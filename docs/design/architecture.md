@@ -1,13 +1,13 @@
 # RoDAQ System Architecture Design Specification
 
-**Version:** v0.4  
+**Version:** v0.5
 **Status:** Design Specification  
 **Scope:** Plugin-independent System Architecture  
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.4
+- RoDAQ V1 Canonical Profile v0.5
 
 ---
 
@@ -47,6 +47,15 @@ MCAP
 SQLite3
 ...
 ```
+
+其中当前 V1 design/mapping validation scope 只包括：
+
+```text
+Acquisition: ROS2 / DDS (Fast DDS baseline)
+Storage: MCAP / SQLite3
+```
+
+首个 functional implementation 只实现 `ROS2 Acquisition + MCAP Storage`。SocketCAN 等其它 backend 属于后续扩展，不参与当前 V1 Profile freeze gate。
 
 可以作为 Storage Plugin 接入。
 
@@ -135,7 +144,7 @@ RoleHandle physical type
 Timestamp slot physical representation
 
 PayloadLease physical type
-copy / borrow / adopt / retain API
+BorrowedInput / Copy / Adopt / Retain API
 inline payload threshold
 scatter/gather implementation
 
@@ -437,6 +446,33 @@ StorageCoordinator
 实现应根据实际需要保持简洁。
 
 但实现上的简洁不能消除设计责任边界。
+
+---
+
+### 1.4.9 Normative Authority Boundaries
+
+RoDAQ V1 使用分层的规范权威关系，避免多个文档重复定义同一语义后发生 drift。
+
+| 文档 | Normative authority |
+|---|---|
+| Canonical Data Model | Canonical State 与 Canonical semantic authority |
+| V1 Canonical Profile | V1 capability subset、value domain 与 cardinality authority |
+| System Architecture | system topology、responsibility、dependency 与 lifecycle phase authority |
+| Runtime | Runtime state、coordination、handle、Binding、dispatch/completion integration authority |
+| Payload | Payload ownership、lifetime、release 与 access authority |
+| Admission | Gate、resource reservation、AcceptanceSequence、accept/reject linearization authority |
+| Acquisition Plugin | source-side discovery、normalization、quiescence、source lifecycle authority |
+| Storage Plugin | descriptor readiness、handoff、persistence、finalization authority |
+
+下游文档可以重复描述端到端流程以保持可读性，但重复内容必须：
+
+> **服从上表中对应 authority，不得建立与 authority 文档不同的第二套 normative semantics。**
+
+如果出现冲突：
+
+1. 先检查是否只是下游文档 stale；
+2. 如果确实需要改变上游 contract，必须显式修改上游 authority；
+3. 不允许实现自行选择“更方便的一份文档”。
 
 ---
 
@@ -1188,13 +1224,25 @@ Canonical Record
 
 ## 4.1 Runtime Activation
 
+Runtime activation 发生在明确的：
+
+```text
+Configured
+    ↓
+Starting
+```
+
+阶段。每次进入 `Starting`：
+
+> **V1 必须建立新的 logical Identity Scope。**
+
 Runtime activation 的依赖关系为：
 
 ```mermaid
 flowchart TD
-    CFG[Configuration Validated]
+    CFG[Configuration Validated / Enter Starting]
 
-    SCOPE[Create Active Identity Scope]
+    SCOPE[Create Fresh Active Identity Scope]
     STORAGE[Prepare Storage Plugin]
     ACQ[Prepare Acquisition Plugins / Native Discovery]
 
@@ -1203,9 +1251,9 @@ flowchart TD
     SREADY[Storage Ready]
     BIND[Required Runtime Bindings Ready]
 
-    OPEN[Open Normal Admission Gate]
-    START[Enable Acquisition]
-    RUN[Running]
+    COMMIT[Activation Commit]
+    ENABLE[Release / Enable Normal Acquisition]
+    RUN[Start Succeeds]
 
     CFG --> SCOPE
     CFG --> STORAGE
@@ -1217,14 +1265,14 @@ flowchart TD
     REG --> BIND
     STORAGE --> SREADY
 
-    SREADY --> OPEN
-    BIND --> OPEN
+    SREADY --> COMMIT
+    BIND --> COMMIT
 
-    OPEN --> START
-    START --> RUN
+    COMMIT --> ENABLE
+    ENABLE --> RUN
 ```
 
-该图表示依赖关系，不表示严格串行执行顺序。
+该图表示依赖关系，不要求 Scope establishment、Storage prepare 和 Acquisition prepare 严格串行。
 
 Runtime configuration 完成后：
 
@@ -1323,9 +1371,85 @@ native discovery
 Storage ready
 +
 required Runtime Binding ready
++
+all activation prerequisites satisfied
         ↓
-open Admission Gate
+Activation Commit
 ```
+
+### Activation Commit
+
+V1 必须存在一个唯一的 logical Activation Commit boundary。
+
+该 boundary 保证：
+
+```text
+normal Plugin callback may call Runtime::Submit
+    ⇒
+Runtime is logically Running
+AND
+Global Admission Gate is Open
+```
+
+因此 normal acquisition routing：
+
+> **不得在 Runtime 仍逻辑处于 Starting 时提前对 Plugin 可见。**
+
+一个实现可以在 Activation Commit 内先发布：
+
+```text
+Runtime logical state = Running
+Gate = Open
+```
+
+再释放 Plugin 的 normal submission permission；也可以使用等价的 barrier / generation publication。
+
+本文不冻结 CPU-level 原子实现，但禁止出现：
+
+```text
+Plugin Enabled and able to Submit
++
+Runtime still rejects because state == Starting
+```
+
+的正常可观察窗口。
+
+`Start()` 只有在 required Acquisition Plugins 已完成 enable/release，并且 activation commit 已成功后才返回 success。
+
+### Activation Abort
+
+如果 `Starting` 中发生：
+
+```text
+Stop request
+required Plugin preparation failure
+required Descriptor / Binding failure
+Storage preparation failure
+activation prerequisite failure
+```
+
+且 Activation Commit 尚未成功，Runtime 必须执行 activation-abort path。
+
+Activation abort 至少保证：
+
+```text
+Admission Gate remains Closed
+no normal Plugin Submit becomes eligible
+settle / cancel pending control operations
+stop every successfully prepared Acquisition Plugin
+abort / close incomplete Storage output without NormalComplete publication
+safely release activation-local Scope / registries / handles
+```
+
+如果上述 cleanup 全部安全完成：
+
+> Runtime 可以结束为非运行状态，并由 Runtime Contract 决定返回 `Stopped` 或可重新配置状态。
+
+如果 cleanup 本身无法安全完成或 contract progress failure：
+
+> Runtime terminal disposition 必须为 `Failed`。
+
+Activation abort 不能把一个尚未成功 activation 的空/部分 Artifact 标记为正常完成的 conformant Artifact。
 
 ---
 
@@ -1481,42 +1605,43 @@ future Records
 
 ## 4.5 Normal Stop
 
-正常停止必须建立：
+正常停止必须建立唯一的：
 
 > **final admission cutoff**
 
-cutoff 使用 Admission Gate 作为逻辑分界。
+并同时收敛两种不同的 Runtime activity：
+
+```text
+active submission call
+    = 已进入 Runtime::Submit、但可能尚未 Gate-pass 的 API execution lifetime
+
+admission in-flight attempt
+    = 已 Gate-pass、尚未达到 terminal admission outcome 的 Canonical attempt lifetime
+```
+
+二者不得混为一个 counter/barrier。
+
+V1 正常停止的逻辑顺序为：
 
 ```mermaid
 flowchart TD
-    STOP[Stop Requested]
-    QUIESCE[Request Acquisition Quiescence]
-    CUT[Final Admission Cutoff]
-    WAIT[Confirm Acquisition Quiescent]
-    RESOLVE[Resolve Pre-cutoff Attempts]
-    DRAIN[Drain Accepted Records]
-    FLUSH[Flush Storage]
-    CLOSE[Close Storage]
-    END[Tear Down Runtime]
+    STOP[Stop Requested / enter Stopping]
+    CUT[Close Admission Gate / final cutoff]
+    WAKE[Wake or cancel pre-gate resource waiters]
+    QUIESCE[Request Acquisition Plugin Quiescence]
+    NONEW[Confirm no new Submit can begin]
+    SUBMIT[Wait active submission calls == 0]
+    ATTEMPT[Resolve all Gate-passed attempts]
+    DRAIN[Handoff / drain all Accepted Records]
+    STORAGE[Flush / resolve persistence / close Storage]
+    PAYLOAD[Resolve Runtime-owned Payload obligations]
+    PSTOP[Stop Acquisition Plugins]
+    END[Safe activation teardown → Stopped]
 
-    STOP --> QUIESCE
-    STOP --> CUT
-
-    QUIESCE --> WAIT
-    CUT --> WAIT
-
-    WAIT --> RESOLVE
-    RESOLVE --> DRAIN
-    DRAIN --> FLUSH
-    FLUSH --> CLOSE
-    CLOSE --> END
+    STOP --> CUT --> WAKE --> QUIESCE --> NONEW --> SUBMIT --> ATTEMPT --> DRAIN --> STORAGE --> PAYLOAD --> PSTOP --> END
 ```
 
-本文不冻结 quiesce request 与 cutoff 的具体 CPU-level 顺序。
-
-但逻辑边界必须明确。
-
----
+具体步骤可以在不破坏依赖关系的前提下并行，但以下 barrier 必须成立。
 
 ### Post-cutoff Submission
 
@@ -1527,16 +1652,18 @@ cutoff
     ↓
 Gate closed
     ↓
-submission rejected before admission domain
+submission remains outside admission domain
+    ↓
+PreAdmissionRejected / lifecycle termination
     ↓
 no AcceptanceSequence
 ```
 
----
+已经进入 `Runtime::Submit` 的 pre-gate call 仍必须安全返回；因此仅等待 `admission_in_flight == 0` 不足以允许 teardown。
 
-### Pre-cutoff Attempt
+### Pre-cutoff Gate-passed Attempt
 
-如果 submission 已经在 cutoff 前成功通过 Admission Gate：
+如果 submission 已经在 cutoff 前 Gate-pass：
 
 ```text
 Gate pass
@@ -1546,28 +1673,45 @@ admission attempt exists
 cutoff happens
 ```
 
-该 attempt 仍然必须按照正常 admission semantics 完成。
+则必须服从 `admission.md` 的 terminalization semantics。
 
-即使实际 AcceptanceSequence write 尚未发生：
+在 V1 healthy Admission commit path 中：
 
-> Runtime 也不得把它重新解释为 post-cutoff submission。
+> **Gate-passed attempt MUST complete Accepted。**
 
-如果最终 rejected：
+不得因为 normal Stop、ordinary queue pressure、Payload pressure 或 Storage backpressure 把 healthy Gate-passed attempt force-reject。
 
-> sequence value remains consumed。
-
-如果最终 accepted：
-
-> Record 必须进入正常 drain / Storage path。
-
-不得：
+只有 Admission / Runtime commit path 自身已经不可信时，才允许：
 
 ```text
-rollback sequence
-invalidate accepted Record
-retroactively reject accepted Record
-remove pre-cutoff attempt from admission domain
+AdmissionRejected
++
+Runtime failure disposition
 ```
+
+无论结果如何，已经分配的 AcceptanceSequence 均不 rollback / reuse。
+
+### Acquisition Plugin Stop
+
+Plugin quiescence 与 Plugin Stop 是两个不同阶段：
+
+```text
+Quiesce
+    → no future normal Submit can begin
+
+Stop
+    → close / release native acquisition resources
+```
+
+Normal Stop 必须最终调用并等待每个 required Acquisition Plugin 达到 `Stopped` 或等价 terminal state。
+
+Plugin Stop 必须具有 bounded progress / failure semantics。
+
+如果 Plugin Stop failure / timeout 使 Runtime 无法证明 safe shutdown：
+
+> normal Stop 必须升级为 `Failed`。
+
+Runtime 在停止 Plugin native resources 前，必须确保不会因此使仍由 Runtime 持有的 Payload anchor / release capability 失效；具体 anchor-stop safety 由 Payload 与 Acquisition Plugin Contract 定义。
 
 ---
 
@@ -1583,9 +1727,11 @@ stop
 new activation
 ```
 
-但再次 activation 是否复用原 logical Identity Scope 不由本文决定。
+V1 中每次新 activation：
 
-如果新 activation 使用新 Scope：
+> **必须使用新的 logical Identity Scope。**
+
+因此：
 
 ```text
 Scope A
@@ -1610,6 +1756,16 @@ DescriptorId
 
 V1 当前不支持 generic Cross-scope Import。
 
+因此 V1 不提供：
+
+```text
+activation A Scope
+    ↓ reuse
+activation B
+```
+
+的 identity continuity。
+
 ---
 
 # 5. Lifecycle 与 Ownership
@@ -1622,6 +1778,8 @@ V1 当前不支持 generic Cross-scope Import。
 Constructed
     ↓
 Configured
+    ↓
+Starting
     ↓
 Running
     ↓
@@ -1722,17 +1880,16 @@ submission 之前：
 
 > Payload Ownership Contract 决定 Runtime 如何维持 lifetime。
 
-具体可以采用：
+V1 ownership ingress 由 Payload Contract 冻结为：
 
 ```text
-copy
-borrow
-retain
-adopt
-anchor
+BorrowedInput used only for synchronous Copy
+Copy
+Adopt
+Retain
 ```
 
-但本文不冻结具体机制。
+raw borrow 不得跨越 synchronous input lifetime。本文不冻结其具体 C++ API / anchor representation。
 
 ---
 
@@ -1762,6 +1919,22 @@ batch queue
 compression worker
 background transaction
 ```
+
+Storage Handoff 的访问边界由 Payload / Storage Contract 进一步冻结为：
+
+```text
+Handoff call entry
+    → call-scoped read-only Payload access
+
+HandoffAccepted
+    → Storage record responsibility
+    → asynchronous Payload Access Lease may begin
+
+PayloadConsumed
+    → all Storage access permanently ends
+```
+
+因此 `HandoffAccepted` 前的同步读取不等于 Storage 已取得异步 retention 权；而 Handoff timeout 也不能被 Runtime 直接解释为 no-future-access。
 
 Storage Contract 必须定义明确的：
 
@@ -2265,17 +2438,25 @@ V1 对 fatal Storage failure 使用：
 ```text
 fatal Storage failure
         ↓
-failure admission cutoff
+terminal disposition = Failure
         ↓
-Admission Gate closed
+failure admission cutoff / Gate closed
         ↓
-no new admission
+wake pre-gate submissions
         ↓
-Runtime → Stopping / Failed
+quiesce Acquisition Plugins
         ↓
-resolve in-flight work
+active submission calls → 0
         ↓
-report failure
+terminalize Gate-passed attempts
+        ↓
+classify Runtime queued vs HandoffAccepted Records
+        ↓
+resolve Storage / Payload state as far as safely possible
+        ↓
+Plugin Stop / failure cleanup where safe
+        ↓
+Runtime → Failed
 ```
 
 Runtime 不得保持：
@@ -2299,10 +2480,15 @@ all future samples repeatedly rejected
 ```text
 A. persistence success already confirmed
 
-B. accepted / submitted to Storage,
+B. Admission Accepted,
+   but Runtime can prove HandoffAccepted never happened
+
+C. HandoffAccepted by Storage,
    but persistence result unconfirmed
 
-C. not admitted
+D. handoff responsibility boundary itself uncertain
+
+E. not admitted
 ```
 
 A：
@@ -2311,21 +2497,17 @@ A：
 
 B：
 
-> 默认不能标记成功。
-
-只有 Storage Contract 能够基于已经完成且确定的 backend operation 给出明确 persistence-success completion 时，才能确认成功。
-
-否则只能报告为：
-
-```text
-failed
-partial
-unknown
-not persisted
-recoverable but unconfirmed
-```
+> Storage responsibility 从未建立，Runtime 将其 persistence outcome 归类为 Failed；不得改写 Admission Accepted history。
 
 C：
+
+> Storage 已承担 record-specific responsibility，必须根据 Storage Contract 尽可能收敛为 Succeeded / Failed / Unknown；没有明确 success 时不得提升为 success。
+
+D：
+
+> 如果 Runtime 自身无法证明 `HandoffAccepted` 是否发生，使用保守 `PersistenceUnknown`。
+
+E：
 
 > failure cutoff 后不进入 admission domain。
 
@@ -2366,6 +2548,48 @@ alter Schema
 如果需要长期保存：
 
 > 应显式建模为 diagnostic Stream。
+
+---
+
+## 6.9 Terminal Disposition
+
+Runtime 的 `Stopping` 是 cleanup / convergence phase，不等价于最终成功结果。
+
+Runtime 必须 latch 本次 shutdown 的 terminal disposition：
+
+```text
+Normal Stop requested
+    → Success disposition
+
+Fatal Storage failure
+Runtime invariant failure
+policy-selected fatal Acquisition failure
+activation/shutdown correctness failure
+    → Failure disposition
+```
+
+最终状态必须满足：
+
+```text
+Success disposition
++ all shutdown barriers succeed
+    → Stopped
+
+Failure disposition
+    → Failed
+```
+
+即使 failure cleanup、Storage close 或 Plugin cleanup 后续执行成功：
+
+> **也不得把已经 latched 的 fatal failure 洗成正常 `Stopped`。**
+
+如果原本是 Success disposition，但 shutdown / finalization / progress 过程中发生 fatal failure：
+
+```text
+Success → Failure
+```
+
+该升级不可逆。
 
 ---
 
@@ -2411,6 +2635,7 @@ at most one active Identity Scope
 one Canonical allocation authority
 
 one or more Acquisition Plugin instances
+one active acquisition path per Stream
 one active Storage Plugin
 ```
 
@@ -2427,6 +2652,16 @@ replace Plugin instance
 ```
 
 Plugin instance 集合在进入 Running 前确定。
+
+同时，V1 对每个 Stream 只允许：
+
+```text
+one owning Acquisition Plugin
+one active acquisition path
+one current Runtime Binding
+```
+
+同一个 Stream 可以有多个 Source，但不允许多个 Plugin / path 同时向该 Stream 供数。Runtime 不做跨 Plugin native Stream 自动合并。
 
 如需改变：
 
@@ -2756,6 +2991,69 @@ close failure
 full-fidelity contract
 ```
 
+### `acquisition_plugin/ros2.md`
+
+定义 ROS2 V1 native-to-RoDAQ Mapping：
+
+```text
+Topic / type / schema
+RMW serialized PayloadEncoding
+publisher SourceId / SourceSequence
+clock / timestamp capability
+discovery / Binding evolution
+ROS2 lifecycle / failure / quiescence
+```
+
+属于首个 functional implementation 的直接实现依据。
+
+### `acquisition_plugin/dds.md`
+
+定义 DDS V1 native-to-RoDAQ Mapping：
+
+```text
+Topic / type / XTypes
+Writer Source identity / sequence
+valid_data / lifecycle boundary
+reader / writer timestamp capability
+serialized DDS Payload
+DDS discovery / failure / quiescence
+```
+
+属于 V1 design / mapping validation target；实现延后，但具体 Mapping 必须参与 Profile freeze。
+
+### `storage_plugin/mcap.md`
+
+定义 MCAP full-fidelity Storage projection：
+
+```text
+rodaq/v1 MCAP profile
+native Payload Channel / Schema projection
+DescriptorBatch Attachment
+RecordMetadataBatch Attachment
+Descriptor-before-Record
+Handoff / PayloadConsumed
+metadata-batch persistence completion
+checked sink
+NormalComplete finalization
+```
+
+属于首个 functional implementation 的直接实现依据。
+
+### `storage_plugin/sqlite3.md`
+
+定义 SQLite3 full-fidelity Storage projection：
+
+```text
+relational Descriptor graph
+U64BE scalar representation
+Record table / Timestamp presence
+Payload binding lifetime
+transaction persistence completion
+Artifact state / finalization
+```
+
+属于 V1 design / mapping validation target；实现延后，但具体 Mapping 必须参与 Profile freeze。
+
 ### `persistence.md`
 
 在以下问题证明形成独立设计边界时建立：
@@ -2774,7 +3072,7 @@ common persistence extensions
 
 ## 7.6 具体 Plugin Mapping 的前置条件
 
-ROS2、DDS、SocketCAN、MCAP、SQLite3 等具体 Mapping 必须建立在插件无关 Contract 已经稳定之后。
+当前 V1 的 ROS2、DDS（Fast DDS baseline）、MCAP、SQLite3 四份具体 Plugin 设计必须建立在插件无关 Contract 已经稳定之后；SocketCAN 等后续 backend 不参与当前 V1 freeze gate。
 
 Contract 达到 Mapping-ready 至少要求：
 
@@ -2800,7 +3098,7 @@ performance parameter OPEN
 
 > 先实现具体 Plugin，再反向定义通用 Contract。
 
-具体 Mapping 的作用是：
+具体 Plugin 设计与 Mapping 的作用是：
 
 > 验证通用设计是否能表达真实 Middleware / Backend semantics。
 
@@ -2913,8 +3211,10 @@ V1 使用：
 ```text
 one Runtime
 one active Identity Scope
+one fresh Scope per activation
 one Canonical allocation authority
 multiple preconfigured Acquisition Plugins
+one active acquisition path / owning Plugin / current Binding per Stream
 one preconfigured active Storage Plugin
 ```
 
@@ -2922,11 +3222,15 @@ Storage preparation、Acquisition preparation/native discovery 和 Identity Scop
 
 真正需要 active Identity Scope 的阶段是 Canonical registration。
 
-Storage ready 和有效 Runtime Binding 是 normal Admission Gate 开放的前提。
+Storage ready、有效 Runtime Binding 和 activation-wide effective limits 是 Activation Commit 的前提。
+
+Activation Commit 必须先建立 Runtime logically Running + Gate Open，再释放 Plugin normal Submit permission。
 
 Admission Gate pass 是进入 admission-attempt domain 的逻辑边界。
 
-normal stop 和 fatal Storage failure 均通过 admission cutoff 关闭新的 admission。
+Runtime 分别追踪 active Submit-call lifetime 与 Gate-passed Admission Attempt lifetime；二者都是 teardown 前必要 barrier。
+
+normal stop 和 fatal Storage failure 均通过 admission cutoff 关闭新的 admission。Normal Stop 还必须最终完成 Acquisition Plugin Stop；fatal failure 一旦 latched，cleanup 成功也不能把最终状态降为 `Stopped`。
 
 Plugin instance topology 在 Running 前确定。
 

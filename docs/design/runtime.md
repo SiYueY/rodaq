@@ -1,14 +1,14 @@
 # RoDAQ Runtime Design Specification
 
-**Version:** v0.4  
+**Version:** v0.5
 **Status:** Design Specification  
 **Scope:** RoDAQ V1 Runtime Architecture and Runtime Data Model
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.4
-- RoDAQ System Architecture Design Specification v0.4
+- RoDAQ V1 Canonical Profile v0.5
+- RoDAQ System Architecture Design Specification v0.5
 
 ---
 
@@ -263,22 +263,35 @@ stateDiagram-v2
     Configured --> Starting: Start
     Configured --> Configured: Reconfigure
 
-    Starting --> Running: activation succeeds
+    Starting --> Running: Activation Commit succeeds
     Starting --> Stopping: Stop / activation abort
-    Starting --> Failed: unrecoverable activation failure
+    Starting --> Failed: activation cleanup cannot be made safe
 
     Running --> Stopping: Stop
     Running --> Stopping: fatal Storage failure
     Running --> Stopping: fatal Runtime invariant failure
     Running --> Stopping: policy-selected fatal Acquisition failure
 
-    Stopping --> Stopped: clean shutdown
-    Stopping --> Failed: shutdown / finalization / progress failure
+    Stopping --> Stopped: Success disposition + all barriers succeed
+    Stopping --> Failed: Failure disposition or shutdown/finalization/progress failure
 
     Stopped --> Configured: Configure
 
     Failed --> [*]
 ```
+
+`Stopping` 只是收敛 / cleanup phase，不代表最终成功。Runtime 必须同时维护本次 shutdown 的 terminal disposition：
+
+```text
+Success
+Failure
+```
+
+Fatal failure 一旦将 disposition 升级为 `Failure`：
+
+> **不可因为后续 cleanup 成功而降回 Success。**
+
+因此 fatal Storage / Runtime / policy-selected fatal Acquisition failure 最终必须进入 `Failed`。
 
 ---
 
@@ -394,6 +407,8 @@ Storage completion state
 Admission Gate
 Plugin activation state
 resource accounting
+effective Runtime / Storage limits
+terminal disposition
 ```
 
 Admission Gate 在初始化阶段保持关闭。
@@ -426,51 +441,82 @@ active Identity Scope ready
 required native facts ready
 ```
 
-而 normal Admission Gate open 必须等待：
+Activation Commit 必须等待：
 
 ```text
 Storage ready
 +
 required Runtime Bindings ready
 +
+effective Runtime/Storage capability limits established
++
 all activation prerequisites required
 for normal Data Plane operation satisfied
 ```
 
-这里的：
+### 2.4.3 Activation Commit
 
-> **activation prerequisites satisfied**
+V1 使用唯一 logical Activation Commit boundary。
 
-表示 `Starting` 阶段内所有用于安全开放 normal Data Plane 的前置条件均已满足。
-
-它不表示：
+该 boundary 必须建立：
 
 ```text
+Runtime logically Running
++
+Global Admission Gate Open
+```
+
+之后才允许 required Acquisition Plugins 的 normal routing / callbacks 获得 `Runtime::Submit` permission。
+
+因此必须满足：
+
+```text
+normal Plugin Submit may begin
+    ⇒
 Runtime state == Running
+AND
+Global Gate == Open
 ```
 
-因为 Runtime 可以在：
+实现可以使用：
 
 ```text
-all prerequisites satisfied
-    ↓
-open / publish normal Data Plane readiness
-    ↓
-complete Starting
-    ↓
-Running
+release/acquire publication
+barrier generation
+serialized Control Plane commit
 ```
 
-这一逻辑过程中完成状态切换。
+等机制，但不得存在 Plugin 已能正常 Submit、Runtime 却仍因 `Starting` 状态拒绝的窗口。
 
-具体 `Running` 状态写入和 Gate publication 的原子关系由实现确定，但不得存在：
+`Start()` 只有在 Activation Commit 成功且 required Acquisition Plugins 完成 enable/release 后才返回 success。
+
+### 2.4.4 Activation Abort
+
+如果 Activation Commit 前发生 Stop 或 activation failure：
 
 ```text
-externally usable open Admission Gate
-while Runtime is not logically ready for Running
+Starting
+    ↓
+activation abort
 ```
 
-的可观察窗口。
+Runtime 必须：
+
+1. 保持 Global Admission Gate closed；
+2. 禁止 Plugin normal Submit permission 发布；
+3. settle / cancel pending descriptor-readiness、registration 和其他 activation control work；
+4. stop 所有已经成功 Prepare 的 Acquisition Plugin；
+5. abort / close Storage incomplete output，且不得发布 `NormalComplete`；
+6. 安全释放 activation-local Scope、registries、handles 和资源；
+7. 只有在 cleanup safety 可以证明时结束 activation。
+
+如果 activation abort cleanup 成功，并且 abort 原因不是 latched fatal failure：
+
+> 可以进入正常非运行终态。
+
+如果 cleanup / quiescence / Storage abort 无法安全完成：
+
+> terminal disposition = Failure，Runtime 最终进入 `Failed`。
 
 ---
 
@@ -526,11 +572,15 @@ failure admission cutoff
 随后完成：
 
 ```text
+close / wake pre-gate submission work
 quiesce Acquisition Plugins
-resolve pre-cutoff admission attempts
+wait active Runtime::Submit calls to return
+resolve Gate-passed admission attempts
 dispatch accepted Runtime Records
 flush / finalize Storage according to Storage Contract
 resolve required Storage completion state
+resolve Payload lifetime obligations
+stop Acquisition Plugins
 release active Runtime state
 ```
 
@@ -542,6 +592,43 @@ Runtime 不得无限等待永远不会完成的 Plugin、Storage dispatch、flus
 
 具体停止顺序见第 12 章。
 
+### 2.6.1 Terminal Disposition Latch
+
+进入 `Stopping` 时 Runtime 必须保留一个不可逆升级的 terminal disposition：
+
+```text
+Success
+Failure
+```
+
+规则：
+
+```text
+normal Stop request
+    → Success
+
+fatal subsystem / invariant failure
+    → Failure
+
+Success + later fatal shutdown failure
+    → Failure
+
+Failure
+    → never returns to Success
+```
+
+`Stopping → Stopped` 只允许在：
+
+```text
+terminal disposition == Success
++
+all shutdown barriers satisfied
+```
+
+时发生。
+
+`terminal disposition == Failure` 时，即使 cleanup 成功，最终状态仍必须是 `Failed`。
+
 ---
 
 ## 2.7 Stopped
@@ -552,8 +639,9 @@ Runtime 不得无限等待永远不会完成的 Plugin、Storage dispatch、flus
 
 ```text
 Admission Gate closed
-Acquisition Plugins quiescent
+Acquisition Plugins stopped
 
+active submission calls == 0
 no unresolved admission attempt
 no queued accepted Runtime Record
 
@@ -758,9 +846,12 @@ ActiveRuntimeState
 ├── StreamTable
 ├── SourceTable
 ├── BindingTable
+├── SubmissionActivityState
 ├── AdmissionState
 ├── StorageDispatchState
 ├── StorageCompletionState
+├── EffectiveLimits
+├── TerminalDisposition
 └── OperationalState
 ```
 
@@ -784,6 +875,58 @@ Stopping / Failed cleanup
     ↓
 safe activation teardown
 ```
+
+### 3.1.1 Active Submission Call Lifetime
+
+Runtime 必须独立追踪：
+
+```text
+active_submission_calls
+```
+
+它表示：
+
+> 已经进入 `Runtime::Submit(...)`、但该 synchronous Submit call 尚未返回的 execution 数量。
+
+生命周期为：
+
+```text
+Submit entry
+    ↓
+active_submission_calls +1
+    ↓
+pre-admission validation / wait / Payload materialization
+    ↓
+optional Gate pass / Admission commit
+    ↓
+terminal admission result available
+    ↓
+Submit return boundary
+    ↓
+active_submission_calls -1
+```
+
+该 counter 与：
+
+```text
+global admission in-flight
+```
+
+不同。后者只覆盖已经 Gate-pass 的 Admission Attempt。
+
+因此可能合法存在：
+
+```text
+active_submission_calls > 0
+AND
+global admission in-flight == 0
+```
+
+例如一个 submission 正在 pre-gate resource wait 或 Copy materialization。
+
+Runtime 不得在 `active_submission_calls != 0` 时销毁该 activation 的 Plugin-facing / Submit-path state。
+
+实现不要求独立 `SubmissionManager`；一个有界 atomic counter + wait/notification primitive 即可满足该 contract。
 
 ---
 
@@ -871,6 +1014,43 @@ allocator 只需要保证：
 如果需要诊断 failed allocation history，由 Runtime observability / diagnostics 独立记录。
 
 不能通过创建假的 Canonical Registry entry 表示失败历史。
+
+### 3.2.3 V1 Scalar Domains
+
+Runtime 必须直接遵守 Canonical Profile v0.5 的 scalar domains：
+
+```text
+Runtime-allocated Canonical ID
+    = uint64 value domain
+
+AcceptanceSequence
+    = uint64 value domain
+
+SourceSequence when present
+    = uint64 value domain
+
+ClockReading
+    = int64 signed tick value
+
+Clock resolution numerator / denominator
+    = positive uint64 reduced rational
+```
+
+`0` 对上述允许 zero 的 value domain 是合法值，不得作为 absent / invalid sentinel。
+
+Runtime 必须使用独立 presence / validity state 表达 absent。
+
+Plugin-native sentinel，例如 middleware 的 unsupported / unknown sequence value：
+
+> 必须由 Acquisition Mapping 在进入 Runtime 前解释为 absent / invalid，不得作为普通 Canonical scalar 直接透传。
+
+所有 scalar conversion 必须 checked：
+
+```text
+no truncation
+no signedness reinterpretation
+no wrap
+```
 
 ---
 
@@ -999,6 +1179,18 @@ SourceId 是 Canonical opaque bytes。
 
 Source-specific canonicalization 在 Acquisition Plugin 中完成。
 
+Runtime 接收到的 SourceId bytes 必须已经满足 Canonical Profile v0.5 的：
+
+```text
+Scope-wide identity-domain disjointness
+```
+
+要求。Runtime 只做 byte-exact equality / interning，无法也不得根据 Plugin type 重新补 domain tag。
+
+如果两个本应属于不同 identity domain 的 Source 因 Mapping 错误产生相同 bytes：
+
+> 属于 Acquisition Mapping / Contract violation；Runtime 不应通过 source-specific heuristic 猜测并拆分。
+
 SourceId interning：
 
 > **属于 Control Plane 操作。**
@@ -1093,8 +1285,8 @@ required interpretation fact no longer valid
 
 current Binding no longer semantically correct
 
-no remaining source/path can produce
-valid Records for that Stream
+no remaining eligible Source in the current
+active acquisition path can produce valid Records
 
 AcceptanceSequence exhausted
 ```
@@ -1403,6 +1595,21 @@ operational counters
 
 实现不要求使用独立 `StreamState` class。
 
+这里的单值：
+
+```text
+owning Acquisition Plugin
+current Runtime Binding
+```
+
+是 V1 Profile 的明确 cardinality，而不是暂时的数据结构简化。
+
+V1 不支持同一 Stream 同时拥有多个 active acquisition path / current Binding。
+
+一个 Stream 可以拥有多个 Source，但这些 Source 必须通过该 Stream 唯一 active acquisition path 与 current Binding 提交 Record。
+
+Runtime 不执行跨 Plugin native logical Stream 自动合并。
+
 ---
 
 ## 4.4 Stream Availability
@@ -1451,7 +1658,7 @@ required fact invalid
 
 current Binding semantics no longer valid
 
-no valid Source/path remains
+no eligible Source remains in the current active acquisition path
 
 AcceptanceSequence exhausted
 
@@ -2657,8 +2864,13 @@ Binding == Stream.current_binding
 required Source state valid
 where applicable
 
+Payload logical size
+<= effective_payload_limit
+
 AcceptanceSequence capacity available
 ```
+
+其中 `effective_payload_limit` 在 Starting 阶段由 Runtime configuration 与 Storage capability negotiation 确定，并在该 activation 内保持稳定。超过该 limit 的 submission 必须在 Gate pass 前拒绝。
 
 之后 submission 才有资格进入 admission-attempt domain。
 
@@ -2812,17 +3024,21 @@ Source recovery
 
 > Canonical admission-attempt semantics 生效。
 
-此后涉及：
+V1 Admission v0.5 要求普通 bounded resource reservation 与 Payload materialization 已在 Gate pass 前完成。
+
+Gate pass 后涉及：
 
 ```text
+Admission in-flight entry
 AcceptanceSequence assignment
-resource reservation
-ingress timestamp capture
-final accept / reject
+RuntimeRecord finalization
 ordered accepted enqueue
+final Accepted / AdmissionRejected terminalization
 ```
 
 的具体 linearization 由 `admission.md` 定义。
+
+`rodaq/acquisition_ingress` capture point 同样由 Admission Contract 定义，并不因为本节列出 Gate pass 而被重新解释为 post-gate timestamp。
 
 其中：
 
@@ -2834,12 +3050,15 @@ ordered accepted enqueue
 
 Stop 时 Runtime：
 
-1. 原子关闭 Global Admission Gate；
-2. 建立 final cutoff；
-3. 禁止新的 gate pass；
-4. 等待已经通过 gate 的 admission attempts 达到 terminal outcome；
-5. dispatch accepted Runtime Records；
-6. 进入 Storage finalization sequence。
+1. 原子关闭 Global Admission Gate并建立 final cutoff；
+2. wake/cancel pre-gate resource waiters；
+3. request Acquisition Plugin quiescence，阻止新的 Submit 开始；
+4. 等待 `active_submission_calls == 0`；
+5. 等待所有已经 Gate-pass 的 admission attempts 达到 terminal outcome；
+6. dispatch accepted Runtime Records；
+7. 进入 Storage finalization sequence。
+
+`active_submission_calls == 0` 与 `global admission in-flight == 0` 都是 teardown 前必要 barrier。
 
 Gate close 与并发 gate pass 必须有唯一 linearization result。
 
@@ -3028,6 +3247,33 @@ missing ClockDescriptor
 同一 Stream 的 Record handoff：
 
 > 必须保持 AcceptanceSequence 顺序。
+
+Runtime 在调用 Handoff 时：
+
+```text
+Dispatch state remains Queued
+```
+
+直到 Storage 明确返回 / 建立：
+
+```text
+HandoffAccepted
+```
+
+才转换为：
+
+```text
+Dispatch = HandoffAccepted
+```
+
+并建立 Storage record responsibility。
+
+Payload access 边界遵循 Storage/Payload v0.3/v0.5：
+
+- Handoff call 内仅授予 call-scoped read-only access；
+- `HandoffAccepted` 后才允许 Storage 异步 retain PayloadView；
+- `FatalFailure` 在 HandoffAccepted 前明确返回时，Storage return 后不得保留 Payload access；
+- timeout / no-progress 若不能证明 Storage execution 已停止，Runtime 必须先建立 failure quiescence，再释放 Payload。
 
 ---
 
@@ -3218,7 +3464,7 @@ Persistence State
 ```text
 Dispatch:
     Queued
-    HandedOff
+    HandoffAccepted
 
 Payload:
     Pending
@@ -3244,6 +3490,18 @@ PersistenceSucceeded
 ```
 
 不是严格的同一状态轴。
+
+`HandoffAccepted` 与 Storage Plugin Contract 中同名 responsibility boundary 含义一致：
+
+> Storage 只有在该 boundary 成立后才承担 record-specific Storage processing responsibility。
+
+如果 fatal Storage failure 发生，而 Record 仍明确处于：
+
+```text
+Dispatch = Queued
+```
+
+则 Runtime 可以证明该 Record 从未 `HandoffAccepted`。该事实用于 §11.7 的 terminal persistence classification。
 
 这些全部属于 operational tracking state：
 
@@ -3764,6 +4022,29 @@ Storage completion events
 retained Payload bytes
 ```
 
+### Effective Payload Limit
+
+Starting 阶段 Runtime 必须从：
+
+```text
+runtime_payload_limit
+storage_payload_limit
+```
+
+建立：
+
+```text
+effective_payload_limit
+=
+min(runtime_payload_limit, storage_payload_limit)
+```
+
+如果 Storage Contract 声明更严格的可接受 Payload limit，Runtime 不得只使用自身 `max_single_payload_size`。
+
+该 effective limit 必须在 normal Gate open 前冻结到 ActiveRuntimeState / equivalent immutable configuration，并由 Admission 在 Gate pass 前检查。
+
+Storage handoff 对 oversize Record 的 fail-closed check 只是 defensive invariant protection，不得成为正常 oversize rejection 路径。
+
 具体默认值由 implementation/configuration 设计确定。
 
 ---
@@ -3941,13 +4222,17 @@ its Streams:
     evaluate stream-level availability
 ```
 
-如果该 Plugin 是某 Stream 唯一有效 acquisition path：
+由于 V1 每个 Stream 只有一个 active acquisition path，如果该 Plugin 是该 Stream 的 owning Acquisition Plugin：
 
 ```text
+Plugin failure
+    ↓
 Stream → Unavailable
 ```
 
-如果 Stream 仍有其他合法 acquisition path，则可以根据 Acquisition Contract 继续 Available。
+Stream 不会在同一 activation 内自动 fail over 到另一个 Plugin/path。
+
+同一 Stream 内多个 Source 的局部 Source failure 仍可按 §11.3 独立处理。
 
 ---
 
@@ -4073,7 +4358,7 @@ Source → Unavailable
 Stream → Unavailable
 ```
 
-只有在该 Source failure 使 Stream 不再具备任何合法 acquisition path 时，Stream 才进入 Unavailable。
+只有在该 Source failure 使当前唯一 active acquisition path 内不再存在任何能够通过 current Binding 合法供数的 Source 时，Stream 才进入 Unavailable。
 
 Source recovery 必须经过 Control Plane 更新 operational availability。
 
@@ -4124,6 +4409,14 @@ Stream → Unavailable
 
 fatal Storage failure 是 Runtime-wide failure。
 
+收到该 failure 后 Runtime 必须立即：
+
+```text
+terminal disposition = Failure
+```
+
+该 disposition 不可因后续 cleanup 成功而恢复为 Success。
+
 Runtime 必须：
 
 ```text
@@ -4134,18 +4427,29 @@ forward lifecycle mutation
 to Control Plane
         ↓
 establish failure admission cutoff
-        ↓
 close Global Admission Gate
+wake pre-gate waiters
         ↓
-quiesce Acquisition Plugins
+request Acquisition Plugin quiescence
         ↓
-resolve pre-cutoff attempts
+no new Submit can begin
+active_submission_calls → 0
         ↓
-resolve Storage state
+terminalize all Gate-passed attempts
+according to Admission failure semantics
+        ↓
+global admission in-flight → 0
+        ↓
+classify Accepted RuntimeRecords by:
+Queued / HandoffAccepted / uncertain boundary
+        ↓
+resolve Storage state and Payload access
 as far as safely possible
         ↓
-attempt failure finalization
-where meaningful
+stop Acquisition Plugins when Payload/native
+resource safety permits
+        ↓
+safe cleanup / quarantine as required
         ↓
 report failure
         ↓
@@ -4185,7 +4489,50 @@ violates AcceptanceSequence order
 
 > Runtime 必须 fail closed。
 
-不得继续 normal admission。
+同时：
+
+```text
+terminal disposition = Failure
+```
+
+不得继续 normal admission，也不得在 cleanup 成功后报告正常 `Stopped`。
+
+### 11.6.1 Common Failure Shutdown Barrier
+
+任何 Runtime-wide fatal failure，无论起因来自 Storage、Runtime invariant 或 policy-selected Acquisition escalation，释放 activation-local state 前都必须满足或安全降级处理以下 barrier：
+
+```text
+Global Gate Closed
++
+no new Plugin Submit can begin
++
+active_submission_calls == 0
++
+all Gate-passed attempts terminal
++
+global admission in-flight == 0
+```
+
+如果 Plugin / Storage failure 使某个 barrier 无法在 contract-defined bounded condition 内证明：
+
+> Runtime 不得通过提前释放 state 伪造 barrier success。
+
+必须进入：
+
+```text
+Failed cleanup
++
+retain / quarantine unsafe-to-release state
+```
+
+直到能够证明 no-future-access，或保留到 process teardown。
+
+对于已经 Accepted 的 Record：
+
+- `Queued` 且明确 never-HandoffAccepted：Runtime 归类 persistence Failed；
+- `HandoffAccepted`：由 Storage Contract 收敛 outcome；
+- handoff boundary uncertain：PersistenceUnknown；
+- 任何分类都不得撤销 Admission Accepted history。
 
 ---
 
@@ -4213,17 +4560,27 @@ Accepted but persistence failed
 Admission rejected
 ```
 
-对于：
+Failure cleanup 必须首先根据 Runtime 已知的 Storage responsibility boundary 分类：
 
 ```text
-accepted
-+
-Storage completion never arrives
-+
-Runtime shutdown progress fails
+Accepted
++ Dispatch == Queued
++ Runtime can prove HandoffAccepted never happened
+    → PersistenceFailed
+
+Accepted
++ HandoffAccepted
+    → resolve according to Storage Contract
+       as Succeeded / Failed / Unknown
+
+Accepted
++ handoff boundary itself cannot be proven
+    → PersistenceUnknown
 ```
 
-最终 persistence state 可以是：
+只有真正跨过 `HandoffAccepted` 的 Record 才由 Storage Plugin 承担 record-specific terminal completion responsibility。
+
+对于已经 `HandoffAccepted` 但 completion 永远不到达、或 Runtime 无法证明 backend terminal result 的 Record：
 
 ```text
 Failed
@@ -4231,7 +4588,7 @@ Unknown
 Recoverable but unconfirmed
 ```
 
-具体由 Storage Contract 定义。
+等最终分类由 Storage Contract 定义。
 
 但绝不能改写为：
 
@@ -4292,126 +4649,140 @@ V1 正常停止逻辑顺序为：
 
 ```text
 1. enter Stopping
+   terminal disposition initially Success
 
 2. close Global Admission Gate
    and establish final admission cutoff
 
-3. request Acquisition Plugin quiescence
+3. wake / cancel all pre-gate
+   resource waiters
 
-4. wait until no new Plugin callback
-   can begin normal submission
+4. request Acquisition Plugin quiescence
 
-5. drive or wait for every pre-cutoff
-   admission attempt to reach:
-      Accepted
-      or
-      Rejected
+5. confirm no new Plugin execution context
+   can begin Runtime::Submit
 
-6. confirm global in-flight admission == 0
+6. wait all active Runtime::Submit calls
+   to return
+   active_submission_calls == 0
 
-7. hand off every accepted RuntimeRecord
+7. confirm every Gate-passed attempt
+   reached terminal outcome
+
+8. confirm global admission in-flight == 0
+
+9. hand off every Accepted RuntimeRecord
    to Storage Dispatch Lane
 
-8. confirm no more Record handoff will occur
+10. confirm no more Record handoff will occur
 
-9. resolve only Storage obligations
-   explicitly required before final flush
+11. resolve only Storage obligations
+    explicitly required before final flush
 
-10. invoke Storage final flush
+12. invoke Storage final flush
 
-11. process / wait for persistence completions
+13. process / wait for persistence completions
     produced or required by flush
 
-12. invoke Storage close / finalization
+14. invoke Storage close / finalization
     when Storage Contract close preconditions hold
 
-13. resolve final Storage completion obligations
+15. resolve final Storage completion obligations
+    and Runtime-owned Payload obligations
 
-14. verify:
-      no remaining Payload lifetime obligation
-      no future Storage callback may access
-      activation-local state
+16. stop Acquisition Plugins
+    and wait Plugin Stopped / terminal result
 
-15. release activation-local Runtime state
+17. verify no future Plugin / Storage callback
+    may access activation-local state
 
-16. transition Stopped
+18. release activation-local Runtime state
+
+19. if terminal disposition == Success
+       → Stopped
+    else
+       → Failed
 ```
 
-任何等待阶段：
-
-> 都必须受对应 contract-defined progress condition 约束。
+任何等待阶段都必须受对应 contract-defined progress condition 约束。
 
 ---
 
-## 12.3 Step 5 与 Step 6 的关系
+## 12.3 Submission Barrier 与 Admission Barrier
 
-Step 5 表示：
+Stop 中必须分别满足两个 barrier。
 
-> **使所有 pre-cutoff attempt 达到 terminal outcome。**
-
-这可能是：
+### Submission Call Barrier
 
 ```text
-waiting for currently executing admission logic
+Acquisition Plugins quiesced
++
+active_submission_calls == 0
 ```
 
-也可能需要 Admission Contract 根据 shutdown policy：
+表示：
+
+> 不再存在仍可能访问 Submit-path Runtime state 的 synchronous submission execution。
+
+pre-gate submission 可以因为 cutoff / cancellation 返回 `PreAdmissionRejected`，并完成 reservation / Payload cleanup。
+
+### Admission Attempt Barrier
 
 ```text
-wake blocked admission
-force terminal rejection
-resolve resource wait
+all Gate-passed attempts terminal
++
+global admission in-flight == 0
 ```
 
-Step 6 不是第二次 resolve。
+表示：
 
-它是：
+> Canonical admission-attempt domain 已收敛。
 
-> **验证 barrier 已经真正成立。**
-
-即：
-
-```text
-all pre-cutoff attempts terminal
-        ↓
-global in-flight admission count == 0
-```
-
-Runtime 只有在该 barrier 成立后，才能确认 admission domain 已完全收敛。
+二者都成立后，Runtime 才可以证明不再有 Data Plane producer 创建新的 Accepted RuntimeRecord。
 
 ---
 
-## 12.4 Stop 中阻塞的 Admission Attempt
+## 12.4 Stop 与 Gate-passed Attempt
 
-如果一个 pre-cutoff attempt 因：
-
-```text
-resource reservation
-queue pressure
-Storage backpressure
-```
-
-尚未达到 terminal outcome，Runtime 不允许无限等待而没有 policy。
-
-`admission.md` 必须定义至少一种可终止策略，例如：
+Admission v0.5 已冻结：
 
 ```text
-wait until bounded condition resolves
-
-or
-
-force Rejected terminal outcome
-
-or
-
-escalate Runtime to Failed
+ordinary resource wait
+Payload materialization
+queue-capacity guarantee
 ```
 
-如果强制 Rejected：
+全部发生在 Gate pass 前。
 
-> 已经进入 admission domain，因此 AcceptanceSequence 仍按 Canonical semantics 消耗。
+因此 Gate-pass 后的 healthy Admission commit path：
 
-不得重新解释成 pre-admission rejection。
+> **不得因 normal Stop、ordinary queue pressure、Payload pressure 或 Storage backpressure 被强制 Rejected。**
+
+如果 cutoff 与 attempt 并发：
+
+```text
+Gate pass before cutoff
+    → attempt exists
+    → healthy commit MUST Accepted
+
+no Gate pass before cutoff
+    → remains pre-admission
+    → PreAdmissionRejected / lifecycle termination
+```
+
+只有 Admission / Runtime commit invariant 已经不可信时，Gate-passed attempt 才允许：
+
+```text
+AdmissionRejected
+```
+
+并且这必然意味着：
+
+```text
+terminal disposition = Failure
+```
+
+AcceptanceSequence 不 rollback / reuse。
 
 ---
 
@@ -4656,6 +5027,33 @@ Runtime → Failed
 
 > 无限等待 Plugin quiescence。
 
+### 12.11.1 Acquisition Plugin Stop Progress
+
+Quiescence 只保证：
+
+```text
+no future Runtime::Submit
+```
+
+它不等于 native resource 已关闭。
+
+在 Runtime 已满足对应 Payload-anchor safety 前置条件后，必须调用 Plugin Stop，并等待：
+
+```text
+Stopped
+```
+
+或明确 failure / timeout。
+
+Plugin Stop failure / timeout：
+
+```text
+terminal disposition = Failure
+Runtime → Failed
+```
+
+Runtime 不得因为 Plugin 已经 Quiesced 就跳过 Stop 并报告正常结束。
+
 ---
 
 ## 12.12 Stop Success
@@ -4663,9 +5061,10 @@ Runtime → Failed
 Runtime 只有在以下条件全部满足时进入 `Stopped`：
 
 ```text
-Acquisition quiescent
+Acquisition Plugins stopped
 
 Admission Gate closed
+active submission calls == 0
 no in-flight admission
 
 no queued Runtime Record
@@ -4679,7 +5078,9 @@ required persistence outcomes resolved
 Storage flush success
 Storage close success
 
-no future completion callback
+terminal disposition == Success
+
+no future Plugin / Storage callback
 can access activation-local state
 ```
 
@@ -4692,6 +5093,12 @@ can access activation-local state
 ```text
 Acquisition Plugin quiescence
 cannot reach required barrier
+
+active submission calls
+cannot reach zero
+
+Acquisition Plugin Stop
+fails / times out
 
 Storage dispatch cannot make
 required progress
@@ -4745,7 +5152,9 @@ Binding counts
 
 queue utilization
 Payload bytes in flight
+effective_payload_limit
 
+active submission call count
 admission attempt count
 accepted count
 admission rejected count
@@ -4758,6 +5167,7 @@ Storage progress failures
 Storage failures
 
 Plugin health
+terminal disposition
 last terminal failure
 ```
 
@@ -5234,6 +5644,50 @@ Failed is terminal
 
 并允许 safe failure cleanup 后销毁。
 
+还必须分别验证：
+
+### Activation Commit Atomicity
+
+构造 required Plugin 在 Enable permission 发布后立即产生 callback。验证任何 normal `Runtime::Submit` 开始时：
+
+```text
+Runtime == Running
+AND
+Global Gate == Open
+```
+
+不得出现 Plugin 已允许 normal Submit 但 Runtime 仍处于 `Starting` 的窗口。
+
+### Starting Activation Abort
+
+分别在：
+
+```text
+Storage Prepared
+Acquisition Prepared
+partial Descriptor registration
+pending Descriptor readiness
+```
+
+阶段注入 activation abort。验证：
+
+- Gate 从未开放；
+- normal Submit permission 从未发布；
+- Prepared Acquisition Plugins 被 Stop；
+- Storage prepared output 走 abort/cleanup，而非 NormalComplete CloseSuccess；
+- activation-local state 安全回收；
+- cleanup failure / timeout 时最终 `Failed`。
+
+### Terminal Disposition Latch
+
+触发 fatal Storage / Runtime failure后让后续 cleanup 全部成功。验证最终仍为：
+
+```text
+Failed
+```
+
+不得因为 cleanup 成功进入 `Stopped`。
+
 ---
 
 ## 16.2 Activation Scope 与 Handle Isolation
@@ -5313,6 +5767,8 @@ SourceHandle not reused
 in activation
 ```
 
+并验证 Runtime 只执行 byte-exact SourceId interning：不同 native identity domain 的 disjointness 必须已经由 Acquisition Mapping 建立；Runtime 不通过 Plugin type 或 heuristic 改写 SourceId equality。
+
 ---
 
 ## 16.5 Source Availability
@@ -5339,7 +5795,7 @@ Source A Unavailable
 Stream X remains Available
 ```
 
-只有当没有合法 acquisition path 时：
+只有当当前唯一 active acquisition path 内没有 eligible Source 时：
 
 ```text
 Stream X → Unavailable
@@ -5618,37 +6074,98 @@ other Streams continue
 
 ---
 
-## 16.15 Stop Cutoff
+## 16.15 Stop Cutoff 与 Submission Barrier
 
 构造：
 
 ```text
-submission before cutoff
-submission racing cutoff
-submission after cutoff
+A: Gate-passed before cutoff
+B: entered Runtime::Submit but remains pre-gate during resource wait / Copy
+C: races Gate pass with cutoff
+D: begins after cutoff
 ```
 
-验证每个 submission 恰好属于：
+验证：
 
 ```text
-pre-cutoff admission attempt
+A
+    → Admission Attempt exists
+    → healthy commit MUST Accepted
+
+B
+    → no Admission Attempt
+    → wake/cancel pre-gate work
+    → PreAdmissionRejected
+    → no AcceptanceSequence
+
+C
+    → exactly one Gate-pass/cutoff linearization result
+
+D
+    → PreAdmissionRejected
+    → no AcceptanceSequence
 ```
 
-或：
+同时让 B 保持在 pre-gate Copy/materialization path，并使：
 
 ```text
-post-cutoff pre-admission rejection
+global admission in-flight == 0
 ```
 
-不存在 ambiguous outcome。
+验证 Runtime 仍然必须等待：
 
-同时构造一个因 resource/backpressure 阻塞的 pre-cutoff attempt，验证：
+```text
+active_submission_calls == 0
+```
 
-> Stop policy 最终使其达到 Accepted、Rejected 或 Runtime Failed，不允许无限悬挂。
+才允许释放 Submit-path activation state。
+
+不得出现：
+
+```text
+normal Stop
+→ force reject healthy Gate-passed attempt
+```
 
 ---
 
-## 16.16 Storage Dispatch Stall During Stop
+## 16.16 Effective Payload Limit
+
+配置：
+
+```text
+runtime_payload_limit > storage_payload_limit
+```
+
+验证 Starting 建立：
+
+```text
+effective_payload_limit = storage_payload_limit
+```
+
+并验证超限 Payload：
+
+```text
+PreAdmissionRejected before Gate pass
+no RuntimeRecord Accepted
+no Storage Handoff
+```
+
+Storage 不应在 normal path 第一次发现该 oversize。
+
+---
+
+## 16.17 HandoffAccepted Responsibility Boundary
+
+构造三种 Handoff：
+
+1. `HandoffAccepted`：Dispatch 从 Queued 变为 HandoffAccepted；Storage 才可跨 return retain PayloadView。
+2. `FatalFailure` before HandoffAccepted：Dispatch 保持 never-handed-off classification，return 后 Storage 不再访问 Payload。
+3. Runtime timeout while Storage execution may still run：handoff boundary / access quiescence 未证明前 Runtime 不释放 Payload；必要时最终 PersistenceUnknown / quarantine。
+
+---
+
+## 16.18 Storage Dispatch Stall During Stop
 
 构造：
 
@@ -5685,7 +6202,7 @@ according to Storage Contract
 
 ---
 
-## 16.17 Stop Flush Ordering
+## 16.19 Stop Flush Ordering
 
 使用只有在 `flush()` 时才提交 batch transaction 的 Storage Plugin。
 
@@ -5722,7 +6239,7 @@ persistence waits flush
 
 ---
 
-## 16.18 Flush Timeout
+## 16.20 Flush Timeout
 
 构造 Storage Plugin：
 
@@ -5745,7 +6262,7 @@ Runtime 不无限等待。
 
 ---
 
-## 16.19 Close Failure / Timeout
+## 16.21 Close Failure / Timeout
 
 分别构造：
 
@@ -5771,7 +6288,7 @@ Artifact 不得标记为 complete conformant。
 
 ---
 
-## 16.20 Plugin Quiescence Timeout
+## 16.22 Plugin Quiescence Timeout
 
 构造 Acquisition Plugin：
 
@@ -5791,9 +6308,20 @@ Stopping → Failed
 
 Runtime 不无限等待。
 
+### Plugin Stop Failure / Timeout
+
+让 Plugin 成功 Quiesce，但 destructive Stop 返回 failure 或永不达到 terminal result。验证：
+
+```text
+terminal disposition = Failure
+Runtime → Failed
+```
+
+不得因为 Plugin 已 Quiesced 就报告 `Stopped`。
+
 ---
 
-## 16.21 Per-stream Dispatch Ordering
+## 16.23 Per-stream Dispatch Ordering
 
 构造同一 Stream：
 
@@ -5815,7 +6343,7 @@ seq 12
 
 ---
 
-## 16.22 Acquisition Failure 与 Same-semantics Recovery
+## 16.24 Acquisition Failure 与 Same-semantics Recovery
 
 Plugin A failure：
 
@@ -5837,7 +6365,7 @@ same Binding reused
 
 ---
 
-## 16.23 Acquisition Recovery with Changed Semantics
+## 16.25 Acquisition Recovery with Changed Semantics
 
 Plugin recovery 后 Clock / Schema 等发生变化。
 
@@ -5855,7 +6383,7 @@ old Binding → Draining
 
 ---
 
-## 16.24 Binding Transition Failure with Valid Old Binding
+## 16.26 Binding Transition Failure with Valid Old Binding
 
 构造：
 
@@ -5876,7 +6404,7 @@ Stream remains Available
 
 ---
 
-## 16.25 Storage Completion Concurrency
+## 16.27 Storage Completion Concurrency
 
 使用多 worker Storage Plugin：
 
@@ -5906,12 +6434,12 @@ fatal event handed to Control Plane
 
 ---
 
-## 16.26 Missing Storage Completion During Stop
+## 16.28 Missing Storage Completion During Stop
 
 构造：
 
 ```text
-Record handed off
+Record HandoffAccepted
 Persistence Pending
 Storage never reports completion
 ```
@@ -5935,7 +6463,7 @@ without confirmation
 
 ---
 
-## 16.27 Failed Cleanup Safety
+## 16.29 Failed Cleanup Safety
 
 构造一个 Plugin failure，其中 callback 延迟退出。
 
@@ -5951,7 +6479,7 @@ without confirmation
 
 ---
 
-## 16.28 Storage Failure
+## 16.30 Storage Failure
 
 Storage fatal failure 时验证：
 
@@ -5974,7 +6502,7 @@ subject to quiescence invariant
 
 ---
 
-## 16.29 Resource Limit
+## 16.31 Resource Limit
 
 分别耗尽：
 
@@ -6291,7 +6819,12 @@ Runtime
 │   ├── Runtime Ingress Clock
 │   ├── Stream Table
 │   ├── Source Table
-│   └── Binding Table
+│   ├── Binding Table
+│   ├── Submission Activity State
+│   ├── Admission State
+│   ├── Storage Dispatch / Completion State
+│   ├── Effective Limits
+│   └── Terminal Disposition
 │
 ├── Control Plane
 │   ├── Plugin facts
@@ -6331,6 +6864,10 @@ Runtime
 ```text
 Acquisition callback
         ↓
+Runtime::Submit entry
+        ↓
+active_submission_calls +1
+        ↓
 BindingHandle
         ↓
 Admission eligibility
@@ -6348,6 +6885,10 @@ RuntimeRecord
 bounded dispatch
         ↓
 Storage Dispatch
+        ↓
+Submit terminal result / return
+        ↓
+active_submission_calls -1
 ```
 
 其中不需要：
@@ -6457,6 +6998,21 @@ when Storage Contract requires
 
 fresh Identity Scope
 per activation
+
+one active acquisition path
+per Stream
+
+activation-wide effective_payload_limit
+checked before Gate pass
+
+separate active-submission
+and admission-attempt barriers
+
+HandoffAccepted as Storage
+responsibility boundary
+
+terminal disposition latch
+for fatal failure
 
 terminal Failed state
 with cleanup-only allowance

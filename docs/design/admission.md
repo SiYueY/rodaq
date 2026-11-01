@@ -1,16 +1,16 @@
 # RoDAQ Admission Design Specification
 
-**Version:** v0.4  
+**Version:** v0.5
 **Status:** Design Specification  
 **Scope:** RoDAQ V1 Admission, Resource Reservation, Acceptance Ordering and Backpressure
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.4
-- RoDAQ System Architecture Design Specification v0.4
-- RoDAQ Runtime Design Specification v0.4
-- RoDAQ Payload Design Specification v0.4
+- RoDAQ V1 Canonical Profile v0.5
+- RoDAQ System Architecture Design Specification v0.5
+- RoDAQ Runtime Design Specification v0.5
+- RoDAQ Payload Design Specification v0.5
 
 ---
 
@@ -56,11 +56,13 @@ Accepted
 
 Admission 必须保证：
 
-- Submission 与 Admission Attempt 明确区分；
+- Submission call lifetime 与 Admission Attempt lifetime 明确区分；
+- Runtime 对整个 synchronous `Submit` 使用独立 active-submission accounting；
 - Gate pass 是 admission-attempt domain 的唯一入口；
 - Gate pass 前不消耗 AcceptanceSequence；
 - Gate pass 后 AcceptanceSequence 唯一、不可回滚、不可复用；
 - Gate pass 前已经保证正常 Accepted path 所需 bounded resource；
+- Payload size 在 Gate pass 前满足 activation-wide `effective_payload_limit`；
 - ordinary queue pressure 不在 Gate pass 后才被发现；
 - Payload 在 Gate pass 前已经成为稳定 `PayloadRef`；
 - Gate pass 后正常路径不再等待普通资源；
@@ -72,7 +74,8 @@ Admission 必须保证：
 - Admission correctness failure 与 downstream Storage failure 明确区分；
 - pre-gate wait / interruption / rollback 不遗留 partial resource；
 - Runtime 不依赖 unbounded queue 或 unbounded shutdown wait；
-- Admission hot path 不执行 Canonical registration 或 source-specific interpretation。
+- Admission hot path 不执行 Canonical registration 或 source-specific interpretation；
+- Profile v0.5 scalar values 不使用 numeric sentinel 表示 absent。
 
 ---
 
@@ -82,6 +85,8 @@ Admission 必须保证：
 
 ```text
 Submission
+
+active submission call accounting
 
 pre-admission validation
 
@@ -263,6 +268,16 @@ V1 Acquisition-facing submission：
 
 > **在 admission decision 层面是同步操作。**
 
+一次 submit operation 从进入 Runtime 开始，到 synchronous return boundary 结束，整个期间都属于 Runtime `active_submission_calls` accounting domain。
+
+它与 Admission Attempt accounting 不同：
+
+```text
+Submit entered but not Gate-passed
+    → active submission
+    → not an Admission Attempt
+```
+
 一次 submit operation 返回前，必须已经确定：
 
 ```text
@@ -438,14 +453,24 @@ resource B wait interrupted
 ```text
 rollback resource A
         ↓
-cleanup acquired Payload responsibility
-        ↓
+PreAdmissionRejected
+```
+
+Phase 3 的 ordinary resource wait 发生在 Phase 4 Payload materialization 之前，因此这种 wait-interruption 场景正常情况下尚未取得 Adopt / Retain Payload responsibility。
+
+如果 failure 发生在 Phase 4 已完成之后、Gate pass 之前，例如 final revalidation 观察到 cutoff / Binding invalidation：
+
+```text
+release / destroy stable PayloadRef
++
+rollback still-local reservations
++
 PreAdmissionRejected
 ```
 
 因此：
 
-> **Wait interruption 属于 pre-gate failure cleanup 的一种。**
+> **所有 pre-gate failure 都必须按实际已经取得的 responsibility 精确 cleanup；不能假定 resource waiter 已经持有 Payload ownership。**
 
 Rollback 必须：
 
@@ -488,7 +513,7 @@ SourceSequence ⇒ SourceHandle present
 
 Payload size representable
 
-Payload size <= configured limit
+Payload size <= activation effective_payload_limit
 
 Payload data / anchor structurally valid
 
@@ -499,7 +524,22 @@ Plugin does not write ingress slot
 timestamp slots belong to Binding
 
 no unsupported timestamp slot
+
+SourceSequence, when present, is a canonical uint64 value
+
+ClockReading values are canonical int64 ticks
 ```
+
+Profile v0.5 中：
+
+```text
+SourceSequence: uint64, 0 is valid
+ClockReading: int64, 0 and negative values are valid
+```
+
+Admission 不得使用 `0`、`UINT64_MAX`、负数等 numeric value 作为通用 absent sentinel。Plugin-native unsupported / unknown sentinel 必须在 Acquisition Mapping 进入 Runtime 前转换为 explicit absence。
+
+所有进入 Runtime 的 scalar conversion 必须已经 checked，禁止 truncation / signedness reinterpretation / wrap。
 
 这些检查失败：
 
@@ -539,6 +579,8 @@ Stream Available
 
 Source valid / available
 where required
+
+Payload size <= effective_payload_limit
 
 AcceptanceSequence not exhausted
 ```
@@ -677,6 +719,14 @@ A sequence = N+1
 Gate pass 前，Runtime 必须保证：
 
 > 如果 submission 随后成功 Gate pass，则普通 Accepted path 所需的 bounded Runtime resources 已经可用。
+
+其中 Payload logical size 已经通过：
+
+```text
+payload_size <= effective_payload_limit
+```
+
+验证。`effective_payload_limit` 由 Runtime v0.5 在 Starting 阶段根据 Runtime limit 与 Storage capability 建立，并在 activation 内保持稳定。
 
 至少包括逻辑上的：
 
@@ -833,7 +883,9 @@ finish before submit() returns
 ### Adopt
 
 ```text
-validate
+structural validation
+        ↓
+required Payload budget / object capacity already reserved in Phase 3
         ↓
 ownership transfer
 ```
@@ -841,10 +893,11 @@ ownership transfer
 ### Retain
 
 ```text
-validate
+structural validation
         ↓
-acquire independent
-lifetime anchor
+required Payload budget / object capacity already reserved in Phase 3
+        ↓
+acquire independent lifetime anchor
 ```
 
 ---
@@ -1657,7 +1710,7 @@ reset
 reuse
 ```
 
-并且按照 Runtime v0.4 的 sequence-exhaustion contract：
+并且按照 Runtime v0.5 的 sequence-exhaustion contract：
 
 > **该 Stream 在当前 active Identity Scope 中不能通过 new Binding、Plugin recovery、Source recovery 或其他运行时恢复操作重置 AcceptanceSequence。**
 
@@ -2497,9 +2550,55 @@ PreAdmissionRejected
 
 > 必须按照 §2.6.2 rollback。
 
-如果已经取得 temporary Payload responsibility：
+ordinary resource waiter 按当前 phase ordering 正常情况下尚未完成 Payload materialization；如果某个 implementation 在等价语义下已经建立 temporary PayloadRef，则仍必须按 §2.2.1 精确 cleanup，但不得改变“wait 发生在 Gate pass 前”的语义。
 
-> 同时按照 §2.2.1 和 `payload.md` cleanup。
+### 6.5.1 Active Submission Calls
+
+Admission 必须与 Runtime v0.5 的：
+
+```text
+active_submission_calls
+```
+
+集成。
+
+它覆盖：
+
+```text
+Submit entry
+    ↓
+structural validation
+    ↓
+ingress capture
+    ↓
+resource wait / reservation
+    ↓
+Payload materialization
+    ↓
+optional Gate pass / commit
+    ↓
+terminal admission result
+    ↓
+Submit return
+```
+
+因此：
+
+```text
+active_submission_calls
+!=
+global admission in-flight
+```
+
+Stop / failure cleanup 在释放 Submit-path Runtime state 以前必须同时证明：
+
+```text
+no new Submit can begin
++
+active_submission_calls == 0
+```
+
+该 accounting 是 Runtime API lifetime safety，不改变 Canonical Admission Attempt 语义，也不消耗 AcceptanceSequence。
 
 ---
 
@@ -2580,11 +2679,13 @@ Normal Stop 必须满足：
 ```text
 Gate Closed
         ↓
-all pre-admission waiters
-cancelled / returned
+all pre-gate waiters cancelled / returned
         ↓
-all Gate-passed attempts
-Accepted
+Acquisition quiescence prevents new Submit
+        ↓
+active_submission_calls == 0
+        ↓
+all Gate-passed attempts Accepted
         ↓
 global admission in-flight == 0
 ```
@@ -2610,8 +2711,11 @@ Failure shutdown 必须满足：
 ```text
 Gate Closed
         ↓
-all pre-admission waiters
-cancelled / returned
+all pre-gate waiters cancelled / returned
+        ↓
+no new Submit can begin
+        ↓
+active_submission_calls == 0
         ↓
 all Gate-passed attempts terminal
         │
@@ -2890,7 +2994,7 @@ Runtime 已经处于 fail-closed / failure-shutdown path时：
 ```text
 terminalize remaining attempts
         ↓
-in-flight == 0
+global admission in-flight == 0
         ↓
 Failed
 ```
@@ -3001,6 +3105,8 @@ Submit(
 ```
 
 Runtime 返回 terminal admission result。
+
+整个调用从 Runtime entry 到 return 都必须处于 `active_submission_calls` lifetime accounting 中；该 bookkeeping 可以是 Runtime internal RAII / scope guard，不要求暴露给 Plugin API。
 
 ---
 
@@ -3840,6 +3946,49 @@ B → Accepted
 
 ---
 
+### Effective Payload Limit
+
+配置：
+
+```text
+runtime_payload_limit = 4 MiB
+storage_payload_limit = 1 MiB
+effective_payload_limit = 1 MiB
+```
+
+提交 2 MiB Payload。验证：
+
+```text
+PreAdmissionRejected
+no Gate pass
+no AcceptanceSequence
+no Storage handoff
+```
+
+不得等到 Storage Handoff 才发现 oversize。
+
+---
+
+### Scalar Domain / Native Sentinel
+
+验证 Runtime-facing submission：
+
+```text
+SourceSequence present(0)
+ClockReading = 0
+ClockReading < 0
+```
+
+均按 Profile v0.5 的合法值处理。
+
+对于 ROS2 / DDS 等 native unsupported sentinel：
+
+> Acquisition Mapping 必须在调用 Runtime 前转换为 absent。
+
+Admission 不得把 generic `UINT64_MAX` 自动解释为 absent。
+
+---
+
 ### Immediate Resource Reject
 
 耗尽 dispatch capacity，使用 Reject policy。
@@ -3905,22 +4054,55 @@ AcceptanceSequence allocation
 
 ---
 
-### Wait Interrupted with Payload Responsibility
+### Payload Materialized then Final Revalidation Fails
 
-在 Wait 前已取得合法 Adopt / Retain Payload responsibility。
+构造：
 
-随后中断 Wait。
+```text
+Phase 3 resources reserved
+        ↓
+Phase 4 Adopt / Retain materialized
+        ↓
+Runtime now owns Payload responsibility
+        ↓
+Stop / Binding invalidation happens
+        ↓
+final pre-gate revalidation fails
+```
 
 验证：
 
 ```text
-partial reservations rolled back
+no Gate pass
+no AcceptanceSequence
 
 Payload responsibility
 released exactly once
 
+remaining local reservations
+rolled back
+
 PreAdmissionRejected
 ```
+
+该测试替代旧的“resource Wait 时已经持有 Payload responsibility”场景，因为 V1 v0.5 ordinary resource wait 明确位于 Payload materialization 之前。
+
+---
+
+### Active Submission Barrier
+
+构造 submission A 已进入 `Runtime::Submit`，仍处于 pre-gate validation / Copy materialization；此时：
+
+```text
+global admission in-flight == 0
+```
+
+触发 Stop，并让 Acquisition Plugin 完成 quiescence。验证：
+
+- Runtime 不得因为 `global admission in-flight == 0` 提前 teardown；
+- 必须等待 A 返回；
+- 最终 `active_submission_calls == 0` 后才允许释放 Submit-path state；
+- A 未 Gate-pass 时不消耗 AcceptanceSequence。
 
 ---
 
@@ -4729,6 +4911,8 @@ RoDAQ V1 Admission 主路径为：
 ```text
 Acquisition Submission
         ↓
+active_submission_calls +1
+        ↓
 Structural Validation
         ↓
 Ingress Timestamp Capture
@@ -4766,6 +4950,7 @@ Payload allocation
 Copy
 
 Adopt / Retain acquisition
+after Payload resource reservation
 
 reservation rollback
 ```
@@ -4785,9 +4970,12 @@ state invalidation
 ```text
 rollback partial reservation
         ↓
-cleanup temporary Payload responsibility
+cleanup Payload responsibility
+if materialization already occurred
         ↓
 PreAdmissionRejected
+        ↓
+Submit return / active_submission_calls -1
 ```
 
 Gate pass 后：
@@ -4901,15 +5089,19 @@ Normal Stop 使用：
 ```text
 close Gate
         ↓
-wake pre-admission waiters
+wake pre-gate waiters
         ↓
-rollback partial reservations
+Acquisition quiescence prevents new Submit
+        ↓
+rollback partial reservations / pre-gate Payload cleanup
+        ↓
+active_submission_calls == 0
         ↓
 finish healthy Gate-passed attempts
         ↓
 all Gate-passed attempts Accepted
         ↓
-in-flight == 0
+global admission in-flight == 0
 ```
 
 进行收敛。
@@ -4923,9 +5115,13 @@ Failure shutdown 使用：
 ```text
 close Gate
         ↓
-wake pre-admission waiters
+wake pre-gate waiters
         ↓
-rollback pre-gate reservations
+prevent new Submit
+        ↓
+rollback pre-gate reservations / Payload cleanup
+        ↓
+active_submission_calls == 0
         ↓
 terminalize every
 Gate-passed attempt
@@ -5028,6 +5224,10 @@ in sequence order
 
 ```text
 Submit()
+    ↓
+active submission accounting
+    ↓
+validate effective_payload_limit / scalar structure
     ↓
 validate
     ↓

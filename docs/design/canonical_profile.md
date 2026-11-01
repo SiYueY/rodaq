@@ -1,6 +1,6 @@
 # RoDAQ V1 Canonical Profile Design Specification
 
-**Version:** Draft v0.4
+**Version:** v0.5
 **Status:** Mapping Review Candidate
 **Scope:** RoDAQ V1 Canonical Capability Profile
 **Normative Base:** RoDAQ Canonical Data Model Design Specification v0.9
@@ -40,8 +40,7 @@ RoDAQ V1 Canonical Profile
     │
     ├── Acquisition mappings
     │   ├── ROS2
-    │   ├── DDS
-    │   └── SocketCAN
+    │   └── DDS
     │
     └── Storage projections
         ├── MCAP
@@ -95,6 +94,8 @@ V1 当前定义：
 - V1 Schema capability；
 - V1 Timestamp / Clock capability；
 - V1 Payload semantic capability；
+- V1 Scalar Domain；
+- V1 storage-visible Canonical ID representation；
 - V1 Acquisition mapping 范围；
 - V1 Storage Projection 范围；
 - V1 明确不支持的 Canonical capabilities；
@@ -217,14 +218,17 @@ transform pipeline
 V1 只覆盖当前已有明确工程目标的：
 
 ```text
-Acquisition:
+Acquisition design targets:
     ROS2
     DDS
-    SocketCAN
 
-Storage:
+Storage design targets:
     MCAP
     SQLite3
+
+Initial functional implementation:
+    ROS2 Acquisition
+    MCAP Storage
 ```
 
 同时保留 Canonical Model 为未来能力扩展提供的长期语义基础。
@@ -267,16 +271,20 @@ Storage:
 | TimestampKeySet | 支持 |
 | SourceDescriptor | 不支持 |
 | Generic per-record metadata | 不支持 |
-| AcceptanceSequence | 支持，mandatory |
-| SourceId | 支持，optional |
-| SourceSequence | 支持，optional |
+| Runtime-allocated Canonical ID | V1 使用 `uint64` value domain；`0` 合法 |
+| AcceptanceSequence | 支持，mandatory；V1 为 `uint64`，`0` 合法 |
+| SourceId | 支持，optional；non-empty opaque bytes |
+| SourceSequence | 支持，optional；V1 为 `uint64`，`0` 合法 |
+| ClockReading | V1 为 `int64` signed tick value |
+| Clock resolution numerator / denominator | V1 为 positive `uint64`，且保持 reduced rational |
 | TimestampKeySet size | 1～4，冻结前经 Mapping Review 验证 |
 | Mandatory Timestamp Role | `rodaq/acquisition_ingress` |
 | Plugin-specific Timestamp Role | 支持 |
 | ClockCorrelation | 不支持 |
 | Generic Cross-scope Import | 不支持 |
 | Transform / Merge Pipeline | 不支持 |
-| Acquisition Plugin | ROS2 / DDS / SocketCAN |
+| Acquisition Plugin | V1 design targets: ROS2 / DDS (Fast DDS baseline); initial implementation = ROS2 |
+| Active acquisition path per Stream | V1 同时恰好 1 条；不支持同一 Stream 多 Plugin / 多 path 并行供数 |
 | Storage Plugin | MCAP / SQLite3 |
 | Full-fidelity Storage | V1 conformant mode 必须支持 |
 | Payload semantics | opaque immutable logical bytes |
@@ -293,12 +301,11 @@ flowchart TD
 
     CP --> ROS[ROS2 Acquisition]
     CP --> DDS[DDS Acquisition]
-    CP --> CAN[SocketCAN Acquisition]
 
     CP --> MCAP[MCAP Storage]
     CP --> SQLITE[SQLite3 Storage]
 
-    CP -. physical representation not defined here .-> RT[Runtime Data Model]
+    CP -. physical layout / wire encoding not defined here .-> RT[Runtime Data Model]
     CP -. APIs not defined here .-> CONTRACTS[Plugin Contracts]
 ```
 
@@ -658,9 +665,80 @@ Plugin 只提供：
 
 > 对识别 source-native logical stream 必要的 source-specific facts。
 
+### 2.3.1 V1 Single Active Acquisition Path
+
+RoDAQ V1 对每个 Canonical Stream 冻结：
+
+> **任一时刻恰好最多只有一条 active acquisition path 为该 Stream 提交 normal Record。**
+
+一条 active acquisition path 由：
+
+```text
+Acquisition Plugin instance
++
+该 Plugin 内对应的 native logical flow
++
+current Runtime Binding
+```
+
+共同确定。
+
+因此 V1 不支持：
+
+```text
+one Stream
+    ← Plugin A / Binding A
+    ← Plugin B / Binding B
+```
+
+这种多个 Plugin 或多个独立 acquisition path 同时向同一 Stream 供数的拓扑。
+
+V1 仍然支持：
+
+```text
+one Stream
+    ├── Source A
+    ├── Source B
+    └── Source C
+```
+
+即：
+
+> **多个 concrete Source 可以通过同一 active acquisition path / current Binding 属于同一个 Stream。**
+
+如果两个 Plugin 发现语义上可能表示同一外部数据流，V1 Runtime：
+
+> 不进行跨 Plugin 的 source-native logical Stream 自动合并。
+
+应用若需要改变负责某个 Stream 的 acquisition path，必须通过：
+
+```text
+stop
+    ↓
+reconfigure
+    ↓
+new activation / fresh Scope
+```
+
+建立新的 V1 topology。
+
+这一约束用于避免 V1 引入：
+
+```text
+AcquisitionPath object
+per-path Binding set
+path failover
+duplicate suppression
+path-local availability merge
+```
+
+等尚无主流采集插件证据证明必要的复杂机制。
+
+未来若需要 redundant acquisition / transport failover，可由新的 Profile 扩展重新定义 Stream 与 acquisition path 的 cardinality。
+
 ---
 
-### 2.3.1 Record Identity
+### 2.3.2 Record Identity
 
 V1 Canonical Record identity：
 
@@ -684,7 +762,7 @@ StreamId
 
 ---
 
-### 2.3.2 AcceptanceSequence
+### 2.3.3 AcceptanceSequence
 
 V1 使用 Canonical Model 定义的 admission-attempt allocation semantics。
 
@@ -749,6 +827,13 @@ stable
 never reused
 ```
 
+其 V1 value domain 由 §2.7.3 规定为：
+
+```text
+uint64
+0 .. UINT64_MAX
+```
+
 并要求：
 
 > 对实际存在的 canonical Records，AcceptanceSequence 必须保持 accepted Records 的相对 acceptance order。
@@ -804,9 +889,65 @@ vendor-specific conversion
 
 必须由对应 Acquisition Plugin / Contract 在提交给 Core 前完成。
 
+### 2.4.1 SourceId Domain Disjointness
+
+Canonical SourceId equality 的比较域是：
+
+```text
+same active Identity Scope
+```
+
+而不是单个 Plugin instance。
+
+因此所有可能在同一 active Scope 中共存的 V1 Acquisition Plugin / canonicalization scheme 必须保证：
+
+> **不同 native identity domain 的 SourceId canonical byte domain 彼此可区分，不能因为原始 byte pattern 恰好相同而在 Runtime Source Registry 中发生跨 domain collision。**
+
+例如概念上允许：
+
+```text
+ROS2-domain-tag || canonical-publisher-gid
+DDS-domain-tag  || canonical-writer-guid
+```
+
+但本 Profile 不冻结具体 tag 或 encoding 格式。
+
+对应 Acquisition Contract / Mapping 必须证明：
+
+```text
+same native Source
+    → same SourceId bytes
+
+different native Source
+within same native identity domain
+    → different SourceId bytes
+
+different identity domains
+that may coexist in one Scope
+    → byte domains remain disjoint
+```
+
+无法证明上述条件时：
+
+```text
+SourceId = absent
+```
+
+不得把“仅在 Plugin-local domain 内唯一”的裸 native bytes 直接声明为 Scope-wide Canonical SourceId。
+
+Runtime 仍只执行：
+
+```text
+non-empty validation
+byte-exact lookup / interning
+scope association
+```
+
+不得猜测或补做 source-specific domain normalization。
+
 ---
 
-### 2.4.1 SourceSequence
+### 2.4.2 SourceSequence
 
 只有满足：
 
@@ -824,6 +965,13 @@ SourceId-scoped
 SourceSequence present
 ⇒
 SourceId present
+```
+
+其 V1 value domain 由 §2.7.4 规定为：
+
+```text
+uint64
+0 .. UINT64_MAX
 ```
 
 V1 不支持通过 Generic Metadata 保存无法归类的 native sequence。
@@ -940,9 +1088,8 @@ V1 支持 source-native serialized/encoded Payload。
 例如：
 
 ```text
-ROS2 CDR
+ROS2 RMW serialized encoding
 DDS CDR / XCDR
-SocketCAN logical raw-frame encoding
 ```
 
 V1 不要求 Canonical Core：
@@ -990,6 +1137,549 @@ rewrite payload
 silently transcode payload
 ```
 
+---
+
+## 2.7 V1 Scalar Domain 与 Storage-visible Identity Representation
+
+Canonical Data Model 冻结的是：
+
+```text
+identity semantics
+sequence semantics
+integer tick semantics
+reduced rational semantics
+```
+
+而不是统一的 C++ ABI 或 Storage wire format。
+
+但是 V1 Mapping 必须在：
+
+```text
+ROS2 / DDS (Fast DDS baseline)
+        ↓
+Runtime
+        ↓
+MCAP / SQLite3
+```
+
+之间对相同 Canonical value 使用确定、可验证且 full-fidelity 的支持范围。
+
+因此 v0.5 进一步规定：
+
+> **V1 实际支持的 scalar value domain，以及 Runtime-allocated Canonical identity 在 Storage boundary 上的 canonical value representation。**
+
+这属于：
+
+```text
+V1 capability restriction
+```
+
+不是：
+
+```text
+Canonical Model semantic rewrite
+```
+
+也不是：
+
+```text
+C++ struct layout
+ABI
+MCAP wire encoding
+SQLite column type
+```
+
+本节中的 scalar boundary 当前仍属于：
+
+> **Mapping Review Candidate。**
+
+在 V1 Profile FROZEN 前，必须由 ROS2 / DDS (Fast DDS baseline) Acquisition Plugin design 和 MCAP / SQLite3 Storage Plugin design 共同验证。
+
+Mapping Review 如果证明某个当前 domain 不能无损覆盖 V1 必需语义：
+
+> 应修改 V1 Profile，而不是在 Mapping 中静默截断或重新解释该值。
+
+---
+
+### 2.7.1 Runtime-allocated Canonical IDs
+
+以下由 Runtime Canonical allocation authority 分配的 identity：
+
+```text
+StreamId
+StreamDescriptorId
+SchemaId
+ClockId
+TimestampKeySetId
+```
+
+在 RoDAQ V1 中使用：
+
+```text
+uint64 value domain
+
+0 .. 2^64 - 1
+```
+
+因此 V1 storage-facing representation 必须能够无损表达完整：
+
+```text
+[0, UINT64_MAX]
+```
+
+范围。
+
+其中：
+
+> **`0` 是合法 Canonical ID value。**
+
+V1 不把 `0` 定义为：
+
+```text
+invalid
+null
+unset
+reserved
+```
+
+sentinel。
+
+如果 Runtime implementation 希望使用：
+
+```text
+0
+-1
+max value
+```
+
+等内部 sentinel，必须在：
+
+```text
+Runtime Handle
+optional wrapper
+validity bit
+internal index
+```
+
+层表达，不能改变 Canonical ID value domain。
+
+对于 optional Canonical reference，例如：
+
+```text
+SchemaId absent
+```
+
+必须与：
+
+```text
+SchemaId present(0)
+```
+
+明确区分。
+
+Runtime allocation 仍必须满足：
+
+```text
+unique within identity domain
+never reused
+never wrap
+never alias
+```
+
+当 allocator 已无法生成新的合法 `uint64` value 时：
+
+> 对应 registration 必须失败。
+
+不得 wrap。
+
+---
+
+### 2.7.2 Storage-visible ID Representation
+
+`uint64` 在本节表示：
+
+> **V1 Canonical numeric value domain。**
+
+它不要求 Storage backend 使用某个具体 physical field type。
+
+例如 backend 可以使用：
+
+```text
+native unsigned integer
+fixed-width bytes
+varint
+BLOB
+backend surrogate ID + reversible mapping
+```
+
+只要 Encode / Decode 能恢复完全相同的 Canonical numeric value。
+
+因此：
+
+```text
+backend field narrower than uint64
+```
+
+或者：
+
+```text
+backend only provides signed 64-bit integer
+```
+
+都不能反向缩小 V1 Canonical ID domain。
+
+Storage Mapping 必须选择能够完整表示：
+
+```text
+0 .. UINT64_MAX
+```
+
+的 encoding，或者对无法 full-fidelity 表示的配置明确拒绝。
+
+不得：
+
+```text
+truncate
+wrap
+reinterpret signed overflow
+reserve Canonical value 0
+```
+
+来适配 backend convenience。
+
+同样，Runtime 内部：
+
+```text
+BindingHandle
+SourceHandle
+DescriptorHandle
+registry index
+```
+
+不是 Storage-visible Canonical ID。
+
+Storage boundary 必须最终解析到：
+
+```text
+Canonical uint64 identity value
+```
+
+或者能够 full-fidelity 恢复该 value 的 Artifact mapping。
+
+---
+
+### 2.7.3 AcceptanceSequence
+
+RoDAQ V1 `AcceptanceSequence` 使用：
+
+```text
+uint64
+
+0 .. UINT64_MAX
+```
+
+其中：
+
+```text
+0
+```
+
+是合法 sequence value。
+
+Canonical Model 的：
+
+```text
+stream-local
+strictly increasing
+stable
+never reused
+```
+
+语义保持不变。
+
+如果某个 Stream 已经消耗：
+
+```text
+UINT64_MAX
+```
+
+作为其最后一个合法 AcceptanceSequence，
+
+则后续 admission attempt：
+
+> 必须在产生新的 Gate-pass / sequence allocation 之前按 sequence exhaustion 处理。
+
+不得：
+
+```text
+wrap to 0
+reuse gap
+reuse rejected-attempt value
+```
+
+Storage 必须显式 full-fidelity 保存 AcceptanceSequence。
+
+不得依赖：
+
+```text
+physical row order
+file offset
+backend message sequence field
+```
+
+作为唯一表示，如果该 backend representation 不能覆盖完整 `uint64` domain。
+
+---
+
+### 2.7.4 SourceSequence
+
+RoDAQ V1 `SourceSequence` 在 present 时使用：
+
+```text
+uint64
+
+0 .. UINT64_MAX
+```
+
+因此：
+
+```text
+SourceSequence absent
+```
+
+与：
+
+```text
+SourceSequence present(0)
+```
+
+必须严格区分。
+
+Native API 中用于表示：
+
+```text
+unknown
+unavailable
+invalid
+```
+
+的负数或其他 sentinel：
+
+> 不能直接成为 V1 SourceSequence value。
+
+Acquisition Mapping 必须依据 native contract 将其解释为：
+
+```text
+SourceSequence absent
+```
+
+或者明确拒绝无法正确映射的 native state。
+
+如果某个真实 source-originated sequence 的合法 value 超出 V1 `uint64` domain：
+
+> 该 source sequence capability 当前为 V1 unsupported。
+
+不得 truncate / wrap。
+
+---
+
+### 2.7.5 ClockReading
+
+Canonical Data Model 已冻结：
+
+> `ClockReading` 使用 signed integer tick semantics。
+
+RoDAQ V1 进一步限制为：
+
+```text
+int64
+
+INT64_MIN .. INT64_MAX
+```
+
+因此以下值都可能合法：
+
+```text
+negative reading
+0
+positive reading
+```
+
+是否语义合理由对应：
+
+```text
+ClockDescriptor
+ClockOrigin
+native Clock contract
+```
+
+决定。
+
+Storage 不得：
+
+```text
+reinterpret negative as unsigned
+clamp negative to zero
+reserve zero as absent
+```
+
+Timestamp absence 必须继续由：
+
+```text
+TimestampState = Absent
+```
+
+表达。
+
+因此：
+
+```text
+Absent
+!=
+Present(0)
+```
+
+如果 native ClockReading 超出 `int64` range，Acquisition Mapping 必须：
+
+- 在 capability / registration 阶段证明能够进行不改变 Clock semantics 的确定性归一化；或者
+- 将该 clock capability 作为 V1 unsupported 明确拒绝。
+
+不得在 hot path 静默 truncate / saturate。
+
+---
+
+### 2.7.6 Clock Resolution Scalar Domain
+
+Clock resolution 使用：
+
+```text
+resolution = numerator / denominator
+seconds per tick
+```
+
+V1 对 numerator / denominator 的支持范围为：
+
+```text
+uint64 positive integer
+
+1 .. UINT64_MAX
+```
+
+并继续满足 Canonical Model：
+
+```text
+numerator > 0
+denominator > 0
+gcd(numerator, denominator) == 1
+```
+
+因此：
+
+```text
+0
+```
+
+不能作为 numerator 或 denominator。
+
+如果 reduced rational 的任一 component 超出 `uint64` domain：
+
+> 当前 ClockDescriptor 为 V1 unsupported。
+
+不得通过降低精度、近似或重新缩放到不同 reduced pair 来静默接受。
+
+---
+
+### 2.7.7 Canonical Identifier 与 SourceId 不受本节数值域替代
+
+以下 Canonical Identifier：
+
+```text
+RoleIdentifier
+SchemaFormat
+PayloadEncoding
+ClockOrigin
+TypeIdentifier
+```
+
+继续遵守 Canonical Model：
+
+```text
+valid UTF-8 byte string
+byte-exact equality
+case-sensitive
+no Unicode normalization
+```
+
+`SourceId` 继续保持：
+
+```text
+optional non-empty opaque byte sequence
+```
+
+它们：
+
+> **不转换成 `uint64`。**
+
+因此 V1 storage-visible value categories 为：
+
+```text
+Runtime-allocated Canonical identity
+    → uint64
+
+AcceptanceSequence
+SourceSequence
+    → uint64
+
+ClockReading
+    → int64
+
+Clock resolution components
+    → positive uint64
+
+Canonical Identifier
+    → UTF-8 byte string
+
+SourceId
+    → opaque bytes
+
+Payload / Schema representation
+    → opaque bytes
+```
+
+---
+
+### 2.7.8 Profile Domain ≠ Runtime ABI
+
+本节不要求 C++ API 必须公开：
+
+```cpp
+uint64_t StreamId;
+uint64_t ClockId;
+int64_t ClockReading;
+```
+
+这样的具体 public struct layout。
+
+Runtime 可以使用：
+
+```text
+strong typedef
+wrapper type
+Handle
+interned index
+packed RuntimeRecord field
+```
+
+只要：
+
+1. V1-profile-valid value 能被完整表示；
+2. Runtime → Storage boundary 能恢复对应 Canonical value；
+3. Artifact round-trip 能恢复完全相同的 V1 Canonical State。
+
+因此：
+
+> **Profile 负责定义 value domain；Runtime Contract 负责定义运行时行为；具体 ABI / wire encoding 由对应实现或 Mapping 定义。**
+
 # 3. V1 时间与 Ordering Profile
 
 ## 3.1 TimestampKeySet Capacity
@@ -1031,12 +1721,11 @@ Canonical Model 本身允许更大的合法 TimestampKeySet。
 
 ### 3.1.1 为什么当前选择 4
 
-V1 Acquisition 范围：
+V1 Acquisition 设计范围：
 
 ```text
 ROS2
 DDS
-SocketCAN
 ```
 
 预计常见 Record-level canonical time 可以由：
@@ -1044,16 +1733,16 @@ SocketCAN
 ```text
 mandatory acquisition ingress
 +
-source-native timestamp
+reader / transport receive timestamp
 +
-transport / receive timestamp
+source-native timestamp when one valid common source clock is proven
 +
-optional hardware/source timestamp
+optional additional contract-defined timestamp when semantically valid
 ```
 
 覆盖。
 
-因此 Draft v0.4 使用：
+因此 v0.5 使用：
 
 ```text
 MaxTimestampKeysPerSet = 4
@@ -1071,7 +1760,7 @@ small fixed timestamp representation
 
 但是：
 
-> **该上限尚未冻结，必须经过 ROS2 / DDS / SocketCAN Mapping Review 验证。**
+> **该上限尚未冻结，必须经过 ROS2 / DDS (Fast DDS baseline) Plugin Review 验证。**
 
 如果任何 V1 Acquisition Mapping 证明：
 
@@ -1187,6 +1876,10 @@ Absent
 ```
 
 必须显式表示。
+
+`Present(ClockReading)` 中的 `ClockReading`：
+
+> 必须满足 §2.7.5 的 V1 `int64` domain。
 
 ---
 
@@ -1304,6 +1997,19 @@ seconds-per-tick
 ```
 
 约束。
+
+V1 Clock scalar domain 进一步要求：
+
+```text
+ClockReading
+    → int64
+
+resolution numerator
+resolution denominator
+    → positive uint64
+```
+
+具体范围与 rejection 规则见 §2.7.5～§2.7.6。
 
 ---
 
@@ -1575,11 +2281,10 @@ V1 Profile 面向：
 
 ```text
 ROS2
-DDS
-SocketCAN
+DDS (Fast DDS baseline)
 ```
 
-三个 Acquisition Plugin。
+两个 Acquisition design target。
 
 每一个 Plugin 必须通过独立 Acquisition Plugin Contract 定义：
 
@@ -1606,20 +2311,34 @@ ROS2 Mapping 至少需要验证：
 ```text
 Topic / logical Stream mapping
 
-message type
+message type / schema representation
 
-Schema representation
-
-serialized CDR Payload
+active RMW serialized PayloadEncoding
 
 publisher GID → optional SourceId
 
-SourceSequence availability
+publication sequence → optional SourceSequence
 
-middleware timestamp semantics
+reader-side received timestamp
+
+publisher-side source timestamp capability boundary
 
 rodaq/acquisition_ingress
 ```
+
+ROS2 SourceId 必须同时满足：
+
+```text
+RMW identity-domain validity
++
+Scope-wide SourceId domain disjointness
+```
+
+不能把仅在某个 RMW local context 内有意义的裸 GID bytes 无条件宣称为跨 domain identity。
+
+ROS2 native `publication_sequence_number` 中由 RMW 定义的 unsupported sentinel：
+
+> 必须由 ROS2 Mapping 转换为 `SourceSequence absent`，不得把 generic Runtime 的 `UINT64_MAX` 当作 absent sentinel。
 
 其中 `SourceSequence availability` 明确表示：
 
@@ -1657,24 +2376,34 @@ message.header.stamp
 
 只有 Acquisition Contract 明确证明其 semantic role 时，才可以作为 contract-defined timestamp capability 暴露。
 
+ROS2 RMW `source_timestamp` 也不是无条件可用的 Canonical timestamp。一个 Stream 存在多个 Publisher Source 时，不同 Publisher 可能属于不同物理 clock domain；在无法证明 common source clock 的情况下：
+
+```text
+source_timestamp
+    → intentionally unsupported as a Canonical TimestampKey
+```
+
+而 reader-side `received_timestamp` 在其 clock continuity 可被一个 ClockDescriptor 正确描述时，是更适合 V1 的 optional native timestamp。
+
 ---
 
-## 4.3 DDS Profile Expectations
+## 4.3 DDS Profile Expectations（Fast DDS Baseline）
 
-DDS Mapping 至少需要验证：
+DDS Plugin Design 至少需要验证：
 
 ```text
 DDS Topic / Stream mapping
-Writer GUID → optional SourceId
-publication sequence → optional SourceSequence
-DynamicType / TypeIdentifier
-CDR / XCDR Payload
-source timestamp
-receive timestamp
+Writer GUID / equivalent → optional SourceId
+writer-originated sequence → optional SourceSequence
+DynamicType / TypeIdentifier / exact Schema representation
+XCDR / explicitly declared PayloadEncoding
+valid_data / instance-lifecycle classification
+reader reception timestamp
+writer source timestamp capability boundary
 rodaq/acquisition_ingress
 ```
 
-DDS Writer GUID 只有在：
+Fast DDS concrete Writer GUID 只有在：
 
 ```text
 valid
@@ -1682,9 +2411,9 @@ stable
 reliably producer-scoped
 ```
 
-时才能经过 DDS Acquisition Contract canonicalization 后建立 SourceId。
+时才能经过 DDS Acquisition Plugin canonicalization 后建立 SourceId。
 
-如果 DDS API 返回：
+如果 Fast DDS API 返回：
 
 ```text
 empty Writer GUID
@@ -1719,16 +2448,29 @@ Writer/SourceId-scoped
 
 时才能映射为 SourceSequence。
 
+DDS writer-side `source_timestamp` 与 ROS2 publisher-side timestamp 具有相同的 multi-Source clock-domain 风险。除非 Mapping/configuration 能证明同一 StreamDescriptor 下相关 Writer 共享 common source clock：
+
+```text
+source_timestamp
+    → intentionally unsupported as a Canonical TimestampKey
+```
+
+reader-side reception timestamp 在其 clock domain 可稳定描述时可以作为 optional Timestamp capability。
+
+对于 `valid_data == false` 等 DDS lifecycle/status sample：
+
+> V1 不把它们伪装成普通 data-bearing Canonical Record。
+
 以下 DDS semantics 不属于当前 V1 Canonical Profile 已解决能力：
 
 ```text
 dispose
-unregister
+unregister / no-writers
 sample lifecycle event
 generic instance lifecycle
 ```
 
-如果 DDS Mapping Review 证明其中某项是 V1 数据采集不可缺失的 canonical semantics：
+如果 DDS Plugin Review 证明其中某项是 V1 数据采集不可缺失的 canonical semantics：
 
 > 必须重新评估 V1 Profile 或 Canonical Model。
 
@@ -1736,60 +2478,76 @@ generic instance lifecycle
 
 ---
 
-## 4.4 SocketCAN Profile Expectations
+## 4.4 V1 Design Scope 与 Initial Implementation Scope
 
-SocketCAN Mapping 必须支持：
+RoDAQ V1 必须区分：
 
 ```text
-Schema absent
-small binary Payload
-kernel / hardware receive timestamp where available
-rodaq/acquisition_ingress
+Design / Mapping validation scope
+
+Initial functional implementation scope
 ```
 
-如果 CAN application counter 已存在 Payload：
+二者不是同一个概念。
 
-> 随 Payload 保存。
+### Design / Mapping validation scope
 
-如果 driver 提供额外 counter，但无法建立可靠 SourceId：
-
-> 不得映射为 SourceSequence。
-
-以下内容：
+V1 Plugin-independent Contract 必须通过以下四个真实 backend Mapping 验证：
 
 ```text
-CAN ID
-EFF
-RTR
-ERR
-DLC
-interface identity
+Acquisition:
+    ROS2
+    DDS (Fast DDS baseline)
+
+Storage:
+    MCAP
+    SQLite3
 ```
 
-必须在 SocketCAN Mapping Review 中明确其归属：
+这四份 Mapping 都必须在 Profile freeze 前闭合 native semantics、scalar domain、identity、clock/timestamp、Payload、lifecycle、failure 和 full-fidelity 问题。
+
+### Initial functional implementation scope
+
+首个可运行里程碑只要求实现：
 
 ```text
-Stream identity
-Source identity
-PayloadEncoding
-Payload bytes
-Timestamp / Clock semantics
-SourceSequence
-intentionally non-canonical source metadata
-structural gap requiring Profile / Canonical Model revision
+ROS2 Acquisition
+        ↓
+RoDAQ Runtime
+        ↓
+MCAP Storage
 ```
 
-其中：
-
-> 只有本来已经属于 source-native logical Payload representation，或者由 SocketCAN Acquisition Contract 明确定义为该 PayloadEncoding 的组成部分的信息，才能归入 Payload bytes。
-
-不得为了保存原本独立于 Payload 的 metadata 而静默改写 source-native Payload。
-
-不得为了快速实现增加：
+其目标是尽早验证：
 
 ```text
-Generic PropertyBag
+Core / Runtime
+Admission
+Payload
+Acquisition Plugin Contract
+Storage Plugin Contract
+end-to-end lifecycle / failure
+```
+
+DDS Acquisition 与 SQLite3 Storage：
+
+> **仍属于 V1 design target，但不阻塞首个 ROS2 + MCAP functional milestone。**
+
+它们在首批实现前的主要作用是：
+
+> 作为独立 Mapping evidence，防止通用 Contract 被 ROS2 / MCAP 的具体实现模型反向塑形。
+
+### Deferred beyond current V1 design scope
+
+SocketCAN 以及其他 Acquisition backend 当前不属于 V1 Profile freeze gate。
+
+它们可以作为后续扩展重新进入 Mapping Review，但当前不得因为未来 SocketCAN 假设增加：
+
+```text
 Generic Metadata
+Generic Event hierarchy
+CAN-specific fields in Core
+additional timestamp capacity without evidence
 ```
 
 ---
@@ -1857,6 +2615,18 @@ Payload logical bytes
 
 ### 4.5.1 Backend native field 不决定 Canonical capability
 
+Storage backend 的：
+
+```text
+native field count
+native integer width
+signedness
+reserved sentinel
+physical row order
+```
+
+都不能反向改写 V1 Canonical value domain。
+
 例如 MCAP 原生只有有限 timestamp field。
 
 不能因此反向限制：
@@ -1872,6 +2642,27 @@ unknown RoleIdentifier
 ```
 
 被丢弃。
+
+同样，如果 backend native integer field 不能完整表示：
+
+```text
+uint64 Canonical ID
+uint64 AcceptanceSequence
+uint64 SourceSequence
+int64 ClockReading
+```
+
+Storage Mapping 必须选择其他 full-fidelity encoding 或 reversible mapping。
+
+不得为了适配 backend native scalar field：
+
+```text
+truncate
+wrap
+saturate
+reinterpret signedness
+reserve Canonical zero value
+```
 
 Storage Plugin 必须通过：
 
@@ -2029,8 +2820,7 @@ flowchart LR
     V1[V1 Canonical Profile]
 
     V1 --> ROS2[ROS2]
-    V1 --> DDS[DDS]
-    V1 --> CAN[SocketCAN]
+    V1 --> DDS[DDS / Fast DDS baseline]
 
     V1 --> MCAP[MCAP]
     V1 --> SQL[SQLite3]
@@ -2067,6 +2857,8 @@ one Runtime instance owns at most one active Identity Scope
 
 single canonical identity allocation authority
 
+one Stream has at most one active acquisition path in V1
+
 Descriptor Graph referentially closed
 
 only supported Descriptor types
@@ -2084,6 +2876,16 @@ no generic per-record metadata dependency
 no Generic Cross-scope Import dependency
 
 Record follows AcceptanceSequence semantics
+
+Runtime-allocated Canonical IDs fit V1 uint64 domain
+
+AcceptanceSequence fits V1 uint64 domain
+
+SourceSequence, when present, fits V1 uint64 domain
+
+ClockReading fits V1 int64 domain
+
+Clock resolution numerator / denominator fit positive uint64 domain
 
 Payload follows canonical logical-byte semantics
 ```
@@ -2117,11 +2919,23 @@ SourceSequence present while SourceId absent
 
 SourceId present but empty
 
+SourceId canonicalization violates declared Scope-wide domain disjointness
+
 invalid Canonical Identifier
 
 ClockDescriptor resolution is not a positive reduced rational
 
 mutable / conflicting DescriptorId mapping
+
+Runtime-allocated Canonical ID outside V1 uint64 domain
+
+AcceptanceSequence outside V1 uint64 domain
+
+SourceSequence outside V1 uint64 domain
+
+ClockReading outside V1 int64 domain
+
+Clock resolution component outside positive uint64 domain
 ```
 
 对于 ClockDescriptor resolution，Validator 至少必须验证：
@@ -2162,6 +2976,19 @@ Plugin Mapping
 V1-profile-valid Canonical State
 ```
 
+并证明：
+
+```text
+Stream registration obeys
+V1 single-active-path cardinality
+
+SourceId canonicalization is stable
+and collision-free in its declared domain
+
+all SourceId domains that may coexist
+in one active Scope are mutually disjoint
+```
+
 并至少覆盖：
 
 ### ROS2
@@ -2185,19 +3012,10 @@ empty / invalid Writer identity
 SourceSequence present
 SourceSequence absent when SourceId absent
 DynamicType / Schema
-source timestamp
-receive timestamp
+reader reception timestamp
+source timestamp only when common writer clock is proven
+valid_data / lifecycle sample classification
 clock restart / source lifecycle where relevant
-```
-
-### SocketCAN
-
-```text
-Schema absent
-small Payload
-timestamp present / unavailable
-SourceId absent
-native counter not misclassified as SourceSequence
 ```
 
 ---
@@ -2238,6 +3056,18 @@ SourceId bytes
 SourceSequence presence/value
 
 AcceptanceSequence
+
+V1 scalar-domain boundary values:
+    Canonical ID = 0
+    Canonical ID = UINT64_MAX
+    AcceptanceSequence = 0
+    AcceptanceSequence = UINT64_MAX
+    SourceSequence absent
+    SourceSequence present(0)
+    SourceSequence present(UINT64_MAX)
+    ClockReading = INT64_MIN
+    ClockReading = 0
+    ClockReading = INT64_MAX
 
 TimestampKeySet
 
@@ -2325,6 +3155,20 @@ SourceId = present(empty)
 SourceSequence present while SourceId absent
 
 ClockDescriptor with non-reduced resolution
+
+Runtime-allocated Canonical ID outside V1 uint64 domain
+
+AcceptanceSequence outside V1 uint64 domain
+
+SourceSequence outside V1 uint64 domain
+
+ClockReading outside V1 int64 domain
+
+Clock resolution numerator / denominator outside positive uint64 domain
+
+Storage mapping that truncates uint64 to a narrower backend field
+
+Storage mapping that uses Canonical value 0 as implicit null / absent sentinel
 ```
 
 期望结果不是：
@@ -2343,23 +3187,22 @@ silent downgrade
 
 ## 5.6 Mapping Review 是 Profile Freeze Gate
 
-Draft v0.4 中：
+v0.5 中：
 
 ```text
 MaxTimestampKeysPerSet = 4
 ```
 
-以及当前 V1 capability set，必须通过：
+以及当前 V1 capability set、§2.7 scalar domains 与 storage-visible ID representation，必须通过：
 
 ```text
 ROS2
 DDS
-SocketCAN
 MCAP
 SQLite3
 ```
 
-五个 Mapping Review 才能冻结。
+四个 Mapping Review 才能冻结。
 
 ---
 
@@ -2374,7 +3217,10 @@ SQLite3
 5. 每个 StreamDescriptor 是否能在最多 4 个 TimestampKey 内无损表达 V1 必需时间语义；
 6. Clock restart/reset 是否能通过 `ClockId → TimestampKeySet → StreamDescriptor` evolution 正确表达；
 7. 是否出现真正要求新增 Generic Metadata 或其他 Canonical primitive 的结构性反例；
-8. 每个 Acquisition Contract 是否已经逐项列出该 Middleware / Source 的关键 native metadata，并明确每一项的归属，确保不存在“尚未分类”的 native semantics。
+8. 每个 Acquisition Contract 是否已经逐项列出该 Middleware / Source 的关键 native metadata，并明确每一项的归属，确保不存在“尚未分类”的 native semantics；
+9. 所有可映射为 SourceSequence 的 native source-originated sequence 是否能够无损进入 V1 `uint64` domain，并正确处理 native unavailable / invalid sentinel；
+10. 所有需要 canonical-visible 的 native ClockReading 是否能够无损进入 V1 `int64` domain；
+11. native clock resolution 是否能够精确表示为 V1 positive `uint64` reduced rational，而不需要近似或 silent precision loss。
 
 这里的 **关键 native metadata** 不是“所有底层 API 暴露的 metadata”，也不是由 Plugin 作者主观挑选的字段集合。若某项 native metadata 在采集过程中丢失，会导致以下任一后果，则它属于 Mapping Review 必须逐项分类的关键 native metadata：
 
@@ -2482,7 +3328,11 @@ byte-exact equality
 6. 是否能保存完整 AcceptanceSequence；
 7. 是否能 byte-exact 保存 Schema 和 Payload；
 8. 是否能保持 ClockDescriptor 的 canonical field equality，包括 reduced resolution；
-9. 是否存在 backend limitation 迫使 Canonical State 被静默丢失。
+9. 是否能 full-fidelity 保存并恢复 `0 .. UINT64_MAX` 的 Runtime-allocated Canonical ID；
+10. 是否能 full-fidelity 保存并恢复 `0 .. UINT64_MAX` 的 AcceptanceSequence / SourceSequence；
+11. 是否能 full-fidelity 保存并恢复 `INT64_MIN .. INT64_MAX` 的 ClockReading；
+12. backend 的 signedness、native integer width、reserved sentinel 是否会错误压缩 V1 scalar domain；
+13. 是否存在 backend limitation 迫使 Canonical State 被静默丢失。
 
 ---
 
@@ -2499,15 +3349,19 @@ Canonical Data Model 已冻结
 
 V1 Profile 的 Normative Base 已更新为 Canonical Data Model 的实际冻结版本
 
-ROS2 Mapping Review 通过
+ROS2 Plugin Review 通过
 
-DDS Mapping Review 通过
+DDS Plugin Review 通过
 
-SocketCAN Mapping Review 通过
+MCAP Plugin Review 通过
 
-MCAP Mapping Review 通过
+SQLite3 Plugin Review 通过
 
-SQLite3 Mapping Review 通过
+V1 Scalar Domain 已由 Acquisition / Storage Mapping Review 证明可实现且无 silent truncation
+
+MCAP / SQLite3 对完整 uint64 Canonical ID / Sequence domain 与 int64 ClockReading domain 的 full-fidelity representation 已验证
+
+Canonical value `0` 与 absent / null state 的区别已通过 Storage round-trip 验证
 
 4-key TimestampKeySet limit 被实际 Mapping Review 证明足够
 或在 Mapping Review 后被调整为实际所需的冻结值
@@ -2576,7 +3430,7 @@ V1 Profile too narrow
 
 ## 5.8 V1 Profile 当前基线
 
-Draft v0.4 的核心基线：
+v0.5 的核心基线：
 
 ```text
 Identity
@@ -2601,12 +3455,24 @@ ClockDescriptor
 TimestampKeySet
 Record
 
+Scalar Domain
+-------------
+Runtime-allocated Canonical IDs = uint64, 0 is valid
+AcceptanceSequence = uint64, 0 is valid
+SourceSequence = optional uint64, present(0) is valid
+ClockReading = int64 signed tick value
+Clock resolution numerator / denominator = positive uint64 reduced rational
+Profile scalar domain does not freeze C++ ABI or backend wire encoding
+Storage must full-fidelity restore exact scalar values
+
 Source
 ------
 optional SourceId
 optional SourceSequence
 no SourceDescriptor
 SourceSequence requires valid SourceId
+SourceId equality is Scope-wide byte equality
+coexisting native identity domains must use disjoint canonical byte domains
 
 Schema
 ------
@@ -2658,8 +3524,12 @@ no canonical physical buffer layout
 Acquisition
 -----------
 ROS2
-DDS
-SocketCAN
+DDS (Fast DDS baseline)
+Initial implementation = ROS2
+DDS implementation deferred until after ROS2 + MCAP validation
+one active acquisition path / owning Plugin / current Binding per Stream
+multiple Sources per Stream remain supported
+no automatic cross-Plugin logical Stream merge
 critical native metadata is defined by identity / interpretation / ordering-alignment / canonical-fidelity impact
 every critical native metadata item must have an explicit Mapping Review classification
 intentionally non-canonical metadata is outside V1 full-fidelity Storage guarantees
@@ -2669,8 +3539,12 @@ Storage
 -------
 MCAP
 SQLite3
+initial implementation = MCAP
+SQLite3 implementation deferred after ROS2 + MCAP validation
 full-fidelity required for conformant mode
 ClockDescriptor field-wise equality required
+backend native scalar width / signedness must not narrow V1 scalar domain
+backend-specific wire encoding remains Mapping responsibility
 
 Deferred / Unsupported
 ----------------------
@@ -2693,9 +3567,8 @@ flowchart TD
 
     CDM --> V1
 
-    ROS[ROS2 Mapping] --> V1
-    DDS[DDS Mapping] --> V1
-    CAN[SocketCAN Mapping] --> V1
+    ROS[ROS2 Acquisition] --> V1
+    DDS[DDS Acquisition] --> V1
 
     V1 --> CORPUS[V1 Canonical Corpus]
 
@@ -2746,23 +3619,42 @@ SourceDescriptor
 
 避免 V1 在没有真实 Mapping evidence 的情况下承担额外架构复杂度。
 
-当前最需要验证的 Profile-specific 假设是：
+当前最需要通过 Mapping Review 验证的 Profile-specific boundary 有两类：
 
 ```text
+Timestamp capacity
+------------------
 TimestampKeySet.size <= 4
+
+Scalar domain
+-------------
+Runtime-allocated Canonical IDs = uint64
+AcceptanceSequence = uint64
+SourceSequence = optional uint64
+ClockReading = int64
+Clock resolution components = positive uint64
 ```
 
-是否能够完整覆盖：
+其中 Timestamp capacity 主要由：
 
 ```text
 ROS2
-DDS
-SocketCAN
+DDS (Fast DDS baseline)
 ```
 
-三个 V1 Acquisition Mapping。
+两个 Acquisition Plugin design/review 验证。
 
-如果真实 Mapping Review 证明 4 不够：
+Scalar domain 则必须由：
+
+```text
+Acquisition Mapping
+    +
+MCAP / SQLite3 Storage Plugin design
+```
+
+共同验证，确保 native value 能进入 V1 domain，同时 Storage Artifact 能 full-fidelity round-trip。
+
+如果真实 Mapping Review 证明 4 个 TimestampKey 不够：
 
 > 应按真正需要的最小 capacity 修改 V1 Profile。
 
@@ -2776,6 +3668,22 @@ SocketCAN
 ```
 
 来人为维持该限制。
+
+如果真实 Mapping Review 证明当前 scalar domain 不能无损覆盖 V1 必需语义：
+
+> 应修改 V1 Profile 的 scalar boundary。
+
+不得通过：
+
+```text
+truncate
+wrap
+saturate
+signedness reinterpretation
+backend sentinel aliasing
+```
+
+来人为维持当前数值域。
 
 同时，Mapping Review 不仅需要确认“是否存在当前 V1 无法表达的 metadata”，还必须：
 
@@ -2796,19 +3704,17 @@ SocketCAN
 因此后续设计顺序为：
 
 ```text
-V1 Canonical Profile Draft v0.4
+V1 Canonical Profile v0.5
         ↓
-ROS2 Mapping Review
+ROS2 Plugin Review
         ↓
-DDS Mapping Review
-        ↓
-SocketCAN Mapping Review
+DDS Plugin Review
         ↓
 根据 Acquisition Mapping 修订 V1 Profile
         ↓
-MCAP Mapping Review
+MCAP Plugin Review
         ↓
-SQLite3 Mapping Review
+SQLite3 Plugin Review
         ↓
 V1 Canonical Corpus
         ↓
