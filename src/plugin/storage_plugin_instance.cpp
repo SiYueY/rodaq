@@ -42,8 +42,8 @@ Result<StoragePluginInstance> StoragePluginInstance::create(PluginLibraryLease l
     }
 
     try {
-        auto state =
-            PluginInstanceStateAccess::create(library_lease, raw_instance, protocol->destroy);
+        auto state = PluginInstanceStateAccess::create(
+            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure);
         return StoragePluginInstance(std::move(state));
     } catch (const std::bad_alloc&) {
         protocol->destroy(raw_instance);
@@ -59,6 +59,14 @@ Result<StoragePluginInstance> StoragePluginInstance::create(PluginLibraryLease l
 
 StoragePluginInstance::StoragePluginInstance(std::shared_ptr<PluginInstanceState> state) noexcept
 : state_(std::move(state)) {}
+
+Result<void> StoragePluginInstance::bind(const rodaq_service_registry& services) {
+    return PluginInstanceStateAccess::bind(state_, services);
+}
+
+Result<void> StoragePluginInstance::configure(rodaq_config_view config) {
+    return PluginInstanceStateAccess::configure(state_, config);
+}
 
 PluginInstanceLease StoragePluginInstance::lease() const noexcept {
     return PluginInstanceLease(state_);

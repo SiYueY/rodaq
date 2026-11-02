@@ -2,6 +2,7 @@
 #define RODAQ_TESTS_PLUGIN_FIXTURE_SUPPORT_HPP_
 
 #include <rodaq/plugin/abi/acquisition.h>
+#include <rodaq/plugin/abi/runtime.h>
 #include <rodaq/plugin/abi/storage.h>
 
 #include <cstdint>

@@ -281,6 +281,34 @@ rodaq_enable_warnings(rodaq_config_view_test)
 rodaq_enable_sanitizers(rodaq_config_view_test)
 add_test(NAME rodaq.plugin.config_view COMMAND rodaq_config_view_test)
 
+add_executable(
+    rodaq_plugin_service_integration_test
+    plugin_service_integration_test.cpp
+)
+target_link_libraries(rodaq_plugin_service_integration_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_plugin_service_integration_test)
+rodaq_enable_sanitizers(rodaq_plugin_service_integration_test)
+add_dependencies(
+    rodaq_plugin_service_integration_test
+    rodaq_test_plugin_valid_acquisition
+    rodaq_test_plugin_valid_storage
+)
+add_test(
+    NAME rodaq.plugin.service_integration
+    COMMAND rodaq_plugin_service_integration_test
+)
+set_tests_properties(
+    rodaq.plugin.service_integration
+    PROPERTIES
+        ENVIRONMENT
+            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>"
+)
+
 add_executable(rodaq_plugin_loader_probe plugin_loader_probe.cpp)
 target_link_libraries(rodaq_plugin_loader_probe PRIVATE rodaq_plugin)
 rodaq_enable_warnings(rodaq_plugin_loader_probe)

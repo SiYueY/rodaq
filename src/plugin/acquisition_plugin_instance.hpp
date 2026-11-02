@@ -22,6 +22,9 @@ public:
 
     ~AcquisitionPluginInstance() = default;
 
+    Result<void> bind(const rodaq_service_registry& services);
+    Result<void> configure(rodaq_config_view config);
+
     PluginInstanceLease lease() const noexcept;
     bool valid() const noexcept;
 

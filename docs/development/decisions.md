@@ -634,3 +634,22 @@ Cross-acquisition equivalence may use separate runs/processes over the same publ
 Same-process co-activation is supported only after recursive dependency, SONAME, ABI, symbol-resolution and runtime coexistence qualification proves that ROS2 `rmw_fastrtps_*` and the RoDAQ-pinned Fast DDS/Fast CDR dependency closure are compatible. Otherwise PluginManager/config validation must reject the combination before activation.
 
 **Reference:** `docs/design/rodaq_v1_system_design.md`, `docs/design/acquisition_plugin/fastdds.md`.
+
+---
+
+## D-032 — M0-D owns Runtime service plumbing; M0-E owns the Plugin SDK
+
+**Status:** Accepted
+
+M0-D implements the additive projection and clock-correlation Stable Runtime
+Service ABI, bounded Service Registry, Runtime-owned ConfigView,
+InteropProjectionRegistry, activation ClockCorrelation and Fake
+Acquisition/Storage `bind/configure` integration.
+
+M0-D does not implement the C++17 Plugin SDK, exception trampolines, metadata
+generation or complete Fake Plugin lifecycle/state-machine qualification. Those
+remain M0-E work. M0-D therefore does not satisfy the complete M0 Exit Gate and
+must not be reported as full M0 PASS.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`, `runtime.md`,
+`docs/design/rodaq_v1_system_design.md`, `docs/development/plan.md`.

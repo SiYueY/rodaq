@@ -1,8 +1,8 @@
 # RoDAQ Development Status
 
-**Updated:** 2026-11-02
+**Updated:** 2026-11-03
 **Branch:** `develop`
-**Base HEAD:** `befc6d4` — `docs: record M0-B and M0-C converged baseline`
+**Pre-integration checkpoint:** `9996e2b` — `runtime: implement projection and clock correlation services`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -12,14 +12,17 @@ This file records factual current repository state. Keep it concise and update i
 
 Status: **ACTIVE**
 
+Current sub-phase: **M0-D — PASS**. M0-E is next.
+
 The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
 ## Current repository state
 
-M0-A Review Closure, M0-B Stable C Plugin ABI and M0-C Plugin Loading + Lifetime
-are complete and validated. The repository now contains:
+M0-A Review Closure, M0-B Stable C Plugin ABI, M0-C Plugin Loading + Lifetime
+and M0-D Runtime Services + ConfigView are complete and validated. The
+repository now contains:
 
 - a C++17 CMake project foundation,
 - warning, sanitizer, CTest, dependency and install support,
@@ -33,9 +36,11 @@ are complete and validated. The repository now contains:
 - pinned dependency submodules with no normal-build network access,
 - header-only install validation for `rodaq::Error` and `rodaq::Result<T>`.
 
-`third_party/` contains all nine approved pinned submodules. No Service Registry,
-ConfigView, C++ Plugin SDK, linkable RoDAQ package target or production shared
-library has been introduced.
+`third_party/` contains all nine approved pinned submodules. M0-D adds bounded
+Service Registry and ConfigView implementations, activation-lifetime
+InteropProjection and ClockCorrelation services, and Fake Plugin
+`bind/configure` integration. No C++ Plugin SDK, linkable installed RoDAQ
+package target or production shared library has been introduced.
 
 ## Design baseline
 
@@ -143,6 +148,20 @@ The common Runtime and Plugin infrastructure must be validated with Fake Plugins
   - direct private state types without a `detail` namespace,
   - `plugin_error` status conversion helpers without an `abi_` prefix,
   - isolated DSO fixture matrix and subprocess lifecycle verification.
+- M0-D Runtime Services + ConfigView implemented:
+  - additive projection and clock-correlation Stable Runtime Service ABI,
+  - C11/C++17 header, minimum-prefix, tail-gating, scalar and installed-header
+    qualification,
+  - bounded freeze-once Service Registry with explicit query and error semantics,
+  - immutable ConfigTree/ConfigView with exact scalar types and stable MAP order,
+  - activation-lifetime InteropProjectionRegistry with immutable copied bytes,
+    idempotent same-byte registration and finite count/byte bounds,
+  - activation-scoped ClockCorrelation with deterministic anchor capture and
+    checked ingress-to-Unix projection,
+  - private instance-level `bind/configure` ABI dispatch with caller-owned error
+    conversion,
+  - Fake Acquisition/Storage service binding, config consumption, projection
+    exchange and clock-anchor query through real DSOs.
 
 M0-B post-PASS structural convergence:
 
@@ -195,13 +214,12 @@ Structural convergence validation:
 
 ## Not started
 
-- Service Registry implementation, including additive `rodaq.runtime.projection.v1` and `rodaq.runtime.clock_correlation.v1` service interfaces defined by the revised V1 design.
-- ConfigView implementation.
 - Minimal C++ Plugin SDK.
+- Plugin exception trampolines and complete Fake lifecycle qualification (M0-E).
 - Runtime ResourceBudget / Admission implementation.
 - Payload / PayloadPool implementation.
 - Dispatch / Completion implementation.
-- Fake Acquisition / Storage.
+- Full Fake Acquisition / Storage runtime data path.
 - ROS 2 Acquisition implementation.
 - MCAP Storage implementation.
 - FastDDS Acquisition implementation.
@@ -270,11 +288,11 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M0-D — Service Registry + ConfigView + C++ Plugin SDK.
-2. Implement minimal Service Registry and ConfigView runtime behavior, including projection and clock-correlation service plumbing/fixtures.
-3. Implement the C++17 Plugin SDK and exception trampolines.
+1. Begin M0-E — C++ Plugin SDK + exception trampolines.
+2. Implement the C++17 Plugin SDK and complete exception firewall.
+3. Implement Plugin Interface Query plumbing.
 4. Add Plugin metadata generation and authoring CMake helpers.
-5. Build Fake Acquisition / Storage lifecycle tests for M0-E.
+5. Build complete Fake Acquisition / Storage lifecycle tests for M0-E.
 
 ## Validation state
 
@@ -319,6 +337,16 @@ M0-C
     ASAN TESTED
     UBSAN TESTED
     REVIEWED
+    PASS
+
+M0-D Runtime Services + ConfigView
+    IMPLEMENTED
+    ABI C/C++ COMPILE TESTED
+    SERVICE/CONFIG TESTED
+    PROJECTION/CLOCK TESTED
+    FAKE PLUGIN INTEGRATION TESTED
+    ASAN TESTED
+    UBSAN TESTED
     PASS
 ```
 
@@ -400,6 +428,25 @@ M0-C validation:
   exactly-once destroy, same-path catalog merge and final-lease unload.
 - Quarantine subprocess verified no subsequent instance creation, no destroy and
   no DSO unload before process exit.
+
+M0-D validation:
+
+- GCC 11.4.0 Debug with warnings-as-errors: all 70 CTest entries passed.
+- ASan Debug with warnings-as-errors: all 70 CTest entries passed directly.
+- UBSan Debug with non-recovering undefined behavior and warnings-as-errors:
+  all 70 CTest entries passed.
+- The Projection multi-reader/serialized-writer test passed under TSan using
+  `setarch "$(uname -m)" -R`; unwrapped execution hit the documented host
+  `unexpected memory mapping` runtime limitation.
+- `BUILD_TESTING=OFF` and `RODAQ_BUILD_TESTS=OFF` each configured and built
+  with zero RoDAQ tests.
+- Fake Acquisition/Storage DSO integration verified create → bind →
+  configure → destroy ordering, required-service absence, wrong protocol,
+  too-small service table and null required service slot failures.
+- Fake integration verified Runtime-owned ConfigView consumption, projection
+  producer/consumer byte exchange and stable activation clock-anchor lookup.
+- Installed-header smoke passed with the additive projection and
+  clock-correlation ABI.
 - Failed load/create paths passed under ASan without leaked DSO handles or
   plugin-code use after unload.
 - `clang-format --dry-run --Werror` over `src/plugin/` and `tests/plugin/`,

@@ -43,8 +43,8 @@ Result<AcquisitionPluginInstance> AcquisitionPluginInstance::create(
     }
 
     try {
-        auto state =
-            PluginInstanceStateAccess::create(library_lease, raw_instance, protocol->destroy);
+        auto state = PluginInstanceStateAccess::create(
+            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure);
         return AcquisitionPluginInstance(std::move(state));
     } catch (const std::bad_alloc&) {
         protocol->destroy(raw_instance);
@@ -61,6 +61,14 @@ Result<AcquisitionPluginInstance> AcquisitionPluginInstance::create(
 AcquisitionPluginInstance::AcquisitionPluginInstance(
     std::shared_ptr<PluginInstanceState> state) noexcept
 : state_(std::move(state)) {}
+
+Result<void> AcquisitionPluginInstance::bind(const rodaq_service_registry& services) {
+    return PluginInstanceStateAccess::bind(state_, services);
+}
+
+Result<void> AcquisitionPluginInstance::configure(rodaq_config_view config) {
+    return PluginInstanceStateAccess::configure(state_, config);
+}
 
 PluginInstanceLease AcquisitionPluginInstance::lease() const noexcept {
     return PluginInstanceLease(state_);

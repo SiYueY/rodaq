@@ -37,10 +37,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 **Status:** ACTIVE
 
-**Current sub-phase:** **M0-C — PASS**. M0-A Review Closure, M0-B Stable C
-Plugin ABI and M0-C Plugin Loading + Lifetime are implemented, mechanically
-tested, sanitizer-tested and reviewed. M0-D Service Registry + ConfigView + C++
-Plugin SDK is next.
+**Current sub-phase:** **M0-D — PASS**. M0-A Review Closure, M0-B Stable C
+Plugin ABI, M0-C Plugin Loading + Lifetime and M0-D Runtime Services + ConfigView
+are implemented, mechanically tested and sanitizer-tested. M0-E C++ Plugin SDK,
+exception trampolines and complete Fake lifecycle qualification is next.
 
 ### Goal
 
@@ -161,10 +161,10 @@ Development:
 - [x] Implement `PluginLibraryLease`.
 - [x] Implement `PluginInstanceLease`.
 - [x] Reject Acquisition/Storage instance creation through the wrong family lease.
-- [ ] Implement Service Registry.
-- [ ] Add `rodaq.runtime.projection.v1` service ABI/plumbing for typed descriptor projections.
-- [ ] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
-- [ ] Implement ConfigView.
+- [x] Implement Service Registry.
+- [x] Add `rodaq.runtime.projection.v1` service ABI/plumbing for typed descriptor projections.
+- [x] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
+- [x] Implement ConfigView.
 - [ ] Implement Plugin Interface Query plumbing.
 - [ ] Implement minimal C++17 Plugin SDK.
 - [ ] Implement exception trampolines.
@@ -175,7 +175,7 @@ Development:
 
 - [x] Fake Acquisition loads and validates.
 - [x] Fake Storage loads and validates.
-- [ ] create/bind/configure/destroy lifecycle works.
+- [x] create/bind/configure/destroy lifecycle works for the M0-D service integration scope.
 - [x] create/destroy lifetime works for the M0-C fixture scope.
 - [x] DSO unload occurs only after last lease.
 - [x] Catalog removal preserves live instance and library-lease lifetime.
@@ -185,10 +185,10 @@ Development:
 - [x] Clean buildable repository skeleton.
 - [x] Pinned dependency graph.
 - [x] M0-B core/family Stable ABI headers.
-- [ ] M0-D additive Runtime service ABI headers for projection and clock-correlation services.
+- [x] M0-D additive Runtime service ABI headers for projection and clock-correlation services.
 - [x] ABI mechanical tests.
 - [x] Plugin loader/infrastructure for the M0-C boundary.
-- [ ] Service Registry / ConfigView.
+- [x] Service Registry / ConfigView.
 - [ ] Minimal C++ Plugin SDK.
 - [ ] Minimal Fake Acquisition / Storage DSOs.
 - [ ] Initial ABI compatibility baseline.
@@ -245,9 +245,9 @@ Development:
 - [x] protocol/struct-size validation.
 - [ ] caller-owned APPENDABLE output: old/new caller/callee compatibility.
 - [ ] flags/reserved validation.
-- [ ] ConfigView MAP/LIST/scalar tests.
-- [ ] ConfigView exact-type conversion.
-- [ ] ConfigView out-of-range index → NOT_FOUND.
+- [x] ConfigView MAP/LIST/scalar tests.
+- [x] ConfigView exact-type conversion.
+- [x] ConfigView out-of-range index → NOT_FOUND.
 - [ ] caller-owned `rodaq_error` remains readable after ABI return.
 - [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
 - [ ] Plugin exception firewall.
@@ -296,7 +296,7 @@ Do not implement in M0:
 3. [x] `Result/Error`.
 4. [x] ABI headers + ABI tests.
 5. [x] `SharedLibrary / PluginLibrary`.
-6. Service Registry / ConfigView.
+6. [x] Service Registry / ConfigView and M0-D Runtime services.
 7. C++ Plugin SDK/trampolines.
 8. Minimal Fake Plugin lifecycle fixtures.
 
