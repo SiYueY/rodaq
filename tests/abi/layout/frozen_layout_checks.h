@@ -34,6 +34,19 @@ RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, domain) == 24, "error domain offs
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, message) == 56, "error message offset");
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, reserved) == 312, "error reserved offset");
 
+RODAQ_TEST_STATIC_ASSERT(
+    sizeof(rodaq_descriptor_readiness_result) == 336, "descriptor readiness size");
+RODAQ_TEST_STATIC_ASSERT(
+    RODAQ_TEST_ALIGNOF(rodaq_descriptor_readiness_result) == 8, "descriptor readiness align");
+RODAQ_TEST_STATIC_ASSERT(
+    offsetof(rodaq_descriptor_readiness_result, struct_size) == 0,
+    "descriptor readiness struct size offset");
+RODAQ_TEST_STATIC_ASSERT(
+    offsetof(rodaq_descriptor_readiness_result, state) == 4, "descriptor readiness state offset");
+RODAQ_TEST_STATIC_ASSERT(
+    offsetof(rodaq_descriptor_readiness_result, failure) == 8,
+    "descriptor readiness failure offset");
+
 RODAQ_TEST_STATIC_ASSERT(sizeof(rodaq_interface) == 16, "interface size");
 RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_interface) == 8, "interface align");
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_interface, context) == 0, "interface context offset");

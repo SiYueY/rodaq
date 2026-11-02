@@ -157,11 +157,9 @@ typedef struct rodaq_runtime_storage_v1 {
 
     void (*persistence_completed)(
         void* context, rodaq_storage_operation operation,
-        rodaq_storage_persistence_state terminal_state, rodaq_status status,
-        rodaq_string_view message) RODAQ_NOEXCEPT;
+        rodaq_storage_persistence_state terminal_state, const rodaq_error* error) RODAQ_NOEXCEPT;
 
-    void (*report_failure)(void* context, rodaq_status status, rodaq_string_view message)
-        RODAQ_NOEXCEPT;
+    void (*report_failure)(void* context, const rodaq_error* error) RODAQ_NOEXCEPT;
 } rodaq_runtime_storage_v1;
 
 #define RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE             \

@@ -65,8 +65,7 @@ typedef struct rodaq_descriptor_readiness_result {
     uint32_t struct_size;
     rodaq_descriptor_readiness state;
 
-    rodaq_status status;
-    uint32_t reserved;
+    rodaq_error failure;
 } rodaq_descriptor_readiness_result;
 
 #define RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION UINT32_C(1)
@@ -180,9 +179,9 @@ struct rodaq_storage_plugin {
     (offsetof(rodaq_storage_capabilities, close_progress_timeout_ns) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_storage_capabilities, close_progress_timeout_ns))
 
-#define RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE  \
-    (offsetof(rodaq_descriptor_readiness_result, status) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_descriptor_readiness_result, status))
+#define RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE   \
+    (offsetof(rodaq_descriptor_readiness_result, failure) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_descriptor_readiness_result, failure))
 
 #define RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE                   \
     (offsetof(rodaq_storage_control_v1, ensure_descriptor_ready) + \

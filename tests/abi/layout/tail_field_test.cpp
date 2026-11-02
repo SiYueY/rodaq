@@ -63,7 +63,7 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_storage_capabilities, close_progress_timeout_ns,
         RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_descriptor_readiness_result, status,
+        rodaq_descriptor_readiness_result, failure,
         RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_storage_control_v1, ensure_descriptor_ready,
