@@ -21,6 +21,9 @@ Result<PluginMetadata> validate_plugin_descriptor(const rodaq_plugin_descriptor&
 Result<void> validate_acquisition_protocol(const rodaq_acquisition_plugin& protocol);
 Result<void> validate_storage_protocol(const rodaq_storage_plugin& protocol);
 
+Result<rodaq_interface> validate_acquisition_control_interface(rodaq_interface interface);
+Result<rodaq_interface> validate_storage_control_interface(rodaq_interface interface);
+
 }  // namespace rodaq::plugin
 
 #endif  // RODAQ_PLUGIN_PLUGIN_VALIDATION_HPP_

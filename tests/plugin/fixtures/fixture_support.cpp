@@ -7,6 +7,38 @@
 #include <cstring>
 #include <string_view>
 
+#ifndef RODAQ_FIXTURE_CONTROL_PROTOCOL_VERSION
+#define RODAQ_FIXTURE_CONTROL_PROTOCOL_VERSION RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION
+#endif
+
+#ifndef RODAQ_FIXTURE_CONTROL_STRUCT_SIZE
+#define RODAQ_FIXTURE_CONTROL_STRUCT_SIZE RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE
+#endif
+
+#ifndef RODAQ_FIXTURE_CONTROL_APPENDABLE_TAIL
+#define RODAQ_FIXTURE_CONTROL_APPENDABLE_TAIL 0
+#endif
+
+#ifndef RODAQ_FIXTURE_CONTROL_MISSING_SLOT
+#define RODAQ_FIXTURE_CONTROL_MISSING_SLOT 0
+#endif
+
+#ifndef RODAQ_FIXTURE_CONTROL_NULL_CONTEXT
+#define RODAQ_FIXTURE_CONTROL_NULL_CONTEXT 0
+#endif
+
+#ifndef RODAQ_FIXTURE_STORAGE_CONTROL_PROTOCOL_VERSION
+#define RODAQ_FIXTURE_STORAGE_CONTROL_PROTOCOL_VERSION RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION
+#endif
+
+#ifndef RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE
+#define RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE
+#endif
+
+#ifndef RODAQ_FIXTURE_STORAGE_CONTROL_MISSING_SLOT
+#define RODAQ_FIXTURE_STORAGE_CONTROL_MISSING_SLOT 0
+#endif
+
 namespace rodaq::test {
 namespace {
 
@@ -266,6 +298,104 @@ rodaq_status validate_fixture_config(
     return RODAQ_STATUS_OK;
 }
 
+bool string_equals(
+    rodaq_string_view value, const char* expected, std::uint64_t expected_size) noexcept {
+    if (value.data == nullptr || value.size != expected_size) {
+        return false;
+    }
+    return std::char_traits<char>::compare(value.data, expected, expected_size) == 0;
+}
+
+rodaq_status prepare_binding_switch(
+    void*, rodaq_binding_transition, rodaq_stream_handle, rodaq_stream_descriptor_handle,
+    rodaq_stream_descriptor_handle, rodaq_error*) noexcept {
+    return RODAQ_STATUS_OK;
+}
+
+rodaq_status commit_binding_switch(void*, rodaq_binding_transition, rodaq_error*) noexcept {
+    return RODAQ_STATUS_OK;
+}
+
+rodaq_status abort_binding_switch(
+    void*, rodaq_binding_transition, rodaq_binding_abort_disposition, rodaq_error*) noexcept {
+    return RODAQ_STATUS_OK;
+}
+
+rodaq_status quiesce_stream(void*, rodaq_stream_handle, rodaq_error*) noexcept {
+    return RODAQ_STATUS_OK;
+}
+
+[[maybe_unused]] rodaq_status quiesce_plugin(void*, rodaq_error*) noexcept {
+    return RODAQ_STATUS_OK;
+}
+
+struct ExtendedAcquisitionControl {
+    rodaq_acquisition_control_v1 base;
+    std::uint64_t tail;
+};
+
+const ExtendedAcquisitionControl acquisition_control = {
+    {
+        RODAQ_FIXTURE_CONTROL_PROTOCOL_VERSION,
+        RODAQ_FIXTURE_CONTROL_APPENDABLE_TAIL ? sizeof(ExtendedAcquisitionControl)
+                                              : RODAQ_FIXTURE_CONTROL_STRUCT_SIZE,
+        &prepare_binding_switch,
+        &commit_binding_switch,
+        &abort_binding_switch,
+        &quiesce_stream,
+#if RODAQ_FIXTURE_CONTROL_MISSING_SLOT
+        nullptr,
+#else
+        &quiesce_plugin,
+#endif
+    },
+    0,
+};
+
+rodaq_status get_capabilities(
+    void*, rodaq_storage_capabilities* out_capabilities, rodaq_error*) noexcept {
+    if (out_capabilities == nullptr ||
+        out_capabilities->struct_size < RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE) {
+        return RODAQ_STATUS_INVALID_ARGUMENT;
+    }
+    *out_capabilities = {};
+    out_capabilities->struct_size = sizeof(rodaq_storage_capabilities);
+    out_capabilities->full_fidelity = RODAQ_TRUE;
+    out_capabilities->maximum_payload_bytes = 1024;
+    out_capabilities->maximum_inflight_records = 8;
+    out_capabilities->maximum_inflight_bytes = 8192;
+    out_capabilities->handoff_progress_timeout_ns = 1'000'000;
+    out_capabilities->descriptor_progress_timeout_ns = 1'000'000;
+    out_capabilities->flush_progress_timeout_ns = 1'000'000;
+    out_capabilities->close_progress_timeout_ns = 1'000'000;
+    return RODAQ_STATUS_OK;
+}
+
+[[maybe_unused]] rodaq_status ensure_descriptor_ready(
+    void*, rodaq_stream_descriptor_handle descriptor, rodaq_descriptor_readiness_result* out_result,
+    rodaq_error*) noexcept {
+    if (out_result == nullptr ||
+        out_result->struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
+        return RODAQ_STATUS_INVALID_ARGUMENT;
+    }
+    *out_result = {};
+    out_result->struct_size = sizeof(rodaq_descriptor_readiness_result);
+    out_result->state =
+        descriptor.value == 0 ? RODAQ_DESCRIPTOR_UNSUPPORTED : RODAQ_DESCRIPTOR_READY;
+    return RODAQ_STATUS_OK;
+}
+
+const rodaq_storage_control_v1 storage_control = {
+    RODAQ_FIXTURE_STORAGE_CONTROL_PROTOCOL_VERSION,
+    RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE,
+    &get_capabilities,
+#if RODAQ_FIXTURE_STORAGE_CONTROL_MISSING_SLOT
+    nullptr,
+#else
+    &ensure_descriptor_ready,
+#endif
+};
+
 }  // namespace
 
 void fixture_record_event(const char* event) noexcept {
@@ -479,13 +609,42 @@ rodaq_status fixture_storage_close(
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_query_interface(
-    void*, rodaq_string_view, rodaq_interface* out_interface, rodaq_error*) noexcept {
-    if (out_interface != nullptr) {
-        out_interface->context = nullptr;
-        out_interface->vtable = nullptr;
+rodaq_status fixture_acquisition_query_interface(
+    void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
+    rodaq_error* out_error) noexcept {
+    static_cast<void>(instance);
+    if (out_interface == nullptr) {
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_error);
     }
-    return RODAQ_STATUS_NOT_FOUND;
+    *out_interface = {};
+    const char expected[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;
+    if (!string_equals(interface_id, expected, sizeof(expected) - 1)) {
+        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_error);
+    }
+    out_interface->context =
+#if RODAQ_FIXTURE_CONTROL_NULL_CONTEXT
+        nullptr;
+#else
+        instance;
+#endif
+    out_interface->vtable = &acquisition_control.base;
+    return RODAQ_STATUS_OK;
+}
+
+rodaq_status fixture_storage_query_interface(
+    void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
+    rodaq_error* out_error) noexcept {
+    if (out_interface == nullptr) {
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_error);
+    }
+    *out_interface = {};
+    const char expected[] = RODAQ_STORAGE_CONTROL_INTERFACE_ID;
+    if (!string_equals(interface_id, expected, sizeof(expected) - 1)) {
+        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_error);
+    }
+    out_interface->context = instance;
+    out_interface->vtable = &storage_control;
+    return RODAQ_STATUS_OK;
 }
 
 }  // namespace rodaq::test

@@ -33,7 +33,7 @@ const rodaq_acquisition_plugin plugin = {
     rodaq::test::fixture_acquisition_configure,
     rodaq::test::fixture_acquisition_start,
     rodaq::test::fixture_acquisition_stop,
-    rodaq::test::fixture_query_interface,
+    rodaq::test::fixture_acquisition_query_interface,
 };
 
 }  // namespace

@@ -270,4 +270,48 @@ Result<void> validate_storage_protocol(const rodaq_storage_plugin& protocol) {
     return validate_required_callbacks(protocol);
 }
 
+Result<rodaq_interface> validate_acquisition_control_interface(rodaq_interface interface) {
+    if (interface.context == nullptr || interface.vtable == nullptr) {
+        return nonstd::make_unexpected(
+            invalid_argument_error("Acquisition control interface is incomplete"));
+    }
+    const auto* control = static_cast<const rodaq_acquisition_control_v1*>(interface.vtable);
+    if (control->protocol_version != RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION) {
+        return nonstd::make_unexpected(invalid_argument_error(
+            "Acquisition control interface protocol version is unsupported"));
+    }
+    if (control->struct_size < RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE) {
+        return nonstd::make_unexpected(invalid_argument_error(
+            "Acquisition control interface struct_size is below the V1 minimum"));
+    }
+    if (control->prepare_binding_switch == nullptr || control->commit_binding_switch == nullptr ||
+        control->abort_binding_switch == nullptr || control->quiesce_stream == nullptr ||
+        control->quiesce_plugin == nullptr) {
+        return nonstd::make_unexpected(
+            invalid_argument_error("Acquisition control interface has a null required slot"));
+    }
+    return interface;
+}
+
+Result<rodaq_interface> validate_storage_control_interface(rodaq_interface interface) {
+    if (interface.context == nullptr || interface.vtable == nullptr) {
+        return nonstd::make_unexpected(
+            invalid_argument_error("Storage control interface is incomplete"));
+    }
+    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    if (control->protocol_version != RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION) {
+        return nonstd::make_unexpected(
+            invalid_argument_error("Storage control interface protocol version is unsupported"));
+    }
+    if (control->struct_size < RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE) {
+        return nonstd::make_unexpected(invalid_argument_error(
+            "Storage control interface struct_size is below the V1 minimum"));
+    }
+    if (control->get_capabilities == nullptr || control->ensure_descriptor_ready == nullptr) {
+        return nonstd::make_unexpected(
+            invalid_argument_error("Storage control interface has a null required slot"));
+    }
+    return interface;
+}
+
 }  // namespace rodaq::plugin

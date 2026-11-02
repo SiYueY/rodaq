@@ -7,6 +7,7 @@
 #include <rodaq/result.hpp>
 
 #include <memory>
+#include <string_view>
 
 namespace rodaq::plugin {
 
@@ -24,6 +25,8 @@ public:
 
     Result<void> bind(const rodaq_service_registry& services);
     Result<void> configure(rodaq_config_view config);
+    Result<rodaq_interface> query_interface(std::string_view interface_id);
+    Result<rodaq_interface> required_control_interface() const;
 
     PluginInstanceLease lease() const noexcept;
     bool valid() const noexcept;

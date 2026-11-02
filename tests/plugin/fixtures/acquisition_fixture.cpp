@@ -105,7 +105,7 @@ const ExtendedAcquisitionPlugin acquisition_plugin = {
         rodaq::test::fixture_acquisition_configure,
         rodaq::test::fixture_acquisition_start,
         rodaq::test::fixture_acquisition_stop,
-        rodaq::test::fixture_query_interface,
+        rodaq::test::fixture_acquisition_query_interface,
     },
     0,
 };
@@ -138,7 +138,7 @@ const ExtendedStoragePlugin storage_plugin = {
         rodaq::test::fixture_storage_submit,
         rodaq::test::fixture_storage_flush,
         rodaq::test::fixture_storage_close,
-        rodaq::test::fixture_query_interface,
+        rodaq::test::fixture_storage_query_interface,
     },
     0,
 };

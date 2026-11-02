@@ -1,6 +1,7 @@
 #include "plugin/acquisition_plugin_instance.hpp"
 
 #include "plugin/plugin_error.hpp"
+#include "plugin/plugin_validation.hpp"
 
 #include <exception>
 #include <new>
@@ -44,7 +45,8 @@ Result<AcquisitionPluginInstance> AcquisitionPluginInstance::create(
 
     try {
         auto state = PluginInstanceStateAccess::create(
-            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure);
+            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure,
+            protocol->query_interface);
         return AcquisitionPluginInstance(std::move(state));
     } catch (const std::bad_alloc&) {
         protocol->destroy(raw_instance);
@@ -63,11 +65,34 @@ AcquisitionPluginInstance::AcquisitionPluginInstance(
 : state_(std::move(state)) {}
 
 Result<void> AcquisitionPluginInstance::bind(const rodaq_service_registry& services) {
-    return PluginInstanceStateAccess::bind(state_, services);
+    Result<void> bind_result = PluginInstanceStateAccess::bind(state_, services);
+    if (!bind_result.has_value()) {
+        return bind_result;
+    }
+    Result<rodaq_interface> control_result =
+        PluginInstanceStateAccess::query_interface(state_, RODAQ_ACQUISITION_CONTROL_INTERFACE_ID);
+    if (!control_result.has_value()) {
+        return nonstd::make_unexpected(std::move(control_result.error()));
+    }
+    Result<rodaq_interface> validated =
+        validate_acquisition_control_interface(control_result.value());
+    if (!validated.has_value()) {
+        return nonstd::make_unexpected(std::move(validated.error()));
+    }
+    PluginInstanceStateAccess::set_required_control_interface(state_, validated.value());
+    return {};
 }
 
 Result<void> AcquisitionPluginInstance::configure(rodaq_config_view config) {
     return PluginInstanceStateAccess::configure(state_, config);
+}
+
+Result<rodaq_interface> AcquisitionPluginInstance::query_interface(std::string_view interface_id) {
+    return PluginInstanceStateAccess::query_interface(state_, interface_id);
+}
+
+Result<rodaq_interface> AcquisitionPluginInstance::required_control_interface() const {
+    return PluginInstanceStateAccess::required_control_interface(state_);
 }
 
 PluginInstanceLease AcquisitionPluginInstance::lease() const noexcept {

@@ -36,7 +36,10 @@ rodaq_status fixture_storage_flush(void* instance, rodaq_error* out_error) noexc
 rodaq_status fixture_storage_close(
     void* instance, const rodaq_storage_close_request* request, rodaq_error* out_error) noexcept;
 
-rodaq_status fixture_query_interface(
+rodaq_status fixture_acquisition_query_interface(
+    void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
+    rodaq_error* out_error) noexcept;
+rodaq_status fixture_storage_query_interface(
     void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
     rodaq_error* out_error) noexcept;
 

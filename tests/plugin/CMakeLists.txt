@@ -32,6 +32,62 @@ rodaq_add_plugin_fixture(
     "${RODAQ_STORAGE_FIXTURE_SOURCE}"
 )
 rodaq_add_plugin_fixture(
+    rodaq_test_plugin_control_wrong_protocol
+    "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_control_wrong_protocol
+    PRIVATE RODAQ_FIXTURE_CONTROL_PROTOCOL_VERSION=2
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_control_too_small
+    "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_control_too_small
+    PRIVATE RODAQ_FIXTURE_CONTROL_STRUCT_SIZE=1
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_control_missing_slot
+    "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_control_missing_slot
+    PRIVATE RODAQ_FIXTURE_CONTROL_MISSING_SLOT=1
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_control_appendable
+    "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_control_appendable
+    PRIVATE RODAQ_FIXTURE_CONTROL_APPENDABLE_TAIL=1
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_control_null_context
+    "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_control_null_context
+    PRIVATE RODAQ_FIXTURE_CONTROL_NULL_CONTEXT=1
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_storage_control_wrong_protocol
+    "${RODAQ_STORAGE_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_storage_control_wrong_protocol
+    PRIVATE RODAQ_FIXTURE_STORAGE_CONTROL_PROTOCOL_VERSION=2
+)
+rodaq_add_plugin_fixture(
+    rodaq_test_plugin_storage_control_missing_slot
+    "${RODAQ_STORAGE_FIXTURE_SOURCE}"
+)
+target_compile_definitions(
+    rodaq_test_plugin_storage_control_missing_slot
+    PRIVATE RODAQ_FIXTURE_STORAGE_CONTROL_MISSING_SLOT=1
+)
+rodaq_add_plugin_fixture(
     rodaq_test_plugin_missing_boot_marker
     "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
 )
@@ -297,6 +353,13 @@ add_dependencies(
     rodaq_plugin_service_integration_test
     rodaq_test_plugin_valid_acquisition
     rodaq_test_plugin_valid_storage
+    rodaq_test_plugin_control_wrong_protocol
+    rodaq_test_plugin_control_too_small
+    rodaq_test_plugin_control_missing_slot
+    rodaq_test_plugin_control_appendable
+    rodaq_test_plugin_control_null_context
+    rodaq_test_plugin_storage_control_wrong_protocol
+    rodaq_test_plugin_storage_control_missing_slot
 )
 add_test(
     NAME rodaq.plugin.service_integration
@@ -306,7 +369,7 @@ set_tests_properties(
     rodaq.plugin.service_integration
     PROPERTIES
         ENVIRONMENT
-            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>"
+            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>;RODAQ_TEST_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_control_wrong_protocol>;RODAQ_TEST_CONTROL_TOO_SMALL=$<TARGET_FILE:rodaq_test_plugin_control_too_small>;RODAQ_TEST_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_control_missing_slot>;RODAQ_TEST_CONTROL_APPENDABLE=$<TARGET_FILE:rodaq_test_plugin_control_appendable>;RODAQ_TEST_CONTROL_NULL_CONTEXT=$<TARGET_FILE:rodaq_test_plugin_control_null_context>;RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_storage_control_wrong_protocol>;RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_storage_control_missing_slot>"
 )
 
 add_executable(rodaq_plugin_loader_probe plugin_loader_probe.cpp)

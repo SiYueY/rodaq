@@ -371,6 +371,35 @@ std::unique_ptr<ServiceRegistry> make_registry(
     return registry;
 }
 
+void register_fixture_projection(RuntimeServices& services) {
+    require_success(services.projection.Register(
+        rodaq_stream_descriptor_handle{42}, "rodaq.test.projection.v1",
+        reinterpret_cast<const std::uint8_t*>("fixture"), 7));
+}
+
+void expect_acquisition_control_failure(const char* path_environment) {
+    PluginManager manager;
+    RuntimeServices services;
+    const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+    AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+        take(manager.load_library(plugin_path(path_environment)))));
+    const auto result = instance.bind(registry->AbiView());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+}
+
+void expect_storage_control_failure(const char* path_environment) {
+    PluginManager manager;
+    RuntimeServices services;
+    register_fixture_projection(services);
+    const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+    StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
+        take(manager.load_library(plugin_path(path_environment)))));
+    const auto result = instance.bind(registry->AbiView());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+}
+
 }  // namespace
 
 TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeRuntimeData) {
@@ -488,4 +517,75 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
     }
+}
+
+TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidated) {
+    PluginManager manager;
+    ConfigTree config = make_config();
+
+    {
+        RuntimeServices services;
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_ACQUISITION_PLUGIN")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        const auto control = instance.required_control_interface();
+        ASSERT_TRUE(control.has_value());
+        ASSERT_NE(nullptr, control.value().context);
+        const auto* vtable =
+            static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
+        ASSERT_NE(nullptr, vtable);
+        EXPECT_EQ(RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION, vtable->protocol_version);
+        EXPECT_GE(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+        EXPECT_NE(nullptr, vtable->prepare_binding_switch);
+        EXPECT_NE(nullptr, vtable->commit_binding_switch);
+        EXPECT_NE(nullptr, vtable->abort_binding_switch);
+        EXPECT_NE(nullptr, vtable->quiesce_stream);
+        EXPECT_NE(nullptr, vtable->quiesce_plugin);
+        EXPECT_TRUE(instance.configure(config.view().AbiView()).has_value());
+
+        const auto unknown = instance.query_interface("rodaq.test.unknown.v1");
+        ASSERT_FALSE(unknown.has_value());
+        EXPECT_EQ(rodaq::ErrorCode::NotFound, unknown.error().code());
+    }
+
+    {
+        RuntimeServices services;
+        register_fixture_projection(services);
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_STORAGE_PLUGIN")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        const auto control = instance.required_control_interface();
+        ASSERT_TRUE(control.has_value());
+        const auto* vtable = static_cast<const rodaq_storage_control_v1*>(control.value().vtable);
+        ASSERT_NE(nullptr, vtable);
+        EXPECT_EQ(RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION, vtable->protocol_version);
+        EXPECT_GE(vtable->struct_size, RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
+        EXPECT_NE(nullptr, vtable->get_capabilities);
+        EXPECT_NE(nullptr, vtable->ensure_descriptor_ready);
+        EXPECT_TRUE(instance.configure(config.view().AbiView()).has_value());
+    }
+}
+
+TEST(PluginServiceIntegrationTest, LargerControlInterfaceIsAccepted) {
+    PluginManager manager;
+    RuntimeServices services;
+    const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+    AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+        take(manager.load_library(plugin_path("RODAQ_TEST_CONTROL_APPENDABLE")))));
+    ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+    const auto control = instance.required_control_interface();
+    ASSERT_TRUE(control.has_value());
+    const auto* vtable = static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
+    EXPECT_GT(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+}
+
+TEST(PluginServiceIntegrationTest, IncompatibleControlInterfacesFailBind) {
+    expect_acquisition_control_failure("RODAQ_TEST_CONTROL_WRONG_PROTOCOL");
+    expect_acquisition_control_failure("RODAQ_TEST_CONTROL_TOO_SMALL");
+    expect_acquisition_control_failure("RODAQ_TEST_CONTROL_MISSING_SLOT");
+    expect_acquisition_control_failure("RODAQ_TEST_CONTROL_NULL_CONTEXT");
+    expect_storage_control_failure("RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL");
+    expect_storage_control_failure("RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT");
 }

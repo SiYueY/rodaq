@@ -1,6 +1,7 @@
 #include "plugin/storage_plugin_instance.hpp"
 
 #include "plugin/plugin_error.hpp"
+#include "plugin/plugin_validation.hpp"
 
 #include <exception>
 #include <new>
@@ -43,7 +44,8 @@ Result<StoragePluginInstance> StoragePluginInstance::create(PluginLibraryLease l
 
     try {
         auto state = PluginInstanceStateAccess::create(
-            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure);
+            library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure,
+            protocol->query_interface);
         return StoragePluginInstance(std::move(state));
     } catch (const std::bad_alloc&) {
         protocol->destroy(raw_instance);
@@ -61,11 +63,33 @@ StoragePluginInstance::StoragePluginInstance(std::shared_ptr<PluginInstanceState
 : state_(std::move(state)) {}
 
 Result<void> StoragePluginInstance::bind(const rodaq_service_registry& services) {
-    return PluginInstanceStateAccess::bind(state_, services);
+    Result<void> bind_result = PluginInstanceStateAccess::bind(state_, services);
+    if (!bind_result.has_value()) {
+        return bind_result;
+    }
+    Result<rodaq_interface> control_result =
+        PluginInstanceStateAccess::query_interface(state_, RODAQ_STORAGE_CONTROL_INTERFACE_ID);
+    if (!control_result.has_value()) {
+        return nonstd::make_unexpected(std::move(control_result.error()));
+    }
+    Result<rodaq_interface> validated = validate_storage_control_interface(control_result.value());
+    if (!validated.has_value()) {
+        return nonstd::make_unexpected(std::move(validated.error()));
+    }
+    PluginInstanceStateAccess::set_required_control_interface(state_, validated.value());
+    return {};
 }
 
 Result<void> StoragePluginInstance::configure(rodaq_config_view config) {
     return PluginInstanceStateAccess::configure(state_, config);
+}
+
+Result<rodaq_interface> StoragePluginInstance::query_interface(std::string_view interface_id) {
+    return PluginInstanceStateAccess::query_interface(state_, interface_id);
+}
+
+Result<rodaq_interface> StoragePluginInstance::required_control_interface() const {
+    return PluginInstanceStateAccess::required_control_interface(state_);
 }
 
 PluginInstanceLease StoragePluginInstance::lease() const noexcept {

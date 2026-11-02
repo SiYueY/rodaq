@@ -165,7 +165,7 @@ Development:
 - [x] Add `rodaq.runtime.projection.v1` service ABI/plumbing for typed descriptor projections.
 - [x] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
 - [x] Implement ConfigView.
-- [ ] Implement Plugin Interface Query plumbing.
+- [x] Implement Plugin Interface Query plumbing.
 - [ ] Implement minimal C++17 Plugin SDK.
 - [ ] Implement exception trampolines.
 - [ ] Implement Plugin metadata generation.
@@ -197,26 +197,24 @@ Development:
 
 #### Acquisition ABI
 
+- M0 qualifies ABI representability and interface semantics. Actual ownership
+  transfer, Binding routing and acceptance sequencing behavior is assigned to
+  M1/M2.
 - [x] `AdmissionOutcome` representable.
 - [x] `RejectionReason` representable.
 - [x] `PayloadDisposition` representable.
-- [ ] Rejection reason does not imply ownership.
-- [ ] ADOPT before transfer → CallerResponsible.
-- [ ] ADOPT after transfer → RuntimeResponsible.
-- [ ] RETAIN before acquisition → CallerResponsible.
-- [ ] RETAIN after acquisition → RuntimeResponsible.
-- [ ] RETAIN disposition does not transfer original native owner.
-- [ ] Gate-pass/in-flight entry precedes irreversible AcceptanceSequence allocation.
-- [ ] PreAdmissionRejected never consumes AcceptanceSequence.
-- [ ] Clock registration same `(PluginInstance, native_id)` + same facts is idempotent.
-- [ ] Clock same key + conflicting immutable facts → CONFLICT.
-- [ ] Clock continuity reset requires new native-id generation evidence.
-- [ ] Stream same `(PluginInstance, native_id)` re-registration is idempotent.
-- [ ] identical native_id in different Plugin instances does not merge Clock/Stream identity.
+- [x] Rejection reason is a separate ABI field and does not encode ownership.
+- [ ] M1: ADOPT before/after transfer ownership behavior.
+- [ ] M1: RETAIN acquisition-point and original-native-owner behavior.
+- [ ] M2: Gate-pass/AcceptanceSequence ordering and PreAdmissionRejected behavior.
+- [ ] M1: Clock/Stream native registration idempotence, conflict and generation behavior.
+- [ ] M1: identical native_id in different Plugin instances remains isolated.
 
 #### Storage ABI
 
-- [ ] submit non-OK means HandoffAccepted never established.
+- M0 qualifies ABI representability. Handoff reconciliation and asynchronous
+  completion behavior is assigned to M1/M2.
+- [ ] M2: submit non-OK means HandoffAccepted never established.
 - [x] PayloadConsumed synchronous result representable.
 - [x] PayloadPending representable.
 - [x] PersistenceSucceeded synchronous result representable.
@@ -225,23 +223,20 @@ Development:
 - [x] PersistencePending representable.
 - [x] Asynchronous/systemic Storage diagnostics use complete `rodaq_error` values.
 - [x] Descriptor readiness FAILED carries complete diagnostics.
-- [ ] no same-stack reentrant callback; cross-thread completion race with submit return is reconciled correctly.
-- [ ] async publication forbidden before irreversible `OK + matching PENDING` decision.
-- [ ] early completion is buffered and cannot reclaim submit-call resources before return/reconcile.
+- [ ] M2: no same-stack reentrant callback; cross-thread completion race reconciliation.
+- [ ] M2: async publication and early-completion buffering rules.
 
 #### Service / Config / lifetime
 
-- [ ] required Service success/failure.
-- [ ] optional Service absence.
-- [ ] required `rodaq.acquisition.control.v1` present/compatible.
-- [ ] required `rodaq.storage.control.v1` present/compatible.
-- [ ] missing/incompatible required control interface prevents activation.
-- [ ] `quiesce_plugin()` blocks all current/future Submit routing without destroying native release capability.
-- [ ] normal Stop order is quiesce → drain/anchor release → destructive stop.
-- [ ] abort KEEP_PAUSED never restores old routing.
-- [ ] abort RESUME_OLD restores only Runtime-proven valid old routing.
-- [ ] repeated terminal abort/commit on one transition → INVALID_STATE.
-- [ ] Runtime lifecycle snapshot gates one recovery attempt and stale snapshot is rejected by later Runtime state checks.
+- [x] required Service success/failure.
+- [x] optional Service absence.
+- [x] required `rodaq.acquisition.control.v1` present/compatible.
+- [x] required `rodaq.storage.control.v1` present/compatible.
+- [x] missing/incompatible required control interface prevents activation.
+- [ ] M2: `quiesce_plugin()` blocks current/future Submit routing.
+- [ ] M2: normal Stop quiesce → drain → destructive stop behavior.
+- [ ] M2: Binding abort KEEP_PAUSED / RESUME_OLD and terminal transition state.
+- [ ] M1/M2: Runtime lifecycle snapshot recovery gating and stale-state rejection.
 - [x] protocol/struct-size validation.
 - [ ] caller-owned APPENDABLE output: old/new caller/callee compatibility.
 - [ ] flags/reserved validation.
@@ -252,11 +247,7 @@ Development:
 - [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
 - [ ] Plugin exception firewall.
 - [ ] raw noexcept violation subprocess death test.
-- [ ] control-call timeout does not imply quiescence.
-- [ ] stream-local control timeout isolates the target Stream by default.
-- [ ] stream-local timeout escalates only when shared synchronization/native/memory-safety guarantees are lost.
-- [ ] timed-out call remains in-flight; overlapping control mutation is forbidden.
-- [ ] timed-out unquiesced Plugin instance/DSO is retained/quarantined.
+- [ ] M2: control timeout/quiescence, stream isolation, overlapping mutation and quarantine behavior.
 - [x] live instance prevents unload.
 - [x] live lease prevents unload.
 - [x] relevant ASan/UBSan suite clean.

@@ -5699,6 +5699,12 @@ Plugin-wide quiesce:
     preserves native capability required by Runtime-owned Payload anchors
 ```
 
+The M0 gate verifies that the Stable ABI and required interfaces can represent
+these states and operations unambiguously. Proof of the corresponding ownership
+transfer, Binding routing, Stop/quiesce, timeout and asynchronous completion
+behavior belongs to M1/M2. Moving behavioral proof to those milestones does not
+weaken or remove any M0 Exit Gate requirement below.
+
 Acquisition ABI 必须证明可以表达：
 
 ```text
