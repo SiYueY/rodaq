@@ -19,3 +19,4 @@ rodaq_enable_warnings(rodaq_foundation)
 rodaq_enable_sanitizers(rodaq_foundation)
 
 add_subdirectory(plugin)
+add_subdirectory(runtime)
