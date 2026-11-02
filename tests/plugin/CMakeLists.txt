@@ -261,6 +261,26 @@ rodaq_enable_warnings(rodaq_plugin_validation_test)
 rodaq_enable_sanitizers(rodaq_plugin_validation_test)
 add_test(NAME rodaq.plugin.validation COMMAND rodaq_plugin_validation_test)
 
+add_executable(rodaq_service_registry_test service_registry_test.cpp)
+target_link_libraries(rodaq_service_registry_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+)
+rodaq_enable_warnings(rodaq_service_registry_test)
+rodaq_enable_sanitizers(rodaq_service_registry_test)
+add_test(NAME rodaq.plugin.service_registry COMMAND rodaq_service_registry_test)
+
+add_executable(rodaq_config_view_test config_view_test.cpp)
+target_link_libraries(rodaq_config_view_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+)
+rodaq_enable_warnings(rodaq_config_view_test)
+rodaq_enable_sanitizers(rodaq_config_view_test)
+add_test(NAME rodaq.plugin.config_view COMMAND rodaq_config_view_test)
+
 add_executable(rodaq_plugin_loader_probe plugin_loader_probe.cpp)
 target_link_libraries(rodaq_plugin_loader_probe PRIVATE rodaq_plugin)
 rodaq_enable_warnings(rodaq_plugin_loader_probe)

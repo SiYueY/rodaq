@@ -1,5 +1,6 @@
 #include "plugin/plugin_validation.hpp"
 
+#include "abi_support.hpp"
 #include "plugin/plugin_error.hpp"
 
 #include <array>
@@ -189,77 +190,7 @@ bool is_valid_semantic_version(std::string_view value) noexcept {
 }
 
 bool is_valid_utf8_without_nul(std::string_view value) noexcept {
-    std::size_t index = 0;
-    while (index < value.size()) {
-        const unsigned char first = static_cast<unsigned char>(value[index]);
-        if (first == 0) {
-            return false;
-        }
-        if (first < 0x80) {
-            ++index;
-            continue;
-        }
-
-        if (first >= 0xC2 && first <= 0xDF) {
-            if (index + 1 >= value.size()) {
-                return false;
-            }
-            const unsigned char second = static_cast<unsigned char>(value[index + 1]);
-            if ((second & 0xC0U) != 0x80U) {
-                return false;
-            }
-            index += 2;
-            continue;
-        }
-
-        if (first >= 0xE0 && first <= 0xEF) {
-            if (index + 2 >= value.size()) {
-                return false;
-            }
-            const unsigned char second = static_cast<unsigned char>(value[index + 1]);
-            const unsigned char third = static_cast<unsigned char>(value[index + 2]);
-            if ((third & 0xC0U) != 0x80U) {
-                return false;
-            }
-            if (first == 0xE0 && (second < 0xA0 || second > 0xBF)) {
-                return false;
-            }
-            if (first == 0xED && (second < 0x80 || second > 0x9F)) {
-                return false;
-            }
-            if (first != 0xE0 && first != 0xED && (second & 0xC0U) != 0x80U) {
-                return false;
-            }
-            index += 3;
-            continue;
-        }
-
-        if (first >= 0xF0 && first <= 0xF4) {
-            if (index + 3 >= value.size()) {
-                return false;
-            }
-            const unsigned char second = static_cast<unsigned char>(value[index + 1]);
-            const unsigned char third = static_cast<unsigned char>(value[index + 2]);
-            const unsigned char fourth = static_cast<unsigned char>(value[index + 3]);
-            if (first == 0xF0 && (second < 0x90 || second > 0xBF)) {
-                return false;
-            }
-            if (first == 0xF4 && (second < 0x80 || second > 0x8F)) {
-                return false;
-            }
-            if (first != 0xF0 && first != 0xF4 && (second & 0xC0U) != 0x80U) {
-                return false;
-            }
-            if ((third & 0xC0U) != 0x80U || (fourth & 0xC0U) != 0x80U) {
-                return false;
-            }
-            index += 4;
-            continue;
-        }
-
-        return false;
-    }
-    return true;
+    return rodaq::is_valid_utf8_without_nul(value);
 }
 
 Result<PluginMetadata> validate_plugin_descriptor(const rodaq_plugin_descriptor& descriptor) {

@@ -1,4 +1,5 @@
 add_library(rodaq_plugin STATIC
+    config_view.cpp
     plugin_error.cpp
     acquisition_plugin_instance.cpp
     plugin_catalog.cpp
@@ -6,6 +7,7 @@ add_library(rodaq_plugin STATIC
     plugin_library.cpp
     plugin_manager.cpp
     plugin_validation.cpp
+    service_registry.cpp
     shared_library.cpp
     storage_plugin_instance.cpp
 )
