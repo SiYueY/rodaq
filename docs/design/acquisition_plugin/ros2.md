@@ -1,7 +1,7 @@
 # RoDAQ ROS2 Acquisition Plugin Mapping Specification
 
-**Version:** v0.3
-**Status:** Mapping Review Candidate
+**Version:** v0.4
+**Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 ROS2 Acquisition Plugin
 **Implementation Scope:** Initial V1 functional implementation — required
 
@@ -13,7 +13,8 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.5
+- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -845,11 +846,149 @@ Control Plane
     → establish Source / Descriptor / Binding state
 ```
 
-首个 unknown Source 的具体处理应保持保守：
+Source 处理必须区分两个完全不同的状态：
 
-- 如果 native Source identity 是 optional，当前 Record 可以以 `SourceId absent` 提交；
-- 如果配置要求 SourceId/SourceSequence 必须存在，则在 Control Plane 建立 Source 前拒绝该 Record；
-- 不允许 callback 首次看到 GID 时直接无锁修改 Source registry。
+```text
+A. native Source identity 真正 unavailable / invalid / untrustworthy
+B. native Source identity 已可靠获得，但 SourceHandle registration 尚未完成
+```
+
+仅 A 可以映射为：
+
+```text
+SourceId absent
+SourceSequence absent
+```
+
+对于 B：
+
+> **不得为了绕过 Control Plane registration 把 known publisher 降级成 SourceId absent。**
+
+在 SourceHandle 建立前，该 Record 必须：
+
+```text
+boundedly buffer
+or
+apply native backpressure
+or
+drop / pre-admission reject
+```
+
+并通过 bounded control event 触发 Source registration。
+
+callback 首次看到可靠 GID 时仍不得直接修改 Runtime Source registry；但“尚未注册”不是“Source identity 不存在”。
+
+---
+
+## 2.6 Stable Plugin ABI Mapping
+
+ROS2 Plugin 的 native mapping 不直接成为 ABI。跨 DSO contract 统一使用 `docs/design/rodaq_plugin_system.md` 定义的 Acquisition Protocol。
+
+### Lifecycle
+
+```text
+create
+    → 构造 ROS2 Plugin-local state
+    → 不创建 subscription / worker
+
+bind
+    → query rodaq.runtime.common.v1
+    → query rodaq.runtime.acquisition.v1
+    → 按需 query rodaq.runtime.canonical.v1
+    → require rodaq.acquisition.control.v1
+
+configure
+    → 通过 Runtime-owned ConfigView 读取 Topic selection / QoS / discovery 配置
+    → 不保存 ConfigView 到调用返回之后
+
+start
+    → 创建/激活 ROS2 discovery 与 subscription path
+    → 完成 required registration / Binding readiness
+    → 只有 Runtime Activation Commit / Gate Open 后才 normal Submit
+
+quiesce_plugin (required control extension)
+    → instance-wide non-destructive barrier
+    → blocks current/future ROS callback / take routing into Runtime submit
+    → preserves ROS-native release capability needed by Runtime-owned Payload anchors
+
+stop
+    → destructive ROS-native shutdown only after Runtime drain / anchor safety
+    → return 后 no future ROS callback / worker can access Runtime
+
+destroy
+    → 只在 callback、originated Payload anchor 与 ROS-native release capability 已安全收敛后调用
+```
+
+### Registration
+
+ROS2 Control Plane 通过 `rodaq.runtime.acquisition.v1` 映射：
+
+```text
+register_source
+register_clock
+register_schema
+register_stream
+publish_stream_descriptor
+report_source_availability
+report_stream_availability
+report_plugin_state
+```
+
+ROS native object pointer、`rclcpp` 类型、RMW handle 不得进入 Stable ABI。
+
+### Data Submission
+
+首个实现的 Copy path 映射为：
+
+```text
+rodaq_record_submission
+    stream / descriptor
+    optional SourceHandle
+    optional SourceSequence
+    explicit timestamp_values[]
+    payload.mode = COPY
+        ↓
+rodaq.runtime.acquisition.v1::submit()
+        ↓
+rodaq_acquisition_submit_result
+```
+
+其中：
+
+```text
+publisher GID canonicalized + registered
+    → source_present = true
+    → source = cached SourceHandle
+
+identity truly unavailable/untrustworthy
+    → source_present = false
+    → source_sequence_present = false
+
+publication sequence only when proven source-originated + SourceId-scoped
+    → source_sequence_present = true
+```
+
+ROS2 timestamp 必须先映射为对应 Canonical Clock 的 signed tick reading，再进入 `timestamp_values[]`；不存在的 timestamp 使用 explicit `present = false`，不能用数值 0 代替 Absent。Runtime 自己注入 `rodaq/acquisition_ingress`。
+
+Plugin 必须显式处理：
+
+```text
+AdmissionOutcome
+RejectionReason
+PayloadDisposition
+```
+
+Copy path：
+
+```text
+PayloadDisposition = NOT_APPLICABLE
+```
+
+如果未来启用 Adopt / Retain：
+
+> 必须严格遵守 Payload Transfer/Acquisition Point 和 CallerResponsible / RuntimeResponsible disposition；不能从 rejection reason 推断 ownership。
+
+函数级 `rodaq_status != OK` 表示 Runtime boundary failure，不是普通 ROS2 backpressure。
 
 ---
 
@@ -1311,7 +1450,7 @@ Source identity rules
 
 ## 4.4 Quiescence 与 Stop
 
-ROS2 Plugin quiescence 必须证明：
+ROS2 Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
 
 ```text
 no new ROS callback / take execution
@@ -1427,6 +1566,24 @@ oversize → pre-admission rejection
 Copy lifetime safe
 Stop while pre-gate submit is active
 ```
+
+首个 Copy path 还必须直接验证 Stable ABI result：
+
+```text
+Accepted
+    → rodaq_status == OK
+    → outcome == RODAQ_ADMISSION_ACCEPTED
+    → rejection_reason == NONE
+    → payload_disposition == NOT_APPLICABLE
+
+ordinary GateClosed / ResourceUnavailable / WaitTimeout
+    → rodaq_status == OK
+    → outcome == RODAQ_ADMISSION_PRE_REJECTED
+    → matching rejection_reason
+    → payload_disposition == NOT_APPLICABLE
+```
+
+如果后续增加 Adopt / Retain path，则必须加入 transfer/acquisition point 前后的 CallerResponsible / RuntimeResponsible conformance cases。
 
 ### Lifecycle / Failure
 

@@ -1,7 +1,7 @@
 # RoDAQ Storage Plugin Design Specification
 
-**Version:** v0.3
-**Status:** Mapping Review Candidate
+**Version:** v0.4
+**Status:** Plugin ABI Reconciliation Candidate
 **Scope:** RoDAQ V1 Storage Plugin Architecture, Projection, Handoff, Persistence and Finalization Contract
 
 **Normative Dependencies:**
@@ -12,7 +12,8 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.5
+- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -408,6 +409,95 @@ Failed
 
 不要求 implementation 使用完全相同的 enum。
 
+### 2.1.1 Stable Plugin ABI Lifecycle Mapping
+
+上述：
+
+```text
+Configured
+Prepared
+Ready
+Closing
+Closed
+Failed
+```
+
+是 Storage 的领域运行状态，不是跨 DSO ABI method 列表。
+
+V1 Stable Storage ABI 冻结：
+
+```text
+create
+bind
+configure
+open
+submit
+flush
+close
+get_extension
+destroy
+```
+
+映射关系：
+
+```text
+ABI create
+    → 构造 Plugin-local instance
+
+ABI bind
+    → 通过 Service Registry 获取 Runtime Services
+
+ABI configure
+    → 建立本文 Configured state
+
+ABI open
+    → 封装 Prepare / backend open / capability validation
+    → 成功后进入能够处理 Descriptor / Record 的 Ready/Open operational state
+
+ABI submit
+    → 对应本文 HandoffRecord domain operation
+
+ABI flush
+    → 对应本文 persistence barrier
+
+ABI close
+    → 对应 Closing → Closed，并完成 callback / Payload-access quiescence
+
+ABI destroy
+    → 只在 Closed 或未 Open 的安全状态调用
+```
+
+因此本文中的：
+
+```text
+Prepare
+EnsureDescriptorReady
+HandoffRecord
+Deliver Completion
+Quiesce after Failure
+```
+
+属于领域 capability / Runtime coordination step，**不是**要求继续向 `rodaq_storage_plugin` core vtable 增加同名 ABI slot。
+
+V1 correctness 所必需的 capability negotiation 与 Descriptor readiness 必须通过 required extension：
+
+```text
+rodaq.storage.control.v1
+```
+
+暴露。
+
+其中：
+
+```text
+get_capabilities()
+ensure_descriptor_ready()
+```
+
+是 V1 required protocol；缺失属于 protocol incompatibility。
+
+只有 rotation / durability 等非核心能力才是 optional Storage Extension。
+
 ---
 
 ## 2.2 Configured
@@ -563,9 +653,14 @@ maximum accepted Payload size
 
 > Storage 不比 Runtime 自身配置的 limit 更严格。
 
-具体 capability structure：
+具体 ABI structure 由 `docs/design/rodaq_plugin_system.md` 冻结为：
 
-> 不在本文冻结。
+```text
+rodaq_storage_capabilities
+rodaq.storage.control.v1
+```
+
+Runtime 必须在 Running / Binding Active 前取得并冻结 effective capability。
 
 ---
 
@@ -1045,15 +1140,13 @@ Storage Plugin：
 
 ## 3.3 Descriptor Readiness Operation
 
-逻辑上 Runtime 请求：
+Runtime 通过 required Storage control extension 调用：
 
 ```text
-EnsureDescriptorReady(...)
+rodaq.storage.control.v1::ensure_descriptor_ready(...)
 ```
 
-具体 API 名称：
-
-> 不在本文冻结。
+该 API 是 V1 Stable Plugin Contract 的组成部分。
 
 operation outcome 至少区分：
 
@@ -1526,7 +1619,36 @@ reversible mapping
 
 ## 4.4 Handoff Outcome
 
-正常 Record handoff 的 immediate outcome 为：
+本文中的 `HandoffRecord` 是领域语义；Stable Plugin ABI 对应：
+
+```text
+rodaq_storage_plugin::submit()
+```
+
+ABI 映射冻结为：
+
+```text
+Plugin-internal HandoffCommit
+    → Plugin 已不可逆决定 submit() 将返回 OK + matching PENDING
+    → 相应 Pending axis 可以发布给 async worker
+    → 该时点不对外建立 HandoffAccepted
+
+submit() function return == OK
+    → confirms HandoffAccepted
+    → out_result 同步给出 Payload axis / Persistence axis 当前状态
+
+Runtime reconcile
+    → 合并 return 与可能已到达的 early completion event
+    → 之后才执行可观察 terminalization / resource reclamation
+
+submit() function return != OK
+    → HandoffAccepted 从未成立
+    → FatalFailure
+    → return 后不得保留 Runtime Payload access
+    → 不得发送该 operation 的正常 completion callback
+```
+
+因此 normal Record handoff 的 immediate domain outcome 为：
 
 ```text
 HandoffAccepted
@@ -1537,6 +1659,8 @@ HandoffAccepted
 ```text
 FatalFailure
 ```
+
+函数级 non-OK 不表示普通 backpressure。Record 在 Runtime 中已经 Accepted，因此 Runtime 必须进入 Storage failure path。
 
 V1 不提供：
 
@@ -1784,7 +1908,7 @@ perform backend encoding
 modify Runtime Payload bytes
 ```
 
-也不得在 `HandoffAccepted` 前把 Runtime-provided PayloadView 发布给会跨 Handoff return 执行的 worker / deferred task。
+也不得在 Plugin 已作出“`submit()` 必然返回 OK + 对应 axis 为 PENDING”的 irreversible handoff decision 之前，把 Runtime-provided PayloadView 发布给会跨 Handoff return 执行的 worker / deferred task。
 
 ---
 
@@ -2151,7 +2275,7 @@ Runtime 对每个：
 HandoffAccepted Record
 ```
 
-独立跟踪：
+独立跟踪两个 axis。
 
 ### Payload axis
 
@@ -2160,6 +2284,34 @@ PayloadPending
     ↓
 PayloadConsumed
 ```
+
+Stable ABI 对应：
+
+```text
+submit return:
+    RODAQ_STORAGE_PAYLOAD_CONSUMED
+    or
+    RODAQ_STORAGE_PAYLOAD_PENDING
+
+async terminal notification:
+    rodaq.runtime.storage.v1::payload_consumed(operation)
+```
+
+如果 submit result 已经返回：
+
+```text
+PAYLOAD_CONSUMED
+```
+
+则不得再发送 callback。
+
+如果返回：
+
+```text
+PAYLOAD_PENDING
+```
+
+则必须 exactly-once terminalize `payload_consumed()`。异步 worker callback 可以与 `submit()` return 竞态，但不得 same-stack synchronous reentrant；Runtime 在 return/reconcile 前只记录 early event，不提前释放当前 submit 调用仍可能使用的 Payload backing。
 
 ### Persistence axis
 
@@ -2173,9 +2325,40 @@ or
 PersistenceUnknown
 ```
 
-两者：
+Stable ABI 对应：
 
-> 独立。
+```text
+submit return:
+    RODAQ_STORAGE_PERSISTENCE_PENDING
+    RODAQ_STORAGE_PERSISTENCE_SUCCEEDED
+    RODAQ_STORAGE_PERSISTENCE_FAILED
+    RODAQ_STORAGE_PERSISTENCE_UNKNOWN
+
+async terminal notification:
+    rodaq.runtime.storage.v1::persistence_completed(...)
+```
+
+如果 submit result 已经同步返回 terminal persistence state：
+
+> 不得再发送该 axis 的 callback。
+
+如果返回 `PERSISTENCE_PENDING`：
+
+> 必须 exactly-once terminalize 为 Succeeded / Failed / Unknown。异步 notification 可以与 `submit()` return 竞态，但不得 same-stack synchronous reentrant；Runtime 统一在 return/reconcile 后提交可观察 terminal state。
+
+两个 axis：
+
+> **严格独立。**
+
+因此以下状态完全合法，而且对大 Payload 场景非常重要：
+
+```text
+PayloadConsumed
++
+PersistencePending
+```
+
+Runtime 此时可以释放大 Payload backing，只保留轻量 persistence bookkeeping。
 
 ---
 
@@ -2351,25 +2534,85 @@ multiple persistence terminals
 
 ---
 
+## 5.5.1 Handoff Decision / Return / Reconcile Linearization
+
+V1 明确区分三个时点：
+
+```text
+1. HandoffCommit (Plugin-internal irreversible decision)
+   Plugin 已决定 submit() 必然返回 OK，且相应 axis 为 PENDING
+   → 从此可以向 async worker 发布 operation/Payload lease
+   → 尚未对 ABI caller 建立 HandoffAccepted
+
+2. submit() return
+   ABI 对 handoff decision 和同步 axis state 的 confirmation
+
+3. Runtime reconcile
+   合并 synchronous submit result 与可能已经到达的 early completion event
+   → 才执行可观察 terminalization / resource release
+```
+
+HandoffAccepted 仍由时点 2 的 `submit() return == OK` 对外建立。
+
+在时点 1 之前：
+
+```text
+no async publication
+no cross-return Payload access
+```
+
+在时点 1 到 3 之间：
+
+```text
+early worker completion may be recorded
+but must not reclaim resources still usable by current submit call
+```
+
+如果最终函数级 return non-OK，而 Runtime 已观察到 async event，则属于 contract violation。
+
+---
+
 ## 5.6 Immediate Completion
 
-Storage handoff 可以在 return 中同步携带：
+Stable ABI 的 `rodaq_storage_submit_result` 可以在 `submit()` return 中同步携带：
 
 ```text
 PayloadConsumed
 
 PersistenceSucceeded
+PersistenceFailed
+PersistenceUnknown
 ```
 
-等 completion。
+等 terminal state。
 
-如果某 completion 已通过 return 表达：
+如果某 axis 已通过 return 表达 terminal：
 
-> 不得再发送对应 callback。
+> **不得再发送对应 callback。**
+
+如果某 axis 返回 Pending：
+
+> Plugin 不得在当前 `submit()` 调用栈内同步 reentrant 调用对应 callback。
+
+跨线程 worker completion 可以与 `submit()` return 发生 race；Runtime 必须在调用 Storage 前预建 operation tracking，并在 return 后 reconcile 已到达的 completion event 与 submit result。
 
 ---
 
 ## 5.7 Completion Notification
+
+Stable ABI 的异步通知分为：
+
+```text
+payload_consumed(operation)
+
+persistence_completed(
+    operation,
+    terminal_state,
+    status,
+    message)
+```
+
+而不是一个把 Payload 与 Persistence 混在一起的通用 `complete()`。
 
 异步 completion 可以来自：
 
@@ -4305,37 +4548,114 @@ Backend mapping 可以定义 backend-specific durability option，
 
 ---
 
-## 7.17 Runtime-facing Storage Interface
+## 7.17 Stable ABI 与 Runtime-facing Storage Capability Mapping
 
-本文不冻结具体 C++ ABI。
-
-逻辑上至少支持：
+本规范不重新定义 Plugin Binary ABI；Stable ABI 由：
 
 ```text
-Configure
+docs/design/rodaq_plugin_system.md
+```
 
+冻结。
+
+Storage Plugin core vtable 只包含：
+
+```text
+create
+bind
+configure
+open
+submit
+flush
+close
+get_extension
+destroy
+```
+
+Plugin → Runtime 通过 Service Registry 获取：
+
+```text
+rodaq.runtime.common.v1
+rodaq.runtime.canonical.v1
+rodaq.runtime.storage.v1
+```
+
+本文中的领域 capability：
+
+```text
 Prepare
-
 EnsureDescriptorReady
-
 HandoffRecord
-
-Flush
-
-Close
-
-Deliver Completion
-
+Deliver PayloadConsumed
+Deliver Persistence outcome
 Report Fatal Failure
-
 Quiesce after Failure
 ```
 
-这些 capability：
+映射为：
 
-> 可以由一个 Storage Plugin class 实现。
+```text
+open/submit/flush/close 内部流程
++
+required rodaq.storage.control.v1
++
+Runtime Storage Service callbacks
++
+Canonical read-only service
++
+optional versioned Extensions
+```
 
-不要求拆分：
+Capability negotiation 和 Descriptor readiness 不得只存在于 Plugin private implementation。
+
+`HandoffRecord` 对应 Stable ABI `submit()`：
+
+```text
+function return == OK
+    → HandoffAccepted
+
+function return != OK
+    → FatalFailure before HandoffAccepted
+```
+
+领域 Close 对应：
+
+```text
+close(rodaq_storage_close_request)
+```
+
+并显式携带：
+
+```text
+NORMAL
+ACTIVATION_ABORT
+FAILURE
+```
+
+只有 `NORMAL` 且 generic/backend finalization contract 全部满足时才允许形成 `NormalComplete` Artifact；Activation abort / Failure close 只负责安全收敛和 incomplete/failure artifact semantics。
+
+`rodaq_storage_submit_result` 独立给出：
+
+```text
+Payload axis:
+    Pending / Consumed
+
+Persistence axis:
+    Pending / Succeeded / Failed / Unknown
+```
+
+异步 terminalization 通过：
+
+```text
+payload_consumed()
+persistence_completed()
+```
+
+分别通知。
+
+配置通过 Runtime-owned `ConfigView` 传入；Plugin ABI 不暴露 `YAML::Node`、MCAP、SQLite3 或其他 backend-specific C++ 类型。
+
+实现内部仍可以由一个 Storage Plugin class 完成全部逻辑，不要求拆分：
 
 ```text
 DescriptorManager
@@ -5128,14 +5448,30 @@ two distinct identities
 
 ### Normal Record Handoff
 
-验证：
+验证 Stable ABI：
 
 ```text
-HandoffAccepted
+submit() returns OK
+    → HandoffAccepted
+```
+
+并分别验证两个 axis 最终 terminalize：
+
+```text
+PayloadPending / PayloadConsumed
+
+PersistencePending
+    → PersistenceSucceeded / Failed / Unknown
+```
+
+最常见正常路径可以是：
+
+```text
+submit result:
+    PayloadConsumed
+    PersistencePending
         ↓
-PayloadConsumed
-        ↓
-PersistenceSucceeded
+later persistence_completed(Succeeded)
 ```
 
 ---
@@ -5145,16 +5481,16 @@ PersistenceSucceeded
 声明：
 
 ```text
-Handoff return
-==
-PayloadConsumed
+submit result.payload_state
+    = PAYLOAD_CONSUMED
 ```
 
 验证：
 
-- return 后 Runtime 可释放 Payload；
-- 不再发送 PayloadConsumed；
-- Storage 不再访问旧 PayloadView。
+- `submit()` return 后 Runtime 可释放 Payload；
+- 不再发送 `payload_consumed()`；
+- Storage 不再访问旧 PayloadView；
+- Persistence axis 可以仍为 Pending。
 
 ---
 
@@ -5162,9 +5498,18 @@ PayloadConsumed
 
 worker 延迟读取。
 
+`submit()` 必须返回：
+
+```text
+payload_state = PAYLOAD_PENDING
+```
+
 验证：
 
-> explicit PayloadConsumed 前 Runtime保持 Payload alive。
+- `submit()` return 前不得 inline 调用 `payload_consumed()`；
+- explicit `payload_consumed(operation)` 前 Runtime 保持 Payload alive；
+- callback exactly once；
+- callback 后 Storage 不再访问旧 PayloadView。
 
 ---
 
@@ -5173,9 +5518,13 @@ worker 延迟读取。
 验证：
 
 ```text
-copy
-→ PayloadConsumed
-→ later PersistenceSucceeded
+copy to bounded Storage-owned memory
+        ↓
+submit result:
+    PAYLOAD_CONSUMED
+    PERSISTENCE_PENDING
+        ↓
+later persistence_completed(Succeeded)
 ```
 
 private copy：
@@ -5196,35 +5545,73 @@ private copy：
 
 ### Duplicate PayloadConsumed
 
+`submit()` 返回 `PAYLOAD_PENDING`，随后发送两次：
+
+```text
+payload_consumed(operation)
+```
+
 验证：
 
-> duplicate completion violation。
+> duplicate axis completion violation。
 
 ---
 
 ### Synchronous + Callback Duplicate
 
-return 已表示 consumed，
+`submit()` result 已表示：
 
-随后再 callback。
+```text
+PAYLOAD_CONSUMED
+```
+
+随后又调用：
+
+```text
+payload_consumed(operation)
+```
 
 验证：
 
 > Contract violation。
 
+同理，如果 `submit()` 已同步返回 terminal Persistence state，后续 `persistence_completed()` 同样是 duplicate violation。
+
+---
+
+### Same-stack Reentrant Completion
+
+Plugin 在当前 `submit()` 调用栈内直接同步调用对应 callback。
+
+验证：
+
+> Contract violation；Runtime 不支持 submit-stack synchronous reentrancy。
+
+另设 cross-thread race case：worker callback 可以在线程调度上先于 caller 观察到 `submit()` return；只要 Plugin 已不可逆地决定返回 `OK + matching PENDING`，Runtime 必须正确 reconcile，而不是误报 violation。
+
 ---
 
 ### Persistence Success
 
-backend commit point完成。
+backend commit point 完成。
 
-验证：
+如果 `submit()` 时为：
 
 ```text
-PersistenceSucceeded
+PERSISTENCE_PENDING
 ```
 
-只产生一次。
+验证 exactly once：
+
+```text
+persistence_completed(
+    operation,
+    PERSISTENCE_SUCCEEDED,
+    OK,
+    ...)
+```
+
+如果 persistence 已能在 `submit()` 内同步确定成功，则允许 result 直接返回 `PERSISTENCE_SUCCEEDED`，并验证之后没有 callback。
 
 ---
 
@@ -5246,29 +5633,51 @@ uncommitted transaction
 
 ### Persistence Failed
 
-确定性 write failure。
+确定性 write / transaction failure。
 
-验证：
+若此前为 `PERSISTENCE_PENDING`，验证 exactly once：
 
 ```text
-PersistenceFailed
+persistence_completed(
+    operation,
+    PERSISTENCE_FAILED,
+    non-OK status,
+    diagnostic)
+```
+
+并验证：
+
+```text
 Storage Failed
 ```
+
+如果该 failure 已在 `submit()` 内同步确定，允许 submit result 直接返回 `PERSISTENCE_FAILED`，此后不得 callback。
 
 ---
 
 ### Persistence Unknown
 
-transaction outcome indeterminate。
+transaction / backend outcome indeterminate。
 
-验证：
+若此前为 `PERSISTENCE_PENDING`，验证 exactly once：
 
 ```text
-PersistenceUnknown
+persistence_completed(
+    operation,
+    PERSISTENCE_UNKNOWN,
+    non-OK status,
+    diagnostic)
+```
+
+并验证：
+
+```text
 Storage Failed
 ```
 
-不得猜 Success。
+不得猜 Success，也不得为了 bookkeeping 方便强行改成 Failed。
+
+如果 Unknown 已在 `submit()` 内同步确定，允许 result 直接返回 `PERSISTENCE_UNKNOWN`，此后不得 callback。
 
 ---
 

@@ -3052,7 +3052,7 @@ Stop 时 Runtime：
 
 1. 原子关闭 Global Admission Gate并建立 final cutoff；
 2. wake/cancel pre-gate resource waiters；
-3. request Acquisition Plugin quiescence，阻止新的 Submit 开始；
+3. call required `rodaq.acquisition.control.v1::quiesce_plugin()`，建立 instance-wide non-destructive quiescence，阻止当前/未来 routing 开始新的 Submit；
 4. 等待 `active_submission_calls == 0`；
 5. 等待所有已经 Gate-pass 的 admission attempts 达到 terminal outcome；
 6. dispatch accepted Runtime Records；
@@ -3208,6 +3208,12 @@ blocking strategy
 该 dispatch path 必须：
 
 > 保持 §6.9 已建立的 same-Stream ordered enqueue relation。
+
+并且 `queue capacity` 必须是**物理可发布 capacity**，不是单独的逻辑 counter。
+
+Gate pass 前 reserved dispatch slot 必须保证后续 enqueue 不再依赖可能失败的普通 heap/page/node allocation。若 transport 无法证明这一点，则它不符合 V1 Accepted no-drop correctness baseline。
+
+因此首个实现应采用 fixed-capacity/preallocated transport；oneTBB queue 只有在证明 reservation→enqueue 之间不存在新的 failure-capable allocation 后才能替代。
 
 ---
 
@@ -4377,8 +4383,11 @@ new Binding transition fails
 +
 old current Binding remains semantically valid
         ↓
-discard / retain failed new transition state
-according to implementation
+Runtime calls abort_binding_switch(
+    transition,
+    RODAQ_BINDING_ABORT_RESUME_OLD)
+        ↓
+Plugin restores old routing exactly once
         ↓
 old Binding remains current
         ↓
@@ -4398,10 +4407,14 @@ new Binding failed
 如果 source-native fact 已变化，使 old Binding 不能再正确解释未来 Record，同时 new Binding 建立失败：
 
 ```text
+Runtime calls abort_binding_switch(
+    transition,
+    RODAQ_BINDING_ABORT_KEEP_PAUSED)
+        ↓
 Stream → Unavailable
 ```
 
-直到能够建立新的合法 Binding。
+Plugin 不得自行恢复 old routing；直到能够建立新的合法 Binding。
 
 ---
 
@@ -4430,9 +4443,10 @@ establish failure admission cutoff
 close Global Admission Gate
 wake pre-gate waiters
         ↓
-request Acquisition Plugin quiescence
+call Acquisition `quiesce_plugin()`
+(instance-wide, non-destructive)
         ↓
-no new Submit can begin
+no current/future Submit routing can begin
 active_submission_calls → 0
         ↓
 terminalize all Gate-passed attempts
@@ -4657,9 +4671,12 @@ V1 正常停止逻辑顺序为：
 3. wake / cancel all pre-gate
    resource waiters
 
-4. request Acquisition Plugin quiescence
+4. call required Acquisition `quiesce_plugin()`
+   as an instance-wide non-destructive barrier
+   while retaining native resources required by
+   Runtime-owned Payload anchor release
 
-5. confirm no new Plugin execution context
+5. confirm no current/newly-discovered Plugin execution context
    can begin Runtime::Submit
 
 6. wait all active Runtime::Submit calls
@@ -4690,7 +4707,9 @@ V1 正常停止逻辑顺序为：
 15. resolve final Storage completion obligations
     and Runtime-owned Payload obligations
 
-16. stop Acquisition Plugins
+16. only after Runtime/Storage drain and all Plugin-origin
+    Payload anchors no longer require native release capability:
+    invoke destructive Acquisition `stop()`
     and wait Plugin Stopped / terminal result
 
 17. verify no future Plugin / Storage callback
@@ -4715,7 +4734,7 @@ Stop 中必须分别满足两个 barrier。
 ### Submission Call Barrier
 
 ```text
-Acquisition Plugins quiesced
+Acquisition `quiesce_plugin()` completed
 +
 active_submission_calls == 0
 ```

@@ -1,7 +1,7 @@
 # RoDAQ Acquisition Plugin Design Specification
 
-**Version:** v0.5
-**Status:** Mapping Review Candidate
+**Version:** v0.6
+**Status:** Plugin ABI Reconciliation Candidate
 **Scope:** RoDAQ V1 Acquisition Plugin Architecture and Runtime Contract
 
 **Normative Dependencies:**
@@ -12,6 +12,7 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -648,6 +649,104 @@ Runtime Running → Failed
 
 ---
 
+### 2.2.2 Stable Plugin ABI Lifecycle Mapping
+
+本节中的：
+
+```text
+Configured
+Prepared
+Enabled
+Quiescing
+Stopped
+```
+
+是 Acquisition Plugin 的**领域运行状态**，不是跨 DSO 的 ABI method 列表。
+
+V1 Stable Plugin ABI 只冻结：
+
+```text
+create
+bind
+configure
+start
+stop
+get_extension
+destroy
+```
+
+映射关系为：
+
+```text
+ABI create
+    → 构造 Plugin-local instance
+    → 不访问 Runtime、不启动 native resource
+
+ABI bind
+    → 通过 Service Registry 获取 Runtime Services
+    → 建立 Plugin → Runtime capability binding
+
+ABI configure
+    → 建立本文的 Configured state
+    → ConfigView 只在该调用期间有效
+
+ABI start
+    → 封装本文的 Prepare + required discovery/registration + Enable
+    → 只有在 Runtime Activation Commit / Gate Open 允许后才能进入 normal Submit
+
+required `rodaq.acquisition.control.v1::quiesce_plugin()`
+    → Plugin-wide non-destructive quiescence barrier
+    → 禁止所有当前/未来 normal Submit routing
+    → 保留 Runtime-owned Payload anchor release 所需 native capability
+
+ABI stop
+    → 仅在 Runtime drain / Payload-anchor safety 已满足后执行 destructive native shutdown
+    → 是 destructive-stop completion barrier，不再承担 pre-drain Plugin-wide quiescence
+
+ABI destroy
+    → 仅在 no-future-callback / no-live-originated-anchor 条件满足后调用
+```
+
+因此本文后续出现的：
+
+```text
+Prepare
+Enable
+Quiesce Binding
+Quiesce Plugin
+Report Recovery
+```
+
+都应理解为：
+
+> Plugin 内部领域 capability / Runtime coordination step。
+
+它们**不是**要求在 `rodaq_acquisition_plugin` core vtable 中继续增加同名 ABI slot。
+
+V1 correctness 所必需的 Binding switch / stream-local quiescence 通过 required extension：
+
+```text
+rodaq.acquisition.control.v1
+```
+
+暴露，而不是继续扩张 core lifecycle。
+
+其中：
+
+```text
+prepare_binding_switch() success == ReadyToCommit
+commit_binding_switch() success  == CommitComplete
+abort_binding_switch(disposition) == pre-commit abort with explicit KEEP_PAUSED / RESUME_OLD
+quiesce_stream()                  == stream-local quiescence barrier
+quiesce_plugin()                  == instance-wide non-destructive quiescence barrier
+```
+
+该 extension 对 V1 conforming Acquisition Plugin 是 REQUIRED；缺失属于 protocol incompatibility。
+
+真正 optional capability 才使用 optional versioned Plugin Extension。
+
+---
+
 ## 2.3 Configured
 
 Configured 表示：
@@ -1034,21 +1133,29 @@ Plugin 不得通过 recovery：
 
 > 重新进入 Enabled 或重新打开 normal Submit path。
 
-Plugin 在一个 recovery attempt 开始前必须：
-
-> 通过 Runtime Control Plane lifecycle query 查询一次 Runtime state，或者使用 Runtime 已主动提供的 terminal-failure notification。
-
-如果查询结果为：
+Plugin 在一个 recovery attempt 开始前必须通过：
 
 ```text
-Runtime == Failed
+rodaq.runtime.common.v1::get_lifecycle_snapshot()
 ```
 
-或者 Plugin 已收到 terminal-failure notification，
+读取一次 Runtime lifecycle/admission snapshot。只有：
 
-则：
+```text
+state == RUNNING
+AND normal_acquisition_allowed == true
+```
 
-> 不开始 normal recovery。
+才允许开始 normal recovery。
+
+如果 snapshot 显示：
+
+```text
+state != RUNNING
+OR normal_acquisition_allowed == false
+```
+
+则不开始 normal recovery。查询之后发生的 Stop/Failure 仍由后续 Runtime registration/report/submit 的当前状态检查最终拒绝；snapshot 不是可长期持有的 permission token。
 
 此时只允许：
 
@@ -1075,9 +1182,7 @@ one recovery attempt
 continuous Runtime state polling
 ```
 
-具体 query / notification API：
-
-> 属于 Runtime-facing Plugin API，不在本文冻结。
+该 query 已由 Stable Plugin Contract 冻结在 `rodaq.runtime.common.v1`。V1 不要求额外 terminal notification channel。
 
 ---
 
@@ -1222,6 +1327,28 @@ Runtime generic contract：
 > 不使用通用 PropertyBag 表达这些 facts。
 
 应使用明确 typed contract。
+
+### 3.2.1 Stream Registration Identity
+
+Stable Runtime Stream registration key 为：
+
+```text
+(PluginInstance, native_id bytes)
+```
+
+同一 activation 内重复注册相同 key 必须幂等并返回同一 StreamHandle/StreamId。不同 Plugin instance 的相同 native bytes 不自动合并。
+
+Plugin 必须把 native logical Stream continuity 编码进 `native_id` evidence：
+
+```text
+same logical Stream
+    → keep same native_id
+
+logical Stream identity changed
+    → new native_id
+```
+
+rename / Schema / PayloadEncoding / TimestampKeySet evolution 不改变 Stream identity，只产生新 StreamDescriptor。
 
 ---
 
@@ -1474,25 +1601,67 @@ Runtime Data Plane：
 
 ## 3.7 Unregistered Source Sample
 
-如果 sample 到达，但其 Source 尚未注册：
+必须区分：
 
-> sample 不得进入 Admission。
+```text
+Source identity truly absent
+
+registration-pending known Source
+```
+
+### Source identity truly absent
+
+如果 native Source identity：
+
+```text
+unknown
+invalid
+unstable
+ambiguous
+or not reliably available
+```
+
+则：
+
+```text
+SourceId = absent
+SourceSequence = absent
+```
+
+这是合法 Canonical Record state。
+
+### Registration-pending known Source
+
+如果 Plugin 已经可靠获得并 canonicalize 出 SourceId bytes，但对应 SourceHandle 尚未完成 registration：
+
+> **sample 不得进入 Admission，也不得临时改写为 SourceId absent。**
 
 Plugin 可以：
 
 ```text
-Drop
+Drop / pre-admission reject
 BoundedBuffer
 NativeBackpressure
 ```
 
+并通过 Control Plane 完成 Source registration。
+
 不得：
 
 ```text
-Submit unknown SourceId
-and ask Runtime to register it
-on hot path
+Submit known-but-unregistered Source as absent
+Submit raw SourceId and ask Runtime to register it on hot path
+mutate Source registry from Data Plane callback
 ```
+
+这保持：
+
+```text
+Control Plane mutates Source Registry
+Data Plane reads stable SourceHandle
+```
+
+同时避免因为 registration latency 丢失已经可靠获得的 Canonical Source identity。
 
 ---
 
@@ -1600,7 +1769,30 @@ new Binding
 
 ---
 
-### 3.9.2 Clock Wrap
+### 3.9.2 Clock Registration Identity
+
+Stable Runtime registration key 为：
+
+```text
+(PluginInstance, native_id bytes)
+```
+
+同一 activation 内：
+
+```text
+same key + identical origin/resolution + same continuity generation
+    → idempotent registration
+    → same ClockHandle
+
+same key + conflicting immutable clock facts
+    → CONFLICT
+```
+
+不同 Plugin instance 的相同 `native_id` 不自动合并。Clock reset/restart/continuity loss 后必须生成新的 native-id generation evidence，不能用旧 key 注册成新的 ClockId；相同 resolution/origin 也不能作为跨 concrete Clock instance 的 identity merge 依据。
+
+---
+
+### 3.9.3 Clock Wrap
 
 native clock wrap normalization：
 
@@ -1616,7 +1808,7 @@ Runtime：
 
 ---
 
-### 3.9.1 ClockReading Scalar Domain
+### 3.9.4 ClockReading Scalar Domain
 
 Profile v0.5 冻结：
 
@@ -2246,6 +2438,8 @@ Unavailable / SwitchFailed
 或等价的 stream-local operational condition；
 6. 继续维持其他健康 Stream 的 normal acquisition。
 
+timed-out `prepare/commit/abort/quiesce_stream` call 在真正返回前仍视为 in-flight。Runtime/Plugin 不得对同一 transition 或同一 Stream routing state 发起重叠 mutation；如果无法等到原调用收敛，则保持目标 Stream 隔离/paused，必要时对 instance 做 quarantine。
+
 该 failure：
 
 > **默认不使整个 Plugin 进入 Failed。**
@@ -2473,21 +2667,43 @@ Plugin 必须 flatten 为：
 
 ## 5.5 Submission Result
 
-Acquisition-facing Submit 的正常返回结果至少必须表达：
+Acquisition-facing Submit 的正常返回结果必须正式映射到 Plugin ABI：
 
 ```text
 AdmissionOutcome
-
 RejectionReason
-when applicable
-
-PayloadOwnershipDisposition
-when applicable
+PayloadDisposition
 ```
 
-具体 C++ type：
+对应 ABI：
 
-> 不在本文冻结。
+```text
+rodaq_acquisition_submit_result
+```
+
+其中：
+
+```text
+AdmissionOutcome
+    PRE_REJECTED
+    REJECTED
+    ACCEPTED
+
+RejectionReason
+    operational reason
+    ACCEPTED 时必须 NONE
+
+PayloadDisposition
+    COPY:
+        NOT_APPLICABLE
+
+    ADOPT / RETAIN:
+        CALLER_RESPONSIBLE
+        or
+        RUNTIME_RESPONSIBLE
+```
+
+这三个维度不能互相推导。
 
 ---
 
@@ -2497,9 +2713,7 @@ when applicable
 
 > **Terminal Submit Result**
 
-指：
-
-> Submit 正常返回控制权给 Plugin，并且 `AdmissionOutcome` 已经确定为：
+表示 Runtime-facing Submit 已正常返回控制权给 Plugin，并且 AdmissionOutcome 已经确定为：
 
 ```text
 PreAdmissionRejected
@@ -2509,306 +2723,406 @@ Accepted
 
 之一。
 
-以下情况不属于正常 Terminal Submit Result：
+对应 ABI：
 
 ```text
-process termination
-
-exception illegally escaping
-Runtime boundary
-
-corrupted / invalid result
+RODAQ_ADMISSION_PRE_REJECTED
+RODAQ_ADMISSION_REJECTED
+RODAQ_ADMISSION_ACCEPTED
 ```
 
-Conforming Runtime：
+语义与 Admission Specification 完全一致。
 
-> 不得正常返回 outcome 未确定的 result。
+#### PreAdmissionRejected
+
+```text
+Gate pass never happened
+AcceptanceSequence not consumed
+RuntimeRecord not Accepted
+```
+
+这是普通：
+
+```text
+GateClosed
+ResourceUnavailable
+WaitTimeout
+invalid operational eligibility
+```
+
+等 pre-gate rejection 的承载结果。
+
+#### AdmissionRejected
+
+```text
+Gate pass happened
+AcceptanceSequence consumed
+RuntimeRecord not Accepted
+Admission/Runtime commit path no longer trustworthy
+```
+
+它不是普通 backpressure outcome。
+
+#### Accepted
+
+```text
+Gate pass happened
+AcceptanceSequence consumed
+ordered Accepted publication complete
+```
+
+一旦 Accepted：
+
+> 普通 Runtime/Storage resource pressure 不得再把该 Record 改写成 rejection。
 
 ---
 
-### 5.5.2 Adopt Ownership Disposition
+### 5.5.2 Rejection Reason
 
-对于：
-
-```text
-Adopt
-```
-
-每一个正常返回的 Terminal Submit Result：
-
-> **必须包含确定的 ownership disposition。**
-
-只允许：
+RejectionReason 提供 operational diagnosis，例如：
 
 ```text
-CallerRetains
-RuntimeResponsible
+InvalidInput
+RuntimeNotRunning
+GateClosed
+StaleHandle
+BindingNotActive
+BindingNotCurrent
+StreamUnavailable
+SourceUnavailable
+SequenceExhausted
+PayloadInvalid
+PayloadTooLarge
+ResourceUnavailable
+WaitTimeout
+RuntimeFailure
 ```
 
-不得存在 ordinary：
+但是：
+
+> **RejectionReason 不表示 Payload ownership / anchor responsibility。**
+
+相同：
 
 ```text
-Unknown
-MaybeTransferred
-Indeterminate
+GateClosed
 ```
 
-状态。
+可以发生在：
+
+```text
+Adopt Transfer Point 之前
+    → CallerResponsible
+
+Adopt Transfer Point 之后
+    → RuntimeResponsible
+```
+
+因此 Plugin 不得根据 rejection reason 自行推断 release responsibility。
 
 ---
 
-#### CallerRetains
+### 5.5.3 PayloadDisposition
 
-表示：
+Plugin System 正式定义：
 
-> Runtime 尚未取得 Adopt ownership responsibility。
+```text
+NOT_APPLICABLE
+CALLER_RESPONSIBLE
+RUNTIME_RESPONSIBLE
+```
 
-因此 Plugin 仍拥有 backing。
+#### Copy
 
-只要 native lifetime 允许，Plugin 可以：
+```text
+PayloadDisposition = NOT_APPLICABLE
+```
+
+Runtime 从不取得 Plugin original Copy input buffer 的 ownership。
+
+#### Adopt
+
+在 Adopt Transfer Point 之前：
+
+```text
+CALLER_RESPONSIBLE
+```
+
+越过 Transfer Point 之后：
+
+```text
+RUNTIME_RESPONSIBLE
+```
+
+一旦 RuntimeResponsible：
+
+> ownership 不回滚。
+
+Plugin 不得：
 
 ```text
 access
 release
 reuse
-retry
+retry with the same adopted anchor
 ```
+
+#### Retain
+
+Retain 的 disposition 描述：
+
+> **本次 Submission 创建的 independent lifetime anchor 谁负责 release。**
+
+它不描述 Plugin 原 native owner。
+
+在 Runtime acquisition point 之前：
+
+```text
+CALLER_RESPONSIBLE
+```
+
+之后：
+
+```text
+RUNTIME_RESPONSIBLE
+```
+
+即使 RuntimeResponsible，Plugin 仍可以继续拥有原 native owner，但不能再次 release 同一个 submission-specific retained anchor。
 
 ---
 
-#### RuntimeResponsible
+### 5.5.4 Runtime Ownership Invariant Failure
 
-表示：
+如果 Runtime 内部发生 correctness failure，使 Runtime 已无法证明 ownership/lifetime acquisition point 是否越过：
 
-> Runtime 已取得该 backing 的 ownership responsibility。
+> ownership uncertainty 不得作为 ordinary API state 转嫁给 Plugin。
 
-Plugin：
-
-> 不得再访问、release 或复用该 backing。
-
-Runtime 负责最终：
+只要 Runtime 仍能返回控制权：
 
 ```text
-release
+PayloadDisposition
+    = RUNTIME_RESPONSIBLE
 ```
 
-或者在 failure 情况下：
+采用保守解释，并同时：
+
+```text
+AdmissionOutcome / RejectionReason
+    表达 RuntimeFailure
+
+Runtime
+    进入 fail-closed / failure shutdown
+```
+
+如果 Runtime 无法证明 safe release：
 
 ```text
 retention / quarantine
 ```
 
-直到 lifetime 能被安全解决。
-
-`RuntimeResponsible`：
-
-> 不意味着 Runtime 必须已经立即释放 backing。
-
-它只表示：
-
-> Plugin 已失去 ownership responsibility。
+优先于可能 double-release 的激进 cleanup。
 
 ---
 
-### 5.5.3 Runtime Ownership Invariant Failure
+### 5.5.5 Function-level Status 与 AdmissionOutcome
 
-如果 Runtime 内部发生 correctness failure，使其无法证明：
-
-```text
-Adopt Transfer Point
-```
-
-是否已经越过，
-
-则：
-
-> Runtime 不得把 ownership uncertainty 作为 ordinary API state 转嫁给 Plugin。
-
-如果 Runtime 仍能够正常返回控制权：
-
-> 必须对外使用保守 disposition：
+Stable ABI 中：
 
 ```text
-RuntimeResponsible
+rodaq_status
 ```
 
-同时 outcome / reason 表达：
+表示 ABI/API call 本身是否可靠完成。
+
+普通 Admission 结果必须通过：
 
 ```text
-RuntimeFailure
+rodaq_status == OK
++
+rodaq_acquisition_submit_result
 ```
 
-或等价 failure semantics，
+表达。
 
-并进入：
-
-```text
-fail-closed / failure shutdown
-```
-
-Runtime 必须把对应 backing 纳入：
-
-```text
-failure-safe ownership reconciliation
-```
-
-如果无法证明 safe release：
-
-> quarantine。
-
-因此 Plugin 的规则始终简单：
-
-```text
-RuntimeResponsible
-⇒
-never touch backing again
-```
-
----
-
-### 5.5.4 Invalid Normal Return
-
-如果一个所谓 Terminal Submit Result：
-
-```text
-contains no valid ownership disposition
-for Adopt
-```
-
-则这是：
-
-```text
-Runtime Contract violation
-```
-
-Plugin 必须：
-
-> 保守视为 `RuntimeResponsible`。
-
-不得：
-
-```text
-release
-reuse
-retry with same backing
-```
-
-Runtime：
-
-> 必须进入或已经处于 failure path。
-
----
-
-### 5.5.5 Exceptional Boundary
-
-Conforming Runtime-facing Submit：
-
-> **不得让 C++ exception 穿过 Runtime → Plugin boundary。**
-
-Runtime 内部异常：
-
-> 应转换为 terminal failure result，或者进入 fail-stop termination。
-
-因此 production Plugin：
-
-> 不应依赖 exception 来判断 ownership。
-
-如果非 conforming implementation 中 exception 意外跨越 Runtime boundary，而 Plugin 获得控制权：
-
-> Plugin 必须保守视为：
-
-```text
-RuntimeResponsible
-```
-
-并报告：
-
-```text
-Runtime Contract violation
-```
-
-如果 process 已终止：
-
-> 不存在后续 Plugin ownership action。
-
----
-
-### 5.5.6 Rejection Reason 不能替代 Ownership Disposition
-
-Admission v0.5 明确定义：
-
-```text
-§2.4 Early Operational Eligibility Check
-```
-
-和：
-
-```text
-§4.1 Final Pre-gate Revalidation
-```
-
-因此：
+例如：
 
 ```text
 GateClosed
-BindingNotActive
-BindingNotCurrent
-StreamUnavailable
-SourceUnavailable
+ResourceUnavailable
+WaitTimeout
 ```
 
-等 condition：
-
-> 可能在 ownership acquisition 前被发现，也可能在其后被发现。
-
-所以相同 rejection reason 可以对应：
+应该是：
 
 ```text
-CallerRetains
+OK
++
+PRE_REJECTED
++
+corresponding RejectionReason
 ```
 
-也可以对应：
+而不是函数级：
 
 ```text
-RuntimeResponsible
+RESOURCE_EXHAUSTED
+TIMEOUT
 ```
 
-Plugin 不得：
+这样：
 
 ```text
-infer ownership
-from RejectionReason
+ABI failure
 ```
 
-Admission outcome、rejection reason 和 ownership disposition：
+与：
 
-> 是三个正交语义维度。
+```text
+domain Admission outcome
+```
+
+保持分离。
+
+如果 Runtime boundary 本身返回 non-OK：
+
+> Plugin 必须把它视为 Runtime contract/failure path，而不是普通 backpressure。
+
+对于 ADOPT / RETAIN，只要 Runtime 可能已经越过 transfer/acquisition point：
+
+```text
+out_result.payload_disposition
+    必须仍然有效并保守为
+    RUNTIME_RESPONSIBLE
+```
+
+防止 double release。
 
 ---
 
-### 5.5.7 Copy 与 Retain
+### 5.5.6 Invalid Normal Return
 
-对于 Copy：
+以下属于 Runtime Contract violation：
 
-> Plugin original buffer ownership 从不转移。
+```text
+ADOPT / RETAIN
++
+正常返回
++
+没有确定 PayloadDisposition
+```
 
-如果 original buffer 仍有效：
+不存在合法普通状态：
 
-> 可以重新构造 Copy submission。
+```text
+UnknownOwnership
+MaybeTransferred
+Indeterminate
+```
 
-对于 Retain：
+Plugin / C++ SDK 必须：
 
-> Plugin 自己的 native owner 可以继续存在。
+```text
+fail closed
+report Runtime contract failure
+```
 
-但 Runtime 对某次 Submit 获得的独立 lifetime anchor：
+如果 disposition 不可信但 backing 可能已转移：
 
-> 只属于那次 submission。
-
-retry 时：
-
-> 必须重新创建新的 Retain anchor。
+```text
+保守按 RuntimeResponsible 处理
+```
 
 ---
+
+### 5.5.7 Exception Boundary
+
+Conforming Runtime-facing Submit：
+
+> **不得让 C++ exception 穿过 Stable C ABI。**
+
+Runtime 内部异常应被转换为：
+
+```text
+terminal domain result
+or
+function-level error + fail-closed path
+```
+
+C++ Plugin SDK 同样必须通过 trampoline：
+
+```text
+catch std::exception
+catch (...)
+```
+
+阻止 Plugin exception 穿越 ABI。
+
+---
+
+### 5.5.8 Retry 与 PayloadDisposition
+
+Retry 是新的 Submission。
+
+#### Copy
+
+只要 original source buffer 仍有效：
+
+```text
+可以重新构造新的 Copy Submission
+```
+
+#### Adopt
+
+如果：
+
+```text
+CALLER_RESPONSIBLE
+```
+
+且 native sample 仍有效，可以重新构造新的 Submission。
+
+如果：
+
+```text
+RUNTIME_RESPONSIBLE
+```
+
+Plugin 不得复用原 backing。
+
+Retry 必须创建：
+
+```text
+new Copy
+or
+new Adopt
+or
+new Retain
+```
+
+#### Retain
+
+如果本次 retained anchor：
+
+```text
+CALLER_RESPONSIBLE
+```
+
+Plugin 负责释放该未被 Runtime 接管的 anchor。
+
+如果：
+
+```text
+RUNTIME_RESPONSIBLE
+```
+
+Runtime 最终释放该 anchor。
+
+无论哪一种情况，如果 Plugin 仍拥有 native object：
+
+> retry 都必须为新的 Submission 创建新的 independent Retain anchor。
+
+---
+
 
 ## 5.6 Backpressure Selection
 
@@ -2945,12 +3259,12 @@ no AcceptanceSequence
 必须检查：
 
 ```text
-PayloadOwnershipDisposition
+PayloadDisposition
 ```
 
-#### CallerRetains
+#### CallerResponsible
 
-Plugin 仍拥有原 backing。
+Plugin 仍负责原 adopted backing。
 
 如果 native sample 仍有效：
 
@@ -2960,7 +3274,7 @@ Plugin 仍拥有原 backing。
 
 Plugin：
 
-> 不得访问、release 或复用原 backing。
+> 不得访问、release 或复用原 adopted backing。
 
 retry 必须提供：
 
@@ -2976,13 +3290,33 @@ new Retain
 
 ### 5.9.3 Retry after Retain
 
-Plugin 如果仍持有 native owner：
+Retain 的 disposition 只描述：
 
-> 可以 retry。
+> 本次 Submit 创建的 independent lifetime anchor。
 
-但必须：
+如果：
 
-> 为新的 Submit 重新创建 Retain anchor。
+```text
+CallerResponsible
+```
+
+Plugin 必须负责释放该未被 Runtime 接管的 anchor。
+
+如果：
+
+```text
+RuntimeResponsible
+```
+
+Runtime 最终负责 release 该 anchor；Plugin 不得再次 release 同一个 anchor。
+
+无论哪一种情况，只要 Plugin 仍持有原 native owner：
+
+> 都可以进行新的 retry。
+
+但 retry 必须：
+
+> 为新的 Submit 重新创建一个新的 independent Retain anchor。
 
 不得复用上一次 Runtime-side lifetime anchor。
 
@@ -3437,6 +3771,15 @@ NativeBackpressure
 
 ### 6.11.2 Plugin-wide Quiescence
 
+Stable ABI 对应：
+
+```text
+rodaq.acquisition.control.v1::quiesce_plugin()
+```
+
+该调用是 instance-wide、non-destructive barrier：必须同时覆盖当前 Stream、并发 discovery 产生的新 Stream、callback/worker/deferred task 的所有 normal Submit routing；成功后仍保留 Runtime-owned Payload anchor release 所需 native capability，直到后续 destructive `stop()`。
+
+
 用于：
 
 ```text
@@ -3540,6 +3883,18 @@ Runtime::Submit
 
 ### 6.13.1 Plugin Stop Integration
 
+正常 Stop 固定顺序为：
+
+```text
+Gate close / wake Admission waiters
+→ quiesce_plugin()
+→ active Submit convergence
+→ Runtime / Storage drain
+→ all Plugin-origin Payload anchors safely terminalized/released
+→ destructive stop()
+→ destroy / unload
+```
+
 Plugin-wide Quiesced 后，Runtime 仍可能正在处理：
 
 ```text
@@ -3604,14 +3959,54 @@ memory safety：
 
 # 7. Interface 与实现约束
 
-## 7.1 Runtime-facing Plugin Capability
+## 7.1 Stable ABI 与 Runtime-facing Capability Mapping
 
-本文不冻结具体 C++ ABI。
-
-逻辑上 Plugin 必须支持：
+本规范不重新定义 Plugin Binary ABI；Stable ABI 由：
 
 ```text
-Configure
+docs/design/rodaq_plugin_system.md
+```
+
+冻结。
+
+Acquisition Plugin core vtable 只包含：
+
+```text
+create
+bind
+configure
+start
+stop
+get_extension
+destroy
+```
+
+Plugin → Runtime 通过 Service Registry 获取：
+
+```text
+rodaq.runtime.common.v1
+rodaq.runtime.acquisition.v1
+```
+
+其中 `rodaq.runtime.acquisition.v1` 除 registration/submit 外还正式提供：
+
+```text
+report_source_availability()
+report_stream_availability()
+report_plugin_state()
+```
+
+这些 operational state report 不是普通 diagnostic，不能用 logging/report_diagnostic 替代。
+
+以及按需获取：
+
+```text
+rodaq.runtime.canonical.v1
+```
+
+本文中的领域 capability：
+
+```text
 Prepare
 Discover / report facts
 Register / update runtime mapping
@@ -3619,16 +4014,48 @@ Enable
 Submit
 Quiesce Binding
 Quiesce Plugin
-Stop
 Report Failure
 Report Recovery
 ```
 
-这些 operation：
+映射为：
 
-> 可以由一个统一 Plugin object 实现。
+```text
+configure/start/stop 内部流程
++
+Runtime Acquisition Service calls
++
+required rodaq.acquisition.control.v1
++
+optional versioned Extensions
+```
 
-不要求拆分多个 interface object。
+Binding switch 的 ReadyToCommit / CommitComplete / abort / stream quiescence 不得只存在于实现内部；它们必须通过 required control extension 跨 DSO 可调用。
+
+配置通过 Runtime-owned：
+
+```text
+ConfigView
+```
+
+传入；Plugin 不得在 ABI 中暴露 `YAML::Node` 或其他 parser-specific type。
+
+Data submission 使用正式：
+
+```text
+rodaq_record_submission
+rodaq_acquisition_submit_result
+```
+
+并严格遵守：
+
+```text
+AdmissionOutcome
+RejectionReason
+PayloadDisposition
+```
+
+三个正交语义维度。
 
 ---
 
@@ -4216,12 +4643,12 @@ Copy / Adopt / Retain contract
 
 ---
 
-### Adopt Ownership
+### Adopt / Retain Ownership
 
 ```text
 AdmissionOutcome
 ≠
-PayloadOwnershipDisposition
+PayloadDisposition
 ```
 
 并且：
@@ -4229,12 +4656,14 @@ PayloadOwnershipDisposition
 ```text
 RejectionReason
 ≠
-PayloadOwnershipDisposition
+PayloadDisposition
 ```
 
-正常 Adopt Terminal Submit Result：
+正常 ADOPT / RETAIN Terminal Submit Result：
 
 > 必须具有确定 disposition。
+
+对于 RETAIN，该 disposition 只作用于本次 Submission 的 independent lifetime anchor，不改变 Plugin 对原 native owner 的 ownership。
 
 ---
 
@@ -4243,7 +4672,7 @@ PayloadOwnershipDisposition
 如果 Runtime ownership bookkeeping 无法证明：
 
 ```text
-CallerRetains
+CallerResponsible
 ```
 
 则对 Plugin：
@@ -4347,7 +4776,7 @@ Adopt：
 ```text
 reuse original backing
 only if
-CallerRetains
+CallerResponsible
 ```
 
 Retain：
@@ -4619,11 +5048,29 @@ Control Plane intern
 
 ---
 
-### Unknown Source Sample
+### Registration-pending Known Source Sample
 
-Source 未注册：
+native Source identity 已可靠获得，但 SourceHandle 尚未注册：
 
-> 不进入 Admission。
+```text
+must not enter Admission
+must not be rewritten as SourceId absent
+```
+
+验证 bounded buffer / backpressure / pre-admission drop-reject policy，并确认 Control Plane registration 完成后才携带 SourceHandle Submit。
+
+---
+
+### Truly Unknown / Unstable Source Identity
+
+native identity truly unavailable / invalid / unstable / ambiguous：
+
+```text
+SourceId absent
+SourceSequence absent
+```
+
+该 Canonical absent state 与 registration-pending known Source 严格区分。
 
 ---
 
@@ -4783,6 +5230,38 @@ callback 返回后 Runtime Payload 仍有效。
 
 ---
 
+### Retain Rejected Before Anchor Acquisition
+
+构造 Runtime 在 Retain acquisition point 前拒绝。
+
+验证：
+
+```text
+PreAdmissionRejected
++
+CallerResponsible
+```
+
+Plugin 负责 release 本次 retained anchor；原 native owner 语义不变。
+
+---
+
+### Retain Rejected After Anchor Acquisition
+
+构造 Runtime 已取得本次 retained anchor 后发生 Gate/Binding rejection。
+
+验证：
+
+```text
+PreAdmissionRejected
++
+RuntimeResponsible
+```
+
+Runtime exactly-once release 本次 retained anchor；Plugin 仍可继续持有原 native owner。
+
+---
+
 ### Invalid Retain
 
 验证：
@@ -4828,7 +5307,7 @@ PreAdmissionRejected
 ```text
 PreAdmissionRejected
 +
-CallerRetains
+CallerResponsible
 ```
 
 Plugin 可以安全管理原 backing。
@@ -4872,7 +5351,7 @@ GateClosed
 ```text
 Gate closed
 before ownership acquisition
-→ CallerRetains
+→ CallerResponsible
 ```
 
 场景 B：
@@ -4889,9 +5368,9 @@ then Gate closes
 
 ---
 
-### Invalid Adopt Disposition Return
+### Invalid Adopt / Retain Disposition Return
 
-模拟 Runtime 正常返回 Adopt result，但 disposition 无效。
+模拟 Runtime 正常返回 ADOPT 或 RETAIN result，但 disposition 无效。
 
 验证 Plugin：
 
@@ -4949,7 +5428,7 @@ reports Runtime Contract violation
 
 ---
 
-### Retry after Adopt — CallerRetains
+### Retry after Adopt — CallerResponsible
 
 验证：
 
@@ -5484,25 +5963,27 @@ Copy / Adopt / Retain
 Runtime Admission
 ```
 
-Adopt ownership：
+Payload responsibility：
 
 ```text
 AdmissionOutcome
 RejectionReason
-PayloadOwnershipDisposition
+PayloadDisposition
 ```
 
 是三个不同维度。
 
-Plugin 必须只根据：
+对于 ADOPT，Plugin 必须只根据：
 
 ```text
-CallerRetains
+CallerResponsible
 or
 RuntimeResponsible
 ```
 
 决定原 backing 是否还能访问。
+
+对于 RETAIN，相同 disposition 只决定本次 Submission 的 retained anchor 谁负责 release；原 native owner 的 ownership 不随之转移。
 
 如果 Runtime ownership 状态无法证明：
 
@@ -5547,7 +6028,7 @@ Copy
 Adopt
     → original backing
       reusable only when
-      CallerRetains
+      CallerResponsible
 
 Retain
     → new Runtime

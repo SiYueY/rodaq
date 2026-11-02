@@ -1,7 +1,7 @@
 # RoDAQ DDS Acquisition Plugin Mapping Specification
 
-**Version:** v0.3
-**Status:** Mapping Review Candidate
+**Version:** v0.4
+**Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 DDS Acquisition Plugin
 **Implementation Scope:** V1 design target; implementation deferred until after ROS2 + MCAP functional validation
 
@@ -13,7 +13,8 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.5
+- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -750,6 +751,98 @@ type-only fallback if reliable TypeIdentifier is available and configuration per
 
 ---
 
+## 2.6 Stable Plugin ABI Mapping
+
+DDS Plugin 的 Fast DDS / DDS native object 不直接进入 Plugin ABI。跨 DSO contract 统一采用 Acquisition Family Protocol。
+
+### Lifecycle
+
+```text
+create
+    → 构造 Plugin-local state
+
+bind
+    → query rodaq.runtime.common.v1
+    → query rodaq.runtime.acquisition.v1
+    → 按需 query rodaq.runtime.canonical.v1
+    → require rodaq.acquisition.control.v1
+
+configure
+    → 通过 Runtime-owned ConfigView 读取 Domain / Participant / discovery / type-resolution 配置
+
+start
+    → 创建或激活 Participant / discovery / DataReader path
+    → 完成 required canonical registration / Binding readiness
+    → Runtime Activation Commit 后才允许 normal Submit
+
+quiesce_plugin (required control extension)
+    → instance-wide non-destructive barrier
+    → blocks current/future DDS receive/discovery routing into Runtime submit
+    → preserves DDS-native release capability needed by Runtime-owned Payload anchors
+
+stop
+    → destructive DDS-native shutdown only after Runtime drain / anchor safety
+    → return 后 no future DDS receive/native worker can access Runtime
+
+destroy
+    → 只在 callback / loan / retained anchor / native release capability 安全收敛后调用
+```
+
+### Registration
+
+DDS native facts与 operational state 通过 `rodaq.runtime.acquisition.v1` 映射为：
+
+```text
+Source
+Clock
+Schema
+Stream
+StreamDescriptor
+```
+
+Fast DDS GUID、TypeObject、DataReader、loan handle 等 native type 不得泄露进 Stable ABI。
+
+### Data Submission
+
+DDS serialized/re-serialized payload 使用：
+
+```text
+rodaq_record_submission
+    stream / descriptor
+    optional SourceHandle
+    optional SourceSequence
+    explicit timestamp_values[]
+    payload
++
+rodaq.runtime.acquisition.v1::submit()
++
+rodaq_acquisition_submit_result
+```
+
+其中 Writer identity 已 canonicalize 并完成 registration 时按 Record 填入 `SourceHandle`；identity 真正 unavailable 才允许 `source_present = false`。已知 Writer 但 SourceHandle 尚未注册时不得伪装成 absent。
+
+Fast DDS RTPS timestamp 保持 exact `1 / 2^32 s` Clock resolution；`timestamp_values[]` 保存 signed tick reading。`INFINITE` / invalid / unavailable 映射为 explicit Absent，合法零值必须保持 `Present(0)`。Runtime 自己注入 `rodaq/acquisition_ingress`。
+
+Plugin 必须处理三个正交维度：
+
+```text
+AdmissionOutcome
+RejectionReason
+PayloadDisposition
+```
+
+Copy path：
+
+```text
+PayloadDisposition = NOT_APPLICABLE
+```
+
+如果未来把 DataReader loan 或其他 native storage 通过 Retain 暴露给 Runtime，则 disposition 只决定本次 retained anchor 谁负责 release；它不转移 Plugin 对原 DDS object 的所有权。
+
+函数级 `rodaq_status != OK` 是 Runtime boundary failure，不是普通 DDS backpressure。
+
+---
+
 # 3. Source、Sequence、Clock、Timestamp 与 Payload
 
 ## 3.1 SourceId
@@ -1161,6 +1254,29 @@ Stream may remain Available
 
 DDS discovery callback 不得直接修改 Runtime Registry。
 
+对于新 Writer 必须区分：
+
+```text
+Writer identity 真正 unavailable / invalid / untrustworthy
+    → SourceId absent 合法
+
+Writer GUID / equivalent identity 已可靠获得
+但 SourceHandle registration 尚未完成
+    → registration-pending known Source
+```
+
+后一种情况不得伪装成 `SourceId absent`。在 SourceHandle 建立前，该 Writer 的 sample 必须：
+
+```text
+boundedly buffer
+or
+apply DDS/native backpressure
+or
+drop / pre-admission reject
+```
+
+并由 Control Plane 完成 Source registration 后才能携带该 Source 进入 Admission。
+
 ## 4.3 Backpressure
 
 DDS 自身已经具有：
@@ -1254,7 +1370,7 @@ ClockId
 
 ## 4.5 Quiescence / Stop
 
-DDS quiescence 必须证明：
+DDS Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
 
 ```text
 no new DataReader/listener/worker
@@ -1368,6 +1484,23 @@ source-native serialized bytes
 reserialization explicitly identified
 oversize pre-gate rejection
 ```
+
+Copy baseline 必须验证 Stable ABI result：
+
+```text
+Accepted
+    → rodaq_status == OK
+    → outcome == RODAQ_ADMISSION_ACCEPTED
+    → rejection_reason == NONE
+    → payload_disposition == NOT_APPLICABLE
+
+ordinary pre-gate rejection
+    → rodaq_status == OK
+    → outcome == RODAQ_ADMISSION_PRE_REJECTED
+    → explicit rejection_reason
+```
+
+如果后续 Fast DDS loan path 使用 Retain，则必须验证本次 retained anchor 在 acquisition point 前后的 CallerResponsible / RuntimeResponsible disposition，并证明原 DDS native owner 不被该 disposition 隐式转移。
 
 ### Lifecycle
 

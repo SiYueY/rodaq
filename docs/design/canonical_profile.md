@@ -1,7 +1,7 @@
 # RoDAQ V1 Canonical Profile Design Specification
 
 **Version:** v0.5
-**Status:** Mapping Review Candidate
+**Status:** Semantic Freeze Candidate
 **Scope:** RoDAQ V1 Canonical Capability Profile
 **Normative Base:** RoDAQ Canonical Data Model Design Specification v0.9
 
@@ -1191,9 +1191,9 @@ SQLite column type
 
 本节中的 scalar boundary 当前仍属于：
 
-> **Mapping Review Candidate。**
+> **Semantic Freeze Candidate。**
 
-在 V1 Profile FROZEN 前，必须由 ROS2 / DDS (Fast DDS baseline) Acquisition Plugin design 和 MCAP / SQLite3 Storage Plugin design 共同验证。
+在 V1 Profile SEMANTIC-FROZEN 前，必须由 ROS2 / DDS (Fast DDS baseline) Acquisition Plugin design 和 MCAP / SQLite3 Storage Plugin design 共同完成静态 Mapping Review。
 
 Mapping Review 如果证明某个当前 domain 不能无损覆盖 V1 必需语义：
 
@@ -1766,7 +1766,7 @@ small fixed timestamp representation
 
 > 为了无损表达该 Plugin 必须 canonical-visible 的时间语义，需要超过 4 个不同 TimestampKey
 
-则必须在 V1 Profile freeze 前：
+则必须在 V1 Profile Semantic Freeze 前：
 
 > **按照 Mapping Review 证明的实际最小需要提高该上限。**
 
@@ -2504,7 +2504,7 @@ Storage:
     SQLite3
 ```
 
-这四份 Mapping 都必须在 Profile freeze 前闭合 native semantics、scalar domain、identity、clock/timestamp、Payload、lifecycle、failure 和 full-fidelity 问题。
+这四份 Mapping 都必须在 Profile Semantic Freeze 前从设计层闭合 native semantics、scalar domain、identity、clock/timestamp、Payload、lifecycle、failure 和 full-fidelity representability 问题。
 
 ### Initial functional implementation scope
 
@@ -2539,7 +2539,7 @@ DDS Acquisition 与 SQLite3 Storage：
 
 ### Deferred beyond current V1 design scope
 
-SocketCAN 以及其他 Acquisition backend 当前不属于 V1 Profile freeze gate。
+SocketCAN 以及其他 Acquisition backend 当前不属于 V1 Profile Semantic Freeze gate。
 
 它们可以作为后续扩展重新进入 Mapping Review，但当前不得因为未来 SocketCAN 假设增加：
 
@@ -3185,7 +3185,27 @@ silent downgrade
 
 ---
 
-## 5.6 Mapping Review 是 Profile Freeze Gate
+## 5.6 Static Mapping Review 是 Semantic Freeze Gate
+
+RoDAQ V1 对“冻结”分三层，禁止混用：
+
+```text
+Semantic Freeze
+    M0 前完成
+    证明 V1 Canonical Profile 语义边界已由四个 backend design 的静态 mapping review 覆盖
+
+ABI Implementation Freeze
+    M0 Exit Gate 后完成
+    证明 Stable ABI 可以无损表达 Semantic-Frozen Profile
+
+Backend Conformance Qualified
+    M3 / M5 分阶段完成
+    通过真实 ROS2/DDS/MCAP/SQLite3 executable corpus / round-trip / failure tests
+```
+
+因此 M0 前不要求 MCAP/SQLite3 executable round-trip 已经运行，但必须完成：
+
+> **static representability review。**
 
 v0.5 中：
 
@@ -3196,13 +3216,15 @@ MaxTimestampKeysPerSet = 4
 以及当前 V1 capability set、§2.7 scalar domains 与 storage-visible ID representation，必须通过：
 
 ```text
-ROS2
-DDS
-MCAP
-SQLite3
+ROS2 design mapping review
+DDS design mapping review
+MCAP design projection review
+SQLite3 design projection review
 ```
 
-四个 Mapping Review 才能冻结。
+证明不存在已知的 silent truncation / unrepresentable Canonical State，才允许进入 Semantic Freeze。
+
+真实 backend executable conformance 属于后续 Qualification，不反向阻塞 M0 Foundation/ABI implementation。
 
 ---
 
@@ -3336,13 +3358,48 @@ byte-exact equality
 
 ---
 
-## 5.7 V1 Profile Freeze Criteria
+## 5.7 V1 Freeze / Qualification Criteria
 
-RoDAQ V1 Canonical Profile 可以进入：
+RoDAQ V1 不再使用一个模糊的单一 `FROZEN` 状态覆盖设计、ABI 和真实 backend qualification。
 
-> **FROZEN**
+### 5.7.1 Semantic Freeze Criteria
 
-只有以下条件全部满足：
+进入：
+
+> **SEMANTIC-FROZEN**
+
+要求：
+
+```text
+Canonical Data Model normative semantics stable
+V1 Profile scalar/presence/identity limits explicitly defined
+ROS2/DDS static Acquisition mapping review closes all required native semantics
+MCAP/SQLite3 static Storage projection review proves representability
+Canonical → Plugin ABI projection review finds no known loss
+no unresolved P0/P1 semantic contradiction blocks implementation
+```
+
+此时可以开始/继续 M0 Stable ABI implementation。
+
+### 5.7.2 ABI Implementation Freeze Criteria
+
+M0 Exit Gate 后可以标记：
+
+> **ABI-IMPLEMENTATION-FROZEN**
+
+要求：
+
+```text
+C/C++ ABI headers implemented
+layout/symbol compatibility tests pass
+Profile values/presence/identity are losslessly representable
+required control/lifecycle protocols are implemented
+old/new ABI fixture policy established
+```
+
+### 5.7.3 Backend Conformance Qualification Criteria
+
+以下条件属于真实 backend qualification；它们在 M3/M5 分阶段完成，而不是 M0 前置条件：
 
 ```text
 Canonical Data Model 已冻结
@@ -3533,7 +3590,7 @@ no automatic cross-Plugin logical Stream merge
 critical native metadata is defined by identity / interpretation / ordering-alignment / canonical-fidelity impact
 every critical native metadata item must have an explicit Mapping Review classification
 intentionally non-canonical metadata is outside V1 full-fidelity Storage guarantees
-no unclassified critical native semantics at Profile freeze
+no unclassified critical native semantics at Semantic Freeze
 
 Storage
 -------
@@ -3578,7 +3635,7 @@ flowchart TD
     MCAP --> REVIEW{All Mapping and Conformance Pass?}
     SQL --> REVIEW
 
-    REVIEW -->|Yes| FROZEN[V1 Canonical Profile FROZEN]
+    REVIEW -->|Yes| QUALIFIED[V1 Backend Conformance Qualified]
     REVIEW -->|Profile too narrow| UPDATE[Revise V1 Profile]
     REVIEW -->|Canonical semantics insufficient| REOPEN[Reopen Canonical Model]
 ```
@@ -3689,7 +3746,7 @@ backend sentinel aliasing
 
 > **逐项关闭关键 native metadata 的归属问题。**
 
-在 Profile freeze 前，不应该存在：
+在 Profile Semantic Freeze 前，不应该存在：
 
 ```text
 重要 native metadata
@@ -3720,7 +3777,7 @@ V1 Canonical Corpus
         ↓
 更新 Normative Base 到冻结 Canonical Model 版本
         ↓
-V1 Canonical Profile FROZEN
+V1 Canonical Profile SEMANTIC-FROZEN
 ```
 
 只有 Mapping Review 证明：

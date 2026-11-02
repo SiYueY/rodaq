@@ -1,7 +1,7 @@
 # RoDAQ MCAP Storage Plugin Mapping Specification
 
-**Version:** v0.4
-**Status:** Mapping Review Candidate
+**Version:** v0.5
+**Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 MCAP Storage Plugin
 **Implementation Scope:** Initial V1 functional implementation — required
 
@@ -13,7 +13,8 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Storage Plugin Design Specification v0.3
+- RoDAQ Storage Plugin Design Specification v0.4
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -334,6 +335,53 @@ max native MCAP Schema representation size
 MCAP 的原生字段宽度：
 
 > 只限制 MCAP projection，不得反向缩窄 Canonical Profile 的 uint64 domain。
+
+---
+
+## 1.6 Stable Plugin Lifecycle / Service Mapping
+
+MCAP Plugin 通过 V1 Storage Family Protocol 接入 Runtime。
+
+```text
+create
+    → 构造 Plugin-local state
+    → 不创建文件、不启动 writer
+
+bind
+    → require rodaq.runtime.common.v1
+    → require rodaq.runtime.canonical.v1
+    → require rodaq.runtime.storage.v1
+    → require rodaq.storage.control.v1
+
+configure
+    → 通过 Runtime-owned ConfigView 读取 chunking、compression、batch、target policy 等配置
+    → 不保存 ConfigView 到调用返回之后
+
+open
+    → 创建 checked sink
+    → 创建/初始化 McapWriter
+    → 建立 Incomplete Artifact / metadata state
+    → 建立 bounded batch state
+
+submit
+    → 对应 §3 Record Handoff
+
+flush
+    → 完成当前 flush-set persistence batch/barrier
+
+close(close_request)
+    → NORMAL: 完成 final batch、允许在全部 finalization checks 成功后发布 NormalComplete
+    → ACTIVATION_ABORT: 只做安全 cleanup / incomplete finalization，禁止 NormalComplete
+    → FAILURE: failure cleanup，禁止把失败 Session 伪装为 NormalComplete
+    → return 后 no future payload/persistence callback
+
+destroy
+    → 只在未 Open 或 Closed/quiesced state 调用
+```
+
+MCAP / mcap-cpp C++ 类型：
+
+> 只存在于 Plugin implementation 内，不进入 `include/rodaq/abi/*` 或 Runtime Public API。
 
 ---
 
@@ -1089,6 +1137,116 @@ return 后不得保留 Runtime Payload access。
 
 ---
 
+### 3.6.1 Stable Storage ABI Mapping
+
+MCAP Handoff 通过 `rodaq_storage_plugin::submit()` 表达。
+
+`rodaq_storage_submission` 必须完整消费当前 Stable ABI 的 Canonical Record 投影：
+
+```text
+AcceptanceSequence
+optional SourceHandle / SourceId
+optional SourceSequence
+complete TimestampStateMap
+Payload
+```
+
+低频 Canonical Descriptor Graph 通过 `rodaq.runtime.canonical.v1` 查询，包括：
+
+```text
+StreamId / StreamDescriptorId
+optional SchemaId
+SchemaFormat / optional TypeIdentifier / representation
+TimestampKeySetId / TimestampKey content
+ClockId / exact reduced rational resolution / ClockOrigin
+```
+
+MCAP sidecar/metadata projection必须保存这些 Canonical value，而不是 Runtime Handle 或 transport slot index。
+
+首个 V1 实现推荐固定为：
+
+```text
+submit() function return == OK
+    ↔ HandoffAccepted
+
+out_result.payload_state
+    = RODAQ_STORAGE_PAYLOAD_CONSUMED
+
+out_result.persistence_state
+    = RODAQ_STORAGE_PERSISTENCE_PENDING
+```
+
+原因是当前设计已经要求并通过 §5.6 Payload Lifetime Tests 验证：
+
+> `mcap-cpp::McapWriter::write(Message)` 在 return 前完成对 caller `Message.data` 的读取/复制，不在 return 后保留 Runtime Payload pointer。
+
+因此首个 MCAP Plugin：
+
+```text
+不发送 payload_consumed() callback
+```
+
+而是在 `submit()` result 中同步返回 `PAYLOAD_CONSUMED`。
+
+Persistence 不能同步报告成功，因为：
+
+```text
+Message data
++
+RecordMetadataBatch Attachment
++
+checked-sink batch barrier
+```
+
+尚未共同完成。
+
+所以 Record 保持：
+
+```text
+PayloadConsumed
++
+PersistencePending
+```
+
+直到 §3.8 batch commit。
+
+Batch commit 成功后，对每个仍 Pending 的 operation exactly-once 调用：
+
+```text
+rodaq.runtime.storage.v1::persistence_completed(
+    operation,
+    RODAQ_STORAGE_PERSISTENCE_SUCCEEDED,
+    RODAQ_STATUS_OK,
+    empty_message)
+```
+
+失败时根据可证明结果报告：
+
+```text
+PERSISTENCE_FAILED
+or
+PERSISTENCE_UNKNOWN
+```
+
+并进入 generic Storage fatal-failure path。
+
+如果 `McapWriter::write()`、checked sink 或 metadata preparation 在 HandoffAccepted 前失败：
+
+```text
+submit() returns non-OK
+no payload callback
+no persistence callback
+no retained Runtime Payload access after return
+```
+
+如果未来 mcap-cpp 版本不再满足 synchronous Payload consumption：
+
+> 不得继续返回 `PAYLOAD_CONSUMED`；必须改成 `PAYLOAD_PENDING` 并通过 `payload_consumed()` exactly-once 终止 Payload Access Lease。
+
+这也是 mcap-cpp 版本升级必须重跑 Payload Lifetime Test 的原因。
+
+---
+
 ## 3.7 Metadata Batch Resource Bound
 
 current RecordMetadataBatch 必须同时受：
@@ -1504,23 +1662,39 @@ MCAP format tuning 与 generic Storage resource/progress limit 分开。
 
 ## 4.4 Initial Implementation 默认策略
 
-首个 correctness baseline 必须先在 Humble vendored mcap-cpp 0.8.0 上通过 §5.6/§5.7 executable tests，然后推荐：
+首个 correctness baseline 必须先在 Humble vendored mcap-cpp 0.8.0 上通过 §5.6/§5.7 executable tests，并额外完成 **long-run writer-memory qualification**。
+
+V1 production baseline 不允许默认开启任何会让 writer-resident memory 随 Record/Chunk 数无界增长的 index/summary feature。
+
+初始推荐：
 
 ```text
 chunking           = enabled
 compression        = None
-message index      = enabled
-summary            = enabled
+message index      = disabled by default
+summary/index      = only enable components proven bounded for the configured artifact lifetime
 chunk/data CRC     = enabled when measured cost acceptable
-metadata sidecar   = uncompressed binary Attachment
+metadata sidecar   = bounded uncompressed binary Attachment batches
 ```
 
 原因：
 
 - 先减少 compression 变量；
-- 保留随机访问能力；
-- 先测真实 Payload/metadata overhead；
+- boundedness 优先于随机访问 convenience；
+- 避免 mcap-cpp 内部 message/chunk/index bookkeeping 随长 Session 线性增长；
+- 先测真实 Payload/metadata/index overhead；
 - 方便 failure injection。
+
+如果业务确实需要某个会 O(N) 累积的 index，而 mcap-cpp 当前实现无法 boundedly flush/reclaim：
+
+```text
+either
+    disable that index
+or
+    introduce an explicitly bounded artifact-rolling policy
+```
+
+不得把“close 时最终会释放”视为 Runtime bounded-memory proof。
 
 随后性能测试再决定：
 
@@ -2049,6 +2223,22 @@ empty payload
 ```
 
 这直接验证目标 mcap-cpp writer 不在 `write(Message)` return 后继续读取 caller Payload pointer。
+
+同时必须验证 Stable ABI result：
+
+```text
+submit() == OK
+submit_result.payload_state == PAYLOAD_CONSUMED
+submit_result.persistence_state == PERSISTENCE_PENDING
+```
+
+并验证：
+
+```text
+no payload_consumed() callback
+later batch commit
+    → exactly one persistence_completed(SUCCEEDED)
+```
 
 首个实现至少对 Humble vendored mcap-cpp 0.8.0 固化该测试；任何 mcap-cpp upgrade 都必须重新运行，不能把某版本实现行为当作永久 API 保证。
 

@@ -5202,6 +5202,40 @@ within current active Scope
 
 不能通过 Binding / Plugin / Source recovery 重置。
 
+V1 queue capacity reservation 必须对应真实、已经可用的 physical enqueue capacity，而不仅是逻辑 counter。
+
+也就是说，在 Gate pass 前取得 `dispatch capacity` permit 时，Runtime 必须已经能够证明后续 ordered enqueue 不再需要可能失败的普通动态分配。
+
+允许的实现例如：
+
+```text
+preallocated fixed-capacity ring / slot array
+preallocated node pool + intrusive/index queue
+other transport with mechanically proven no-allocation enqueue after reservation
+```
+
+不允许：
+
+```text
+reserve logical dispatch counter
+    ↓
+Gate pass
+    ↓
+underlying queue push allocates a new page/node
+    ↓
+allocation fails
+```
+
+这种实现会破坏 Accepted no-drop contract。
+
+oneTBB 或其他第三方 queue 只有在能够证明：
+
+```text
+all post-reservation enqueue resources are already physically reserved
+```
+
+时才能承担 correctness-critical dispatch transport；否则只能作为 benchmark/reference，不作为 V1 Admission correctness baseline。
+
 V1 推荐 queue capacity reservation：
 
 > 与 visible queue position 分离。

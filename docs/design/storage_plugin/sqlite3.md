@@ -1,7 +1,7 @@
 # RoDAQ SQLite3 Storage Plugin Mapping Specification
 
-**Version:** v0.3
-**Status:** Mapping Review Candidate
+**Version:** v0.4
+**Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 SQLite3 Storage Plugin
 **Implementation Scope:** V1 design target; implementation deferred until after ROS2 + MCAP functional validation
 
@@ -13,7 +13,8 @@
 - RoDAQ Runtime Design Specification v0.5
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Storage Plugin Design Specification v0.3
+- RoDAQ Storage Plugin Design Specification v0.4
+- RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
@@ -838,6 +839,53 @@ U64BE field length
 
 ---
 
+## 2.7 Stable Plugin Lifecycle / Service Mapping
+
+SQLite3 Plugin 通过 V1 Storage Family Protocol 接入 Runtime。
+
+```text
+create
+    → 构造 Plugin-local state
+    → 不打开 database
+
+bind
+    → require rodaq.runtime.common.v1
+    → require rodaq.runtime.canonical.v1
+    → require rodaq.runtime.storage.v1
+    → require rodaq.storage.control.v1
+
+configure
+    → 通过 Runtime-owned ConfigView 读取 target、batching、busy policy、pragma profile、resource bounds
+    → 不保存 ConfigView 到调用返回之后
+
+open
+    → sqlite3_open_v2
+    → schema / metadata initialization
+    → prepared statement creation
+    → Incomplete Artifact state
+
+submit
+    → 对应 §3 Handoff / Payload Binding
+
+flush
+    → commit 当前 flush-set transaction/batch
+
+close(close_request)
+    → NORMAL: final transaction + finalization status + statement cleanup + sqlite3_close；只有全部 NormalComplete 条件满足时才写 NormalComplete
+    → ACTIVATION_ABORT: rollback/cleanup + Incomplete/Aborted artifact semantics，禁止 NormalComplete
+    → FAILURE: failure cleanup，禁止把失败 Session 伪装为 NormalComplete
+    → return 后 no future payload/persistence callback
+
+destroy
+    → 只在未 Open 或 Closed/quiesced state 调用
+```
+
+`sqlite3*`、`sqlite3_stmt*` 和其他 SQLite native type：
+
+> 只存在于 Plugin implementation 内，不进入 Stable ABI / Runtime Public API。
+
+---
+
 # 3. Handoff、Payload Lifetime 与 Persistence
 
 ## 3.1 Writer Model
@@ -945,6 +993,112 @@ Handoff return
 该 direct path 的 `HandoffAccepted` 与 `PayloadConsumed` 可以在同一个 synchronous Handoff return 中发生，不建立跨 return 的 asynchronous Payload Access Lease。
 
 如果未来实现选择在 `HandoffAccepted` 后把仍绑定 Runtime Payload 的 work 交给异步 writer，则必须显式建立 generic Payload Access Lease，并在 reset/clear/finalize 后才 `PayloadConsumed`。不得在 SQLite 仍可能读取 bound pointer 时提前结束 lease。
+
+### 3.2.1 Stable Storage ABI Mapping
+
+SQLite3 Handoff 通过 `rodaq_storage_plugin::submit()` 表达。
+
+`rodaq_storage_submission` 必须完整消费当前 Stable ABI 的 Canonical Record 投影：
+
+```text
+AcceptanceSequence
+optional SourceHandle / SourceId
+optional SourceSequence
+complete TimestampStateMap
+Payload
+```
+
+低频 Canonical Descriptor Graph 通过 `rodaq.runtime.canonical.v1` 查询，包括：
+
+```text
+StreamId / StreamDescriptorId
+optional SchemaId
+SchemaFormat / optional TypeIdentifier / representation
+TimestampKeySetId / TimestampKey content
+ClockId / exact reduced rational resolution / ClockOrigin
+```
+
+SQLite projection 必须持久化 Canonical value；Runtime Handle 和 transport slot index 不能作为持久化 identity。
+
+首个 V1 single-writer direct path 推荐：
+
+```text
+bind Runtime Payload
+    ↓
+sqlite3_step() reaches terminal INSERT result
+    ↓
+sqlite3_reset()
+sqlite3_clear_bindings()
+    ↓
+SQLite no longer references Runtime Payload
+    ↓
+HandoffAccepted
+```
+
+对应 ABI：
+
+```text
+submit() function return == OK
+
+out_result.payload_state
+    = RODAQ_STORAGE_PAYLOAD_CONSUMED
+
+out_result.persistence_state
+    = RODAQ_STORAGE_PERSISTENCE_PENDING
+```
+
+因此首个实现：
+
+```text
+不发送 payload_consumed() callback
+```
+
+因为 Runtime Payload 已在 `submit()` return 前被 SQLite 完全解除引用。
+
+事务 COMMIT 成功后，对 batch 中各 Pending operation exactly-once 调用：
+
+```text
+rodaq.runtime.storage.v1::persistence_completed(
+    operation,
+    RODAQ_STORAGE_PERSISTENCE_SUCCEEDED,
+    RODAQ_STATUS_OK,
+    empty_message)
+```
+
+如果 transaction 被明确 rollback：
+
+```text
+PERSISTENCE_FAILED
+```
+
+如果 backend/process failure 后无法证明 transaction outcome：
+
+```text
+PERSISTENCE_UNKNOWN
+```
+
+如果 INSERT 在 HandoffAccepted 前就 terminal failure：
+
+```text
+submit() returns non-OK
+no payload callback
+no persistence callback
+no Runtime Payload access after return
+```
+
+如果未来实现改为异步 writer，并在 `submit()` return 后仍保留 SQLite binding / Runtime PayloadView：
+
+```text
+payload_state = PAYLOAD_PENDING
+```
+
+且必须在 reset/clear/finalize 真正结束所有 Runtime Payload access 后 exactly-once 调用：
+
+```text
+payload_consumed(operation)
+```
+
+不能因为 row 已进入 private queue 就提前结束 Payload lease。
 
 ## 3.3 Transaction Batching
 
@@ -1445,7 +1599,29 @@ release/mutate original Runtime bytes
 stored BLOB exact
 ```
 
-以及：
+并验证首个 direct path 的 Stable ABI result：
+
+```text
+submit() == OK
+submit_result.payload_state == PAYLOAD_CONSUMED
+submit_result.persistence_state == PERSISTENCE_PENDING
+```
+
+随后 transaction COMMIT：
+
+```text
+→ exactly one persistence_completed(SUCCEEDED)
+```
+
+不得再发送：
+
+```text
+payload_consumed()
+```
+
+因为 Payload axis 已在 submit result 中同步 terminal。
+
+另外覆盖：
 
 ```text
 retryable SQLITE_BUSY

@@ -1166,13 +1166,20 @@ Runtime：
 - 必须产生 operational diagnostic；
 - 如果无法确认资源已经安全释放，可以进入 quarantine / terminal failure cleanup。
 
-C++ V1 implementation 中：
+C++ V1 raw ABI release callback 是 `RODAQ_NOEXCEPT`。
 
-> release path SHOULD be `noexcept`。
+```text
+SDK authoring callback throws
+    → SDK wrapper catches before entering raw ABI
+    → records terminal diagnostic/failure
 
-如果 external release implementation 违反这一要求：
+raw ABI release callback throws
+    → ABI violation
+    → std::terminate / abnormal process termination is expected
+    → no same-process Runtime recovery guarantee
+```
 
-> Runtime 必须将其转换为 terminal Contract violation handling，不能让 exception unwinding 破坏 ownership bookkeeping。
+Runtime 只对没有逃出 raw noexcept boundary 的正常/contained failure 路径维护 exactly-once ownership bookkeeping。
 
 ---
 
@@ -1500,6 +1507,41 @@ move：
 
 ---
 
+### 4.7.1 RuntimeRecord Move
+
+RuntimeRecord move 后：
+
+```text
+source RuntimeRecord
+    no longer owns PayloadRef
+
+destination RuntimeRecord
+    owns PayloadRef
+```
+
+moved-from RuntimeRecord：
+
+> 不得在后续 pipeline 中再次参与 Payload release。
+
+---
+
+### 4.7.2 RuntimeRecord Copy
+
+V1 不要求 RuntimeRecord copyable。
+
+如果实现支持 RuntimeRecord copy：
+
+> PayloadRef 必须显式 duplicate lifetime anchor。
+
+不得造成：
+
+```text
+double release
+unanchored alias
+```
+
+---
+
 ## 4.8 Submit Activity Lifetime
 
 Payload materialization 发生在 Gate pass 前，因此 Stop / failure cutoff 可能发生在：
@@ -1546,42 +1588,7 @@ external anchor exactly-once release
 
 ---
 
-### 4.7.1 RuntimeRecord Move
-
-RuntimeRecord move 后：
-
-```text
-source RuntimeRecord
-    no longer owns PayloadRef
-
-destination RuntimeRecord
-    owns PayloadRef
-```
-
-moved-from RuntimeRecord：
-
-> 不得在后续 pipeline 中再次参与 Payload release。
-
----
-
-### 4.7.2 RuntimeRecord Copy
-
-V1 不要求 RuntimeRecord copyable。
-
-如果实现支持 RuntimeRecord copy：
-
-> PayloadRef 必须显式 duplicate lifetime anchor。
-
-不得造成：
-
-```text
-double release
-unanchored alias
-```
-
----
-
-## 4.8 Exactly-once Release
+## 4.9 Exactly-once Release
 
 所有 ingress mode 都必须满足：
 
@@ -1648,25 +1655,23 @@ PayloadView
 
 ## 5.3 Storage Payload Access Lease
 
-Runtime 发起 Record Handoff 时，Storage 获得一个：
+Runtime 发起 Record Handoff 前，必须先为该 Storage operation 建立 Runtime-owned operation state，并保持当前调用所需 Payload backing 有效。
 
-> **call-scoped read-only PayloadView**
-
-该 view 在 Handoff call 执行期间可同步读取，但在 Storage 尚未返回 / 建立：
+Storage 获得一个 read-only `PayloadView`。V1 把异步发布线性化点定义为 Plugin-internal **HandoffCommit**：
 
 ```text
-HandoffAccepted
+Plugin irrevocably commits to
+submit() == OK
+and payload axis == PAYLOAD_PENDING
 ```
 
-之前：
+HandoffCommit 不对 ABI caller 建立 HandoffAccepted；HandoffAccepted 仍由后续 `submit() return == OK` 建立。
 
-> **不得发布给会跨 Handoff return 执行的 worker、deferred task 或其他异步 consumer。**
+在这个 HandoffCommit 之前，Plugin 不得把 PayloadView 发布给跨调用 worker/deferred consumer。
 
-只有到达 `HandoffAccepted` 后，Storage responsibility 与跨调用的：
+一旦该决策成立，Plugin 可以发布 worker；worker completion 可以与 `submit()` return 竞态。此时 Runtime 已经预建 operation tracking，并把对应 Payload Access Lease 视为 provisional-active，直到 return/reconcile 确认结果。
 
-> **Payload Access Lease**
-
-才同时建立。
+`submit()` 的成功 return 是对该 irreversible handoff decision 的 ABI confirmation，不是允许异步发布的唯一物理时点。
 
 lease 期间：
 
@@ -1685,25 +1690,28 @@ PayloadConsumed
 
 ## 5.4 Asynchronous Access
 
-Storage Plugin 只有在该 Record 已达到：
+Storage Plugin 只有在已经到达 HandoffCommit、不可逆决定：
 
 ```text
-HandoffAccepted
+submit() will return OK
+payload_state == PAYLOAD_PENDING
 ```
 
-后才可以：
+后才可以把 PayloadView 发布给异步 worker。
+
+如果 worker 在 caller 观察到 `submit()` return 前就完成，Runtime 只记录 early completion event；**不得在 submit call/reconcile 结束前因为该 early event 提前释放当前调用仍可能读取的 Payload backing。**
+
+return/reconcile 后：
 
 ```text
-retain PayloadView internally
-read from worker thread
-copy asynchronously
+OK + PAYLOAD_PENDING + early payload_consumed
+    → Payload axis terminalize exactly once
+    → then Payload backing may be released
 ```
 
-并且前提是：
+并且任何异步读取都必须发生在 PayloadConsumed terminalization 之前。
 
-> 尚未报告 `PayloadConsumed`。
-
-如果 Handoff 在 `HandoffAccepted` 前明确返回 `FatalFailure`：
+如果 Handoff 在 HandoffCommit 建立前明确返回 `FatalFailure` / function-level non-OK：
 
 > return 后不得仍有 Storage execution context 保留 / 访问该 PayloadView。
 
@@ -2407,9 +2415,13 @@ Runtime：
 
 > release function SHOULD be `noexcept`。
 
-如果异常仍越过 ownership boundary：
+SDK authoring layer 必须在进入 raw ABI `release(...) RODAQ_NOEXCEPT` 前捕获可捕获的 C++ author callback exception，并转换为 Plugin-local terminal diagnostic/failure state，不允许异常穿越 raw ABI。
 
-> Runtime 必须把它转换为 terminal Contract violation handling，不能让 exception unwinding 破坏 Runtime ownership bookkeeping。
+如果异常已经逃出 raw `RODAQ_NOEXCEPT` release callback：
+
+> **这是进程级 ABI violation；C++ `std::terminate` 行为是允许且预期的，Runtime 不承诺同进程恢复。**
+
+测试必须用 subprocess/death-test 验证 raw noexcept violation，而不能要求 Runtime 外层 catch 后继续收敛。Runtime 仍必须保证在正常/SDK-contained failure path 下不会主动重复调用 release。
 
 ---
 
@@ -3290,12 +3302,14 @@ no unbounded external retention
 
 ### Async Storage
 
-Storage Handoff 返回 `HandoffAccepted` 后，worker 继续读取 Payload。
+Storage 在已经不可逆决定 `submit() == OK + PAYLOAD_PENDING` 后发布 worker；worker 可以与 `submit()` return 竞态并继续读取 Payload。
 
 验证：
 
-- HandoffAccepted 前不得把 PayloadView 发布给跨 return worker；
-- HandoffAccepted 后、PayloadConsumed 前 Runtime 不释放 Payload。
+- HandoffCommit 前不得把 PayloadView 发布给跨 return worker；
+- Runtime 在调用 Storage 前已建立 operation tracking / provisional lease；
+- early PayloadConsumed 只暂存，不在 submit return/reconcile 前提前释放 Payload；
+- reconcile 后、PayloadConsumed terminalization 前 Runtime 保持 Payload backing。
 
 ---
 
@@ -3521,14 +3535,21 @@ Runtime Failed 后：
 
 ### Throwing Release Contract Violation
 
-构造错误 external release implementation 抛出异常。
+分两层验证：
 
-验证：
+```text
+SDK authoring callback throws
+    → SDK wrapper catches before raw ABI
+    → records terminal diagnostic/failure
+    → no exception crosses RODAQ_NOEXCEPT
 
-- exception 不破坏 Runtime ownership bookkeeping；
-- physical release 不被重复执行；
-- violation 被报告；
-- Runtime 按 terminal failure policy 收敛。
+raw ABI release callback throws anyway
+    → subprocess death test
+    → std::terminate / abnormal process termination expected
+    → no same-process recovery guarantee
+```
+
+不得再把 raw noexcept violation 写成 Runtime 可以 catch 并继续同进程收敛的场景。
 
 ---
 

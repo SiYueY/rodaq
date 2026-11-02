@@ -1693,11 +1693,13 @@ Runtime failure disposition
 
 ### Acquisition Plugin Stop
 
-Plugin quiescence 与 Plugin Stop 是两个不同阶段：
+Plugin quiescence 与 Plugin Stop 是两个不同阶段。V1 Stable Plugin Contract 中，前者具体对应 required `rodaq.acquisition.control.v1::quiesce_plugin()`：
 
 ```text
-Quiesce
+quiesce_plugin()
+    → instance-wide, non-destructive
     → no future normal Submit can begin
+    → preserve native release capability required by Runtime-owned Payload anchors
 
 Stop
     → close / release native acquisition resources
