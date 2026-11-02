@@ -22,9 +22,9 @@ M2  Fake End-to-End Runtime
         ↓
 M3  ROS2 Acquisition + MCAP Storage Vertical Slice
         ↓
-M4  Production Hardening
+M4  FastDDS Acquisition + MCAP Interoperability
         ↓
-M5  DDS Acquisition + SQLite3 Storage
+M5  Production Hardening + Release Qualification
 ```
 
 Current milestone: **M0 — ACTIVE**
@@ -51,7 +51,7 @@ Create the buildable project foundation and implement the Stable Plugin boundary
 - [x] V1 system design baseline exists.
 - [x] Plugin System Freeze Candidate exists.
 - [x] Acquisition / Storage Plugin contracts reconciled with Plugin System.
-- [x] ROS2 / DDS / MCAP / SQLite3 mapping documents aligned to Stable ABI.
+- [x] ROS2 / FastDDS / MCAP required V1 mappings aligned to Stable ABI; SQLite3 retained as future architecture-validation mapping.
 - [x] R1 — Canonical ABI Contract Reconciliation PASS.
 - [x] R2 — Control & Lifecycle Contract Reconciliation PASS.
 - [x] R3 — ABI Mechanics Contract Reconciliation PASS.
@@ -162,6 +162,8 @@ Development:
 - [x] Implement `PluginInstanceLease`.
 - [x] Reject Acquisition/Storage instance creation through the wrong family lease.
 - [ ] Implement Service Registry.
+- [ ] Add `rodaq.runtime.projection.v1` service ABI/plumbing for typed descriptor projections.
+- [ ] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
 - [ ] Implement ConfigView.
 - [ ] Implement Plugin Interface Query plumbing.
 - [ ] Implement minimal C++17 Plugin SDK.
@@ -182,7 +184,8 @@ Development:
 
 - [x] Clean buildable repository skeleton.
 - [x] Pinned dependency graph.
-- [x] Stable ABI headers.
+- [x] M0-B core/family Stable ABI headers.
+- [ ] M0-D additive Runtime service ABI headers for projection and clock-correlation services.
 - [x] ABI mechanical tests.
 - [x] Plugin loader/infrastructure for the M0-C boundary.
 - [ ] Service Registry / ConfigView.
@@ -280,7 +283,7 @@ Do not implement in M0:
 - full PayloadPool,
 - Dispatch/Completion Domain,
 - ROS2 data acquisition,
-- DDS data acquisition,
+- FastDDS data acquisition,
 - MCAP writing,
 - SQLite3 persistence,
 - production performance tuning,
@@ -493,9 +496,9 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 Do not implement in M2:
 
 - ROS2.
-- DDS.
+- FastDDS.
 - MCAP.
-- SQLite3.
+- SQLite3 (future).
 - final AppImage release qualification.
 - final performance tuning.
 
@@ -515,7 +518,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] M1 PASS.
 - [ ] M2 PASS.
 - [ ] ROS2 mapping reviewed against current ABI.
-- [ ] MCAP mapping reviewed against current ABI and frozen mcap-cpp version.
+- [ ] MCAP mapping reviewed against current ABI and a directly pinned RoDAQ mcap-cpp version/commit (no ROS2 mcap_vendor runtime dependency).
 
 ### Scope
 
@@ -529,6 +532,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] Stream mapping.
 - [ ] StreamDescriptor publication.
 - [ ] QoS / ConfigView.
+- [ ] `rodaq.projection.ros2.v1` generation and registration.
 - [ ] serialized payload acquisition.
 - [ ] Copy baseline.
 - [ ] Retain/loan only if concrete lifetime evidence justifies it.
@@ -538,8 +542,9 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 #### MCAP Storage
 
 - [ ] Plugin lifecycle.
-- [ ] Schema projection.
-- [ ] Channel projection.
+- [ ] `Header.profile = ros2`.
+- [ ] Ros2Projection → Schema projection.
+- [ ] Ros2Projection → Channel / offered QoS projection.
 - [ ] Record projection.
 - [ ] checked sink.
 - [ ] bounded metadata batching.
@@ -576,7 +581,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] WaitTimeout result.
 - [ ] Stop while callbacks active.
 
-### MCAP
+### MCAP / interoperability
 
 - [ ] Schema/Channel mapping.
 - [ ] descriptor evolution.
@@ -587,6 +592,11 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] flush.
 - [ ] close.
 - [ ] failure injection.
+- [ ] `ros2 bag info` qualification.
+- [ ] `ros2 bag play` + subscriber verification.
+- [ ] PlotJuggler direct-open + field decode qualification.
+- [ ] Foxglove direct-open + field decode qualification.
+- [ ] representative String/Imu/Image/PointCloud2/JointState/TF/custom-message fixtures.
 
 Required initial submit mapping:
 
@@ -602,6 +612,8 @@ Required initial submit mapping:
 - [ ] no MCAP type leaks into Runtime Core public contracts.
 - [ ] Canonical mapping validated.
 - [ ] logical payload round-trip exact.
+- [ ] ROS2-profile MCAP with complete ros2msg/ros2idl + cdr projection.
+- [ ] ros2 bag play / PlotJuggler / Foxglove qualification passes for the M3 corpus.
 - [ ] AcceptanceSequence/timestamps preserved.
 - [ ] ROS2 Stop quiescence passes.
 - [ ] MCAP PayloadConsumed lifetime test passes.
@@ -613,293 +625,166 @@ Required initial submit mapping:
 
 Do not implement in M3:
 
-- DDS.
-- SQLite3.
+- FastDDS Acquisition (implemented in M4).
+- SQLite3 Storage implementation.
 - final production tuning.
 - final release qualification.
 - hot reload.
 
 ---
 
-## M4 — Production Hardening
+## M4 — FastDDS Acquisition + MCAP Interoperability
 
 **Status:** NOT STARTED
 
 ### Goal
 
-Make the proven M3 system measurable, bounded under stress, failure-hardened and release-qualified.
+Implement the second V1 Acquisition path directly on Fast DDS / Fast CDR, without a ROS2 runtime dependency on the recording host, and prove that ROS2 Acquisition and FastDDS Acquisition converge to the same ROS2-compatible MCAP contract.
 
 ### Prerequisites
 
 - [ ] M3 PASS.
+- [ ] Fast DDS / Fast CDR versions frozen for implementation.
+- [ ] DDS-Pipe / DDS Record & Replay source-reference audit completed.
 
 ### Scope
 
-#### Correctness hardening
+#### FastDDS Acquisition
 
-- [ ] ASan suite.
-- [ ] UBSan suite.
-- [ ] TSan suite.
-- [ ] fuzz targets where appropriate.
-- [ ] repeated Plugin load/unload.
-- [ ] stress.
-- [ ] soak.
-- [ ] Stop/failure stress.
+- [ ] Plugin lifecycle and clean non-ROS2 deployment.
+- [ ] DomainParticipant / endpoint discovery / DataReader lifecycle.
+- [ ] `rt/*` ROS2 topic normalization.
+- [ ] TypeInformation / CompleteTypeObject / DynamicType resolution.
+- [ ] exact ROS2 type-name reconstruction.
+- [ ] dependency-complete ros2idl/ros2msg reconstruction.
+- [ ] serialized CDR data path without mandatory per-record DynamicData decode/re-encode.
+- [ ] Writer GUID SourceId mapping.
+- [ ] publication/reception timestamp mapping.
+- [ ] DataWriter QoS → deterministic `offered_qos_profiles`.
+- [ ] `rodaq.projection.ros2.v1` generation.
+- [ ] bounded pending-type/discovery state.
+- [ ] listener/worker quiescence and failure/recovery.
 
-#### Performance
+#### Cross-Acquisition Equivalence
 
-- [ ] 10-camera encoded profile.
-- [ ] 10-camera raw RGB8 stress profile.
-- [ ] mixed workload.
-- [ ] PayloadPool tuning.
-- [ ] Queue/dispatch tuning.
-- [ ] Storage batching tuning.
-- [ ] allocator A/B.
-- [ ] copy/allocation accounting.
-- [ ] latency histograms.
+- [ ] record the same ROS2 publisher corpus through ROS2 Acquisition and FastDDS Acquisition.
+- [ ] compare normalized topic/type/schema semantics.
+- [ ] compare payload bytes.
+- [ ] compare QoS projection.
+- [ ] compare timestamp semantics/tolerance.
+- [ ] compare playback-visible behavior.
 
-#### Release
+#### Interoperability
 
-- [ ] x86_64 AppImage.
-- [ ] aarch64 AppImage.
-- [ ] GLIBC gate.
-- [ ] GLIBCXX gate.
-- [ ] CXXABI gate.
-- [ ] RPATH/RUNPATH audit.
-- [ ] recursive DT_NEEDED closure.
-- [ ] Plugin dependency closure.
-- [ ] SONAME collision check.
-- [ ] Ubuntu 22.04 clean-system test.
-- [ ] Ubuntu 24.04 clean-system test.
-- [ ] native ARM64 qualification.
-- [ ] SBOM.
-- [ ] THIRD_PARTY_NOTICES.
-- [ ] checksums.
-- [ ] release manifest.
+- [ ] FastDDS → MCAP `ros2 bag info`.
+- [ ] FastDDS → MCAP `ros2 bag play` + subscriber verification.
+- [ ] FastDDS → MCAP PlotJuggler qualification.
+- [ ] FastDDS → MCAP Foxglove qualification.
+- [ ] RoDAQ Canonical round-trip.
 
 ### Deliverables
 
-- [ ] benchmark suite.
-- [ ] stress/soak suite.
-- [ ] failure/crash matrix.
-- [ ] performance baseline.
-- [ ] qualified release artifacts.
-- [ ] release metadata/licenses.
+- [ ] FastDDS Acquisition Plugin DSO.
+- [ ] Plugin manifest and dependency closure.
+- [ ] DDS-Pipe / DDS Record & Replay source-reference audit notes/evidence.
+- [ ] cross-acquisition equivalence suite.
+- [ ] FastDDS interoperability golden corpus.
+- [ ] clean non-ROS2 recording-host smoke package.
 
 ### Verification
 
-- [ ] throughput.
-- [ ] CPU.
-- [ ] RSS.
-- [ ] allocations/record.
-- [ ] copies/record.
-- [ ] P50/P95/P99/P99.9.
-- [ ] Payload HWM.
-- [ ] Dispatch HWM.
-- [ ] Storage inflight HWM.
-- [ ] Admission wait/timeout.
-- [ ] disk slowdown/full/error.
-- [ ] Stop at peak load.
-- [ ] Plugin failure.
-- [ ] Payload exhaustion.
-- [ ] Stop during both Storage pending axes.
-- [ ] primary/secondary error preservation.
+- [ ] `rmw_fastrtps_cpp` external ROS2 baseline passes.
+- [ ] dynamic publisher add/remove/restart.
+- [ ] complete type dependency discovery.
+- [ ] multiple publishers on one topic.
+- [ ] BEST_EFFORT / RELIABLE / TRANSIENT_LOCAL QoS cases.
+- [ ] 720P image payload path.
+- [ ] no mandatory hot-path deserialize/re-serialize.
+- [ ] FastDDS Stop/quiescence under active traffic.
+- [ ] no ROS2 libraries in FastDDS recording-host transitive runtime closure.
+- [ ] ROS2/FastDDS cross-acquisition equivalence runs in separate process profiles by default.
+- [ ] simultaneous ROS2 + FastDDS activation is rejected unless Fast DDS/Fast CDR SONAME/ABI/symbol coexistence qualification explicitly passes.
 
 ### Exit Gate
 
-- [ ] required sanitizer suites clean.
-- [ ] stress/soak has no unbounded growth.
-- [ ] bounded high-water behavior proven.
-- [ ] 10-camera profiles recorded.
-- [ ] mixed workload passes.
-- [ ] crash/failure matrix passes.
-- [ ] each performance optimization has before/after evidence.
-- [ ] x86_64 AppImage qualified on Ubuntu22/24.
-- [ ] aarch64 AppImage qualified on native ARM64.
-- [ ] ABI/runtime symbol-version gates pass.
-- [ ] recursive Plugin dependency closure passes.
-- [ ] SBOM/license/release manifest complete.
+- [ ] FastDDS Acquisition integrates without ROS2 runtime dependency.
+- [ ] no Fast DDS / Fast CDR type leaks into Runtime Core public contracts.
+- [ ] complete ROS2 schema and Ros2Projection generated for qualification corpus.
+- [ ] FastDDS → Runtime → MCAP passes ros2 bag play / PlotJuggler / Foxglove.
+- [ ] ROS2 vs FastDDS cross-acquisition equivalence suite passes.
+- [ ] clean non-ROS2 recording-host dependency audit passes.
 
 ### Out of Scope
 
-DDS and SQLite3 are not required for M4 PASS.
+- Generic DDS recording.
+- ROS2 services/actions recording.
+- DDS routing/forwarding/replay.
+- SQLite3 Storage implementation.
+- final production tuning/release qualification.
 
 ---
 
-## M5 — DDS Acquisition + SQLite3 Storage
+## M5 — Production Hardening + Release Qualification
 
 **Status:** NOT STARTED
 
 ### Goal
 
-Validate that the frozen architecture generalizes to a second Acquisition middleware and a second Storage backend without backend-specific exceptions in Runtime Core or Stable ABI.
+Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavior and release qualification without weakening correctness or interoperability.
 
 ### Prerequisites
 
 - [ ] M4 PASS.
-- [ ] DDS implementation/version reviewed.
-- [ ] SQLite3 version/build policy reviewed.
 
 ### Scope
 
-##### DDS Acquisition
-
-- [ ] Plugin lifecycle.
-- [ ] Participant/discovery/DataReader.
-- [ ] Source mapping.
-- [ ] Clock mapping.
-- [ ] Schema/XTypes mapping.
-- [ ] Stream mapping.
-- [ ] descriptor evolution.
-- [ ] source-native serialized / explicit reserialization path.
-- [ ] Copy baseline.
-- [ ] Retain/loan only if lifetime proof exists.
-- [ ] listener/worker quiescence.
-- [ ] failure/recovery.
-
-##### SQLite3 Storage
-
-- [ ] Plugin lifecycle.
-- [ ] descriptor projection.
-- [ ] prepared statements.
-- [ ] bounded transaction batching.
-- [ ] Payload binding lifetime.
-- [ ] persistence outcomes.
-- [ ] rollback.
-- [ ] Unknown outcome.
-- [ ] WAL/journal policy.
-- [ ] finalization marker.
-- [ ] recovery.
+- [ ] ASan / UBSan / TSan regression suites.
+- [ ] repeated load/unload and Stop/failure stress.
+- [ ] long soak and MCAP failure injection.
+- [ ] 10-camera × 30 FPS × 1280×720 encoded workload.
+- [ ] raw-image stress workload.
+- [ ] mixed small/large-message workload.
+- [ ] PayloadPool / queue / batching benchmark-driven tuning.
+- [ ] CPU / RSS / allocation / copy-count / tail-latency baselines.
+- [ ] ros2 bag play / PlotJuggler / Foxglove interoperability regression.
+- [ ] x86_64 / aarch64 AppImage qualification.
+- [ ] Ubuntu 22.04 / 24.04 clean-system qualification.
+- [ ] GLIBC / GLIBCXX / CXXABI / RPATH / DT_NEEDED gates.
+- [ ] FastDDS-only deployment without ROS2 runtime.
+- [ ] plugin dependency collision audit covers ROS2 `rmw_fastrtps_*` versus RoDAQ-pinned Fast DDS/Fast CDR.
+- [ ] SBOM / licenses / checksums / release manifest.
 
 ### Deliverables
 
-- [ ] DDS Acquisition Plugin DSO.
-- [ ] SQLite3 Storage Plugin DSO.
-- [ ] Plugin manifests.
-- [ ] DDS → Runtime → MCAP validation.
-- [ ] ROS2 → Runtime → SQLite3 validation.
-- [ ] DDS → Runtime → SQLite3 validation where useful.
-- [ ] Canonical mapping symmetry tests.
-- [ ] cross-backend compatibility tests.
+- [ ] benchmark and soak reports.
+- [ ] crash/failure matrix evidence.
+- [ ] interoperability regression corpus/results.
+- [ ] qualified release artifacts for required architectures.
+- [ ] SBOM / THIRD_PARTY_NOTICES / release manifest.
 
 ### Verification
 
-#### DDS
-
-- [ ] multiple Writers per Stream.
-- [ ] SourceSequence present/absent.
-- [ ] reader-side timestamp.
-- [ ] type evolution.
-- [ ] loan lifetime if enabled.
-- [ ] early callback before activation.
-- [ ] Stop/quiescence.
-- [ ] same-semantics recovery.
-
-#### SQLite3
-
-- [ ] descriptor FK readiness.
-- [ ] unsigned sequence ordering projection.
-- [ ] SQLITE_STATIC lifetime.
-- [ ] SQLITE_TRANSIENT copied-memory accounting.
-- [ ] transaction batching.
-- [ ] COMMIT BUSY.
-- [ ] rollback.
-- [ ] PersistenceFailed.
-- [ ] PersistenceUnknown.
-- [ ] WAL/finalization cases.
-- [ ] close with prepared statements.
-
-Required initial direct-path mapping:
-
-- [ ] `payload_state == PAYLOAD_CONSUMED`.
-- [ ] `persistence_state == PERSISTENCE_PENDING`.
-- [ ] COMMIT emits exactly one persistence completion.
-- [ ] no payload callback for synchronously consumed Payload.
-
-#### Canonical symmetry
-
-- [ ] payload logical bytes equivalent across MCAP/SQLite projections.
-- [ ] AcceptanceSequence preserved.
-- [ ] descriptor interpretation preserved.
-- [ ] timestamp semantics preserved.
+- [ ] bounded high-water marks under camera and mixed workloads.
+- [ ] no long-run resource growth.
+- [ ] failure paths preserve deterministic quiescence and Artifact state.
+- [ ] performance optimizations have before/after evidence.
+- [ ] ROS2 and FastDDS interoperability remains green after tuning.
 
 ### Exit Gate
 
-- [ ] DDS integrates without Runtime Core semantic changes.
-- [ ] SQLite3 integrates without Runtime Core semantic changes.
-- [ ] no DDS type leaks to common Public API/ABI.
-- [ ] no SQLite type leaks to common Public API/ABI.
-- [ ] DDS Stop/quiescence passes.
-- [ ] SQLite PayloadConsumed/PersistencePending lifetime test passes.
-- [ ] SQLite Failed/Unknown outcome tests pass.
-- [ ] Canonical mapping symmetry demonstrated.
-- [ ] no backend-specific exception added to Stable Plugin ABI.
-- [ ] V1 requirements satisfied across both Acquisition and both Storage backend families.
+- [ ] required sanitizer and long-soak suites clean.
+- [ ] bounded-resource behavior proven.
+- [ ] camera/mixed-workload baselines recorded.
+- [ ] crash/failure matrix passes.
+- [ ] ROS2 + FastDDS MCAP interoperability qualification passes.
+- [ ] x86_64 and aarch64 release qualification passes.
+- [ ] FastDDS recording-host package has no ROS2 runtime dependency.
+- [ ] SBOM/license/release manifest complete.
 
 ### Out of Scope
 
-Not part of V1 milestone plan:
-
+- SQLite3 implementation.
 - SocketCAN implementation.
+- Generic DDS implementation.
 - additional Storage formats.
-- Runtime hot reload.
-- Plugin process sandboxing.
-- remote/distributed Plugin execution.
-- WASM Plugin runtime.
-
----
-
-## Plan maintenance rules
-
-### One active milestone
-
-Exactly one milestone is `ACTIVE`.
-
-Do not promote the next milestone until the current Exit Gate is satisfied.
-
-### Evidence before PASS
-
-A completed checkbox is not enough.
-
-Before a milestone becomes PASS, `status.md` must summarize available evidence:
-
-- build,
-- tests,
-- sanitizer,
-- benchmark,
-- release qualification,
-
-as applicable.
-
-### Progress terminology
-
-Use precise state:
-
-```text
-implemented
-compiled
-unit-tested
-integration-tested
-sanitizer-tested
-benchmark-tested
-release-qualified
-```
-
-Do not use `done` when validation has not run.
-
-### Design conflicts
-
-If implementation requires changing a frozen contract:
-
-1. stop changing the contract in code;
-2. record the conflict;
-3. review the relevant `docs/design/*.md`;
-4. update the design deliberately if approved;
-5. then continue implementation.
-
-### Plan changes
-
-- Update checkboxes only when repository state supports them.
-- Keep this file executable and factual.
-- Detailed design belongs in `docs/design/`.
-- Do not create a new planning document unless the existing plan cannot represent the work cleanly.
+- runtime hot reload / process sandboxing.

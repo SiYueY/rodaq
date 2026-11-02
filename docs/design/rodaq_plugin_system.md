@@ -4,7 +4,7 @@
 >
 > 本文定义 RoDAQ（Robot Data Acquisition）V1 动态插件系统的长期接口基线，包括 Binary ABI、C++ Plugin SDK、Acquisition / Storage Family Protocol、Runtime Service、Plugin Extension、配置接口、生命周期、并发模型、资源所有权、动态库加载与卸载、构建发布以及 ABI 兼容性验证。
 >
-> 本文的目标不是证明 RoDAQ 可以动态加载 `.so`，而是在 ROS 2 Acquisition、DDS Acquisition、MCAP Storage、SQLite3 Storage 开始正式实现之前，建立一套足够稳定的插件契约，使 Runtime 后续内部重构和功能扩展尽量不会迫使已经开发的插件重新适配。
+> 本文的目标不是证明 RoDAQ 可以动态加载 `.so`，而是在 ROS2 Acquisition、FastDDS Acquisition 与 MCAP Storage 开始正式实现之前，建立一套足够稳定的插件契约，使 Runtime 后续内部重构和功能扩展尽量不会迫使已经开发的插件重新适配；SQLite3、SocketCAN、Generic DDS 等后续 Plugin 也必须能够复用同一边界。
 >
 > 本文中的 `V1` 指 RoDAQ 产品阶段，不等同于某一个 ABI、Service 或 Interface 的版本号。源码目录中不设置 `v1/` 层级；需要版本化的协议通过 ABI 常量、Protocol Version、Service ID 和 Interface / optional Extension ID 显式表达。
 
@@ -28,7 +28,7 @@ Allocator
 Statistics
 ```
 
-这些组件以后可以持续优化，只要 Public API 和 Plugin Contract 不变化，ROS 2、DDS、MCAP、SQLite3 Plugin 就不需要感知。
+这些组件以后可以持续优化，只要 Public API 和 Plugin Contract 不变化，ROS2、FastDDS、MCAP 以及后续 SQLite3/SocketCAN/Generic DDS Plugin 就不需要感知。
 
 Plugin System 不同。
 
@@ -229,7 +229,7 @@ Extension 是否可以缓存
 
 ```mermaid
 flowchart TD
-    P["Concrete Plugin<br/>ROS2 / DDS / MCAP / SQLite3"]
+    P["Concrete Plugin<br/>ROS2 / FastDDS / MCAP / future backends"]
 
     SDK["RoDAQ C++17 Plugin SDK<br/>Base / Wrapper / Export / Trampoline"]
 
@@ -311,12 +311,13 @@ V1 冻结：
 librodaq_acquisition_ros2.so
     rodaq.acquisition.ros2
 
-librodaq_acquisition_dds.so
-    rodaq.acquisition.dds
+librodaq_acquisition_fastdds.so
+    rodaq.acquisition.fastdds
 
 librodaq_storage_mcap.so
     rodaq.storage.mcap
 
+future example (not V1 release payload):
 librodaq_storage_sqlite3.so
     rodaq.storage.sqlite3
 ```
@@ -1155,6 +1156,8 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 | `rodaq_plugin_descriptor` | `description` | `id/name/version` valid; reserved zero |
 | `rodaq_service_registry_vtable` | `query` | `query != NULL` |
 | `rodaq_runtime_common_v1` | `report_diagnostic` | `log`, `monotonic_time_ns`, `get_lifecycle_snapshot`, `report_diagnostic` all non-NULL |
+| `rodaq_unix_epoch_clock_anchor` | `unix_anchor_ns` | ingress ClockId/reading valid; reserved zero |
+| `rodaq_runtime_clock_correlation_v1` | `get_unix_epoch_anchor` | lookup slot non-NULL |
 | `rodaq_source_registration` | `source_id` | source_id non-empty |
 | `rodaq_clock_registration` | `origin` | native_id non-empty; rational resolution valid |
 | `rodaq_schema_registration` | `representation` | presence/format contract valid |
@@ -1170,6 +1173,9 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 | `rodaq_stream_view` | `stream_id` | exact Canonical id available |
 | `rodaq_stream_descriptor_view` | `transport_timestamp_key_count` | complete descriptor projection available |
 | `rodaq_runtime_canonical_v1` | `get_stream_descriptor` | all V1 lookup slots non-NULL |
+| `rodaq_projection_registration` | `payload` | descriptor/id/payload relationships valid; reserved zero |
+| `rodaq_projection_view` | `payload` | immutable projection bytes available |
+| `rodaq_runtime_projection_v1` | `get_projection` | register/get slots non-NULL for the caller role |
 | `rodaq_config_vtable` | `as_string` | all V1 ConfigView slots non-NULL |
 | `rodaq_acquisition_control_v1` | `quiesce_plugin` | all V1 control slots non-NULL |
 | `rodaq_storage_capabilities` | `close_progress_timeout_ns` | all bounded-capability fields initialized |
@@ -1430,7 +1436,7 @@ rodaq_error
 
 # 3. Plugin / Runtime 双向接口
 
-这一章定义真正会被 ROS2、DDS、MCAP、SQLite3 Plugin 直接依赖的长期接口。
+这一章定义真正会被 ROS2、FastDDS、MCAP 及后续 Plugin 直接依赖的长期接口。
 
 ---
 
@@ -1462,7 +1468,7 @@ reserved == 0
 
 ```text
 rodaq.acquisition.ros2
-rodaq.acquisition.dds
+rodaq.acquisition.fastdds
 rodaq.storage.mcap
 rodaq.storage.sqlite3
 ```
@@ -1751,6 +1757,8 @@ Runtime 不会在 Instance 生命周期内替换一个已绑定 Service。
 ```text
 rodaq.runtime.common.v1
 rodaq.runtime.canonical.v1
+rodaq.runtime.projection.v1
+rodaq.runtime.clock_correlation.v1
 rodaq.runtime.acquisition.v1
 rodaq.runtime.storage.v1
 ```
@@ -1758,10 +1766,12 @@ rodaq.runtime.storage.v1
 V1 Stable C ABI 同时提供 exact literal 常量：
 
 ```c
-#define RODAQ_RUNTIME_COMMON_SERVICE_ID      "rodaq.runtime.common.v1"
-#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID   "rodaq.runtime.canonical.v1"
-#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition.v1"
-#define RODAQ_RUNTIME_STORAGE_SERVICE_ID     "rodaq.runtime.storage.v1"
+#define RODAQ_RUNTIME_COMMON_SERVICE_ID             "rodaq.runtime.common.v1"
+#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID          "rodaq.runtime.canonical.v1"
+#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID         "rodaq.runtime.projection.v1"
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID  "rodaq.runtime.clock_correlation.v1"
+#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID        "rodaq.runtime.acquisition.v1"
+#define RODAQ_RUNTIME_STORAGE_SERVICE_ID            "rodaq.runtime.storage.v1"
 ```
 
 命名：
@@ -1775,7 +1785,6 @@ rodaq.<domain>.<service>.v<major>
 ```text
 rodaq.runtime.metrics.v1
 rodaq.runtime.memory.v1
-rodaq.runtime.clock_correlation.v1
 ```
 
 实验：
@@ -1889,6 +1898,72 @@ non-throwing across ABI
 `get_lifecycle_snapshot()` 必须 bounded/non-blocking，不等待 Plugin 或 Storage。Recovery worker 在每次 recovery attempt 开始前读取一次 snapshot；只有 `state == RUNNING && normal_acquisition_allowed == true` 才允许开始 normal recovery。
 
 该 snapshot 不是长期 permission：查询后 Runtime 仍可能进入 Stop/Failed；后续 registration/report/submit 继续由 Runtime 当前状态最终裁决并拒绝 stale recovery work。Plugin 不持续轮询该接口。
+
+---
+
+### 3.8.1 Runtime Clock Correlation Service
+
+Some Storage formats require an epoch-based replay timestamp, while Canonical `rodaq/acquisition_ingress` intentionally remains a local monotonic Clock. V1 exposes the immutable activation correlation through a dedicated read-only Runtime service instead of letting each Storage Plugin sample wall time independently.
+
+Service ID：
+
+```text
+rodaq.runtime.clock_correlation.v1
+```
+
+```c
+typedef struct rodaq_unix_epoch_clock_anchor {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_clock_handle clock;
+    int64_t clock_reading;
+    uint64_t unix_anchor_ns;
+} rodaq_unix_epoch_clock_anchor;
+
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION UINT32_C(1)
+
+typedef struct rodaq_runtime_clock_correlation_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*get_unix_epoch_anchor)(
+        void* context,
+        rodaq_clock_handle clock,
+        rodaq_unix_epoch_clock_anchor* out_anchor,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_clock_correlation_v1;
+```
+
+V1 guarantees a correlation for the Runtime-owned `rodaq/acquisition_ingress` Clock. That Clock has：
+
+```text
+resolution = 1 / 1,000,000,000 second per tick
+ClockReading = int64 monotonic nanoseconds
+```
+
+so a Storage Plugin computes：
+
+```text
+delta = record_ingress_reading - anchor.clock_reading
+unix_ns = anchor.unix_anchor_ns + delta
+```
+
+using checked signed arithmetic and range validation before converting to a backend `uint64` timestamp.
+
+Rules：
+
+```text
+anchor captured once per activation
+immutable for activation lifetime
+read-only to Plugin
+no per-Record system_clock sampling
+NOT Canonical clock equivalence
+NOT a claim that ingress Clock origin is Unix epoch
+NOT_FOUND for ClockHandle without a proven correlation
+```
+
+Storage may cache the returned value for the activation lifetime. The service is Control Plane/read-mostly and is not a per-Record hot-path requirement.
 
 ---
 
@@ -3560,6 +3635,161 @@ Runtime Handle
 raw View pointer
 transport slot index as Canonical identity
 ```
+
+## 3.23.1 Typed Interoperability Projection Service
+
+Canonical read-only views intentionally do not carry ROS2 QoS、MCAP profile、CAN database hints or other external-ecosystem metadata. V1 uses a separate Runtime-owned projection registry so Acquisition and Storage remain decoupled while a Storage Backend can still generate a standards-compatible artifact.
+
+Service ID：
+
+```text
+rodaq.runtime.projection.v1
+```
+
+A projection is identified by a versioned UTF-8 identifier, for example：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+Projection bytes are **not Canonical State**. They are an immutable, bounded, projection-specific representation whose format is defined by the corresponding mapping specification.
+
+```c
+typedef struct rodaq_projection_registration {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_stream_descriptor_handle descriptor;
+    rodaq_string_view projection_id;
+    rodaq_bytes_view payload;
+} rodaq_projection_registration;
+
+typedef struct rodaq_projection_view {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_stream_descriptor_handle descriptor;
+    rodaq_string_view projection_id;
+    rodaq_bytes_view payload;
+} rodaq_projection_view;
+
+#define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
+
+typedef struct rodaq_runtime_projection_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*register_projection)(
+        void* context,
+        const rodaq_projection_registration* request,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_projection)(
+        void* context,
+        rodaq_stream_descriptor_handle descriptor,
+        rodaq_string_view projection_id,
+        rodaq_projection_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_projection_v1;
+```
+
+### Registration ordering
+
+Acquisition Control Plane uses：
+
+```text
+publish_stream_descriptor
+        ↓
+register required InteropProjection(s)
+        ↓
+Storage descriptor readiness
+        ↓
+Binding Active
+```
+
+Therefore a required projection is never lazily created from the first Record. `register_projection()` is illegal from the Record hot path.
+
+### Ownership and lifetime
+
+Runtime copies the registered projection identifier and payload into Runtime-owned activation-lifetime storage. The caller may release its source buffer after `register_projection()` returns successfully.
+
+Returned `rodaq_projection_view` is：
+
+```text
+immutable
+borrowed
+activation-lifetime stable for the registered descriptor
+```
+
+Plugin code must not persist raw view pointers outside the documented Runtime service lifetime.
+
+### Idempotence and conflict
+
+For the same：
+
+```text
+(StreamDescriptorHandle, projection_id)
+```
+
+registration is immutable：
+
+```text
+same bytes
+    → idempotent success permitted
+
+different bytes
+    → CONFLICT / contract failure
+```
+
+Projection mutation requires a new StreamDescriptor / Binding evolution when the changed projection affects external interpretation.
+
+### Bounds
+
+Runtime configuration must enforce finite：
+
+```text
+max_projection_bytes_per_descriptor
+max_projection_bytes_per_activation
+max_projection_count_per_descriptor
+```
+
+A projection that exceeds these bounds fails before Binding Active. Projection storage is Control Plane memory and is not charged as per-Record Payload.
+
+### Caller role
+
+The service context is role-scoped：
+
+```text
+Acquisition Plugin
+    register + get own projection when needed
+
+Storage Plugin
+    read-only get
+```
+
+Storage cannot modify projection state, and Acquisition cannot obtain a direct Storage pointer. This preserves the invariant：
+
+```text
+Acquisition → Runtime → Storage
+```
+
+### Not a Generic Property Bag
+
+The registry does not provide arbitrary key/value lookup. Every accepted `projection_id` used by a release contract must have：
+
+```text
+a versioned identifier
+a separate mapping specification
+a deterministic payload encoding
+explicit size bounds
+validation rules
+```
+
+Unknown projection identifiers may be ignored by consumers that do not require them. A Storage Backend that declares a projection as required must return Descriptor Unsupported when it is absent or invalid.
+
+For V1 ROS2 interoperability, `rodaq.projection.ros2.v1` is required by the MCAP Storage mapping. Its payload encoding and semantic fields are frozen by `acquisition_plugin/ros2.md` and `acquisition_plugin/fastdds.md`; both producers must generate semantically equivalent projections.
+
+---
 
 ## 3.24 ConfigView
 
@@ -6731,9 +6961,8 @@ AppDir/
         └── rodaq/
             └── plugins/
                 ├── librodaq_acquisition_ros2.so
-                ├── librodaq_acquisition_dds.so
-                ├── librodaq_storage_mcap.so
-                └── librodaq_storage_sqlite3.so
+                ├── librodaq_acquisition_fastdds.so
+                └── librodaq_storage_mcap.so
 ```
 
 Plugin RUNPATH：
@@ -7345,7 +7574,7 @@ repeated instance cycles
 
 ## 6.15 Fake Plugin
 
-在真实 ROS2 / MCAP Plugin 开发之前，必须先实现：
+在真实 ROS2 / FastDDS / MCAP Plugin 开发之前，必须先实现：
 
 ```text
 FakeAcquisitionPlugin
@@ -7578,7 +7807,7 @@ flowchart TD
     J["10. Plugin CMake Helper"]
     K["11. ABI Baseline"]
     L["12. ROS2 + MCAP"]
-    M["13. DDS + SQLite3"]
+    M["13. FastDDS + MCAP Interop"]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M
 ```

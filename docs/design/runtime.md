@@ -1,14 +1,14 @@
 # RoDAQ Runtime Design Specification
 
-**Version:** v0.5
+**Version:** v0.6
 **Status:** Design Specification  
 **Scope:** RoDAQ V1 Runtime Architecture and Runtime Data Model
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
 
 ---
 
@@ -842,7 +842,9 @@ ActiveRuntimeState
 ├── IdentityScope
 ├── CanonicalIdAuthority
 ├── CanonicalRegistry
+├── InteropProjectionRegistry
 ├── IngressClock
+├── ReplayTimeCorrelation
 ├── StreamTable
 ├── SourceTable
 ├── BindingTable
@@ -1017,7 +1019,7 @@ allocator 只需要保证：
 
 ### 3.2.3 V1 Scalar Domains
 
-Runtime 必须直接遵守 Canonical Profile v0.5 的 scalar domains：
+Runtime 必须直接遵守 Canonical Profile v0.6 的 scalar domains：
 
 ```text
 Runtime-allocated Canonical ID
@@ -1173,13 +1175,58 @@ TimestampKeySetId equal
 
 ---
 
+### 3.6.1 Interop Projection Registry
+
+Runtime additionally owns an activation-scoped `InteropProjectionRegistry`. It is deliberately separate from `CanonicalRegistry`：
+
+```text
+CanonicalRegistry
+    = Canonical State authority
+
+InteropProjectionRegistry
+    = immutable external-ecosystem projection facts
+    = non-Canonical
+```
+
+Key：
+
+```text
+(StreamDescriptorHandle, projection_id)
+```
+
+V1 required projection：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+The registry is mutated only on the Control Plane through `rodaq.runtime.projection.v1`. Acquisition publishes projections after the StreamDescriptor exists and before Storage descriptor readiness. Storage reads projections through the same Runtime service; there is no Acquisition → Storage pointer/call path.
+
+Properties：
+
+```text
+activation-lifetime ownership
+immutable after successful registration
+idempotent same-bytes registration
+conflicting second registration rejected
+bounded count and bytes
+no per-Record mutation
+no hot-path string lookup
+```
+
+Projection registration failure does not mutate Canonical State already published. The corresponding Binding simply cannot become Active if required Storage readiness depends on the missing/invalid projection.
+
+The Runtime treats projection payload bytes as opaque. Meaning, deterministic encoding and validation rules belong to the versioned mapping specification for that projection identifier.
+
+---
+
 ## 3.7 Source Registry 与 Source State
 
 SourceId 是 Canonical opaque bytes。
 
 Source-specific canonicalization 在 Acquisition Plugin 中完成。
 
-Runtime 接收到的 SourceId bytes 必须已经满足 Canonical Profile v0.5 的：
+Runtime 接收到的 SourceId bytes 必须已经满足 Canonical Profile v0.6 的：
 
 ```text
 Scope-wide identity-domain disjointness
@@ -1415,20 +1462,65 @@ have known positive reduced rational resolution
 be stable for activation lifetime
 ```
 
-其实现可以基于：
+V1 为了让 Storage interoperability timeline 可机械投影，进一步冻结 Runtime ingress Clock 的公开 Canonical representation：
+
+```text
+resolution = 1 / 1,000,000,000 second per tick
+ClockReading = signed int64 monotonic nanoseconds
+```
+
+实现可以基于：
 
 ```text
 std::chrono::steady_clock
 platform monotonic clock
 ```
 
-但 Runtime 必须能够建立合法 ClockDescriptor。
+并在 capture point 转换成上述 nanosecond representation。Runtime 必须验证转换、range 和 monotonicity；不能让 platform-native tick period 泄漏为不同 activation 的随机 ABI/Storage behavior。
 
 如果 Runtime 检测到 ingress Clock 不再满足 contract：
 
 > 视为 Runtime correctness failure。
 
 不得静默修改、clamp 或重新解释已经产生的 ClockReading。
+
+---
+
+### 3.8.2 Activation-scoped Replay-Time Correlation
+
+The Canonical ingress Clock remains a local monotonic clock. For standard file formats that require an epoch-based replay timeline, Runtime also captures a non-Canonical activation-scoped correlation anchor：
+
+```text
+ingress_anchor
+    = current Runtime ingress ClockReading
+
+unix_anchor_ns
+    = current system Unix-epoch time in nanoseconds
+```
+
+This pair is captured as closely together as practical during activation and is immutable for the activation lifetime.
+
+For a Record with ingress reading `t`：
+
+```text
+replay_time_ns
+    = unix_anchor_ns + exact_delta(t, ingress_anchor)
+```
+
+This projection：
+
+```text
+preserves acquisition-relative timing
+excludes Storage queue/handoff latency
+is not Canonical State
+is not a ClockId equivalence claim
+must check signed/unsigned overflow and resolution conversion
+must not be recomputed from current wall clock per Record
+```
+
+V1 MCAP Storage uses this correlation as the default source for `Message.log_time` unless a stronger validated epoch-compatible acquisition timestamp policy is selected. A system-clock jump after activation therefore does not distort relative replay timing.
+
+The anchor is exposed read-only through `rodaq.runtime.clock_correlation.v1`. MCAP Storage queries it during Open/descriptor preparation and caches the immutable activation anchor; it must not call a wall-clock API per Record. The service does not change `rodaq/acquisition_ingress` Canonical origin or equality semantics.
 
 ---
 

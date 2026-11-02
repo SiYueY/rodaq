@@ -1,18 +1,18 @@
 # RoDAQ Storage Plugin Design Specification
 
-**Version:** v0.4
+**Version:** v0.5
 **Status:** Plugin ABI Reconciliation Candidate
 **Scope:** RoDAQ V1 Storage Plugin Architecture, Projection, Handoff, Persistence and Finalization Contract
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ Acquisition Plugin Design Specification v0.7
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
@@ -75,21 +75,22 @@ Storage Plugin 必须保证：
 
 ## 1.2 V1 目标 Storage Plugin
 
-V1 Storage Contract 的 concrete design / validation target 为：
+V1 Storage Contract 的 **required implementation** 为：
 
 ```text
-MCAP
-SQLite3
+MCAP Storage
 ```
 
-实现顺序明确为：
+V1 正式 recording artifact 采用 ROS2-compatible MCAP，并要求同时支持：
 
 ```text
-V1 initial implementation: MCAP Storage
-V1 deferred implementation after initial validation: SQLite3 Storage
+ros2 bag play
+PlotJuggler
+Foxglove
+RoDAQ full-fidelity decode
 ```
 
-SQLite3 在 ROS2 + MCAP 首条端到端链路验证后实现，但其设计必须在 Profile freeze 前完成，用于证明 generic Storage Contract 没有被 MCAP container model 反向塑形。
+SQLite3 继续作为 **future / designed Storage target** 保留完整 mapping 文档，用于证明 generic Storage Contract 没有被 MCAP container model 反向塑形，但不进入 V1 implementation / release gate。
 
 同时不能依赖这些 backend 的具体 API 或数据结构。
 
@@ -109,8 +110,10 @@ sqlite3_stmt*
 未来可以增加：
 
 ```text
+SQLite3
 Parquet
 HDF5
+MDF4
 custom binary format
 remote object storage
 database backend
@@ -118,6 +121,49 @@ streaming archival backend
 ```
 
 而不改变 Canonical Model 和 Runtime 基础 contract。
+
+---
+
+## 1.2.1 Typed Interoperability Projection Consumption
+
+Storage Plugin 除了查询 Canonical Descriptor Graph，还可以通过 Runtime 的：
+
+```text
+rodaq.runtime.projection.v1
+```
+
+查询与当前 StreamDescriptor 关联的 versioned typed InteropProjection。
+
+规则：
+
+```text
+Canonical Descriptor
+    = full-fidelity authority
+
+InteropProjection
+    = external ecosystem projection input
+    = non-Canonical
+    = immutable / bounded / versioned
+```
+
+Storage 不得：
+
+```text
+直接调用 Acquisition Plugin
+根据 Plugin concrete type 分支
+把 projection 当作 Canonical identity
+在 projection 与 Canonical Descriptor 冲突时静默选择其中一个
+```
+
+Storage Descriptor readiness 必须把所需 projection 作为 capability/precondition 检查的一部分。例如 V1 MCAP Storage 对正式 ROS2-compatible Artifact 要求：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+存在且完整；否则该 Descriptor 为 Unsupported。
+
+未来 Storage 可以支持其它 projection identifier，或者完全不需要任何 projection。这一机制不能演变为任意 GenericMetadata / PropertyBag。
 
 ---
 
@@ -4066,7 +4112,7 @@ Storage backend：
 
 ### 7.2.1 V1 Scalar Domain Fidelity
 
-Storage 必须完整保留 Canonical Profile v0.5 的 scalar domains：
+Storage 必须完整保留 Canonical Profile v0.6 的 scalar domains：
 
 ```text
 Runtime-allocated Canonical IDs
@@ -4389,7 +4435,8 @@ persistence state
 - 所有 Canonical ID mapping 无悬空引用；
 - backend-specific index / summary / footer 等 normal finalization structure 已完整建立；
 - Artifact finalization status 与实际 Close outcome 一致；
-- 不存在 mutually contradictory projection metadata。
+- 不存在 mutually contradictory projection metadata；
+- 如果当前 backend/config 声明了 external interoperability contract，则所有 required typed projection 均已验证并成功投影。
 
 self-consistent：
 

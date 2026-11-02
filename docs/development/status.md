@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-02
 **Branch:** `develop`
-**Base HEAD:** `98b9423` — `feat: implement RoDAQ stable plugin ABI foundation`
+**Base HEAD:** `befc6d4` — `docs: record M0-B and M0-C converged baseline`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -13,6 +13,8 @@ This file records factual current repository state. Keep it concise and update i
 Status: **ACTIVE**
 
 The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
+
+The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
 ## Current repository state
 
@@ -41,32 +43,32 @@ Current system baseline:
 
 - `docs/design/rodaq_v1_system_design.md` — V1 Detailed System Design / Implementation Baseline.
 - `docs/design/rodaq_plugin_system.md` — V1 Plugin System Detailed Design / Freeze Candidate.
-- `docs/design/architecture.md` — v0.5.
-- `docs/design/runtime.md` — v0.5.
+- `docs/design/architecture.md` — v0.6.
+- `docs/design/runtime.md` — v0.6.
 - `docs/design/canonical_data_model.md` — v0.9.
-- `docs/design/canonical_profile.md` — v0.5.
+- `docs/design/canonical_profile.md` — v0.6.
 - `docs/design/admission.md` — v0.5.
 - `docs/design/payload.md` — v0.5.
-- `docs/design/acquisition_plugin.md` — v0.6, Plugin ABI Reconciliation Candidate.
-- `docs/design/acquisition_plugin/ros2.md` — v0.4, Plugin ABI Mapping Review Candidate.
-- `docs/design/acquisition_plugin/dds.md` — v0.4, Plugin ABI Mapping Review Candidate.
-- `docs/design/storage_plugin.md` — v0.4, Plugin ABI Reconciliation Candidate.
-- `docs/design/storage_plugin/mcap.md` — v0.5, Plugin ABI Mapping Review Candidate.
-- `docs/design/storage_plugin/sqlite3.md` — v0.4, Plugin ABI Mapping Review Candidate.
+- `docs/design/acquisition_plugin.md` — v0.7, Plugin ABI Reconciliation Candidate.
+- `docs/design/acquisition_plugin/ros2.md` — v0.5, Plugin ABI Mapping Review Candidate.
+- `docs/design/acquisition_plugin/fastdds.md` — v0.5, V1 Implementation Mapping Baseline.
+- `docs/design/storage_plugin.md` — v0.5, Plugin ABI Reconciliation Candidate.
+- `docs/design/storage_plugin/mcap.md` — v0.6, Plugin ABI Mapping Review Candidate.
+- `docs/design/storage_plugin/sqlite3.md` — v0.5, Future Storage Mapping / Architecture Validation.
 
 ## V1 implementation scope
 
-Design in V1:
+V1 required implementation:
 
-- ROS 2 Acquisition.
-- DDS Acquisition.
+- ROS2 Acquisition.
+- FastDDS Acquisition.
 - MCAP Storage.
-- SQLite3 Storage.
 
-Implement first:
+V1 artifact requirement:
 
-- ROS 2 Acquisition.
-- MCAP Storage.
+- ROS2-profile MCAP consumable by `ros2 bag play`, PlotJuggler and Foxglove, while retaining RoDAQ full-fidelity sidecars.
+
+Architecture/design targets retained for later implementation include Generic DDS, SocketCAN and SQLite3; they are not V1 release gates.
 
 The common Runtime and Plugin infrastructure must be validated with Fake Plugins before the first real backend vertical slice.
 
@@ -77,7 +79,7 @@ The common Runtime and Plugin infrastructure must be validated with Fake Plugins
 - Non-compressed V1 system design baseline has been produced.
 - Detailed Plugin System design has been produced.
 - V1 development stages have been unified into one authoritative M0–M5 milestone model; the system blueprint defines the Gate semantics and `docs/development/plan.md` tracks execution state.
-- Plugin System / generic Acquisition / generic Storage / ROS2 / DDS / MCAP / SQLite3 documents have been reconciled to the same stable ABI semantics before M0 implementation.
+- Plugin System / generic Acquisition / generic Storage / ROS2 / FastDDS / MCAP documents have been reconciled to the same stable ABI semantics; SQLite3 remains a future architecture-validation mapping.
 - Plugin architecture direction has converged on:
   - stable C ABI,
   - C++17 authoring SDK,
@@ -193,7 +195,7 @@ Structural convergence validation:
 
 ## Not started
 
-- Service Registry implementation.
+- Service Registry implementation, including additive `rodaq.runtime.projection.v1` and `rodaq.runtime.clock_correlation.v1` service interfaces defined by the revised V1 design.
 - ConfigView implementation.
 - Minimal C++ Plugin SDK.
 - Runtime ResourceBudget / Admission implementation.
@@ -202,7 +204,7 @@ Structural convergence validation:
 - Fake Acquisition / Storage.
 - ROS 2 Acquisition implementation.
 - MCAP Storage implementation.
-- DDS Acquisition implementation.
+- FastDDS Acquisition implementation.
 - SQLite3 Storage implementation.
 
 ## Current design readiness
@@ -255,8 +257,9 @@ No remaining known P0/P1 static design blocker prevents M0 Foundation + Plugin A
 The Stable C ABI and private Plugin loading/lifetime boundary are implemented and
 mechanically qualified. No Service Registry, ConfigView, Plugin SDK, Runtime data
 plane or backend round-trip has been executed. ROS2/MCAP executable
-qualification remains an M3 gate, and DDS/SQLite3 qualification remains an M5
-gate.
+qualification remains an M3 gate; FastDDS/MCAP interoperability is the M4 gate;
+production hardening/release qualification is M5. SQLite3 is now a future design
+validation target rather than a V1 release gate.
 
 The Result policy is now frozen by D-025:
 
@@ -268,7 +271,7 @@ The Result policy is now frozen by D-025:
 ## Immediate next actions
 
 1. Begin M0-D — Service Registry + ConfigView + C++ Plugin SDK.
-2. Implement minimal Service Registry and ConfigView runtime behavior.
+2. Implement minimal Service Registry and ConfigView runtime behavior, including projection and clock-correlation service plumbing/fixtures.
 3. Implement the C++17 Plugin SDK and exception trampolines.
 4. Add Plugin metadata generation and authoring CMake helpers.
 5. Build Fake Acquisition / Storage lifecycle tests for M0-E.

@@ -1,13 +1,13 @@
 # RoDAQ System Architecture Design Specification
 
-**Version:** v0.5
+**Version:** v0.6
 **Status:** Design Specification  
 **Scope:** Plugin-independent System Architecture  
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.5
+- RoDAQ V1 Canonical Profile v0.6
 
 ---
 
@@ -48,16 +48,20 @@ SQLite3
 ...
 ```
 
-其中当前 V1 design/mapping validation scope 只包括：
+其中当前 V1 **implementation scope** 为：
 
 ```text
-Acquisition: ROS2 / DDS (Fast DDS baseline)
-Storage: MCAP / SQLite3
+Acquisition: ROS2 / FastDDS
+Storage: MCAP
 ```
 
-首个 functional implementation 只实现 `ROS2 Acquisition + MCAP Storage`。SocketCAN 等其它 backend 属于后续扩展，不参与当前 V1 Profile freeze gate。
+两种 Acquisition 都必须通过同一个 Runtime / Canonical contract 接入，并由 MCAP Storage 输出 ROS2-compatible MCAP。ROS2 Acquisition 依赖 ROS2 runtime；FastDDS Acquisition 直接依赖 Fast DDS / Fast CDR、参考 DDS-Pipe 与 DDS Record & Replay，实现 recording host 脱离 ROS2 runtime 但保持 ROS2 wire compatibility。
 
-可以作为 Storage Plugin 接入。
+两者在 V1 中默认按替代部署 profile qualification，而不是要求同一进程同时激活。原因是 ROS2 `rmw_fastrtps_*` 与 RoDAQ-pinned FastDDS Plugin 可能携带不同 Fast DDS/Fast CDR ABI。只有 dependency closure、SONAME 与 symbol coexistence qualification 通过后，simultaneous activation 才能被标记 supported；否则必须拒绝该组合。
+
+当前 V1 **architecture/design scope** 仍明确考虑其它 Plugin，例如 Generic DDS、SocketCAN、SQLite3、HDF5/MDF4 等。它们不参与 V1 implementation/release gate，但公共 Contract 不得被 ROS2/FastDDS/MCAP-specific 类型反向塑形。
+
+MCAP、SQLite3 及其它 backend 均可以作为 Storage Plugin 接入。
 
 所有具体 Plugin 必须服从统一的 Runtime、Canonical State、Lifecycle、Ownership 和 Failure Contract，不允许具体 Middleware 或 Storage Backend 的实现模型反向决定 RoDAQ Core 的系统结构。
 
@@ -340,6 +344,42 @@ device counter modulus
 ```
 
 等 source-specific knowledge。
+
+---
+
+### 1.4.4.1 Typed interoperability projection 通过 Runtime 中介
+
+某些外部生态兼容信息不属于 Canonical State，但又必须从 Acquisition 传递给 Storage，例如 ROS2 offered QoS。此类信息不得放入 Payload、不得新增任意 PropertyBag，也不得建立 Acquisition → Storage 直接依赖。
+
+统一路径：
+
+```text
+Acquisition native facts
+        ↓
+versioned typed InteropProjection
+        ↓
+Runtime Projection Registry
+        ↓
+Storage Descriptor Readiness
+```
+
+V1 required projection：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+它只服务外部 interoperability：
+
+```text
+not Canonical identity
+not Record identity
+not Stream equality
+immutable / bounded / versioned
+Control Plane only
+```
+
+未来 Generic DDS、SocketCAN、MDF 等可以定义新的 typed projection，而不修改 Canonical Model。
 
 ---
 
@@ -881,6 +921,7 @@ Clock interpretation
 timestamp interpretation
 counter wrap / reset handling
 native Payload acquisition
+typed InteropProjection construction when required by the mapping
 capability declaration
 native fact change notification
 ```
@@ -891,7 +932,7 @@ Acquisition Plugin 不负责：
 Canonical ID allocation
 Descriptor registry
 AcceptanceSequence
-Storage Projection
+backend-specific Storage Projection
 Storage writing
 ```
 
@@ -905,6 +946,7 @@ Storage Plugin 负责：
 
 ```text
 backend initialization
+query/validate required typed InteropProjection
 Storage Projection
 Descriptor persistence
 Record persistence
@@ -3008,28 +3050,29 @@ ROS2 lifecycle / failure / quiescence
 
 属于首个 functional implementation 的直接实现依据。
 
-### `acquisition_plugin/dds.md`
+### `acquisition_plugin/fastdds.md`
 
-定义 DDS V1 native-to-RoDAQ Mapping：
+定义 FastDDS V1 native-to-RoDAQ Mapping：
 
 ```text
-Topic / type / XTypes
-Writer Source identity / sequence
-valid_data / lifecycle boundary
-reader / writer timestamp capability
-serialized DDS Payload
-DDS discovery / failure / quiescence
+Fast DDS discovery / DataReader lifecycle
+ROS2 DDS topic-name normalization
+XTypes / TypeObject / DynamicType
+ROS2 type/schema reconstruction
+Writer Source identity / timestamp / QoS
+serialized CDR Payload
+failure / recovery / quiescence
 ```
 
-属于 V1 design / mapping validation target；实现延后，但具体 Mapping 必须参与 Profile freeze。
+属于 V1 required implementation。实现直接基于 Fast DDS / Fast CDR，工程上重点参考 DDS-Pipe 与 DDS Record & Replay，但不把它们或 ROS2 runtime 作为 RoDAQ runtime dependency。
 
 ### `storage_plugin/mcap.md`
 
 定义 MCAP full-fidelity Storage projection：
 
 ```text
-rodaq/v1 MCAP profile
-native Payload Channel / Schema projection
+ROS2 MCAP profile (`Header.profile = ros2`)
+Ros2Projection → native Channel / Schema / QoS projection
 DescriptorBatch Attachment
 RecordMetadataBatch Attachment
 Descriptor-before-Record
@@ -3054,7 +3097,7 @@ transaction persistence completion
 Artifact state / finalization
 ```
 
-属于 V1 design / mapping validation target；实现延后，但具体 Mapping 必须参与 Profile freeze。
+属于 future / designed Storage target，不参与 V1 implementation/release gate；其设计继续用于验证 generic Storage Contract 没有被 MCAP container model 反向塑形。
 
 ### `persistence.md`
 
@@ -3074,7 +3117,7 @@ common persistence extensions
 
 ## 7.6 具体 Plugin Mapping 的前置条件
 
-当前 V1 的 ROS2、DDS（Fast DDS baseline）、MCAP、SQLite3 四份具体 Plugin 设计必须建立在插件无关 Contract 已经稳定之后；SocketCAN 等后续 backend 不参与当前 V1 freeze gate。
+当前 V1 的 ROS2、FastDDS、MCAP 三个 required implementation 必须建立在插件无关 Contract 已经稳定之后。SQLite3、SocketCAN、Generic DDS 等后续 Plugin 继续作为 architecture/design validation target，但不参与 V1 implementation/release gate。
 
 Contract 达到 Mapping-ready 至少要求：
 

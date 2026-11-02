@@ -7,9 +7,9 @@
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 
 ---

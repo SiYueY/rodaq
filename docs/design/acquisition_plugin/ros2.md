@@ -1,6 +1,6 @@
 # RoDAQ ROS2 Acquisition Plugin Mapping Specification
 
-**Version:** v0.4
+**Version:** v0.5
 **Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 ROS2 Acquisition Plugin
 **Implementation Scope:** Initial V1 functional implementation — required
@@ -8,12 +8,12 @@
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ Acquisition Plugin Design Specification v0.7
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
@@ -90,7 +90,7 @@ C++17
 RMW implementation selectable
 ```
 
-当前开发机默认具备 `rmw_fastrtps_cpp`，但 ROS2 Acquisition Plugin 的 generic boundary 不绑定 Fast DDS RMW；DDS Acquisition 由 `dds.md` 单独定义；其首个 concrete baseline 为 Fast DDS。
+当前开发机默认具备 `rmw_fastrtps_cpp`，但 ROS2 Acquisition Plugin 的 generic boundary 不绑定 Fast DDS RMW；FastDDS Acquisition 由 `fastdds.md` 单独定义；它直接基于 Fast DDS / Fast CDR，不依赖 ROS2 runtime，但必须产生与本文等价的 ROS2 interoperability projection。
 
 实现依赖边界：
 
@@ -643,6 +643,8 @@ representation
 
 它不得伪装成 `ros2msg`，也不得让 native tooling 误认为存在完整 message definition。
 
+对于 V1 required `MCAP Storage + ROS2 interoperability` path，type-only descriptor **不能进入 Ready Binding**：MCAP Descriptor readiness 必须要求完整 `rodaq.projection.ros2.v1` 与 `ros2msg/ros2idl` dependency-complete Schema。type-only 只保留为 generic Acquisition / diagnostic capability，不属于 V1 qualified recording output。
+
 如果后续获得 exact schema：
 
 ```text
@@ -671,6 +673,85 @@ Clock interpretation where relevant
 ```
 
 Descriptor ID 仍由 Runtime 分配。
+
+### 2.3.1 `rodaq.projection.ros2.v1`
+
+ROS2 Acquisition 在发布 StreamDescriptor 后、Storage descriptor readiness 前，必须通过：
+
+```text
+rodaq.runtime.projection.v1
+```
+
+为该 descriptor 注册 `rodaq.projection.ros2.v1`。
+
+该 projection **不是 Canonical State**；其目的只是把生成标准 ROS2 MCAP 所需要、但不属于 Canonical identity/equality 的信息传递给 Storage。Canonical Schema、StreamName 与 PayloadEncoding 仍然是 authority。
+
+V1 logical fields：
+
+```text
+topic_name
+    exact normalized ROS2 topic name
+    MUST equal Canonical StreamName
+
+type_name
+    exact ROS interface package resource name
+    MUST equal Canonical Schema.TypeIdentifier
+
+serialization_format
+    active RMW serialization format
+    V1 qualified MCAP requires cdr-compatible ROS2 serialized payload
+
+offered_qos_profiles
+    ROS2 publisher offered QoS set in rosbag2-compatible YAML representation
+
+type_hash
+    optional; present only when the selected ROS2 baseline exposes a stable ROS2 type-hash identity
+```
+
+Schema body is **not duplicated** into the projection payload. MCAP Storage obtains `SchemaFormat` and exact representation from Canonical Schema and cross-checks：
+
+```text
+SchemaFormat ∈ {ros2msg, ros2idl}
+TypeIdentifier == projection.type_name
+StreamName == projection.topic_name
+PayloadEncoding is compatible with projection.serialization_format
+```
+
+#### Projection payload encoding
+
+`rodaq.projection.ros2.v1` uses a deterministic binary record so no JSON/YAML parser is required for the outer projection envelope：
+
+```text
+u32_le format_version = 1
+u32_le topic_name_size
+bytes  topic_name UTF-8
+u32_le type_name_size
+bytes  type_name UTF-8
+u32_le serialization_format_size
+bytes  serialization_format UTF-8
+u32_le offered_qos_profiles_size
+bytes  offered_qos_profiles UTF-8 YAML
+u32_le type_hash_size
+bytes  type_hash UTF-8; zero length = absent
+```
+
+Rules：
+
+```text
+no trailing bytes
+all size arithmetic checked before allocation/copy
+all required strings valid UTF-8 and non-empty except offered_qos_profiles may encode an empty set
+projection payload subject to Runtime projection bounds
+same logical input → same bytes
+```
+
+`offered_qos_profiles` YAML follows the rosbag2/ROS2 QoS representation expected by ROS2 MCAP readers. The ROS2 Plugin may implement this encoder itself or reuse a dependency already present in its ROS2 build, but MCAP Storage must not depend on ROS2 libraries to interpret native QoS objects; it only receives the normalized UTF-8 representation.
+
+For multiple currently discovered publishers, the Plugin must build the offered-QoS set deterministically. A change that alters the externally visible offered-QoS projection creates a new immutable projection and therefore a new StreamDescriptor/Binding; it must not mutate projection bytes in place after the descriptor is Ready.
+
+This is especially required for replay-sensitive QoS such as durability (`/tf_static` / transient-local cases).
+
+---
 
 ## 2.4 ROS2 Native Metadata Classification
 
@@ -998,7 +1079,7 @@ PayloadDisposition = NOT_APPLICABLE
 
 ROS Publisher 是 ROS2 Mapping 中的 concrete Source。
 
-SourceId 必须满足 Canonical Profile v0.5 的 Scope-wide domain disjointness。
+SourceId 必须满足 Canonical Profile v0.6 的 Scope-wide domain disjointness。
 
 因此 ROS2 SourceId logical encoding 必须包含：
 
@@ -1525,6 +1606,9 @@ type identity always preserved for admitted typed payload
 exact schema unavailable → explicit type-only descriptor or no activation
 type-only → exact schema causes Descriptor evolution
 Storage readiness before Binding Active
+rodaq.projection.ros2.v1 registered before readiness
+projection topic/type/serialization cross-checks Canonical Descriptor
+projection change → new descriptor, never in-place mutation
 ```
 
 ### Source
@@ -1562,6 +1646,9 @@ optional common-source-clock configuration
 
 ```text
 serialized bytes exact
+qualified path serialization format projects to MCAP cdr without decode/re-encode
+offered_qos_profiles representation is deterministic
+TRANSIENT_LOCAL publisher projection is preserved for replay
 oversize → pre-admission rejection
 Copy lifetime safe
 Stop while pre-gate submit is active
@@ -1636,7 +1723,7 @@ V1 选择：
 
 ## 5.4 Implementation Readiness
 
-本文已经足以指导首个 ROS2 Acquisition 实现。目标 Humble headers 已确认：
+本文已经足以指导 V1 ROS2 Acquisition 实现。实现还必须同时落地 `rodaq.projection.ros2.v1`，因为 V1 MCAP interoperability 已是 required contract，而不是 optional export feature。目标 Humble headers 已确认：
 
 ```text
 GenericSubscription public callback

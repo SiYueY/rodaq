@@ -1,6 +1,6 @@
 # RoDAQ MCAP Storage Plugin Mapping Specification
 
-**Version:** v0.5
+**Version:** v0.6
 **Status:** Plugin ABI Mapping Review Candidate
 **Scope:** RoDAQ V1 MCAP Storage Plugin
 **Implementation Scope:** Initial V1 functional implementation — required
@@ -8,12 +8,12 @@
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Storage Plugin Design Specification v0.4
+- RoDAQ Storage Plugin Design Specification v0.5
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
@@ -24,19 +24,17 @@
 
 本文定义 RoDAQ V1 Canonical State 到 MCAP Artifact 的正式 Storage Plugin 设计。
 
-MCAP 是 首个 V1 functional milestone 必须实现的 Storage Backend，与 ROS2 Acquisition 一起形成第一条可运行链路：
+MCAP 是 V1 唯一 required Storage Backend。ROS2 Acquisition 与 FastDDS Acquisition 都必须收敛到同一个 MCAP interoperability contract：
 
 ```text
-ROS2 Acquisition
-        ↓
-RoDAQ Runtime
-        ↓
-MCAP Storage Plugin
-        ↓
-*.mcap
+ROS2 Acquisition ─────┐
+                      ├──> RoDAQ Runtime ──> MCAP Storage Plugin ──> ROS2-profile *.mcap
+FastDDS Acquisition ──┘
 ```
 
-本文同时要求 MCAP Plugin 的设计不能只适配 ROS2。后续接入 DDS Acquisition 后，同一个 Storage Contract 必须继续成立。
+MCAP Plugin **不能根据 Acquisition concrete type 分支**。两种 Acquisition 都通过 Canonical Descriptor/Record + `rodaq.projection.ros2.v1` 提供 Storage 所需信息；MCAP 只消费统一 Runtime contract。
+
+V1 正式输出既要保留 RoDAQ full-fidelity Canonical sidecar，也必须能够直接被 `ros2 bag play`、PlotJuggler 与 Foxglove 消费。Generic DDS / OMG-IDL-only MCAP 是未来 capability，不属于 V1 required artifact contract。
 
 MCAP Plugin 直接依赖：
 
@@ -46,14 +44,18 @@ mcap-cpp
 RoDAQ checked file sink
 ```
 
-首个 ROS2 + MCAP implementation 的目标环境当前为：
+MCAP Plugin 的 runtime dependency 必须直接 pin `mcap-cpp`，不得通过 ROS2 `mcap_vendor` 间接取得：
 
 ```text
-ROS 2 Humble mcap_vendor
-MCAP_LIBRARY_VERSION = 0.8.0
+RoDAQ MCAP Plugin
+    → pinned mcap-cpp
+    → RoDAQ checked file sink
+
+NOT
+    → /opt/ros/<distro>/mcap_vendor runtime dependency
 ```
 
-Mapping Contract 不绑定永久版本号，但实现必须以实际 vendored API 为准；不能把较新 mcap-cpp 的接口能力倒灌到 Humble baseline。
+Humble `mcap_vendor` 中使用过的 mcap-cpp 0.8.0 仍可作为已验证 API/behavior 的历史 evidence，以及与 Humble rosbag2 的 interoperability comparison baseline；但它不再是 RoDAQ 的依赖来源。正式编码 M3 前必须冻结 RoDAQ 直接依赖的 mcap-cpp commit/version，并重新执行本文所有 writer/lifetime/failure qualification。Mapping Contract 不能把某个较新版本才有的能力假定为永久 API。
 
 不把 `rosbag2_storage_mcap` 作为运行时中间层：
 
@@ -172,6 +174,9 @@ https://github.com/eProsima/DDS-Record-Replay
 
 Foxglove MCAP / mcap-cpp
 https://github.com/foxglove/mcap
+
+PlotJuggler official MCAP loader
+https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_load_mcap
 ```
 
 ### rosbag2_storage_mcap
@@ -211,7 +216,7 @@ fastwrite / zstd_fast / zstd_small preset
 
 > **当 source-native Payload 本来就是 MCAP registry 已知的 serialization 时，应尽量保持它原样进入 Message.data。**
 
-这样 ROS2/Foxglove/MCAP 工具才有机会继续直接消费数据。
+这样 ROS2、PlotJuggler、Foxglove 和其它 MCAP 工具才有机会继续直接消费数据。
 
 ### DDS Record & Replay
 
@@ -261,51 +266,53 @@ Summary / Index
 
 ## 1.4 V1 Artifact 基本原则
 
-V1 使用：
+V1 qualified Artifact 固定使用：
 
 ```text
-MCAP Header.profile = "rodaq/v1"
+MCAP Header.profile = "ros2"
+MCAP Header.library = "rodaq/<version>"
 ```
 
-`rodaq/v1` 是 RoDAQ profile，而不是 MCAP Registry 的 `ros2` profile。
+`profile` 用于声明外部 interoperability contract；RoDAQ 自身身份、Canonical sidecar version 与 finalization state 放在 Header.library、MCAP Metadata 与 Attachments 中，不再占用一个 private `rodaq/v1` profile。
 
-原因是一个 V1 Artifact 将来可以同时包含：
+V1 native data Channel contract：
 
 ```text
-ROS2 CDR
-Fast DDS CDR
-future heterogeneous streams
+message_encoding = cdr
+schema encoding   = ros2msg | ros2idl
+schema name       = exact ROS2 package resource type
+channel topic     = exact normalized ROS2 topic
+channel metadata  = offered_qos_profiles + optional ROS2 metadata
+Message.data      = serialized ROS2 CDR bytes
 ```
 
-不能把整个文件永久声明为纯 ROS2 profile。
-
-但 data Channel 应尽可能使用 MCAP Registry 的 well-known：
+同时保留：
 
 ```text
-message_encoding
-schema encoding
+DescriptorBatch Attachment
+RecordMetadataBatch Attachment
+Finalization Manifest
 ```
 
-例如：
+用于 RoDAQ full-fidelity round-trip。标准消费者可以忽略这些 sidecar records；RoDAQ validator 则依赖它们恢复 Canonical State。
+
+因此 V1 的原则是：
 
 ```text
-ROS2 CDR       → message_encoding = cdr
-ROS2 .msg      → schema encoding = ros2msg
-ROS2 .idl      → schema encoding = ros2idl
-OMG IDL        → schema encoding = omgidl
+standard ROS2 MCAP projection
++
+RoDAQ full-fidelity sidecar
 ```
 
-因此：
+而不是：
 
 ```text
-RoDAQ profile
+private RoDAQ MCAP profile
+or
+custom Record envelope in Message.data
 ```
 
-不等于：
-
-```text
-所有 Channel 都是 RoDAQ-private encoding
-```
+未来如果支持 Generic DDS、SocketCAN 或其它非 ROS2 stream，可以新增独立 artifact/profile capability；不得为了未来异构场景降低当前 V1 ROS2 interoperability contract。
 
 ---
 
@@ -350,6 +357,8 @@ create
 bind
     → require rodaq.runtime.common.v1
     → require rodaq.runtime.canonical.v1
+    → require rodaq.runtime.projection.v1
+    → require rodaq.runtime.clock_correlation.v1
     → require rodaq.runtime.storage.v1
     → require rodaq.storage.control.v1
 
@@ -393,7 +402,7 @@ MCAP / mcap-cpp C++ 类型：
 
 ```text
 MCAP Magic
-MCAP Header(profile="rodaq/v1")
+MCAP Header(profile="ros2", library="rodaq/<version>")
 
 RoDAQ file metadata
 
@@ -448,7 +457,7 @@ canonical_model      = "v0.9"
 canonical_profile    = "v0.5"
 storage_plugin       = "mcap"
 storage_contract     = "v0.3"
-mapping_version      = "v0.4"
+mapping_version      = "v0.6"
 ```
 
 这些 string metadata：
@@ -610,119 +619,96 @@ Descriptor Ready
 
 ## 2.4 Native MCAP Schema Projection
 
-Canonical SchemaDescriptor 是 authority。
+Canonical SchemaDescriptor remains the full-fidelity authority. `rodaq.projection.ros2.v1` proves that the descriptor is eligible for the V1 ROS2 MCAP projection and supplies ROS2-specific interoperability facts not stored in Canonical State.
 
-MCAP Schema 是：
-
-> **为了 native tooling interoperability 建立的 projection。**
-
-如果 Canonical Stream 没有 Schema：
+For a V1 qualified descriptor, all of the following are mandatory：
 
 ```text
-MCAP Channel.schema_id = 0
+Canonical Schema present
+Canonical Schema.TypeIdentifier present
+SchemaFormat = ros2msg | ros2idl
+Schema representation non-empty and dependency-complete
+Ros2Projection present and valid
+projection.type_name == Schema.TypeIdentifier
+projection.topic_name == StreamName
+projection.serialization_format is cdr-compatible
 ```
 
-如果存在 SchemaDescriptor，并且 representation size 在 MCAP `uint32` schema-data limit 与 Storage capability 内，则建立 MCAP Schema。
-
-推荐映射：
-
-| Canonical SchemaFormat | MCAP schema.encoding |
-|---|---|
-| `ros2msg` | `ros2msg` |
-| `ros2idl` | `ros2idl` |
-| `omg/idl` | `omgidl` |
-| 已知 MCAP Registry encoding | 对应 well-known encoding |
-| 其它 exact format | 使用明确 custom encoding 或仅 sidecar，取决于 backend config |
-
-Schema name：
+Then MCAP Schema is created as：
 
 ```text
-TypeIdentifier present
-    → TypeIdentifier
+Schema.name
+    = exact ROS2 TypeIdentifier
 
-TypeIdentifier absent
-    → "rodaq/schema/<SchemaId>"
+Schema.encoding
+    = ros2msg | ros2idl
+
+Schema.data
+    = exact Canonical Schema representation bytes
 ```
 
-`Schema.data` 保存 exact representation bytes。
+V1 qualified output **does not use `schema_id = 0` for ROS2 CDR streams**. Schema absent、type-only schema、`omg/idl`-only schema or incomplete dependency closure causes Descriptor readiness = Unsupported for this Storage configuration.
 
-如果某个 Canonical Schema 无法合法投影成 MCAP Schema：
+This rejection does not mean the Canonical model cannot represent such data. It only means the current V1 MCAP artifact contract is deliberately narrower than the future generic Storage capability.
 
-> 不影响 Canonical full-fidelity sidecar；Channel 可以 `schema_id = 0`，但 third-party native decode capability 降级。
-
-如果配置要求：
-
-```text
-require_native_schema_projection = true
-```
-
-则这种情况在 Descriptor readiness 阶段直接 Unsupported。
-
-Initial ROS2 implementation 推荐启用该要求，因为 ROS2 message definition 正常应可获得。
+MCAP native Schema count/size limits remain backend capabilities and must be checked before Binding Active.
 
 ---
 
 ## 2.5 Native MCAP Channel Projection
 
-每个 StreamDescriptor 建立一个独立 MCAP Channel。
+MCAP Channel identity must follow the **external ROS2 interpretation contract**, not blindly mirror every Canonical StreamDescriptor revision.
 
-原因：
-
-```text
-StreamDescriptor immutable
-```
-
-所以 Descriptor evolution：
+V1 logical `Ros2ChannelKey`：
 
 ```text
-same StreamId
-StreamDescriptor A → Channel A
-StreamDescriptor B → Channel B
+topic_name
+ROS2 type_name
+schema identity / representation identity
+serialization_format
+normalized offered_qos_profiles
 ```
 
-不能复用已写入的 Channel 后修改其 interpretation。
+If a new Canonical StreamDescriptor differs only in RoDAQ-internal clock/TimestampKeySet/source metadata while the `Ros2ChannelKey` is unchanged, MCAP Storage may reuse the existing Channel. The new StreamDescriptorId is still preserved in the RoDAQ sidecar for full-fidelity reconstruction.
 
-Channel：
+If any ROS2-visible field changes：
+
+```text
+topic/type/schema/serialization/QoS projection
+```
+
+Storage creates a new Channel after successful Descriptor readiness.
+
+Channel projection：
 
 ```text
 topic
-    = StreamName
+    = Ros2Projection.topic_name
 
 schema_id
-    = projected SchemaId or 0
+    = non-zero projected ROS2 Schema id
 
 message_encoding
-    = projected PayloadEncoding
+    = cdr
+
+metadata["offered_qos_profiles"]
+    = Ros2Projection.offered_qos_profiles
 ```
 
-### PayloadEncoding projection
+Optional ROS2 metadata such as a type hash may be emitted only when its semantics and target rosbag2 version mapping have been validated; it cannot replace the required exact Schema/type fields.
 
-推荐：
+Storage must cross-check projection and Canonical State before marking descriptor Ready：
 
 ```text
-Canonical ros2/rmw/cdr
-    → MCAP cdr
-
-Canonical DDS encoding
-that is exact RTPS SerializedPayload framing
-    → MCAP cdr
-
-known registry encoding
-    → corresponding registry string
-
-unknown/custom exact encoding
-    → explicit custom message_encoding string
+projection.topic_name == Canonical StreamName
+projection.type_name == Canonical Schema.TypeIdentifier
+Canonical SchemaFormat ∈ {ros2msg, ros2idl}
+Canonical PayloadEncoding is compatible with ROS2 CDR
 ```
 
-不得仅因为 bytes “看起来像 CDR” 就声明：
+A contradiction is a descriptor/projection contract failure, not a reason to silently choose one representation.
 
-```text
-message_encoding = cdr
-```
-
-只有 Payload 实际符合 MCAP registry 对 `cdr` 的 framing contract 才可以这样映射。
-
-Channel metadata 可以增加：
+RoDAQ-specific inspection metadata may still include：
 
 ```text
 rodaq.stream_id
@@ -731,13 +717,19 @@ rodaq.payload_encoding
 rodaq.schema_id
 ```
 
-建议以固定格式 hex / string 保存，便于 inspection。
+but those fields are not Canonical round-trip authority and must not collide with ROS2 profile metadata.
 
-但：
+### Same topic / incompatible type evolution
 
-> **Channel metadata 不是 Canonical round-trip authority。**
+A ROS2 topic changing to an incompatible type within one recording cannot be hidden behind the same Channel. V1 must either：
 
-真正 full-fidelity 仍依赖 DescriptorBatch。
+```text
+rotate/end the current qualified artifact
+or
+fail/reject the incompatible descriptor according to recording policy
+```
+
+It must not produce an artifact whose same ROS2 topic has ambiguous incompatible interpretation and still claim normal interoperability qualification.
 
 ---
 
@@ -874,51 +866,68 @@ RoDAQ decoder 完全不依赖 `Message.sequence`。
 
 ---
 
-## 3.3 MCAP log_time / publish_time
+## 3.3 MCAP `log_time` / `publish_time`
 
-`log_time / publish_time` 只作为 MCAP index / interoperability projection。
+`log_time / publish_time` are interoperability/replay projections. Canonical timestamp authority remains the RecordMetadataBatch, but the projected timeline must be derived from **acquisition/source time**, never Storage queue latency.
 
-Canonical timestamp authority 在 RecordMetadataBatch 内。
-
-### V1 default
-
-默认：
+V1 explicitly forbids：
 
 ```text
-log_time
-    = Storage Handoff observed system wall time in uint64 ns
-
-publish_time
-    = log_time
+log_time = Storage Handoff observed wall time
 ```
 
-这样普通 MCAP 工具得到一个实用的 wall-time timeline，同时不错误宣称 Runtime monotonic ingress Clock 与 Unix epoch 等价。
+because backpressure、batching and queueing would distort playback timing.
 
-这两个值：
+### `log_time`
 
-> 不是 Canonical timestamp，也不用于 full-fidelity round-trip。
+V1 default is an activation-scoped replay timeline derived from Runtime `rodaq/acquisition_ingress` before Storage handoff.
 
-### Optional timestamp projection
-
-未来/配置可以选择一个明确可转换为：
+Runtime establishes an activation-scoped correlation anchor and exposes it through `rodaq.runtime.clock_correlation.v1`：
 
 ```text
-Unix epoch nanoseconds
+ingress_monotonic_at_activation
+system_unix_time_at_activation
 ```
 
-的 Canonical TimestampKey 投影到 log/publish time。
-
-但必须同时证明：
+and projects each ingress reading as：
 
 ```text
-ClockOrigin semantics known
-resolution exact-convertible
-reading in uint64 ns range
+log_time_ns = system_unix_time_at_activation
+            + exact_delta(acquisition_ingress,
+                          ingress_monotonic_at_activation)
 ```
 
-否则回退 default wall-time projection。
+Requirements：
 
-不能为了 MCAP timestamp 字段而改变 Canonical Clock semantics。
+```text
+relative acquisition timing preserved
+storage latency excluded
+conversion overflow checked
+result representable as MCAP uint64 nanoseconds
+system-clock jumps after activation do not perturb relative ordering
+```
+
+The correlation is an interoperability projection, not a claim that the Canonical monotonic Clock itself has Unix-epoch origin.
+
+MCAP queries this anchor once per activation/open path and caches it. A future stronger correlation for other clocks may be used only when equivalent or stronger replay semantics are proven; the V1 default remains the Runtime ingress correlation.
+
+### `publish_time`
+
+If the Record carries a valid source publication timestamp with a proven conversion to Unix-epoch nanoseconds：
+
+```text
+publish_time = converted source publication time
+```
+
+otherwise：
+
+```text
+publish_time = log_time
+```
+
+No Plugin may reinterpret an unknown/monotonic/device timestamp as Unix epoch merely to populate MCAP fields.
+
+The chosen projection source/policy must be recorded in low-frequency RoDAQ file metadata so offline validation can explain the native MCAP timeline.
 
 ---
 
@@ -1448,7 +1457,7 @@ new Record uses new ChannelId
 
 ## 4.1 mcap-cpp API Reality
 
-首个实现必须以目标 Humble `mcap_vendor` 中实际 vendored 的 mcap-cpp 0.8.0 为 correctness baseline。
+首个实现必须以 **RoDAQ 自己冻结并直接 pin 的 mcap-cpp version/commit** 为 correctness baseline。Humble `mcap_vendor` 的 0.8.0 behavior 只作为历史对照 evidence。
 
 该版本关键 API：
 
@@ -1661,7 +1670,7 @@ MCAP format tuning 与 generic Storage resource/progress limit 分开。
 
 ## 4.4 Initial Implementation 默认策略
 
-首个 correctness baseline 必须先在 Humble vendored mcap-cpp 0.8.0 上通过 §5.6/§5.7 executable tests，并额外完成 **long-run writer-memory qualification**。
+首个 correctness baseline 必须在 RoDAQ frozen direct mcap-cpp dependency 上通过 §5.6/§5.7 executable tests，并额外完成 **long-run writer-memory qualification**。
 
 V1 production baseline 不允许默认开启任何会让 writer-resident memory 随 Record/Chunk 数无界增长的 index/summary feature。
 
@@ -1951,7 +1960,7 @@ RoDAQ MCAP decoder/validator 的逻辑流程：
 ```text
 open MCAP
         ↓
-validate Header.profile = rodaq/v1
+validate Header.profile = ros2
         ↓
 read RoDAQ file metadata
         ↓
@@ -1978,172 +1987,141 @@ validate Finalization Manifest / Footer / counts
 
 ---
 
-## 5.2 ROS2 Initial Implementation Interoperability
+## 5.2 ROS2 MCAP Interoperability Contract
 
-对于 ROS2 Stream，如果：
+ROS2 interoperability is a **normative V1 requirement**, not best-effort compatibility evidence.
 
-```text
-SchemaFormat = ros2msg / ros2idl
-PayloadEncoding can project to MCAP cdr
-Schema representation available
-```
-
-则 native data Channel 可以投影为：
-
-```text
-topic            = ROS2 StreamName
-schema encoding  = ros2msg / ros2idl
-message_encoding = cdr
-Message.data     = original ROS2 serialized bytes
-```
-
-RoDAQ-specific metadata只存在于 Attachment / Metadata，不额外占用用户 Topic Channel。
-
-这可以显著提升：
-
-```text
-mcap CLI
-Foxglove / generic MCAP readers
-other readers that understand ros2msg/ros2idl + cdr
-```
-
-对 normal data Channel 的可读性。
-
-但是必须严格区分：
-
-```text
-RoDAQ MCAP profile
-!=
-MCAP Registry ROS2 profile
-```
-
-官方 MCAP ROS2 profile 要求：
+Every normal V1 data Channel must be backed by a valid `rodaq.projection.ros2.v1` and satisfy：
 
 ```text
 Header.profile = ros2
+Schema.name = exact ROS2 type name
+Schema.encoding = ros2msg | ros2idl
+Schema.data = complete dependency bundle
+Channel.topic = normalized ROS2 topic
 Channel.message_encoding = cdr
-Schema.encoding = ros2msg or ros2idl
-Channel.metadata contains offered_qos_profiles
+Channel.metadata["offered_qos_profiles"] = normalized ROS2 offered QoS representation
+Message.data = ROS2-compatible serialized CDR
+log_time = acquisition/reception replay timeline
+publish_time = source publication timeline when valid, otherwise log_time
 ```
 
-RoDAQ V1 Artifact 则固定：
+RoDAQ Attachments / Metadata may coexist with this standard projection. External consumers are not required to understand RoDAQ sidecars.
+
+A StreamDescriptor that cannot satisfy this contract is Unsupported by the V1 MCAP Storage configuration. V1 does not emit `schema_id = 0`、`type-only` or `omgidl` fallback data Channels and still call the artifact qualified.
+
+Formal qualification must include：
 
 ```text
-Header.profile = rodaq/v1
+ros2 bag info
+ros2 bag play + subscriber verification
+PlotJuggler direct open + schema/field decode
+Foxglove direct open + schema/field decode
 ```
 
-并且 generic Storage Contract 当前没有把 ROS2 offered QoS profile 作为 Canonical / Storage input。
-
-因此 V1 正式保证是：
-
-> **ROS2-compatible native data projection where possible，而不是严格 ROS2-profile MCAP conformance。**
-
-不能把：
+`NormalComplete` and interoperability qualification remain distinct concepts：
 
 ```text
-ros2 bag info -s mcap
-ros2 bag play -s mcap
+NormalComplete
+    = RoDAQ persistence/finalization completeness
+
+ROS2 MCAP Qualified
+    = external projection/consumer qualification contract satisfied
 ```
 
-作为 RoDAQ V1 normative correctness requirement。某个 rosbag2 版本可能接受 `rodaq/v1` profile 并忽略 RoDAQ Attachment，这属于 compatibility evidence，不属于格式保证。
-
-如果未来需要正式 ROS2-profile export：
-
-> 应设计显式 exporter / conversion path，补齐 ROS2 profile 要求的 QoS metadata，并写出 `Header.profile = ros2`。
-
-这不应通过给 generic Storage Contract 增加 ROS2-specific metadata 来实现。
-
-如果某 Stream 只有 `rodaq/ros2/type-only-v1` SchemaDescriptor：
-
-> RoDAQ full-fidelity 仍可成立，但 native ROS2 schema decode capability 不成立；Channel 应使用 `schema_id = 0` 或明确 custom projection，不能伪装成 `ros2msg`。
+V1 release artifacts require both, but keeping the concepts separate prevents generic Storage semantics from becoming ROS2-specific.
 
 ---
 
-## 5.3 DDS Interoperability（Fast DDS Baseline）
+## 5.3 FastDDS Acquisition Interoperability
 
-对于 Fast DDS：
+FastDDS Acquisition does **not** get a separate MCAP format. It must reconstruct the same `rodaq.projection.ros2.v1` as ROS2 Acquisition and therefore enters the exact same MCAP Schema/Channel path.
+
+Required mapping：
 
 ```text
-exact RTPS SerializedPayload framing
-    → MCAP cdr
+DDS/RTPS topic
+    → normalized ROS2 topic
 
-exact OMG IDL representation
-    → MCAP omgidl
+DDS/XTypes type graph
+    → exact ROS2 TypeIdentifier
+    → complete ros2idl or ros2msg Schema
+
+Fast DDS serialized payload
+    → proven ROS2-compatible CDR
+
+DataWriter QoS
+    → normalized offered_qos_profiles
 ```
 
-时，可以保持标准 MCAP Channel。
+MCAP Storage is forbidden from branching on：
 
-如果 Fast DDS Plugin 最终选择的 Canonical Payload 不符合 MCAP registry `cdr` framing：
+```text
+source_plugin == ros2
+source_plugin == fastdds
+```
 
-> 必须使用明确 custom message_encoding，不能为了第三方工具兼容性错误标成 `cdr`。
+The only accepted distinction is the normalized Canonical Descriptor + Ros2Projection content.
 
-Full-fidelity 的优先级高于伪兼容。
+Generic Fast DDS / OMG-IDL-only streams are future capability. They cannot enter a V1 qualified artifact merely because MCAP itself supports `omgidl + cdr`.
+
+Cross-Acquisition Equivalence tests must record the same ROS2 publisher corpus through both Acquisition Plugins and compare external topic/type/schema/payload/QoS/timeline semantics.
 
 ---
 
-## 5.4 Common Canonical Corpus
+## 5.4 Canonical Corpus 与 V1 Projection Boundary
 
-MCAP 与 SQLite3 必须使用同一套 Canonical Corpus。
+通用 Storage Contract 的 Canonical corpus 仍应覆盖完整 Canonical state space；但 **V1 MCAP ROS2 artifact contract 并不承诺把每一种 Canonical Stream 都投影为 native ROS2 Channel**。因此验证必须分成两类，而不能把“backend-independent Canonical expressiveness”与“当前 MCAP interoperability eligibility”混为一谈。
 
-至少包括：
+### A. ROS2-qualified round-trip corpus
 
-### Scalar
-
-```text
-Canonical ID = 0
-Canonical ID near UINT64_MAX
-AcceptanceSequence = 0
-AcceptanceSequence near UINT64_MAX
-intentional AcceptanceSequence gaps
-```
-
-### Source
+这些 case 必须同时满足 valid `rodaq.projection.ros2.v1`，并完成 native MCAP + RoDAQ sidecar full-fidelity round-trip：
 
 ```text
-SourceId absent
-binary SourceId containing NUL
-SourceSequence absent
-SourceSequence present(0)
-SourceSequence near UINT64_MAX
-```
-
-### Timestamp
-
-```text
+Canonical ID = 0 / near UINT64_MAX
+AcceptanceSequence = 0 / gaps / near UINT64_MAX
+SourceId absent / binary with NUL
+SourceSequence absent / Present(0) / near UINT64_MAX
 1..4 TimestampKeys
-Absent
-Present(0)
-negative ClockReading
-INT64_MIN
-INT64_MAX
-```
-
-### Schema
-
-```text
-schema absent
-ROS2 schema
-OMG IDL schema
-binary/unknown exact schema format
-```
-
-### Payload
-
-```text
-empty Payload
-binary Payload containing NUL / 0xff
+Timestamp Absent / Present(0)
+negative ClockReading / INT64_MIN / INT64_MAX
+ros2msg schema with complete dependencies
+ros2idl schema with complete dependencies
+empty and binary Payload
 large Payload near effective_payload_limit
-```
-
-### Evolution
-
-```text
 multiple Streams
 same Stream + multiple StreamDescriptors
 Clock restart → new Clock / TKS / StreamDescriptor
 ```
 
-round-trip 后必须恢复 same Canonical graph/records。
+对这些 case，round-trip 后必须恢复 same Canonical graph/records，并且 ROS2 native projection 通过 §5.2/§5.8 qualification。
+
+### B. Canonical-but-not-V1-ROS2-projectable corpus
+
+这些 case 用于证明 **拒绝边界**，不是要求当前 V1 MCAP 生成降级 Channel：
+
+```text
+Schema absent
+type-only schema
+OMG IDL-only schema
+binary/unknown exact schema format
+missing rodaq.projection.ros2.v1
+projection/type/schema contradiction
+unproven CDR framing
+```
+
+Expected result：
+
+```text
+Descriptor readiness = Unsupported / explicit contract failure
+no dependent Record accepted for that Binding
+no schema_id=0 fallback Channel emitted
+no falsely qualified Artifact emitted
+```
+
+未来 Generic DDS / other-profile MCAP capability 可以为这些 Canonical cases 定义新的 projection contract；这不改变当前 V1 ROS2-qualified behavior。
+
+SQLite3 future mapping 仍可使用完整 generic Canonical corpus 验证 relational full-fidelity，但它不再是 V1 MCAP release gate 的对称 backend。
 
 ---
 
@@ -2164,7 +2142,8 @@ RecordMetadataBatch ordinal ranges:
     no gap
     cover exactly all data Messages
 
-ChannelId / StreamDescriptorId consistent
+each Message ChannelId resolves to a Ros2ChannelKey compatible with its sidecar StreamDescriptorId
+Channel reuse across Canonical descriptor revisions is allowed only when Ros2ChannelKey is unchanged
 PayloadSize matches Message.dataSize
 ```
 
@@ -2239,7 +2218,7 @@ later batch commit
     → exactly one persistence_completed(SUCCEEDED)
 ```
 
-首个实现至少对 Humble vendored mcap-cpp 0.8.0 固化该测试；任何 mcap-cpp upgrade 都必须重新运行，不能把某版本实现行为当作永久 API 保证。
+首个实现必须对 RoDAQ frozen direct mcap-cpp version 固化该测试；任何 mcap-cpp upgrade 都必须重新运行，不能把某版本实现行为当作永久 API 保证。
 
 ---
 
@@ -2276,16 +2255,17 @@ NormalComplete
 
 ---
 
-## 5.8 Executable Smoke Validation
+## 5.8 Executable Interoperability Qualification
 
-当前设计应在实现前至少建立两个独立 smoke test：
+Implementation must establish reproducible golden fixtures, not only ad-hoc manual smoke tests.
 
-### Container test
+### Container / RoDAQ full-fidelity test
 
 ```text
-Header.profile = rodaq/v1
-native Schema
-native Channel
+Header.profile = ros2
+Header.library = rodaq/<version>
+native ros2msg/ros2idl Schema
+native cdr Channel
 raw Message.data
 DescriptorBatch Attachment
 RecordMetadataBatch Attachment
@@ -2294,35 +2274,71 @@ close
 reopen
 FileOrder decode
 Attachment decode
+Canonical round-trip
 ```
 
-### ROS2 projection compatibility experiment
+### ROS2 qualification
 
-使用真实 ROS2 type，例如：
+At minimum：
 
 ```text
 std_msgs/msg/String
+sensor_msgs/msg/Imu
+sensor_msgs/msg/Image
+sensor_msgs/msg/PointCloud2
 sensor_msgs/msg/JointState
+tf2_msgs/msg/TFMessage
+nested custom message
 ```
 
-验证：
+For each fixture：
 
 ```text
-ros2msg / ros2idl Schema projection
-cdr Message.data
-RoDAQ Attachments do not alter native data bytes
+ros2 bag info
+ros2 bag play
+subscriber verifies topic/type/message values/order/timing tolerance
 ```
 
-并可额外尝试：
+The playback environment must have the required ROS2 type support for custom messages; embedded MCAP Schema does not by itself guarantee arbitrary ROS2 runtime typesupport generation.
+
+### Visualization qualification
+
+The same artifact corpus must be opened directly by：
 
 ```text
-ros2 bag info -s mcap
-ros2 bag play -s mcap
+PlotJuggler
+Foxglove
 ```
 
-但结果只能记录为目标 rosbag2 版本的 interoperability evidence。
+and verify that expected schema、fields、timestamps and representative Image / PointCloud2 / TF data are decoded, not merely that the file opens without error.
 
-> **由于 Header.profile 仍是 `rodaq/v1`，这些命令的成功不能被提升为 MCAP ROS2-profile conformance。**
+### Acquisition matrix
+
+The qualification corpus runs through both：
+
+```text
+ROS2 Acquisition → MCAP
+FastDDS Acquisition → MCAP
+```
+
+and includes a Cross-Acquisition Equivalence comparison.
+
+### QoS / lifecycle cases
+
+At least：
+
+```text
+BEST_EFFORT sensor publisher
+RELIABLE publisher
+TRANSIENT_LOCAL / tf_static-like publisher
+multiple publishers on one topic
+publisher join/leave/restart
+schema/type discovery before first accepted sample
+large 720P image payload
+long-running ordering/timeline test
+```
+
+No manual GUI action is required on every artifact close. Runtime validation is deterministic; actual ROS2/PlotJuggler/Foxglove consumer execution belongs to CI/release qualification and golden-fixture regression.
 
 ---
 
@@ -2352,7 +2368,7 @@ Canonical Descriptor Graph
 - 不把 uint64 sequence 压进 uint32；
 - 不把多个 timestamp 压进两个 MCAP 时间字段；
 - 保持 source-native Payload 原样；
-- 允许 ROS2/DDS data Channel 尽量使用标准 schema/encoding projection；
+- ROS2 与 FastDDS Acquisition 都必须使用同一个标准 ROS2 schema/encoding/QoS projection；
 - 不复制 Payload 做 native mirror；
 - 不需要 private MCAP opcode；
 - 不需要修改 mcap-cpp；
@@ -2360,9 +2376,9 @@ Canonical Descriptor Graph
 
 当前没有发现必须重开 Canonical Data Model、Canonical Profile 或 generic Storage Plugin Contract 的结构性问题。
 
-MCAP Mapping 已达到：
+MCAP Mapping v0.6 的 implementation gate 为：
 
-> **可以进入 ROS2 + MCAP initial functional implementation，用 executable tests 验证 writer/sink implementation-specific assumptions。**
+> **先实现 ROS2 Acquisition + MCAP 的 strict interoperability vertical slice，再接入 FastDDS Acquisition；两条路径必须通过同一个 Ros2Projection/MCAP path，并以 ros2 bag play、PlotJuggler、Foxglove 和 RoDAQ validator 的 golden qualification 作为 V1 release evidence。**
 
 实现前仍保持 OPEN 的主要内容只有：
 

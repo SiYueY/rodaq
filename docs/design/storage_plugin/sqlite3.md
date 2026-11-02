@@ -1,19 +1,19 @@
 # RoDAQ SQLite3 Storage Plugin Mapping Specification
 
-**Version:** v0.4
-**Status:** Plugin ABI Mapping Review Candidate
-**Scope:** RoDAQ V1 SQLite3 Storage Plugin
-**Implementation Scope:** V1 design target; implementation deferred until after ROS2 + MCAP functional validation
+**Version:** v0.5
+**Status:** Future Storage Mapping / Architecture Validation
+**Scope:** Future SQLite3 Storage Plugin mapped against the RoDAQ V1 Canonical/Storage contracts
+**Implementation Scope:** Designed only; not part of V1 implementation or release gate
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Storage Plugin Design Specification v0.4
+- RoDAQ Storage Plugin Design Specification v0.5
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
@@ -24,7 +24,7 @@
 
 SQLite3 当前属于：
 
-> **V1 design / mapping validation target。**
+> **future / designed Storage target，用于 architecture validation；不属于 V1 implementation / release gate。**
 
 当前 Ubuntu 22.04 开发机 SQLite library 为 3.37.2，可作为 deferred implementation baseline。设计只依赖 SQLite3 C API 中稳定的：
 
@@ -39,7 +39,7 @@ limit / error code
 
 能力，不依赖 rosbag2_storage_sqlite3 自身。后者用于参考真实机器人记录场景中的 pragma、性能与 crash-resilience 取舍。
 
-但不属于首个 ROS2 + MCAP functional milestone 的实现范围。
+它不属于当前 V1 的任何 implementation milestone；文档继续维护的目的，是证明 generic Storage Contract 对 relational/transaction backend 仍成立，并为后续版本提供实现基线。
 
 SQLite3 与 MCAP 的价值不同：
 
@@ -1696,9 +1696,9 @@ explicit Artifact completion state
 
 ## 5.6 Implementation Status
 
-SQLite3 Storage Mapping v0.3 是 V1 design / mapping validation target，但：
+SQLite3 Storage Mapping v0.5 是 future / designed target：
 
-> 不阻塞首个 ROS2 + MCAP functional milestone。
+> 不参与 V1 implementation、interoperability qualification 或 release completion。
 
 正式实现前需要重新核对：
 

@@ -262,8 +262,8 @@ M0 — Foundation + Plugin ABI
 M1 — Runtime Core Primitives
 M2 — Fake End-to-End Runtime
 M3 — ROS2 Acquisition + MCAP Storage Vertical Slice
-M4 — Production Hardening
-M5 — DDS Acquisition + SQLite3 Storage
+M4 — FastDDS Acquisition + MCAP Interoperability
+M5 — Production Hardening + Release Qualification
 ```
 
 Do not maintain a second `Phase 1..N` numbering system.
@@ -571,3 +571,66 @@ Each entry should contain:
 - canonical design reference.
 
 Do not copy large design sections into this file.
+
+---
+
+## D-030 — V1 implements ROS2 + FastDDS Acquisition and ROS2-compatible MCAP only
+
+**Status:** Accepted
+
+V1 implementation scope is frozen as:
+
+```text
+Acquisition
+    ROS2
+    FastDDS
+
+Storage
+    MCAP
+```
+
+FastDDS is implemented directly on Fast DDS / Fast CDR, uses DDS-Pipe and DDS Record & Replay as source-level engineering references, and must not require a ROS2 runtime on the recording host. Its V1 qualified input is ROS2-compatible DDS pub/sub traffic, with `rmw_fastrtps_cpp` as the primary qualification baseline.
+
+ROS2 Acquisition and FastDDS Acquisition both publish the versioned typed projection:
+
+```text
+rodaq.projection.ros2.v1
+```
+
+through the Runtime Projection Registry. MCAP Storage consumes that common projection and must not branch on Acquisition implementation type.
+
+V1 normal release artifacts use the ROS2 MCAP profile and must pass:
+
+```text
+ros2 bag play
+PlotJuggler
+Foxglove
+RoDAQ full-fidelity validation
+```
+
+SQLite3, Generic DDS, SocketCAN and additional Storage formats remain architecture/design targets but are not V1 implementation or release gates.
+
+This decision supersedes the old scope implication in D-015 that M5 implemented DDS + SQLite3; D-015 still governs the single authoritative M0–M5 milestone model.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`, `docs/design/acquisition_plugin/fastdds.md`, `docs/design/storage_plugin/mcap.md`.
+
+---
+
+## D-031 — ROS2 and FastDDS Acquisition are alternative V1 process profiles by default
+
+**Status:** Accepted
+
+Both ROS2 Acquisition and FastDDS Acquisition are required V1 implementations, but V1 does not require them to be simultaneously active in one RoDAQ process.
+
+The required deployment profiles are:
+
+```text
+ROS2 Acquisition + MCAP
+FastDDS Acquisition + MCAP
+```
+
+Cross-acquisition equivalence may use separate runs/processes over the same publisher corpus.
+
+Same-process co-activation is supported only after recursive dependency, SONAME, ABI, symbol-resolution and runtime coexistence qualification proves that ROS2 `rmw_fastrtps_*` and the RoDAQ-pinned Fast DDS/Fast CDR dependency closure are compatible. Otherwise PluginManager/config validation must reject the combination before activation.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`, `docs/design/acquisition_plugin/fastdds.md`.

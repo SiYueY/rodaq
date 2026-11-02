@@ -1,103 +1,163 @@
-# RoDAQ DDS Acquisition Plugin Mapping Specification
+# RoDAQ FastDDS Acquisition Plugin Mapping Specification
 
-**Version:** v0.4
-**Status:** Plugin ABI Mapping Review Candidate
-**Scope:** RoDAQ V1 DDS Acquisition Plugin
-**Implementation Scope:** V1 design target; implementation deferred until after ROS2 + MCAP functional validation
+**Version:** v0.5
+**Status:** V1 Implementation Mapping Baseline
+**Scope:** RoDAQ V1 FastDDS Acquisition Plugin — ROS2-compatible DDS wire acquisition
+**Implementation Scope:** V1 required implementation
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
-- RoDAQ Acquisition Plugin Design Specification v0.6
+- RoDAQ Acquisition Plugin Design Specification v0.7
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
 
 ---
 
 # 1. 目标与映射边界
 
-本文定义 DDS Acquisition Plugin 在 RoDAQ V1 中的正式 native-to-RoDAQ Mapping Contract。
+本文定义 **FastDDS Acquisition Plugin** 在 RoDAQ V1 中的正式 native-to-RoDAQ Mapping Contract。
 
-本文的规范层级以：
+V1 的产品定位不是实现一个 arbitrary Generic DDS recorder，而是提供第二条 ROS2 数据采集路径：
+
+> **直接基于 eProsima Fast DDS / Fast CDR 订阅 ROS2 在 DDS/RTPS 层产生的 pub/sub traffic，使 recording host 不依赖 ROS2 Runtime，同时在 Topic、Type、Schema、serialization、QoS 与 timestamp projection 上兼容 ROS2。**
+
+因此必须同时满足：
 
 ```text
-DDS / RTPS concepts
-    Topic
-    DataWriter
-    DataReader
-    SampleInfo
-    XTypes / TypeIdentifier / TypeObject
-    source / reception timestamp
-    instance lifecycle
+implementation dependency
+    Fast DDS
+    Fast CDR
+    RoDAQ Plugin SDK
+
+must NOT require
+    rclcpp
+    rcl
+    rmw
+    rosidl runtime
+    rosbag2 runtime
+    /opt/ros
+    ROS_DISTRO environment
+
+source-level engineering references
+    eProsima DDS-Pipe
+    eProsima DDS Record & Replay
 ```
 
-为语义基础，不把某个 DDS vendor 的 C++ 类型提升为 RoDAQ generic contract。
+DDS-Pipe / DDS Record & Replay 是实现参考，不作为 RoDAQ Runtime dependency。RoDAQ 只吸收与自身职责匹配的成熟机制，例如 discovery、DynamicTypes、DataReader lifecycle、QoS、serialized payload handling 与 quiescence；不复制 routing、writer forwarding、replay 或 recorder-storage coupling。
 
-V1 concrete implementation baseline 选用：
+本文仍以 DDS / RTPS native concepts 作为底层事实来源：
 
 ```text
-eProsima Fast DDS 2.6.x
+DomainParticipant
+Topic
+DataWriter
+DataReader
+SampleInfo
+GUID / endpoint discovery
+XTypes / TypeIdentifier / TypeObject / DynamicType
+source / reception timestamp
+QoS
+serialized CDR
+```
+
+但它们只存在于 FastDDS Plugin implementation。Runtime generic boundary 不暴露 Fast DDS C++ type。
+
+V1 concrete baseline：
+
+```text
+eProsima Fast DDS 2.6.x initial Humble-compatible evidence baseline
 Fast CDR
 C++17
 ```
 
-原因是当前 Ubuntu 22.04 + ROS2 Humble 开发环境已经提供该版本，并且它能够为本文的 DDS/RTPS mapping 提供直接可执行验证。
+最终 release 使用的 Fast DDS / Fast CDR version 必须由 dependency baseline 单独冻结，并在 Ubuntu 22.04 / 24.04、amd64 / arm64 与 AppImage closure 中重新 qualification；不能把 ROS2 安装包当作 hidden runtime dependency。
 
-因此本文同时区分：
+### ROS2 Acquisition coexistence boundary
 
-```text
-portable DDS mapping rule
-    → normative V1 DDS semantics
+FastDDS Acquisition 与 ROS2 Acquisition 都是 V1 required implementation，但 **V1 不要求同一 RoDAQ process 同时激活两者**。
 
-Fast DDS adapter evidence
-    → concrete implementation / feasibility evidence
-```
-
-如果某项能力只能通过 Fast DDS-specific API 获得，必须明确标记为 adapter capability；它不能反向成为 Runtime 或 generic Acquisition Contract 的必需类型。
-
-DDS Acquisition 属于 V1 design / mapping validation scope，但不阻塞首个：
+潜在冲突路径：
 
 ```text
-ROS2 Acquisition + MCAP Storage
+ROS2 Acquisition
+    → rcl/rmw
+    → rmw_fastrtps_*
+    → ROS2-distributed Fast DDS / Fast CDR
+
+FastDDS Acquisition
+    → RoDAQ-pinned Fast DDS / Fast CDR
 ```
 
-functional milestone。实现可在该 milestone 验证后进入。
+由于 Plugin DSO 默认共享 process dynamic-link namespace，同 SONAME 不同 binary、不同 minor ABI 或 symbol set 都可能导致错误绑定。因此 qualification 分成：
 
-DDS Record & Replay 作为工程参考，不作为 RoDAQ runtime dependency。
+```text
+required:
+    ROS2 Acquisition + MCAP in one process profile
+    FastDDS Acquisition + MCAP in a clean non-ROS2 process profile
+    cross-acquisition equivalence across separate runs/processes
+
+optional only after proof:
+    ROS2 Acquisition + FastDDS Acquisition simultaneous activation
+```
+
+若同时激活未通过 recursive DT_NEEDED、SONAME、symbol resolution 和 runtime stress qualification，PluginManager/config validation 必须在 start/activation 前拒绝该组合。不得通过 `LD_LIBRARY_PATH` 顺序、偶然加载顺序或“恰好 ABI 兼容”作为 correctness contract。
 
 数据路径：
 
 ```text
-DDS DomainParticipant / Topic / DataReader
+External ROS2 publisher
         ↓
-data-bearing sample + SampleInfo
+ROS2 RMW / rmw_fastrtps
         ↓
-DDS Acquisition Plugin
+DDS / RTPS wire
         ↓
-DDS native facts
+Fast DDS DomainParticipant / discovery / DataReader
         ↓
-Runtime registration / Binding
+FastDDS Acquisition Plugin
+        ├── Control Plane: ROS2 topic/type/schema/QoS reconstruction
+        └── Data Plane: serialized CDR + source/timestamp facts
+        ↓
+Canonical registration + rodaq.projection.ros2.v1
+        ↓
+Runtime Binding
         ↓
 Runtime::Submit
 ```
+
+V1 scope only admits **ROS2-compatible DDS pub/sub streams** into the qualified recording path. Arbitrary native DDS topics, arbitrary OMG-IDL-only artifacts, ROS2 service/action wire capture and DDS replay/routing are future capabilities.
+
+V1 primary interoperability qualification baseline is deliberately narrower than “all ROS2 RMW implementations”：
+
+```text
+external ROS2
+    ROS2 Humble baseline
+    ROS2 Jazzy release qualification target
+
+RMW
+    rmw_fastrtps_cpp required baseline
+    rmw_fastrtps_dynamic_cpp may be qualified when available
+```
+
+Other DDS-based RMW implementations may interoperate at the DDS/RTPS level, but they are not a V1 guarantee until their topic/type/QoS/wire mapping has passed the same executable qualification. FastDDS Plugin must not advertise generic “all ROS2” compatibility solely because DDSI-RTPS is shared.
 
 V1 保持：
 
 ```text
 one Canonical Stream
-    → one owning DDS Plugin
+    → one owning FastDDS Plugin
     → one active acquisition path
     → one current Binding
     → zero or more DataWriter Source
 ```
 
-ROS2 与 DDS 即使最终连接的是同一 DDS network：
+ROS2 Acquisition 与 FastDDS Acquisition 即使观察到同一 ROS2 network：
 
-> Runtime 也不进行自动跨 Plugin Stream merge。
+> Runtime 也不进行自动跨 Plugin Stream merge。二者通过离线 Cross-Acquisition Equivalence Test 验证外部 ROS2 semantics，而不是在运行时合并 identity。
 
 ## 1.1 Native Evidence
 
@@ -134,7 +194,7 @@ Fast DDS 的 `SampleIdentity` 可以包含 writer identity + sequence number，�
 
 普通 sample 的 Writer 关联使用 `publication_handle`；Fast DDS-specific Mapping 再利用其 `InstanceHandle_t ↔ GUID_t` 语义恢复 RTPS Writer GUID。
 
-因此 DDS Mapping 明确区分：
+因此 FastDDS Mapping 明确区分：
 
 ```text
 portable DDS semantics
@@ -146,9 +206,12 @@ implementation capability
 
 ## 1.2 参考实现、标准边界与工程取舍
 
-DDS Mapping 的主要工程参考为：
+FastDDS Mapping 的主要工程参考为：
 
 ```text
+eProsima DDS-Pipe
+https://github.com/eProsima/DDS-Pipe
+
 eProsima DDS Record & Replay
 https://github.com/eProsima/DDS-Record-Replay
 
@@ -156,7 +219,7 @@ Fast DDS
 https://github.com/eProsima/Fast-DDS
 ```
 
-其中 DDS Record & Replay 是最直接的工程参考，因为它已经真实处理：
+其中 DDS-Pipe 是 Data Plane / discovery / endpoint lifecycle 的主要源码参考，DDS Record & Replay 是 recorder behavior、DynamicTypes、schema projection 与 MCAP interoperability 的主要源码参考。DDS Record & Replay 已经真实处理：
 
 ```text
 DDS automatic discovery
@@ -176,7 +239,7 @@ filtering / partitions
 
 DDS Record & Replay 的核心经验是利用 Fast DDS DynamicTypes，使 Recorder 不需要在编译期知道所有 Topic type。
 
-这正是 RoDAQ DDS Plugin concrete Fast DDS adapter 应采用的方向：
+这正是 RoDAQ FastDDS Plugin concrete adapter 应采用的方向：
 
 ```text
 Participant discovery
@@ -215,12 +278,12 @@ only-with-type
 ```text
 late schema
 bounded pending state
-type-only vs wait-for-exact-schema policy
+wait-for-exact-schema policy
 ```
 
-是现实需求。
+是现实需求。对于 future Generic DDS capability 可以重新评估 type-only Artifact，但 V1 FastDDS → ROS2 MCAP qualified path 不允许这种降级。
 
-RoDAQ V1 DDS Mapping 推荐默认：
+RoDAQ V1 FastDDS Mapping 冻结：
 
 ```text
 require_type_for_binding = true
@@ -241,7 +304,7 @@ pending_type_samples
 
 但绝不能像“直到 TypeObject 到来”为止无限缓存。
 
-即使以后证明 raw serialized payload 可以在没有完整 TypeObject 的情况下获得，normal Admission 仍必须保留可靠 TypeIdentifier；最多退化为显式 `rodaq/dds/type-only-v1`，不能退化为丢失 type identity 的 schema-absent typed Stream。
+即使 raw serialized payload 可以在完整 TypeObject 到达前获得，V1 qualified path 仍不能因此建立 type-only Ready Binding。Plugin 只能 boundedly pending、施加 backpressure，或在 Admission 前 drop/reject；只有 reliable ROS2 TypeIdentifier + dependency-complete `ros2idl/ros2msg` + valid `rodaq.projection.ros2.v1` 都就绪后才能进入 normal Admission。
 
 ### type information 持久化
 
@@ -251,15 +314,15 @@ RoDAQ 应吸收的不是其具体 MCAP attachment 格式，而是：
 
 > **Schema representation 应当是可独立解释的 dependency-complete representation。**
 
-所以 DDS Plugin 注册 SchemaDescriptor 时应优先获得：
+所以 FastDDS Plugin 的 Control Plane 应优先获得：
 
 ```text
 TypeIdentifier
-TypeObject / dependency graph
-or exact OMG IDL representation
+CompleteTypeObject / dependency graph
+DynamicType
 ```
 
-并清楚声明 SchemaFormat。
+并将它们确定性重建为 V1 qualified path 所要求的 dependency-complete `ros2idl` 或 `ros2msg` SchemaDescriptor。OMG IDL 仍可作为 native type-resolution evidence，但不能作为 V1 ROS2-profile MCAP 的最终 SchemaFormat。
 
 ### Writer GUID 与 Writer Sequence
 
@@ -395,155 +458,211 @@ independent Storage Plugin
 
 ## 2.1 Native Logical Stream
 
-V1 中一个 DDS native logical flow 至少由：
+V1 FastDDS Plugin 从 DDS discovery 得到 native Topic/Type facts，但进入 Canonical registration 前必须先完成 ROS2 wire normalization。
+
+普通 ROS2 pub/sub 的 DDS Topic 必须能够证明属于 ROS2 topic mapping domain。典型 mapping：
 
 ```text
-DDS domain / participant mapping domain
+DDS topic
+    rt/camera/image_raw
+        ↓ ROS2 topic-name normalization
+Canonical StreamName
+    /camera/image_raw
+```
+
+V1 只处理普通 ROS2 pub/sub topic。`rq/*`、`rr/*` 以及 action/service-specific DDS entities 不进入 normal V1 recording path。
+
+Native logical flow identity 至少包含：
+
+```text
+DDS DomainId / configured mapping domain
 +
-Topic name
+DDS Topic identity
 +
-registered type identity
-```
-
-区分。
-
-推荐：
-
-```text
-StreamName = DDS Topic name
-```
-
-但 Topic name 仍然不是 Runtime Canonical identity key。
-
-同名 Topic 如果存在不兼容 Type：
-
-> 不得静默合并。
-
-DDS Plugin 负责判断其 own native domain 内的 flow continuity。
-
-Runtime 只负责：
-
-```text
-validate registration
-allocate StreamId
-own Descriptor Registry
-own Binding
-```
-
-Runtime 不比较 DDS facts 与 ROS2 facts 来判断：
-
-```text
-same logical Stream ?
-```
-
-## 2.2 Schema / Type
-
-DDS serialized Payload 的解释至少依赖：
-
-```text
-type identity
+DDS registered type identity
 +
-serialized encoding
+ROS2 mapping result
 ```
 
-因此 V1 DDS Mapping 与 ROS2 Mapping 使用相同的最低原则：
+同名 ROS2 Topic 如果发现不兼容 ROS2 type：
 
-> **任何进入 normal Admission 的 typed DDS StreamDescriptor 都必须保留 TypeIdentifier；不能因为 TypeObject / IDL 暂时不可得而把 type identity 一并丢失。**
+> 不得静默合并；应形成新的 native logical flow / Stream，或者在当前 artifact contract 下拒绝。
 
-DDS 类型信息可能来自：
+FastDDS Plugin 负责 native flow continuity 与 ROS2 normalization validity。Runtime 只负责 Canonical registration / ID allocation / Binding ownership，不尝试从 raw DDS facts 推断 ROS2 semantics。
 
-```text
-static TypeSupport
-DDS-XTypes TypeIdentifier / TypeObject
-IDL
-DynamicType
-implementation-specific type support
-```
+## 2.2 ROS2 Type / Schema / PayloadEncoding
 
-V1 logical mapping：
+FastDDS V1 qualified path 的解释 contract 必须最终收敛到与 ROS2 Acquisition 相同的 ROS2-level semantics：
 
 ```text
 TypeIdentifier
-    = exact UTF-8 DDS type name used to select
-      the top-level type inside the Schema representation
+    = exact ROS interface package resource name
+      e.g. sensor_msgs/msg/Image
 
 PayloadEncoding
-    = dds/xcdr1
-      dds/xcdr2
-      or exact implementation-declared serialized encoding
-```
+    = ros2/rmw/cdr
+      when the captured serialized payload is proven compatible with ROS2 CDR framing
 
-`TypeIdentifier` 是 Canonical UTF-8 Identifier，因此：
-
-> **不得把 binary XTypes `TypeIdentifier` / `TypeObject` raw bytes 直接拼入该字段。**
-
-如果 DDS XTypes equivalence identity 用于区分同名但不兼容的 type revision，它属于 native flow/type-continuity evidence；结构差异最终通过新的 `SchemaDescriptorId` 和 exact Schema representation 保留，而不是通过把 opaque binary identity 塞进 Canonical `TypeIdentifier`。
-
-如果存在 exact IDL：
-
-```text
-SchemaFormat = omg/idl
-representation = exact IDL bytes selected by the Mapping
-```
-
-如果 source-native exact representation 是 XTypes TypeObject / dependency graph，而不是 IDL：
-
-> 使用单独、明确且 versioned 的 SchemaFormat 保存 exact TypeObject representation；不得先生成“看起来等价”的 IDL 再声称 byte-exact native schema fidelity。
-
-V1 DDS Mapping 允许：
-
-```text
-SchemaFormat = dds/xtypes/type-object-v1
-```
-
-但只有 concrete DDS adapter 已冻结并验证 deterministic、dependency-complete binary bundle 后才能使用。该 bundle 至少包含：
-
-```text
-top-level XTypes identity evidence
-exact TypeObject bytes
-all required dependent TypeObject bytes
-explicit entry lengths and deterministic ordering
-```
-
-Fast DDS implementation 尚未完成该 bundle 的 executable validation 时，应优先使用 exact self-contained `omg/idl`；否则退化到明确的 `rodaq/dds/type-only-v1`，不能生成半完整 TypeObject bundle。
-
-如果 exact structural representation 暂时不可得，但 type identity 已可靠获得，可以显式使用：
-
-```text
 SchemaFormat
-    = rodaq/dds/type-only-v1
+    = ros2idl
+      or ros2msg
+```
 
+DDS discovery 可使用：
+
+```text
+XTypes TypeInformation
 TypeIdentifier
-    = exact DDS type identity
-
-representation
-    = empty byte string
+CompleteTypeObject
+DynamicType
+static TypeSupport when explicitly configured
 ```
 
-该模式只保存 type identity，不声称 Artifact self-contained。
+但 binary DDS XTypes identity 不得直接塞进 Canonical UTF-8 `TypeIdentifier`。Plugin 必须依据 ROS2 DDS type mapping 恢复 exact ROS interface type name；不能只凭字符串相似性猜测。
 
-如果连可靠 TypeIdentifier 都不可获得：
+### Schema reconstruction
 
-> 该 flow 不能进入 normal V1 Admission。
-
-如果 DDS API 只暴露 deserialized C++ object，Plugin 有两种合法选择：
+优先方向：
 
 ```text
-A. reserialize to a clearly declared logical DDS encoding
-
-B. use lower serialized / RTPS access path
-   to preserve source bytes
+CompleteTypeObject / DynamicType
+        ↓
+ROS2 type model
+        ↓
+dependency-complete ros2idl
 ```
 
-但不允许：
+`ros2idl` 与 XTypes/IDL type model 更接近，因此是 FastDDS 首个实现的优先 projection。若参考 DDS Record & Replay 的 `ros2-types` 路径能够证明 deterministic `.msg` reconstruction，也允许生成 dependency-complete `ros2msg`。
+
+无论选择 `ros2idl` 还是 `ros2msg`：
 
 ```text
-reserialized bytes
-    ↓
-claim they are exact original wire bytes
+top-level type exact
+dependency closure complete
+deterministic ordering
+no missing dependent type
+same native type graph → same representation bytes
 ```
 
-`PayloadEncoding` 必须描述实际产生的 byte representation。
+都必须成立。
+
+V1 qualified recording **不接受**：
+
+```text
+SchemaFormat = omg/idl only
+SchemaFormat = rodaq/dds/type-only-v1
+schema absent
+unproven DDS type → ROS2 type guess
+```
+
+作为 MCAP Ready Descriptor。类型信息暂时未完成时，FastDDS Plugin 可以 boundedly buffer pending samples、backpressure 或 pre-admission drop/reject；一旦完整 type/schema 可用再发布 Ready Descriptor。Generic DDS / OMG-IDL artifact 是未来 capability，不属于 V1 required output。
+
+### Serialized payload path
+
+Data Plane 的目标是：
+
+```text
+source ROS2 CDR bytes
+        ↓
+FastDDS Acquisition
+        ↓
+Canonical Payload
+        ↓
+MCAP Message.data
+```
+
+而不是每条消息：
+
+```text
+CDR → DynamicData → generic object → CDR
+```
+
+DynamicTypes 主要属于 Control Plane。具体实现必须优先参考 DDS-Pipe / DDS Record & Replay 的 serialized payload / payload-pool 路径，选择能够避免 mandatory per-record full deserialize/re-serialize 的 Fast DDS API 层。
+
+如果冻结的 Fast DDS public path 无法直接暴露满足 RoDAQ lifetime/serialization contract 的 bytes，必须在 implementation review 中明确选择 lower serialized/RTPS path 或受控 reserialization fallback，并用 10-camera workload 量化其 copy/CPU cost；不得把 reserialized bytes 伪称为 exact original wire bytes。
+
+### `rodaq.projection.ros2.v1`
+
+FastDDS Plugin 必须产生与 `ros2.md` 完全相同版本和编码的：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+logical fields：
+
+```text
+topic_name
+    = normalized ROS2 topic
+
+type_name
+    = reconstructed ROS2 package resource type
+
+serialization_format
+    = cdr for V1 qualified path
+
+offered_qos_profiles
+    = discovered/configured ROS2 offered QoS set normalized to rosbag2-compatible YAML
+
+type_hash
+    = optional, only when a correct ROS2 type-hash mapping is proven
+```
+
+#### QoS reconstruction boundary
+
+FastDDS Plugin 不得把 DDS defaults 猜成 ROS2 publisher 的真实 offered QoS。对 V1 qualified baseline，QoS reconstruction 的 evidence 优先级为：
+
+```text
+1. endpoint discovery / matched-publication facts
+   whose mapping to ROS2 QoS is proven for the qualified RMW baseline
+
+2. explicit per-topic/type ROS2 QoS override in RoDAQ configuration
+   when a required ROS2 field is not observable on the wire/API
+
+otherwise
+   projection incomplete → Descriptor Unsupported
+```
+
+需要逐项审查的 ROS2 QoS 至少包括：
+
+```text
+history / depth
+reliability
+durability
+deadline
+lifespan
+liveliness
+liveliness lease duration
+```
+
+以及目标 rosbag2 baseline 的其它 serialized QoS fields。某个字段如果无法从 Fast DDS discovery 可靠恢复，不能静默填 ROS2 default；必须通过显式 override 或拒绝 qualified Binding。
+
+多个 Writer 的 offered profiles 必须确定性排序/去重后编码。Binding Active 后发现一个会改变 `offered_qos_profiles` 的新 Writer 时，不允许原地修改 immutable projection；V1 可以建立新的 descriptor/projection generation 或按 recording policy rotate/reject，但必须保证 MCAP Channel metadata 与实际用于该 Channel 的 projection 一致。
+
+Projection outer bytes **MUST use the exact deterministic binary encoding frozen in `ros2.md §2.3.1`**。MCAP Storage therefore consumes one projection format regardless of whether the producer was ROS2 Acquisition or FastDDS Acquisition。
+
+Projection registration order：
+
+```text
+publish Canonical StreamDescriptor
+        ↓
+register rodaq.projection.ros2.v1
+        ↓
+MCAP descriptor readiness
+        ↓
+Binding Active
+```
+
+Projection 与 Canonical Descriptor 冲突时必须失败。例如：
+
+```text
+projection.topic_name != StreamName
+projection.type_name != Schema.TypeIdentifier
+SchemaFormat not ros2msg/ros2idl
+serialization not compatible with PayloadEncoding
+```
+
+都不能进入 qualified V1 Binding。
 
 ## 2.3 Data-bearing Sample 与 DDS Lifecycle Sample
 
@@ -604,9 +723,9 @@ Clock semantics
 
 ---
 
-## 2.5 V1 DDS Plugin 内部组织
+## 2.5 V1 FastDDS Plugin 内部组织
 
-DDS Plugin 可以保持为一个紧凑对象；Fast DDS adapter 不要求拆出多个 Manager。
+FastDDS Plugin 可以保持为一个紧凑对象；Fast DDS adapter 不要求拆出多个 Manager。
 
 内部需要维护的核心状态：
 
@@ -624,7 +743,7 @@ quiescence state
 
 ### Participant / Domain
 
-V1 一个 DDS Plugin instance 对应一个明确配置的：
+V1 一个 FastDDS Plugin instance 对应一个明确配置的：
 
 ```text
 DDS DomainId
@@ -636,7 +755,7 @@ Participant configuration
 
 如果需要同时采集多个 DDS domain：
 
-> 使用多个 DDS Acquisition Plugin instance。
+> 使用多个 FastDDS Acquisition Plugin instance。
 
 这与 Runtime 支持多个 Acquisition Plugin instance 的拓扑一致。
 
@@ -702,21 +821,29 @@ serialize exact declared PayloadEncoding
 Runtime::Submit
 ```
 
-### DynamicData 与 serialization
+### DynamicTypes 与 serialized data path
 
-第一版 Fast DDS 实现推荐以 DynamicTypes 路径获得 type knowledge，但 Canonical Payload 必须保持：
+第一版 FastDDS 实现使用 DynamicTypes / TypeObject 获取 **type knowledge**，但它们属于 Control Plane。V1 Data Plane 的目标 Payload 是：
 
 ```text
-serialized logical DDS bytes
+ROS2-compatible serialized CDR bytes
 ```
 
 而不是 DynamicData object tree。
 
-如果 high-level API 返回 DynamicData：
+因此 implementation source-reference audit 必须优先验证 DDS-Pipe / DDS Record & Replay 所使用的 serialized payload / payload-pool path，选择 Fast DDS 能稳定提供 serialized bytes 且满足 lifetime contract 的 API 层。
 
-> 必须使用明确的 Fast CDR/XCDR serialization path，并把实际 encoding 注册为 PayloadEncoding。
+如果冻结版本最终只能通过 high-level DynamicData 获得 sample，则允许一个受控 reserialization fallback，但必须：
 
-如果未来选择 lower RTPS serialized payload path，则可以避免一次 reserialization，但需要单独审查：
+```text
+use explicit Fast CDR serialization
+prove generated framing is ROS2-compatible cdr
+register the exact PayloadEncoding
+measure copy / CPU cost on the 10-camera workload
+never claim reserialized bytes are exact original wire bytes
+```
+
+如果选择 lower RTPS serialized payload path，则必须额外审查：
 
 ```text
 payload ownership
@@ -739,21 +866,21 @@ max wait duration
 
 达到上限后不能无限增长。
 
-策略必须显式配置为：
+达到 pending bound 后，V1 qualified path 只能执行明确的 pre-Runtime policy：
 
 ```text
-reject/drop pre-Runtime native sample
+bounded backpressure when the native API permits
 or
-type-only fallback if reliable TypeIdentifier is available and configuration permits
+reject/drop pre-Runtime native sample
 ```
 
-这类 sample 尚未进入 Runtime Admission，因此不消耗 AcceptanceSequence。
+不能切换成 type-only Ready Binding。此时 sample 尚未进入 Runtime Admission，因此不消耗 AcceptanceSequence；对应 drop/reject 必须有可观测计数和诊断。
 
 ---
 
 ## 2.6 Stable Plugin ABI Mapping
 
-DDS Plugin 的 Fast DDS / DDS native object 不直接进入 Plugin ABI。跨 DSO contract 统一采用 Acquisition Family Protocol。
+FastDDS Plugin 的 Fast DDS / DDS native object 不直接进入 Plugin ABI。跨 DSO contract 统一采用 Acquisition Family Protocol。
 
 ### Lifecycle
 
@@ -764,6 +891,7 @@ create
 bind
     → query rodaq.runtime.common.v1
     → query rodaq.runtime.acquisition.v1
+    → query rodaq.runtime.projection.v1
     → 按需 query rodaq.runtime.canonical.v1
     → require rodaq.acquisition.control.v1
 
@@ -868,7 +996,7 @@ DDS SourceId 的 canonical byte domain 必须与 ROS2 domain disjoint。
 
 同一组 RTPS GUID bytes 也不能脱离 DDS Domain identity 单独比较：不同 DDS DomainId 可以存在相同 GUID bytes，但它们不是同一个 native Source。
 
-因此 V1 DDS SourceId identity domain 至少包含：
+因此 V1 FastDDS SourceId identity domain 至少包含：
 
 ```text
 DDS DomainId
@@ -876,10 +1004,10 @@ DDS DomainId
 writer identity scheme
 ```
 
-V1 DDS SourceId 使用 versioned、scheme-tagged binary domain：
+V1 FastDDS SourceId 使用 versioned、scheme-tagged binary domain：
 
 ```text
-ASCII "rodaq.source.dds.v1\0"
+ASCII "rodaq.source.fastdds.v1\0"
 
 u32 dds_domain_id
 
@@ -914,7 +1042,7 @@ guidPrefix.value[0..11]
 entityId.value[0..3]
 ```
 
-这个 `rodaq.source.dds.v1` prefix 保证 DDS identity domain 与 ROS2 SourceId domain disjoint；`dds_domain_id` 防止跨 DDS Domain 的 GUID byte collision；scheme tag 又允许未来其它 DDS adapter 使用不同、但仍 deterministic 的 writer identity representation。
+这个 `rodaq.source.fastdds.v1` prefix 保证 DDS identity domain 与 ROS2 SourceId domain disjoint；`dds_domain_id` 防止跨 DDS Domain 的 GUID byte collision；scheme tag 又允许未来其它 DDS adapter 使用不同、但仍 deterministic 的 writer identity representation。
 
 Fast DDS ordinary Topic sample 的具体 Writer identity 路径为：
 
@@ -1162,7 +1290,7 @@ int32 seconds + uint32 fraction
 3. dds/source_timestamp          optional only with proven common clock
 ```
 
-因此当前 DDS Mapping 同样：
+因此当前 FastDDS Mapping 同样：
 
 > 不要求提高 `MaxTimestampKeysPerSet = 4`。
 
@@ -1198,7 +1326,7 @@ or another exact serialization
 
 ## 4.1 Activation
 
-DDS Plugin activation：
+FastDDS Plugin activation：
 
 ```text
 prepare Participant / Reader resource
@@ -1370,7 +1498,7 @@ ClockId
 
 ## 4.5 Quiescence / Stop
 
-DDS Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
+FastDDS Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
 
 ```text
 no new DataReader/listener/worker
@@ -1405,19 +1533,15 @@ transport/native worker
 ## 5.1 明确不属于当前 V1 的能力
 
 ```text
+generic arbitrary DDS / OMG-IDL recording artifact
+ROS2 services / actions wire recording
+DDS routing / forwarding / replay
 exact DDS dispose/no-writers replay
-
 sample/view/generation rank persistence
-
 portable SourceSequence for every DDS implementation
-
-portable raw-wire byte access for every DDS implementation
-
 unconditional multi-writer source_timestamp
-
 cross-Plugin merge with ROS2 Stream
-
-DDS path failover inside one activation
+FastDDS path failover inside one activation
 ```
 
 ## 5.2 必须验证的 Cases
@@ -1425,12 +1549,16 @@ DDS path failover inside one activation
 ### Discovery
 
 ```text
-Topic/type discovery
+ROS2-compatible DDS Topic/type discovery
+rt/* → normalized ROS2 topic mapping
 multiple writers
 writer add/remove
-incompatible type not merged
-type identity preserved for every admitted typed payload
-type-only → exact TypeObject/IDL causes Descriptor evolution
+incompatible ROS2 type not merged
+CompleteTypeObject / dependency discovery
+exact ROS2 type identity preserved for every admitted payload
+complete ros2idl/ros2msg reconstruction
+rodaq.projection.ros2.v1 registered before descriptor readiness
+DataWriter QoS → deterministic offered_qos_profiles projection
 ```
 
 ### Data Semantics
@@ -1515,58 +1643,60 @@ descriptor evolution
 
 ## 5.3 设计审查结论
 
-DDS Mapping 设计提供了独立于 ROS2 的 Acquisition evidence；Fast DDS 只是当前 concrete feasibility baseline。
+FastDDS Mapping 的 V1 角色已经从“portable Generic DDS evidence”收敛为：
 
-当前通用架构能够表达：
+> **Fast DDS / Fast CDR based ROS2 wire acquisition without ROS2 runtime dependency.**
+
+通用 Acquisition / Canonical Contract 仍保持 middleware-neutral；FastDDS-specific GUID、TypeObject、DataReader、QoS object 等类型不得泄漏到 Stable ABI。
+
+当前架构能够表达：
 
 ```text
-multiple Writer Source per Stream
-optional SourceSequence, including an explicit absent baseline
-reader-side clock/timestamp
+multiple DataWriter Source per Stream
+optional SourceSequence
+reader/source timestamp facts
 schema/type evolution
-data-bearing sample
-bounded Plugin queue / backpressure
+serialized CDR payload
+bounded discovery / pending-type state
 quiescence / recovery
+versioned Ros2Projection
 ```
 
-没有发现为了 DDS data acquisition 必须新增：
+V1 qualified path 的额外硬约束是：
 
 ```text
-Generic Metadata
-Generic Event
-SourceDescriptor
-multi-path Stream
+ROS2 topic normalization proven
+ROS2 type reconstruction proven
+complete ros2msg/ros2idl schema available
+cdr framing compatible
+Ros2Projection complete
 ```
 
-的证据。
+无法满足这些条件的 Generic DDS flow 不进入当前 MCAP Ready Binding；它留给 future Generic DDS capability，而不是通过降低 MCAP interoperability contract 来兼容。
 
-当前显式边界包括：
-
-- ordinary Topic portable API 不保证 Writer-originated SourceSequence；
-- multi-writer source timestamp 没有 common-clock evidence 时不映射；
-- complete DDS instance lifecycle replay 当前被裁剪；
-- Writer GUID 必须与 DDS DomainId 一起形成 Scope-safe SourceId；
-- XTypes binary type identity 属于 native type evidence / exact schema representation，不能直接污染 UTF-8 Canonical TypeIdentifier。
-
-如果以后它成为真实需求，再重新评估 Canonical Model。
-
-`MaxTimestampKeysPerSet = 4` 对当前 DDS Mapping（Fast DDS baseline）足够。
+`MaxTimestampKeysPerSet = 4` 对当前 FastDDS Mapping baseline 足够。
 
 ## 5.4 Implementation Status
 
-DDS Acquisition 是 V1 design target，但 concrete implementation：
+FastDDS Acquisition 是 **V1 required implementation**。
 
-> 不阻塞首个 ROS2 + MCAP functional milestone。
-
-正式实现前必须针对最终选定的 DDS implementation/version 再审核：
+正式编码前必须完成一次针对 DDS-Pipe / DDS Record & Replay 当前冻结源码版本的 source-reference audit，至少确认：
 
 ```text
-serialized sample access
+participant / endpoint discovery pattern
+DynamicTypes / CompleteTypeObject resolution
+ROS2 type projection / ros2-types behavior
+serialized payload access path
+DataWriter QoS discovery
 publication_handle → Writer GUID mapping
-optional lower-path SourceSequence capability
 Time_t exact representation
-loaned buffer lifetime
+listener / worker quiescence
+payload pool / loan lifetime
 ```
+
+实现不直接依赖 DDS-Pipe 或 DDS Record & Replay；任何借鉴的机制必须重新落到 RoDAQ lifecycle、bounds、ownership 和 Plugin ABI contract 中。
+
+Recording-host qualification 必须包含一个没有 `/opt/ros`、未设置 `ROS_DISTRO` 的 clean environment，证明 FastDDS Plugin 的 transitive runtime dependency closure 不包含 ROS2 libraries。
 
 ## 5.5 Native Evidence 与可执行验证
 

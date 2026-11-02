@@ -1,15 +1,15 @@
 # RoDAQ Acquisition Plugin Design Specification
 
-**Version:** v0.6
+**Version:** v0.7
 **Status:** Plugin ABI Reconciliation Candidate
 **Scope:** RoDAQ V1 Acquisition Plugin Architecture and Runtime Contract
 
 **Normative Dependencies:**
 
 - RoDAQ Canonical Data Model Design Specification v0.9
-- RoDAQ V1 Canonical Profile v0.5
-- RoDAQ System Architecture Design Specification v0.5
-- RoDAQ Runtime Design Specification v0.5
+- RoDAQ V1 Canonical Profile v0.6
+- RoDAQ System Architecture Design Specification v0.6
+- RoDAQ Runtime Design Specification v0.6
 - RoDAQ Payload Design Specification v0.5
 - RoDAQ Admission Design Specification v0.5
 - RoDAQ V1 Plugin System Design — current Freeze Candidate
@@ -74,22 +74,30 @@ Acquisition Plugin 必须：
 
 ## 1.2 V1 目标 Plugin 类型
 
-V1 Acquisition Contract 的 concrete design / validation target 为：
-
-```text
-ROS2
-DDS (Fast DDS baseline)
-```
-
-其中首个 functional implementation 只要求实现：
+V1 Acquisition Contract 的 required concrete implementation 为：
 
 ```text
 ROS2 Acquisition
+FastDDS Acquisition
 ```
 
-DDS Acquisition 在 ROS2 + MCAP 功能验证后实现，但其具体 Plugin 设计与 native Mapping 必须在 V1 Profile freeze 前完成，用于证明通用 Contract 没有被 ROS2-specific model 反向塑形。
+两者使用不同 native path：
 
-SocketCAN 当前不属于 V1 freeze gate，作为后续扩展保留。
+```text
+ROS2 Acquisition
+    → rcl/rmw serialized path
+    → ROS2 runtime dependency allowed
+
+FastDDS Acquisition
+    → Fast DDS / Fast CDR direct path
+    → DDS-Pipe / DDS Record & Replay as source-level references
+    → no ROS2 runtime dependency
+    → reconstruct ROS2-compatible wire semantics
+```
+
+两种 Plugin 都必须产生相同版本的 typed `Ros2Projection`，使 V1 MCAP Storage 不需要判断 Record 来自 ROS2 还是 FastDDS。
+
+SocketCAN、Generic DDS、camera SDK 等不属于 V1 implementation/release gate，但继续作为架构扩展目标。公共 Contract 必须允许这些 Plugin 在不修改 Canonical Model 和 Runtime 基础语义的情况下接入。
 
 Contract 同时不能依赖这些 backend 的具体类型。
 
@@ -121,6 +129,71 @@ vendor transport
 ```
 
 也应能够在不改变 Canonical Model 和 Runtime 基础 contract 的情况下接入。
+
+---
+
+## 1.2.1 Typed Interoperability Projection
+
+Canonical Model 只表达长期稳定的数据语义，不承担某个外部生态的文件互操作细节。但 Storage Backend 为了生成标准 Artifact，可能需要 Acquisition 已经掌握、又不属于 Canonical identity/equality 的低频事实，例如 ROS2 publisher offered QoS。
+
+V1 因此引入一个受控的 **typed interoperability projection** 机制：
+
+```text
+Acquisition native facts
+        ↓
+Canonical registration
+        +
+versioned InteropProjection
+        ↓
+Runtime-owned Projection Registry
+        ↓
+Storage Descriptor Readiness
+```
+
+该机制必须满足：
+
+```text
+not Canonical State
+not part of Record Identity
+not part of Stream/Descriptor equality
+immutable after publication
+bounded per descriptor and per activation
+versioned by explicit projection identifier
+Runtime-mediated; no Acquisition → Storage direct call
+not queried on every Record hot path
+```
+
+V1 冻结的 projection identifier：
+
+```text
+rodaq.projection.ros2.v1
+```
+
+其 logical fields 至少包括：
+
+```text
+normalized ROS2 topic name
+exact ROS2 type name
+serialization format
+publisher offered QoS representation
+optional ROS2 type/hash identity when the selected ROS2 baseline provides it
+```
+
+Schema format / representation **不在 projection 中复制**。它们继续由 Canonical SchemaDescriptor 精确保存；projection 中与 StreamName / TypeIdentifier / PayloadEncoding 重叠的字段只用于 **cross-check**，不能成为另一套 Canonical authority。Storage 必须拒绝 projection 与 Canonical Descriptor 相互矛盾的情况。
+
+Runtime 通过独立的 `rodaq.runtime.projection.v1` Service 注册和查询 projection。Runtime 对 projection payload 的业务语义保持 opaque，只负责：
+
+```text
+identifier/version validation
+ownership/lifetime
+immutability
+bounds
+(StreamDescriptor, projection-id) association
+```
+
+V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2.v1`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
+
+未来其它生态可以增加新的 typed projection，例如 CAN/MDF mapping；这不等于引入 Generic PropertyBag。
 
 ---
 
@@ -258,7 +331,7 @@ multiple Sources
 multiple Bindings across different Streams
 ```
 
-但是 Canonical Profile v0.5 对 V1 冻结：
+但是 Canonical Profile v0.6 对 V1 冻结：
 
 > **每个 Canonical Stream 任一时刻最多只有一条 active acquisition path、一个 owning Acquisition Plugin 和一个 current Runtime Binding。**
 
@@ -4311,6 +4384,8 @@ Backend-specific mapping：
 
 > 应通过 typed mapping contract 表达。
 
+`rodaq.runtime.projection.v1` 是这一规则的显式实现：projection 必须具有已登记的 identifier、version、独立规范和严格 size/lifetime bound；Runtime 不提供任意 key/value 查询，也不允许 Plugin 把未知 native object 塞进 projection 逃避设计审查。
+
 只有出现明确跨 backend 的共同需求后：
 
 > 才考虑增加新的通用 primitive。
@@ -5882,6 +5957,8 @@ Runtime ingress timestamp
 Storage persistence
 ```
 
+当 concrete mapping 需要外部生态互操作信息时，Plugin 可以在 Control Plane 为 StreamDescriptor 发布 versioned typed InteropProjection；该 projection 不进入 per-record Submit hot path，也不改变 Canonical equality。
+
 Source identity：
 
 ```text
@@ -6130,4 +6207,6 @@ retention / quarantine
 
 最终 V1 Acquisition Plugin Contract 提供：
 
-> **以 ROS2、DDS（Fast DDS baseline）两个 V1 design target 验证完整 lifecycle、discovery、identity、schema、clock、timestamp、payload、backpressure、dynamic evolution、failure/recovery 和 quiescence 能力，同时保持 Contract 对未来 SocketCAN 等 acquisition backend 可扩展；首个实现只要求 ROS2，并继续把单 Stream failure 与 Plugin-wide failure 解耦，使 Payload ownership 在所有正常和异常提交路径上明确、保守且 memory-safe。**
+> **以 ROS2、FastDDS 两个 V1 required implementation 验证完整 lifecycle、discovery、identity、schema、clock、timestamp、payload、backpressure、dynamic evolution、failure/recovery、InteropProjection 和 quiescence 能力，同时保持 Contract 对未来 Generic DDS、SocketCAN 等 backend 可扩展；M3 先实现 ROS2，M4 再实现 FastDDS，并继续把单 Stream failure 与 Plugin-wide failure 解耦，使 Payload ownership 在所有正常和异常提交路径上明确、保守且 memory-safe。**
+
+ROS2 与 FastDDS Acquisition 默认是 alternative deployment profiles。V1 不要求它们在同一 process namespace 同时激活；若底层 Fast DDS/Fast CDR dependency closure 未通过 ABI/SONAME/symbol coexistence qualification，Runtime/PluginManager 必须将 simultaneous activation 视为 unsupported combination，而不是依赖动态链接器的偶然解析结果。

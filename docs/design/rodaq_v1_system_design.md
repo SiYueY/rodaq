@@ -8,7 +8,7 @@
 
 > **文档定位**
 > 本文定义 RoDAQ（Robot Data Acquisition）V1 公共框架的总体架构、Runtime 核心机制、动态插件体系、仓库与构建组织、第三方依赖基线、开源参考实现、AppImage 发布方式以及开发验证路线。
-> 本文面向实际工程开发，不是概念性白皮书，也不是某一个具体插件的接口说明。后续 `runtime`、`plugin system`、`ROS2 Acquisition`、`DDS Acquisition`、`MCAP Storage`、`SQLite3 Storage` 的实现都应遵循本文给出的总体边界和工程约束。
+> 本文面向实际工程开发，不是概念性白皮书，也不是某一个具体插件的接口说明。后续 `runtime`、`plugin system`、`ROS2 Acquisition`、`FastDDS Acquisition` 与 `MCAP Storage` 的 V1 实现，以及 SQLite3、SocketCAN、Generic DDS 等后续 Plugin 设计，都应遵循本文给出的总体边界和工程约束。
 
 ---
 
@@ -64,41 +64,69 @@ RoDAQ 的核心工程原则是：
 
 ## 1.1 V1 系统范围
 
-V1 设计范围：
+V1 **实现范围**冻结为：
 
 ```text
 Acquisition Plugins
     ROS2
-    DDS
+    FastDDS
 
 Storage Plugins
     MCAP
-    SQLite3
 ```
 
-V1 第一条实现和验证链路：
+V1 必须完成两条真实采集链路，并收敛到同一个 MCAP interoperability contract：
 
 ```text
-ROS2 Acquisition
-      ↓
-RoDAQ Runtime
-      ↓
-MCAP Storage
+ROS2 Acquisition ─────┐
+                      ├──> RoDAQ Runtime ──> MCAP Storage ──> ROS2-profile MCAP
+FastDDS Acquisition ──┘
 ```
 
-原因是这条路径可以最快验证：
+其中：
 
-- 插件加载；
-- Canonical Model；
-- Payload ownership；
-- Runtime Admission；
-- Dispatch / Completion；
-- Storage handoff；
-- 高带宽图像数据；
-- AppImage 打包；
-- Crash / Stop / Backpressure 行为。
+- `ROS2 Acquisition` 使用 ROS2 原生 `rcl/rmw` serialized path，面向已经安装 ROS2 Runtime 的部署环境；
+- `FastDDS Acquisition` 直接基于 eProsima Fast DDS / Fast CDR，实现层参考 DDS-Pipe 与 DDS Record & Replay，不依赖 ROS2 Runtime，但在 Topic、Type、Schema、CDR、QoS 与时间语义上恢复 ROS2-compatible projection；
+- 两条 Acquisition path 不做跨 Plugin Stream 自动 merge，但对于同一 ROS2 数据源必须通过 Cross-Acquisition Equivalence Test 证明外部 ROS2 语义等价；
+- `MCAP Storage` 是 V1 唯一实现的 Storage Backend，正式输出必须能够被 `ros2 bag play`、PlotJuggler、Foxglove 直接消费，并同时保留 RoDAQ full-fidelity Canonical sidecar。
 
-DDS Acquisition 和 SQLite3 Storage 在 V1 中完成设计，但可以在 Runtime 与 Plugin System 稳定之后实现。
+两种 Acquisition 都是 V1 required implementation，但默认是 **alternative deployment / acquisition profiles**，不是要求同一进程同时激活：
+
+```text
+Profile A
+    ROS2 Acquisition + MCAP
+
+Profile B
+    FastDDS Acquisition + MCAP
+```
+
+原因是 ROS2 `rmw_fastrtps_*` 可能通过 ROS2 安装引入一套 Fast DDS/Fast CDR，而 FastDDS Acquisition 又要求 RoDAQ 自己直接 pin 的 Fast DDS/Fast CDR。V1 Plugin 仍运行在同一 process namespace；如果两套 dependency 的 SONAME / ABI / symbol set 不兼容，同时加载可能产生不可控的 dynamic-linker collision。
+
+因此 V1 冻结：
+
+- 必须分别支持并 qualification ROS2 + MCAP 与 FastDDS + MCAP；
+- Cross-Acquisition Equivalence Test 允许在两个独立进程/运行实例中记录同一 source corpus；
+- **不要求**同一 RoDAQ process 同时加载/激活 ROS2 Acquisition 与 FastDDS Acquisition；
+- 只有 Release Dependency Audit 证明两者实际 Fast DDS/Fast CDR dependency closure 兼容、且 SONAME/symbol collision 测试通过时，才允许把 simultaneous activation 标记为 supported；
+- 若未证明，PluginManager / packaging validation 必须拒绝或明确标记该组合 unsupported，不能依赖 loader 偶然选择某一个 DSO。
+
+V1 **架构设计范围**仍然必须支持未来扩展，而不能被上述三个 concrete Plugin 反向塑形。至少保留以下扩展方向：
+
+```text
+Future Acquisition
+    Generic DDS
+    SocketCAN
+    camera / LiDAR vendor SDK
+    UDP / TCP / shared memory
+
+Future Storage
+    SQLite3
+    HDF5
+    MDF4
+    other database / archival backends
+```
+
+SQLite3 设计文档继续保留，用于验证通用 Storage Contract 不依赖 MCAP container model，但 **不属于 V1 implementation / release gate**。
 
 ## 1.2 总体架构
 
@@ -106,7 +134,7 @@ DDS Acquisition 和 SQLite3 Storage 在 V1 中完成设计，但可以在 Runtim
 flowchart LR
     subgraph Acquisition["Acquisition Layer"]
         A1["ROS2 Acquisition Plugin"]
-        A2["DDS Acquisition Plugin"]
+        A2["FastDDS Acquisition Plugin"]
         A3["Future Acquisition Plugins"]
     end
 
@@ -128,7 +156,7 @@ flowchart LR
 
     subgraph Storage["Storage Layer"]
         S1["MCAP Storage Plugin"]
-        S2["SQLite3 Storage Plugin"]
+        S2["SQLite3 Storage Plugin (Future)"]
         S3["Future Storage Plugins"]
     end
 
@@ -768,6 +796,53 @@ query immutable views
 详细字段由 `docs/design/canonical_data_model.md`、`canonical_profile.md` 与 `rodaq_plugin_system.md` 共同约束；本文冻结上述跨模块语义，不允许专项实现反向修改这些规则。
 
 
+### 1.3.14 Canonical State 与 InteropProjection 分离
+
+V1 新增的 ROS2 MCAP interoperability requirement **不改变 Canonical Model**。系统明确区分：
+
+```text
+Canonical State
+    Source / Clock / Schema / Stream / StreamDescriptor / Record / Payload
+    → long-term semantic authority
+
+InteropProjection
+    external ecosystem compatibility facts
+    → non-Canonical
+```
+
+V1 数据路径：
+
+```text
+ROS2 Acquisition ─────┐
+                      ├─ Canonical Descriptor + rodaq.projection.ros2.v1
+FastDDS Acquisition ──┘
+                                   ↓
+                         Runtime Projection Registry
+                                   ↓
+                         MCAP Descriptor Readiness
+                                   ↓
+                         ROS2-profile MCAP
+```
+
+约束：
+
+- Acquisition 与 Storage 仍不能直接调用；
+- Runtime 只管理 projection identifier/version、ownership、immutability、bounds 与 descriptor association，不解释 ROS2 QoS 业务语义；
+- projection 只在 Control Plane 注册，不进入每条 Record 的 hot path；
+- projection 与 Canonical Descriptor 冲突时必须拒绝，不能静默选一个；
+- V1 required `rodaq.projection.ros2.v1` 由 ROS2/FastDDS 两个 Acquisition 产生同一逻辑 contract，MCAP Storage 只消费统一 projection；
+- future Generic DDS、SocketCAN、MDF 等可以定义其它 typed projection，而不修改 Canonical State，也不引入 Generic PropertyBag。
+
+这使 V1 能同时满足：
+
+```text
+strict ROS2 MCAP interoperability
++
+plugin-independent Canonical/Runtime architecture
+```
+
+---
+
 ## 1.4 推荐仓库目录结构
 
 RoDAQ V1 在正式开发前应冻结顶层目录职责。后续可以增加私有文件，但不应频繁调整这些边界。
@@ -905,7 +980,7 @@ rodaq/
 │   │   │   ├── src/
 │   │   │   └── tests/
 │   │   │
-│   │   └── dds/
+│   │   └── fastdds/
 │   │       ├── CMakeLists.txt
 │   │       ├── include/
 │   │       ├── src/
@@ -987,7 +1062,7 @@ rodaq/
 │   ├── storage_plugin.md
 │   ├── acquisition_plugin/
 │   │   ├── ros2.md
-│   │   └── dds.md
+│   │   └── fastdds.md
 │   └── storage_plugin/
 │       ├── mcap.md
 │       └── sqlite3.md
@@ -1150,10 +1225,10 @@ flowchart TD
     API["RoDAQ Public API / ABI"]
     CORE["RoDAQ Runtime"]
     ROS["ROS2 Acquisition"]
-    DDS["DDS Acquisition"]
+    DDS["FastDDS Acquisition"]
     MCAP["MCAP Storage"]
     SQL["SQLite3 Storage"]
-    EXT["ROS2 / DDS / MCAP / SQLite3"]
+    EXT["ROS2 / Fast DDS / MCAP / future backends"]
 
     API --> CORE
     API --> ROS
@@ -1171,7 +1246,7 @@ flowchart TD
 
 ```text
 Runtime Core → ROS2
-Runtime Core → DDS
+Runtime Core → Fast DDS
 Runtime Core → MCAP
 Runtime Core → SQLite3
 
@@ -1382,13 +1457,18 @@ link boundary
 
 时，才值得成为独立 target。
 
-Concrete Plugin：
+Concrete Plugin target 分为当前实现与后续设计目标：
 
 ```text
-rodaq_acquisition_ros2
-rodaq_acquisition_dds
-rodaq_storage_mcap
-rodaq_storage_sqlite3
+V1 implemented:
+    rodaq_acquisition_ros2
+    rodaq_acquisition_fastdds
+    rodaq_storage_mcap
+
+future / designed:
+    rodaq_storage_sqlite3
+    rodaq_acquisition_socketcan
+    ...
 ```
 
 ## 1.8 安装树
@@ -1407,9 +1487,8 @@ rodaq_storage_sqlite3
 │   ├── rodaq/
 │   │   └── plugins/
 │   │       ├── librodaq_acquisition_ros2.so
-│   │       ├── librodaq_acquisition_dds.so
-│   │       ├── librodaq_storage_mcap.so
-│   │       └── librodaq_storage_sqlite3.so
+│   │       ├── librodaq_acquisition_fastdds.so
+│   │       └── librodaq_storage_mcap.so
 │   │
 │   └── cmake/
 │       └── RoDAQ/
@@ -3029,7 +3108,7 @@ high-water behavior
 
 # 3. 动态插件系统设计
 
-Plugin System 是 RoDAQ V1 最重要的长期兼容边界之一。ROS2、DDS、MCAP、SQLite3 等真实插件开始开发之前，应先冻结插件协议、Runtime services、生命周期、ownership 和 ABI 演化规则。
+Plugin System 是 RoDAQ V1 最重要的长期兼容边界之一。ROS2、FastDDS、MCAP 等 V1 required Plugin 开始开发之前，应先冻结插件协议、Runtime services、生命周期、ownership 和 ABI 演化规则；SQLite3、SocketCAN、Generic DDS 等后续 Plugin 必须复用同一边界。
 
 RoDAQ V1 的目标不是“能够 `dlopen()` 插件”，而是：
 
@@ -3041,7 +3120,7 @@ RoDAQ V1 的目标不是“能够 `dlopen()` 插件”，而是：
 
 ```mermaid
 flowchart TD
-    A["Concrete Plugin<br/>ROS2 / DDS / MCAP / SQLite3"]
+    A["Concrete Plugin<br/>ROS2 / FastDDS / MCAP / future plugins"]
     B["RoDAQ C++17 Plugin SDK<br/>wrappers / base classes / export helpers"]
     C["Stable C ABI<br/>family protocols / services / extensions"]
     D["PluginManager"]
@@ -3470,6 +3549,8 @@ Plugin → Runtime
 ```text
 rodaq.runtime.common.v1
 rodaq.runtime.canonical.v1
+rodaq.runtime.projection.v1
+rodaq.runtime.clock_correlation.v1
 rodaq.runtime.acquisition.v1
 rodaq.runtime.storage.v1
 ```
@@ -3504,6 +3585,28 @@ Record submission
 
 其中 `submit()` 必须 thread-safe。Source/Stream availability 与 Plugin-wide recovery/failure state 也通过该 Service report；Runtime Common Service 的 lifecycle snapshot 是 recovery attempt 的一次性前置确认，不是持久 permission token。
 
+### Projection Runtime Service
+
+负责：
+
+```text
+versioned typed InteropProjection registration/query
+immutable activation-lifetime projection ownership
+bounded projection storage
+```
+
+V1 required projection 为 `rodaq.projection.ros2.v1`。Acquisition 在 Control Plane 注册，Storage 只读查询。
+
+### Clock Correlation Runtime Service
+
+负责：
+
+```text
+read-only activation-scoped ingress Clock → Unix epoch anchor
+```
+
+V1 MCAP Storage 用它构造 replay `log_time`，不得在每条 Record handoff 时重新读取 wall clock。
+
 ### Storage Runtime Service
 
 负责：
@@ -3518,7 +3621,6 @@ asynchronous Storage failure reporting
 ```text
 rodaq.runtime.metrics.v1
 rodaq.runtime.memory.v1
-rodaq.runtime.clock_correlation.v1
 ```
 
 原则上不需要修改 Acquisition / Storage core protocol。
@@ -3935,7 +4037,7 @@ abidiff baseline
 compatibility fixtures
 ```
 
-只有这套边界冻结之后，ROS2、DDS、MCAP、SQLite3 才适合并行开发。
+只有这套边界冻结之后，ROS2、FastDDS、MCAP 才适合进入 V1 concrete implementation；SQLite3、SocketCAN、Generic DDS 等后续 Plugin 也必须在不引入 backend-specific ABI exception 的前提下接入。
 
 ---
 
@@ -3964,6 +4066,9 @@ RoDAQ 实现应区分：
 | Config Parsing | yaml-cpp | ConfigLoader backend |
 | Result primitive | expected-lite | Result implementation |
 | Allocator | mimalloc | optional backend |
+| ROS2 Acquisition native API | ROS2 rcl/rmw/rosidl | Plugin-local dependency; allowed only for ROS2 Acquisition |
+| FastDDS Acquisition native API | Fast DDS + Fast CDR | Plugin-local direct pinned dependency; no ROS2 runtime dependency |
+| MCAP Storage format library | mcap-cpp | Plugin-local direct pinned dependency; no `mcap_vendor` runtime dependency |
 | Tests | GoogleTest / GoogleMock | test-only |
 | Benchmark | Google Benchmark | benchmark-only |
 
@@ -3994,6 +4099,8 @@ HdrHistogram
 | Lifecycle / Quiescence | eCAL | rosbag2 | Runtime + Plugin convergence |
 | Result/Error | LLVM Expected/Error | expected-lite | RoDAQ error taxonomy |
 | Plugin ABI / SDK | PlotJuggler SDK | LLVM Plugin、gz-plugin、class_loader | family protocol、services、extensions、DSO lifetime |
+| FastDDS Acquisition | eProsima DDS-Pipe | eProsima DDS Record & Replay | ROS2 wire mapping、Canonical mapping、projection、lifecycle/bounds |
+| MCAP interoperability | rosbag2_storage_mcap | PlotJuggler MCAP loader、Foxglove/mcap | strict ROS2 profile + RoDAQ sidecar + qualification |
 
 ## 4.3 gRPC
 
@@ -4923,9 +5030,8 @@ AppDir/
     │   └── rodaq/
     │       └── plugins/
     │           ├── librodaq_acquisition_ros2.so
-    │           ├── librodaq_acquisition_dds.so
-    │           ├── librodaq_storage_mcap.so
-    │           └── librodaq_storage_sqlite3.so
+    │           ├── librodaq_acquisition_fastdds.so
+    │           └── librodaq_storage_mcap.so
     │
     └── share/
         └── rodaq/
@@ -5174,9 +5280,15 @@ different binary
 
 ```text
 两个 Plugin 带入不同版本 libfoo.so.1
+
+ROS2 Acquisition / rmw_fastrtps
+    → ROS2-distributed Fast DDS / Fast CDR
+
+FastDDS Acquisition
+    → RoDAQ-pinned Fast DDS / Fast CDR
 ```
 
-这可能在单 process namespace 中产生 symbol collision。
+这可能在单 process namespace 中产生 symbol collision、ABI mismatch，或让一个 Plugin 实际绑定到另一套 dependency。
 
 处理原则：
 
@@ -5286,8 +5398,8 @@ M0 — Foundation + Plugin ABI
 M1 — Runtime Core Primitives
 M2 — Fake End-to-End Runtime
 M3 — ROS2 Acquisition + MCAP Storage Vertical Slice
-M4 — Production Hardening
-M5 — DDS Acquisition + SQLite3 Storage
+M4 — FastDDS Acquisition + MCAP Interoperability
+M5 — Production Hardening + Release Qualification
 ```
 
 不再同时使用：
@@ -5318,8 +5430,8 @@ flowchart TD
     M1["M1 Runtime Core Primitives"]
     M2["M2 Fake End-to-End Runtime"]
     M3["M3 ROS2 + MCAP Vertical Slice"]
-    M4["M4 Production Hardening"]
-    M5["M5 DDS + SQLite3"]
+    M4["M4 FastDDS + MCAP Interoperability"]
+    M5["M5 Production Hardening"]
 
     M0 --> M1 --> M2 --> M3 --> M4 --> M5
 ```
@@ -5353,7 +5465,7 @@ M0 不实现完整 Runtime Data Plane。
 V1 system design baseline 已存在
 Plugin System Freeze Candidate 已完成 Contract reconciliation
 Acquisition / Storage generic Plugin docs 已与 Plugin System 对齐
-ROS2 / DDS / MCAP / SQLite3 mapping docs 已映射 Stable ABI
+ROS2 / FastDDS / MCAP required mapping docs 已映射 Stable ABI；SQLite3 future mapping 已用于 architecture-validation review
 AGENTS.md + docs/development/* 共享上下文机制已建立
 ```
 
@@ -6269,9 +6381,9 @@ M2 不实现：
 
 ```text
 ROS2
-DDS
+FastDDS
 MCAP
-SQLite3
+SQLite3（future）
 
 AppImage release qualification
 final performance tuning
@@ -6324,7 +6436,7 @@ M2 == PASS
 ```text
 ROS2 mapping doc current ABI mapping reviewed
 MCAP mapping doc current ABI mapping reviewed
-Humble + mcap-cpp concrete version baseline identified
+direct pinned mcap-cpp version/commit identified; Humble rosbag2/mcap_vendor retained only as interoperability reference
 ```
 
 ### Scope
@@ -6443,7 +6555,8 @@ Accepted Copy:
 MCAP：
 
 ```text
-Schema/Channel mapping
+Header.profile = ros2
+Ros2Projection → Schema / Channel mapping
 descriptor evolution
 same-Stream ordering
 payload exactness
@@ -6453,6 +6566,17 @@ flush
 close
 failure injection
 ```
+
+Interoperability：
+
+```text
+ros2 bag info / play
+PlotJuggler direct open + field decode
+Foxglove direct open + field decode
+RoDAQ full-fidelity decode
+```
+
+至少覆盖 `std_msgs/String`、`sensor_msgs/Imu`、`sensor_msgs/Image`、`sensor_msgs/PointCloud2`、`sensor_msgs/JointState`、`tf2_msgs/TFMessage` 与一个 nested custom message。
 
 Payload lifetime：
 
@@ -6500,6 +6624,12 @@ M3 PASS 要求：
 
 [PASS] payload logical bytes round-trip exactly
 
+[PASS] produced MCAP uses the ROS2 MCAP profile and complete ros2msg/ros2idl + cdr projection
+
+[PASS] `ros2 bag info` and `ros2 bag play` qualification passes for the frozen ROS2 baseline
+
+[PASS] PlotJuggler and Foxglove qualification fixtures decode expected fields/timeline
+
 [PASS] ROS2 Stop quiescence passes under active callbacks
 
 [PASS] MCAP PayloadConsumed lifetime test passes for frozen mcap-cpp version
@@ -6516,8 +6646,8 @@ M3 PASS 要求：
 M3 不实现：
 
 ```text
-DDS Acquisition
-SQLite3 Storage
+FastDDS Acquisition（进入 M4）
+SQLite3 Storage implementation
 final production tuning
 final arm64/amd64 AppImage release qualification
 live hot reload
@@ -6525,11 +6655,145 @@ live hot reload
 
 ---
 
-## 6.5 M4 — Production Hardening
+## 6.5 M4 — FastDDS Acquisition + MCAP Interoperability
 
 ### Goal
 
-把已经功能正确的 M3 系统推进到：
+在不修改已冻结 Runtime / Canonical / Plugin 基础 contract 的前提下，实现第二条 V1 Acquisition path：
+
+```text
+External ROS2 / rmw_fastrtps
+        ↓ DDS / RTPS wire
+FastDDS Acquisition Plugin
+        ↓
+RoDAQ Runtime
+        ↓
+MCAP Storage Plugin
+        ↓
+ROS2-profile MCAP
+```
+
+FastDDS Plugin 的核心目标不是依赖 ROS2 API 重做一遍 ROS2 Acquisition，而是：
+
+```text
+implementation dependency:
+    Fast DDS + Fast CDR
+
+engineering reference:
+    eProsima DDS-Pipe
+    eProsima DDS Record & Replay
+
+ROS2 runtime dependency:
+    none
+
+external compatibility target:
+    ROS2-compatible DDS pub/sub traffic
+```
+
+同时必须证明 ROS2 Acquisition 与 FastDDS Acquisition 对相同 ROS2 数据源产生等价的外部 ROS2 projection，并由同一个 MCAP Storage path 输出可播放 Artifact。
+
+### Prerequisites
+
+```text
+M3 == PASS
+FastDDS mapping doc reviewed against frozen Fast DDS/Fast CDR versions
+DDS-Pipe / DDS Record & Replay source-reference audit complete for reused mechanisms
+```
+
+### Scope
+
+FastDDS Acquisition：
+
+```text
+DomainParticipant / discovery / DataReader lifecycle
+ROS2 DDS topic-name normalization
+XTypes TypeIdentifier / TypeObject / DynamicType resolution
+ROS2 type-name reconstruction
+complete ros2idl / ros2msg schema projection
+serialized CDR acquisition without per-sample DynamicData decode/re-encode
+Writer GUID source identity
+publication / reception timestamp extraction
+Writer QoS → Ros2Projection offered QoS
+bounded pending-type / discovery state
+listener/worker quiescence
+failure/recovery
+```
+
+Control Plane 与 Data Plane 必须分离：
+
+```text
+Control Plane:
+    discovery + TypeObject + schema/projection construction
+
+Data Plane:
+    serialized CDR + cached handles + timestamps + SourceId
+```
+
+V1 FastDDS normal path 不接收 arbitrary Generic DDS stream。无法证明 ROS2-compatible topic/type/schema/CDR projection 的 flow 在 Descriptor readiness 阶段 Unsupported；Generic DDS 作为后续 Acquisition capability 设计。
+
+### Cross-Acquisition Equivalence
+
+对同一 ROS2 publisher corpus，分别通过 ROS2 Acquisition 与 FastDDS Acquisition 记录，至少比较：
+
+```text
+normalized StreamName
+ROS2 TypeIdentifier
+schema logical content / dependency closure
+payload bytes
+serialization format
+QoS projection
+source identity semantics
+timestamp semantics
+MCAP Schema / Channel semantics
+playback-visible behavior
+```
+
+内部 Canonical IDs 不要求数值相同，但外部 ROS2 interpretation 必须等价。
+
+### Interoperability Qualification
+
+两条 Acquisition path 产生的正式 MCAP 都必须通过：
+
+```text
+MCAP structural validation
+RoDAQ Canonical round-trip
+ros2 bag info
+ros2 bag play + subscriber verification
+PlotJuggler direct open + decoded field verification
+Foxglove direct open + decoded field verification
+```
+
+测试 baseline 至少覆盖 Ubuntu 22.04 / ROS2 Humble；Jazzy qualification 在依赖基线允许时纳入 release matrix。FastDDS recording host 本身必须能在没有 `/opt/ros` 的环境运行。
+
+### Exit Gate
+
+```text
+[PASS] FastDDS Acquisition integrates without ROS2 runtime dependency
+[PASS] no Fast DDS / Fast CDR type leaks into Runtime Core public contracts
+[PASS] serialized CDR hot path avoids mandatory per-record deserialize/re-serialize
+[PASS] DynamicTypes / TypeObject path reconstructs complete ROS2 schema for qualification corpus
+[PASS] FastDDS → Runtime → MCAP passes ros2 bag play / PlotJuggler / Foxglove qualification
+[PASS] ROS2 Acquisition vs FastDDS Acquisition equivalence suite passes
+[PASS] FastDDS Stop/quiescence and dynamic publisher lifecycle tests pass
+[PASS] clean non-ROS2 recording-host dependency audit passes
+```
+
+### Out of Scope
+
+```text
+Generic DDS recording mode
+ROS2 service/action recording
+SQLite3 Storage implementation
+DDS routing / forwarding / replay subsystem
+```
+
+---
+
+## 6.6 M5 — Production Hardening + Release Qualification
+
+### Goal
+
+把已经通过 ROS2 + FastDDS + MCAP 功能与 interoperability qualification 的系统推进到：
 
 ```text
 bounded
@@ -6539,478 +6803,83 @@ failure-tested
 release-qualified
 ```
 
-状态。
-
-M4 的原则是：
-
-> **任何性能优化都必须以 benchmark 为依据，并且不得削弱已经冻结的 correctness / ABI contract。**
+状态。任何性能优化都必须有 benchmark evidence，并且不得削弱 correctness、interoperability 或 Plugin ABI contract。
 
 ### Prerequisites
-
-必须：
-
-```text
-M3 == PASS
-```
-
-并已经存在可重复的：
-
-```text
-ROS2 + MCAP functional workload
-Fake stress workload
-```
-
-### Scope
-
-Correctness hardening：
-
-```text
-ASan
-UBSan
-TSan
-libFuzzer where appropriate
-repeated load/unload
-Stop/failure stress
-long soak
-```
-
-Performance：
-
-```text
-PayloadPool tuning
-queue capacity
-dispatch batching
-Storage batching
-allocator A/B tests
-oneTBB behavior
-copy count
-allocation count
-```
-
-Metrics：
-
-```text
-throughput
-CPU
-RSS
-allocations / record
-copies / record
-
-P50
-P95
-P99
-P99.9
-
-Payload high watermark
-Dispatch high watermark
-Storage inflight high watermark
-Admission wait
-Admission timeout
-```
-
-Release：
-
-```text
-AppImage x86_64
-AppImage aarch64
-
-GLIBC gate
-GLIBCXX gate
-CXXABI gate
-
-RPATH/RUNPATH
-DT_NEEDED recursive closure
-Plugin dependency closure
-SONAME collision
-
-clean Ubuntu 22.04
-clean Ubuntu 24.04
-
-real ARM64 qualification
-
-SBOM
-licenses
-checksums
-release manifest
-```
-
-### Deliverables
-
-```text
-benchmark suite
-
-stress/soak suite
-
-failure injection suite
-
-10-camera profiles
-
-mixed workload profile
-
-performance baseline report
-
-qualified AppImage artifacts
-
-SBOM
-THIRD_PARTY_NOTICES
-release manifest
-```
-
-### Verification
-
-#### 10-camera encoded profile
-
-明确：
-
-```text
-10 cameras
-× 30 FPS
-× 1280×720
-```
-
-必须记录真实：
-
-```text
-encoding
-average payload size
-bandwidth
-disk characteristics
-Storage configuration
-```
-
-#### Raw image stress profile
-
-RGB8：
-
-```text
-1280×720×3
-≈ 2.64 MiB/frame
-
-× 30 FPS
-× 10
-
-≈ 792 MiB/s theoretical payload rate
-```
-
-该 profile 用于：
-
-```text
-copy cost
-memory pressure
-PayloadPool
-Storage backpressure
-disk ceiling
-```
-
-而不是默认部署假设。
-
-#### Mixed workload
-
-至少：
-
-```text
-camera
-IMU
-joint state
-TF-like small message
-CAN-like small frames
-```
-
-验证：
-
-```text
-large Payload does not monopolize all resources
-small-message object pressure remains bounded
-multiple Streams do not break tail latency
-```
-
-#### Failure / crash
-
-至少：
-
-```text
-Storage stall
-disk slowdown
-disk full
-permission failure
-target disappeared
-Stop at peak load
-Plugin failure
-Payload exhaustion
-Stop during PayloadPending
-Stop during PersistencePending
-flush failure
-close failure
-secondary cleanup failure
-```
-
-### Exit Gate
-
-M4 PASS 要求：
-
-```text
-[PASS] required sanitizer suites are clean
-
-[PASS] stress/soak completes without resource growth
-
-[PASS] bounded-resource high-water behavior is verified
-
-[PASS] 10-camera encoded and raw stress profiles have recorded metrics
-
-[PASS] mixed workload has no correctness regression
-
-[PASS] failure/crash matrix preserves primary failure and deterministic quiescence
-
-[PASS] performance changes have before/after benchmark evidence
-
-[PASS] x86_64 AppImage passes Ubuntu22/24 clean-system qualification
-
-[PASS] aarch64 AppImage passes native ARM64 qualification
-
-[PASS] GLIBC/GLIBCXX/CXXABI gates pass
-
-[PASS] recursive Plugin dependency closure is complete
-
-[PASS] SBOM/license/release manifest produced
-```
-
-### Out of Scope
-
-M4 不要求：
-
-```text
-DDS
-SQLite3
-```
-
-除非它们被作为额外实验 workload，但不能成为 M4 Gate 的依赖。
-
----
-
-## 6.6 M5 — DDS Acquisition + SQLite3 Storage
-
-### Goal
-
-在不修改已冻结 Runtime/Plugin core contract 的前提下，加入第二套 Acquisition 与第二套 Storage backend，验证 RoDAQ 的抽象不是：
-
-```text
-ROS2-specific
-MCAP-specific
-```
-
-而是真正具有：
-
-```text
-middleware independence
-storage-format independence
-Canonical symmetry
-```
-
-### Prerequisites
-
-必须：
 
 ```text
 M4 == PASS
 ```
 
-以及：
-
-```text
-DDS mapping doc reviewed against final selected DDS implementation/version
-SQLite3 mapping doc reviewed against final SQLite version/build options
-```
-
 ### Scope
 
-DDS Acquisition：
+Correctness / stress：
 
 ```text
-create/bind/configure/start/stop
-
-Participant/discovery/DataReader path
-
-Source mapping
-Clock mapping
-Schema / XTypes mapping
-Stream mapping
-StreamDescriptor evolution
-
-serialized source-native or explicitly identified reserialization path
-
-Copy baseline
-Retain/loan path only if native lifetime proof exists
-
-listener/worker quiescence
-failure/recovery
+ASan / UBSan / TSan
+repeated load/unload
+Stop/failure stress
+long soak
+MCAP failure injection
+cross-acquisition regression
 ```
 
-SQLite3 Storage：
+Performance：
 
 ```text
-create/bind/configure/open/submit/flush/close
-
-Canonical descriptor projection
-
-prepared statements
-
-bounded transaction batching
-
-Payload binding lifetime
-
-Persistence outcome
-
-rollback
-Unknown outcome
-
-finalization marker
-journal/WAL policy
-
-recovery
+10 cameras × 30 FPS × 1280×720 encoded profile
+raw image stress profile
+mixed small/large message workload
+PayloadPool / queue / batching tuning
+copy count / allocation count / CPU / RSS / tail latency
 ```
 
-首个 SQLite direct path 推荐：
+Interoperability regression：
 
 ```text
-sqlite3_step()
-reset + clear bindings
-    ↓
-submit return
-
-payload_state
-    = PAYLOAD_CONSUMED
-
-persistence_state
-    = PERSISTENCE_PENDING
-
-transaction COMMIT
-    → persistence_completed(SUCCEEDED/FAILED/UNKNOWN)
+ros2 bag play
+PlotJuggler
+Foxglove
+RoDAQ validator
 ```
 
-### Deliverables
+Release：
 
 ```text
-DDS Acquisition Plugin .so
-
-SQLite3 Storage Plugin .so
-
-Plugin manifests
-
-backend-specific CMake targets
-
-DDS → Runtime → MCAP validation
-
-ROS2 → Runtime → SQLite3 validation
-
-DDS → Runtime → SQLite3 validation where useful
-
-canonical mapping symmetry tests
-
-cross-backend compatibility tests
-```
-
-### Verification
-
-DDS：
-
-```text
-multiple Writer Source per Stream
-SourceSequence present / absent behavior
-reader-side timestamp
-schema/type evolution
-loaned-buffer lifetime if enabled
-early callback before activation
-Stop / quiescence
-same-semantics recovery
-```
-
-SQLite：
-
-```text
-descriptor FK readiness
-unsigned AcceptanceSequence ordering projection
-SQLITE_STATIC payload lifetime
-SQLITE_TRANSIENT copied-memory accounting
-transaction batching
-COMMIT BUSY
-rollback
-PersistenceFailed
-PersistenceUnknown
-WAL/finalization cases
-close with prepared statements
-```
-
-必须直接验证：
-
-```text
-submit() == OK
-payload_state == PAYLOAD_CONSUMED
-persistence_state == PERSISTENCE_PENDING
-
-COMMIT
-    → exactly one persistence_completed()
-```
-
-如果未来异步 writer 在 submit return 后仍持有 Runtime Payload：
-
-```text
-payload_state == PAYLOAD_PENDING
-    → exactly one payload_consumed()
-```
-
-Canonical symmetry：
-
-```text
-same logical Record
-    mapped through MCAP
-    mapped through SQLite3
-
-logical payload equality preserved
-AcceptanceSequence preserved
-descriptor interpretation preserved
-timestamp semantics preserved
+x86_64 + aarch64
+Ubuntu 22.04 / 24.04 clean systems
+GLIBC / GLIBCXX / CXXABI gates
+RPATH / RUNPATH / recursive DT_NEEDED closure
+AppImage contents and Plugin dependency closure
+FastDDS-only deployment without ROS2 runtime
+SBOM / licenses / checksums / release manifest
 ```
 
 ### Exit Gate
 
-M5 PASS 要求：
-
 ```text
-[PASS] DDS backend integrates without changing Runtime Core semantics
-
-[PASS] SQLite backend integrates without changing Runtime Core semantics
-
-[PASS] no DDS type leaks into common Runtime Public API / Stable ABI
-
-[PASS] no SQLite type leaks into common Runtime Public API / Stable ABI
-
-[PASS] DDS Stop/quiescence tests pass
-
-[PASS] SQLite PayloadConsumed/PersistencePending lifetime test passes
-
-[PASS] SQLite failure/Unknown outcome tests pass
-
-[PASS] canonical mapping symmetry across MCAP/SQLite is demonstrated
-
-[PASS] Plugin ABI requires no backend-specific exception
-
-[PASS] V1 system requirements are satisfied across both Acquisition and both Storage backend families
+[PASS] sanitizer and long-soak suites are clean
+[PASS] all bounded-resource high-water marks are verified
+[PASS] camera and mixed-workload benchmark baselines are recorded
+[PASS] failure/crash matrix preserves deterministic quiescence and artifact status
+[PASS] ROS2 and FastDDS interoperability qualification remains green after tuning
+[PASS] x86_64 and aarch64 release qualification passes
+[PASS] FastDDS recording-host package has no ROS2 runtime dependency
+[PASS] SBOM/license/release manifest produced
 ```
 
 ### Out of Scope
 
-M5 仍不包括：
-
 ```text
-SocketCAN Acquisition implementation
-new Storage formats
+SQLite3 implementation
+SocketCAN implementation
+Generic DDS implementation
+additional Storage formats
 runtime hot reload
 Plugin process sandboxing
-distributed Plugin execution
-WASM Plugin runtime
 ```
 
-这些属于后续版本或独立设计。
+SQLite3 / SocketCAN / additional backends remain design-validation targets for extensibility, but they do not participate in V1 release completion.
 
 ---
 

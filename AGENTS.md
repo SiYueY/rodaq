@@ -48,25 +48,32 @@ Report the conflict and either fix the implementation or deliberately revise the
 
 ## 3. Current V1 scope
 
-Design scope:
+Required V1 implementation:
 
-- Acquisition Plugins: ROS 2 and DDS.
-- Storage Plugins: MCAP and SQLite3.
+- Acquisition Plugins: ROS2 and FastDDS.
+- Storage Plugins: MCAP.
 
-First functional implementation:
+Implementation sequence:
 
-- ROS 2 Acquisition.
-- MCAP Storage.
+- M3: ROS2 Acquisition + MCAP Storage vertical slice.
+- M4: FastDDS Acquisition + the same MCAP interoperability path.
+- M5: production hardening + release qualification.
 
-DDS Acquisition and SQLite3 Storage follow after the common Runtime and first vertical slice are validated.
+FastDDS is implemented directly on Fast DDS / Fast CDR, uses DDS-Pipe and DDS Record & Replay as source-level references, and must not require a ROS2 runtime on the recording host. ROS2 and FastDDS Acquisition must produce the same versioned `rodaq.projection.ros2.v1` contract for MCAP Storage.
 
-SocketCAN and other backends are future extensions and are not part of the current V1 freeze gate.
+ROS2 Acquisition and FastDDS Acquisition are required V1 alternatives, not a requirement for same-process co-activation. Unless Fast DDS/Fast CDR dependency coexistence is explicitly qualified, treat simultaneous activation as unsupported because both plugins may bring incompatible Fast DDS/Fast CDR DSOs into one process namespace.
+
+V1 normal MCAP artifacts must be ROS2-profile compatible and qualified with `ros2 bag play`, PlotJuggler and Foxglove while retaining RoDAQ full-fidelity sidecars.
+
+Generic DDS, SocketCAN, SQLite3 and other backends remain architecture/design targets for extensibility, but are not V1 implementation or release gates.
 
 ## 4. Non-negotiable architecture rules
 
 - C++17; GCC 11.x is the reference compiler.
 - Runtime is the only system-level mediator between Acquisition and Storage.
 - Canonical Model is the semantic authority; backend-specific types must not leak into Runtime public contracts.
+- Interoperability-specific facts use bounded/versioned typed projections through Runtime; no Acquisition-to-Storage direct call or Generic PropertyBag.
+- MCAP replay timeline derives from Runtime acquisition ingress correlation, never Storage handoff wall time.
 - One Canonical Stream has at most one active acquisition path at a time in V1.
 - Control Plane state mutation is logically serialized.
 - Acquisition may submit concurrently from multiple callback threads.

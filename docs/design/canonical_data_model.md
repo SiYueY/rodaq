@@ -1204,6 +1204,8 @@ RuntimeBinding canonical object
 
 只有当多个真实 Acquisition / Storage 场景都证明一个概念具有稳定共同语义时，才将其提升为 canonical primitive。
 
+外部生态 interoperability 所需、但不属于长期公共数据语义的低频信息，例如 ROS2 `offered_qos_profiles`，通过 Runtime-owned、versioned typed InteropProjection 传递。InteropProjection 明确 **不是 Canonical State**，不得参与 Canonical identity / equality / round-trip definition；它也不能反向成为 Generic Metadata / PropertyBag 的入口。
+
 ---
 
 ## 1.5 概念与专业术语
@@ -7526,14 +7528,16 @@ Storage Plugin 集合
 是否实现 Transform
 ```
 
-例如 V1 Profile 可以规定：
+例如当前 V1 Profile 可以规定：
 
 ```text
 one active Identity Scope per Runtime
 
-ROS2 / DDS / SocketCAN
+required Acquisition = ROS2 / FastDDS
+future mapping validation = Generic DDS / SocketCAN / ...
 
-MCAP / SQLite3
+required Storage = MCAP
+future mapping validation = SQLite3 / other backends
 
 small fixed timestamp slot limit
 
@@ -8348,11 +8352,15 @@ Storage Plugin conformance
         ↓
 Canonical → Storage → Canonical round-trip
 
-E2E integration
+V1 required E2E integration
         ↓
-ROS2 / DDS / SocketCAN
+ROS2 / FastDDS
 ×
-MCAP / SQLite3
+MCAP
+
+future architecture-validation mapping
+        ↓
+Generic DDS / SocketCAN / SQLite3 / ...
 ```
 
 Canonical corpus 应覆盖：
@@ -8579,9 +8587,11 @@ Host ↔ Scope
 ```text
 V1 Canonical Profile
         ↓
-ROS2 / DDS / SocketCAN Mapping Review
+ROS2 / FastDDS required Mapping Review
         ↓
-MCAP / SQLite3 Mapping Review
+MCAP required projection / unsupported-boundary Review
+        ↓
+Generic DDS / SocketCAN / SQLite3 future architecture-validation Review
         ↓
 Canonical Conformance Corpus
         ↓

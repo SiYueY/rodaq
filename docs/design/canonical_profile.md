@@ -1,6 +1,6 @@
 # RoDAQ V1 Canonical Profile Design Specification
 
-**Version:** v0.5
+**Version:** v0.6
 **Status:** Semantic Freeze Candidate
 **Scope:** RoDAQ V1 Canonical Capability Profile
 **Normative Base:** RoDAQ Canonical Data Model Design Specification v0.9
@@ -38,13 +38,16 @@ Canonical State Space
     ▼
 RoDAQ V1 Canonical Profile
     │
-    ├── Acquisition mappings
+    ├── V1 required Acquisition mappings
     │   ├── ROS2
-    │   └── DDS
+    │   └── FastDDS
     │
-    └── Storage projections
-        ├── MCAP
-        └── SQLite3
+    ├── V1 required Storage projection
+    │   └── MCAP
+    │
+    └── future architecture-validation mappings
+        ├── Generic DDS / SocketCAN / ...
+        └── SQLite3 / other Storage backends
 ```
 
 V1 Profile 不重新定义 Canonical semantics。
@@ -215,23 +218,20 @@ transform pipeline
 
 一次性进入 V1。
 
-V1 只覆盖当前已有明确工程目标的：
+V1 required implementation 覆盖：
 
 ```text
-Acquisition design targets:
+Acquisition:
     ROS2
-    DDS
+    FastDDS
 
-Storage design targets:
+Storage:
     MCAP
-    SQLite3
-
-Initial functional implementation:
-    ROS2 Acquisition
-    MCAP Storage
 ```
 
-同时保留 Canonical Model 为未来能力扩展提供的长期语义基础。
+其中 FastDDS 直接基于 Fast DDS / Fast CDR，用于在 recording host 不依赖 ROS2 Runtime 的情况下采集 ROS2-compatible DDS pub/sub traffic。V1 MCAP 输出具有额外 interoperability eligibility 约束，但这些约束 **不改变 Canonical-valid / V1-profile-valid 的定义**；不满足当前 MCAP projection 的 Canonical State 必须在 Descriptor readiness 显式 Unsupported，而不是被改写成 Canonical-invalid。
+
+同时保留 Generic DDS、SocketCAN、SQLite3 等 future mapping 作为 architecture-validation evidence，确保 Canonical Model 和 Plugin Contract 不被当前 ROS2/MCAP 组合反向塑形。
 
 ---
 
@@ -280,12 +280,12 @@ Initial functional implementation:
 | TimestampKeySet size | 1～4，冻结前经 Mapping Review 验证 |
 | Mandatory Timestamp Role | `rodaq/acquisition_ingress` |
 | Plugin-specific Timestamp Role | 支持 |
-| ClockCorrelation | 不支持 |
+| Canonical ClockCorrelation | 不支持；Runtime 可提供 non-Canonical replay-time correlation service |
 | Generic Cross-scope Import | 不支持 |
 | Transform / Merge Pipeline | 不支持 |
-| Acquisition Plugin | V1 design targets: ROS2 / DDS (Fast DDS baseline); initial implementation = ROS2 |
+| Acquisition Plugin | V1 required implementation: ROS2 + FastDDS; future mappings may add Generic DDS / SocketCAN / others |
 | Active acquisition path per Stream | V1 同时恰好 1 条；不支持同一 Stream 多 Plugin / 多 path 并行供数 |
-| Storage Plugin | MCAP / SQLite3 |
+| Storage Plugin | V1 required implementation: MCAP; SQLite3 and others are future architecture-validation mappings |
 | Full-fidelity Storage | V1 conformant mode 必须支持 |
 | Payload semantics | opaque immutable logical bytes |
 | Payload physical layout | 不由本 Profile 定义 |
@@ -300,10 +300,11 @@ flowchart TD
     CM -->|legal state space| CP
 
     CP --> ROS[ROS2 Acquisition]
-    CP --> DDS[DDS Acquisition]
+    CP --> FDD[FastDDS Acquisition]
 
     CP --> MCAP[MCAP Storage]
-    CP --> SQLITE[SQLite3 Storage]
+    CP -. future architecture validation .-> GDDS[Generic DDS / SocketCAN]
+    CP -. future architecture validation .-> SQLITE[SQLite3 / other Storage]
 
     CP -. physical layout / wire encoding not defined here .-> RT[Runtime Data Model]
     CP -. APIs not defined here .-> CONTRACTS[Plugin Contracts]
@@ -1155,16 +1156,16 @@ reduced rational semantics
 但是 V1 Mapping 必须在：
 
 ```text
-ROS2 / DDS (Fast DDS baseline)
+ROS2 / FastDDS
         ↓
 Runtime
         ↓
-MCAP / SQLite3
+Storage projection / persistence
 ```
 
 之间对相同 Canonical value 使用确定、可验证且 full-fidelity 的支持范围。
 
-因此 v0.5 进一步规定：
+因此 v0.6 进一步规定：
 
 > **V1 实际支持的 scalar value domain，以及 Runtime-allocated Canonical identity 在 Storage boundary 上的 canonical value representation。**
 
@@ -1193,7 +1194,7 @@ SQLite column type
 
 > **Semantic Freeze Candidate。**
 
-在 V1 Profile SEMANTIC-FROZEN 前，必须由 ROS2 / DDS (Fast DDS baseline) Acquisition Plugin design 和 MCAP / SQLite3 Storage Plugin design 共同完成静态 Mapping Review。
+在 V1 Profile SEMANTIC-FROZEN 前，必须由 ROS2、FastDDS Acquisition 与 MCAP Storage 的 required mapping review 证明 V1 required path 无 silent truncation / semantic loss。SQLite3、Generic DDS 等 future mapping 继续作为 non-blocking architecture-validation evidence；一旦它们揭示当前公共语义存在 P0/P1 结构性问题，同样必须在冻结前解决。
 
 Mapping Review 如果证明某个当前 domain 不能无损覆盖 V1 必需语义：
 
@@ -1742,7 +1743,7 @@ optional additional contract-defined timestamp when semantically valid
 
 覆盖。
 
-因此 v0.5 使用：
+因此 v0.6 使用：
 
 ```text
 MaxTimestampKeysPerSet = 4
@@ -1760,7 +1761,7 @@ small fixed timestamp representation
 
 但是：
 
-> **该上限尚未冻结，必须经过 ROS2 / DDS (Fast DDS baseline) Plugin Review 验证。**
+> **该上限尚未冻结，必须经过 ROS2 / FastDDS Plugin Review 验证。**
 
 如果任何 V1 Acquisition Mapping 证明：
 
@@ -2277,14 +2278,14 @@ flowchart TD
 
 ## 4.1 Acquisition Mapping 范围
 
-V1 Profile 面向：
+V1 Profile 的 required Acquisition implementation 面向：
 
 ```text
 ROS2
-DDS (Fast DDS baseline)
+FastDDS
 ```
 
-两个 Acquisition design target。
+两个 Acquisition mapping。Generic DDS、SocketCAN 等属于 future architecture-validation mapping，不是 V1 implementation/release gate。
 
 每一个 Plugin 必须通过独立 Acquisition Plugin Contract 定义：
 
@@ -2387,19 +2388,24 @@ source_timestamp
 
 ---
 
-## 4.3 DDS Profile Expectations（Fast DDS Baseline）
+## 4.3 FastDDS Profile Expectations（ROS2 Wire Acquisition）
 
-DDS Plugin Design 至少需要验证：
+FastDDS Mapping 的 V1 role 是：
+
+> 直接基于 Fast DDS / Fast CDR 观察 ROS2-compatible DDS pub/sub traffic，在 recording host 不依赖 ROS2 Runtime 的情况下建立与 ROS2 Acquisition 等价的 Canonical/interop interpretation。
+
+FastDDS Plugin Design 至少需要验证：
 
 ```text
-DDS Topic / Stream mapping
+ROS2 DDS Topic → normalized ROS2 Stream mapping
+DDS/XTypes type graph → exact ROS2 TypeIdentifier
+CompleteTypeObject / DynamicType → dependency-complete ros2idl/ros2msg
+serialized DDS payload → proven ROS2-compatible CDR
 Writer GUID / equivalent → optional SourceId
 writer-originated sequence → optional SourceSequence
-DynamicType / TypeIdentifier / exact Schema representation
-XCDR / explicitly declared PayloadEncoding
-valid_data / instance-lifecycle classification
 reader reception timestamp
 writer source timestamp capability boundary
+DataWriter QoS → non-Canonical rodaq.projection.ros2.v1
 rodaq/acquisition_ingress
 ```
 
@@ -2411,34 +2417,16 @@ stable
 reliably producer-scoped
 ```
 
-时才能经过 DDS Acquisition Plugin canonicalization 后建立 SourceId。
-
-如果 Fast DDS API 返回：
-
-```text
-empty Writer GUID
-invalid Writer GUID
-unreliable Writer identity
-```
-
-则：
+时才能经过 FastDDS Acquisition Plugin canonicalization 后建立 SourceId。invalid/unreliable identity 必须导致：
 
 ```text
 SourceId = absent
 SourceSequence = absent
 ```
 
-必须同时成立。
+不得为了保存 publication sequence 构造 fake SourceId、借用 StreamId 或生成 temporary SourceId。
 
-不得为了保存 publication sequence：
-
-```text
-construct fake SourceId
-use StreamId as SourceId
-invent temporary SourceId
-```
-
-publication sequence 只有在 Writer SourceId 已经可靠存在，并且该 sequence 确认是：
+publication sequence 只有在 Writer SourceId 已可靠存在，并确认是：
 
 ```text
 writer-originated
@@ -2448,7 +2436,7 @@ Writer/SourceId-scoped
 
 时才能映射为 SourceSequence。
 
-DDS writer-side `source_timestamp` 与 ROS2 publisher-side timestamp 具有相同的 multi-Source clock-domain 风险。除非 Mapping/configuration 能证明同一 StreamDescriptor 下相关 Writer 共享 common source clock：
+Fast DDS writer-side `source_timestamp` 与 ROS2 publisher-side timestamp 具有相同的 multi-Source clock-domain 风险。除非 Mapping/configuration 能证明同一 StreamDescriptor 下相关 Writer 共享 common source clock，否则：
 
 ```text
 source_timestamp
@@ -2457,91 +2445,63 @@ source_timestamp
 
 reader-side reception timestamp 在其 clock domain 可稳定描述时可以作为 optional Timestamp capability。
 
-对于 `valid_data == false` 等 DDS lifecycle/status sample：
+FastDDS-specific QoS、ROS2 topic/type reconstruction evidence 等 interoperability facts 不因此进入 Canonical State；它们通过 versioned typed `rodaq.projection.ros2.v1` 传递给 MCAP Storage。
 
-> V1 不把它们伪装成普通 data-bearing Canonical Record。
-
-以下 DDS semantics 不属于当前 V1 Canonical Profile 已解决能力：
-
-```text
-dispose
-unregister / no-writers
-sample lifecycle event
-generic instance lifecycle
-```
-
-如果 DDS Plugin Review 证明其中某项是 V1 数据采集不可缺失的 canonical semantics：
-
-> 必须重新评估 V1 Profile 或 Canonical Model。
-
-不能通过 Generic Metadata 临时塞入。
+V1 qualified FastDDS path 不接受 arbitrary Generic DDS / OMG-IDL-only flow。无法证明 ROS2-compatible Topic/Type/Schema/CDR contract 的 flow 必须在 Binding readiness 前 Unsupported。Generic DDS lifecycle (`dispose`、`no-writers` 等) 与 native OMG-IDL artifact 属于 future mapping；如果 future review 证明它们需要新的 canonical primitive，应重新评估 Profile/Canonical Model，而不是塞进 Generic Metadata。
 
 ---
 
-## 4.4 V1 Design Scope 与 Initial Implementation Scope
+## 4.4 V1 Implementation Scope 与 Architecture-validation Scope
 
 RoDAQ V1 必须区分：
 
 ```text
-Design / Mapping validation scope
+required implementation / release scope
 
-Initial functional implementation scope
+future architecture-validation mapping scope
 ```
 
-二者不是同一个概念。
-
-### Design / Mapping validation scope
-
-V1 Plugin-independent Contract 必须通过以下四个真实 backend Mapping 验证：
+### Required V1 implementation / release scope
 
 ```text
 Acquisition:
     ROS2
-    DDS (Fast DDS baseline)
+    FastDDS
 
 Storage:
     MCAP
-    SQLite3
 ```
 
-这四份 Mapping 都必须在 Profile Semantic Freeze 前从设计层闭合 native semantics、scalar domain、identity、clock/timestamp、Payload、lifecycle、failure 和 full-fidelity representability 问题。
-
-### Initial functional implementation scope
-
-首个可运行里程碑只要求实现：
+实现顺序允许分阶段：
 
 ```text
-ROS2 Acquisition
-        ↓
-RoDAQ Runtime
-        ↓
-MCAP Storage
+M3: ROS2 Acquisition + MCAP
+M4: FastDDS Acquisition + the same MCAP interoperability path
+M5: production hardening / release qualification
 ```
 
-其目标是尽早验证：
+两条 Acquisition path 都必须生成 semantically equivalent `rodaq.projection.ros2.v1`，最终 MCAP 必须通过 ROS2、PlotJuggler、Foxglove interoperability qualification。
+
+### Future architecture-validation mappings
 
 ```text
-Core / Runtime
-Admission
-Payload
-Acquisition Plugin Contract
-Storage Plugin Contract
-end-to-end lifecycle / failure
+Generic DDS
+SocketCAN
+SQLite3
+other Acquisition / Storage backends
 ```
 
-DDS Acquisition 与 SQLite3 Storage：
+这些 mapping 不属于 V1 implementation/release gate，但用于持续验证：
 
-> **仍属于 V1 design target，但不阻塞首个 ROS2 + MCAP functional milestone。**
+> Plugin-independent Canonical / Runtime / Storage Contract 没有因为当前 ROS2/FastDDS/MCAP 的具体模型而被锁死。
 
-它们在首批实现前的主要作用是：
+它们可以提前完成设计、源码参考和静态 representability review；不要求在 V1 release 前提供 executable backend implementation。
 
-> 作为独立 Mapping evidence，防止通用 Contract 被 ROS2 / MCAP 的具体实现模型反向塑形。
+### Deferred / non-required implementation capabilities
 
-### Deferred beyond current V1 design scope
+Generic DDS、SocketCAN、SQLite3 以及其他 backend 当前不属于 V1 implementation/release gate。
 
-SocketCAN 以及其他 Acquisition backend 当前不属于 V1 Profile Semantic Freeze gate。
-
-它们可以作为后续扩展重新进入 Mapping Review，但当前不得因为未来 SocketCAN 假设增加：
+它们可以作为 architecture-validation mapping 进入 Review，但当前不得因为未来 backend 假设增加：
 
 ```text
 Generic Metadata
@@ -2819,11 +2779,12 @@ canonical provenance graph
 flowchart LR
     V1[V1 Canonical Profile]
 
-    V1 --> ROS2[ROS2]
-    V1 --> DDS[DDS / Fast DDS baseline]
+    V1 --> ROS2[ROS2 Acquisition]
+    V1 --> FDD[FastDDS Acquisition]
 
-    V1 --> MCAP[MCAP]
-    V1 --> SQL[SQLite3]
+    V1 --> MCAP[MCAP Storage]
+    V1 -. future mapping .-> GDDS[Generic DDS / SocketCAN]
+    V1 -. future mapping .-> SQL[SQLite3 / other Storage]
 
     V1 -. unsupported .-> IMPORT[Generic Cross-scope Import]
     V1 -. unsupported .-> CORR[ClockCorrelation]
@@ -3004,17 +2965,20 @@ timestamp capability
 serialized payload fidelity
 ```
 
-### DDS
+### FastDDS
 
 ```text
+ROS2 DDS topic normalization
+exact ROS2 type reconstruction
+complete ros2idl/ros2msg Schema
 valid Writer SourceId
 empty / invalid Writer identity
-SourceSequence present
-SourceSequence absent when SourceId absent
-DynamicType / Schema
+SourceSequence present / absent semantics
+serialized ROS2-compatible CDR fidelity
 reader reception timestamp
 source timestamp only when common writer clock is proven
-valid_data / lifecycle sample classification
+DataWriter QoS → rodaq.projection.ros2.v1
+bounded pending-type behavior
 clock restart / source lifecycle where relevant
 ```
 
@@ -3022,27 +2986,27 @@ clock restart / source lifecycle where relevant
 
 ## 5.4 Storage Plugin Conformance
 
-MCAP 和 SQLite3 必须通过同一套：
+Storage Backend 不能定义自己的 Canonical semantics。但 concrete backend 可以声明一个比 V1-profile-valid Canonical State 更窄的 **projection eligibility**，前提是 unsupported boundary 在 Descriptor readiness 前显式拒绝。
 
-> **V1 Canonical Corpus**
-
-不能各自定义不同 Canonical semantics。
-
-测试路径：
+V1 required MCAP Storage 的两类验证为：
 
 ```text
-Canonical Corpus
-    ↓
-Storage Encode
-    ↓
-Artifact
-    ↓
-Storage Decode
-    ↓
-Canonical State
-    ↓
-Field-wise equality
+ROS2-projectable Canonical corpus
+    → MCAP Encode
+    → ROS2-profile Artifact
+    → RoDAQ Decode
+    → Canonical field-wise equality
+    + ros2 bag / PlotJuggler / Foxglove qualification
+
+Canonical-valid but not ROS2-projectable corpus
+    → Descriptor Unsupported
+    → no accepted dependent Record
+    → no silent schema-less/generic fallback
 ```
+
+因此 `SchemaId absent` 仍然可以是 V1-profile-valid Canonical State；只是它不满足当前 V1 ROS2-profile MCAP artifact eligibility。Profile 不应为了一个 Storage format 把它改成 Canonical-invalid。
+
+Future SQLite3 等 backend 若声明 generic full-fidelity capability，则应使用更完整的 V1 Canonical Corpus，并证明自己的 Storage Projection 同样不改变 Canonical semantics。
 
 必须验证：
 
@@ -3191,21 +3155,19 @@ RoDAQ V1 对“冻结”分三层，禁止混用：
 
 ```text
 Semantic Freeze
-    M0 前完成
-    证明 V1 Canonical Profile 语义边界已由四个 backend design 的静态 mapping review 覆盖
+    M0 前完成/持续通过变更审查维护
+    证明 V1 Canonical Profile 语义边界已由 required ROS2 / FastDDS / MCAP mapping review 覆盖，并检查 future mapping 是否暴露结构性反例
 
 ABI Implementation Freeze
     M0 Exit Gate 后完成
     证明 Stable ABI 可以无损表达 Semantic-Frozen Profile
 
 Backend Conformance Qualified
-    M3 / M5 分阶段完成
-    通过真实 ROS2/DDS/MCAP/SQLite3 executable corpus / round-trip / failure tests
+    M3 / M4 / M5 分阶段完成
+    通过真实 ROS2 / FastDDS / MCAP executable corpus、interoperability、round-trip、failure 与 release tests
 ```
 
-因此 M0 前不要求 MCAP/SQLite3 executable round-trip 已经运行，但必须完成：
-
-> **static representability review。**
+因此 Semantic Freeze 不要求 future SQLite3 等 backend executable round-trip，但 required ROS2 / FastDDS / MCAP mapping 必须完成 static representability review；future mapping 一旦已经发现结构性矛盾，也不能以“非 V1 实现”为理由忽略。
 
 v0.5 中：
 
@@ -3217,9 +3179,9 @@ MaxTimestampKeysPerSet = 4
 
 ```text
 ROS2 design mapping review
-DDS design mapping review
+FastDDS design mapping review
 MCAP design projection review
-SQLite3 design projection review
+future SQLite3 / Generic DDS mapping review as non-blocking architecture evidence
 ```
 
 证明不存在已知的 silent truncation / unrepresentable Canonical State，才允许进入 Semantic Freeze。
@@ -3373,8 +3335,9 @@ RoDAQ V1 不再使用一个模糊的单一 `FROZEN` 状态覆盖设计、ABI 和
 ```text
 Canonical Data Model normative semantics stable
 V1 Profile scalar/presence/identity limits explicitly defined
-ROS2/DDS static Acquisition mapping review closes all required native semantics
-MCAP/SQLite3 static Storage projection review proves representability
+ROS2/FastDDS static Acquisition mapping review closes all required V1 native semantics
+MCAP static Storage projection review proves required artifact representability and explicit unsupported boundary
+future SQLite3/Generic DDS mapping review has no known unresolved P0/P1 structural counterexample
 Canonical → Plugin ABI projection review finds no known loss
 no unresolved P0/P1 semantic contradiction blocks implementation
 ```
@@ -3399,24 +3362,24 @@ old/new ABI fixture policy established
 
 ### 5.7.3 Backend Conformance Qualification Criteria
 
-以下条件属于真实 backend qualification；它们在 M3/M5 分阶段完成，而不是 M0 前置条件：
+以下条件属于真实 backend qualification；它们在 M3/M4/M5 分阶段完成，而不是 M0 前置条件：
 
 ```text
 Canonical Data Model 已冻结
 
 V1 Profile 的 Normative Base 已更新为 Canonical Data Model 的实际冻结版本
 
-ROS2 Plugin Review 通过
+ROS2 Plugin Review / executable qualification 通过
 
-DDS Plugin Review 通过
+FastDDS Plugin Review / executable qualification 通过
 
-MCAP Plugin Review 通过
+ROS2 Acquisition 与 FastDDS Acquisition cross-equivalence 通过
 
-SQLite3 Plugin Review 通过
+MCAP Plugin Review / ROS2-profile interoperability qualification 通过
 
 V1 Scalar Domain 已由 Acquisition / Storage Mapping Review 证明可实现且无 silent truncation
 
-MCAP / SQLite3 对完整 uint64 Canonical ID / Sequence domain 与 int64 ClockReading domain 的 full-fidelity representation 已验证
+MCAP RoDAQ sidecar 对其 accepted ROS2-projectable corpus 中完整 uint64 Canonical ID / Sequence domain 与 int64 ClockReading domain 的 full-fidelity representation 已验证；non-projectable corpus 在 readiness 前确定性拒绝
 
 Canonical value `0` 与 absent / null state 的区别已通过 Storage round-trip 验证
 
@@ -3427,9 +3390,11 @@ Canonical value `0` 与 absent / null state 的区别已通过 Storage round-tri
 
 V1 Canonical Corpus 完成
 
-MCAP full-fidelity round-trip 通过
+MCAP accepted-corpus full-fidelity round-trip 通过
 
-SQLite3 full-fidelity round-trip 通过
+ros2 bag play / PlotJuggler / Foxglove qualification 通过两条 Acquisition path
+
+future SQLite3 等 backend 不属于 V1 executable gate
 
 所有 unsupported capability 均有明确 rejection behavior
 
@@ -3580,10 +3545,9 @@ no canonical physical buffer layout
 
 Acquisition
 -----------
-ROS2
-DDS (Fast DDS baseline)
-Initial implementation = ROS2
-DDS implementation deferred until after ROS2 + MCAP validation
+ROS2 = V1 required
+FastDDS = V1 required; direct Fast DDS/Fast CDR, ROS2 wire compatible, no ROS2 runtime on recording host
+Generic DDS / SocketCAN = future architecture-validation mapping
 one active acquisition path / owning Plugin / current Binding per Stream
 multiple Sources per Stream remain supported
 no automatic cross-Plugin logical Stream merge
@@ -3594,10 +3558,8 @@ no unclassified critical native semantics at Semantic Freeze
 
 Storage
 -------
-MCAP
-SQLite3
-initial implementation = MCAP
-SQLite3 implementation deferred after ROS2 + MCAP validation
+MCAP = V1 required ROS2-profile artifact + RoDAQ sidecar
+SQLite3 / other Storage = future architecture-validation mapping
 full-fidelity required for conformant mode
 ClockDescriptor field-wise equality required
 backend native scalar width / signedness must not narrow V1 scalar domain
@@ -3607,7 +3569,8 @@ Deferred / Unsupported
 ----------------------
 SourceDescriptor
 Generic Metadata
-ClockCorrelation
+Canonical ClockCorrelation
+(non-Canonical Runtime replay-time anchor is allowed)
 Generic Cross-scope Import
 Transform / Merge
 Distributed shared Scope
@@ -3625,15 +3588,17 @@ flowchart TD
     CDM --> V1
 
     ROS[ROS2 Acquisition] --> V1
-    DDS[DDS Acquisition] --> V1
+    FDD[FastDDS Acquisition] --> V1
 
     V1 --> CORPUS[V1 Canonical Corpus]
 
-    CORPUS --> MCAP[MCAP Round-trip]
-    CORPUS --> SQL[SQLite3 Round-trip]
+    CORPUS --> ELIG{ROS2 MCAP eligible?}
+    ELIG -->|Yes| MCAP[MCAP Round-trip + Interop]
+    ELIG -->|No| UNSUP[Explicit Descriptor Unsupported]
+    CORPUS -. future architecture validation .-> SQL[SQLite3 / other backend mapping]
 
-    MCAP --> REVIEW{All Mapping and Conformance Pass?}
-    SQL --> REVIEW
+    MCAP --> REVIEW{Required V1 Mapping and Conformance Pass?}
+    UNSUP --> REVIEW
 
     REVIEW -->|Yes| QUALIFIED[V1 Backend Conformance Qualified]
     REVIEW -->|Profile too narrow| UPDATE[Revise V1 Profile]
@@ -3667,7 +3632,8 @@ full-fidelity Storage
 
 ```text
 distributed shared Scope
-ClockCorrelation
+Canonical ClockCorrelation
+(non-Canonical Runtime replay-time anchor is allowed)
 Generic Cross-scope Import
 Transform / Merge
 Generic Metadata
@@ -3696,20 +3662,12 @@ Clock resolution components = positive uint64
 
 ```text
 ROS2
-DDS (Fast DDS baseline)
+FastDDS
 ```
 
-两个 Acquisition Plugin design/review 验证。
+两个 V1 required Acquisition Plugin design/review 验证，并继续接受 future Generic DDS / SocketCAN mapping 的反例检查。
 
-Scalar domain 则必须由：
-
-```text
-Acquisition Mapping
-    +
-MCAP / SQLite3 Storage Plugin design
-```
-
-共同验证，确保 native value 能进入 V1 domain，同时 Storage Artifact 能 full-fidelity round-trip。
+Scalar domain 必须由 required Acquisition Mapping + MCAP accepted-corpus/full-fidelity review 证明当前 V1 path 无 silent narrowing；SQLite3 等 future mapping 继续作为额外 representability evidence。
 
 如果真实 Mapping Review 证明 4 个 TimestampKey 不够：
 
@@ -3761,19 +3719,19 @@ backend sentinel aliasing
 因此后续设计顺序为：
 
 ```text
-V1 Canonical Profile v0.5
+V1 Canonical Profile v0.6
         ↓
 ROS2 Plugin Review
         ↓
-DDS Plugin Review
+FastDDS Plugin Review
         ↓
-根据 Acquisition Mapping 修订 V1 Profile
+根据 required Acquisition Mapping 修订 V1 Profile
         ↓
-MCAP Plugin Review
+MCAP Plugin Review + projection eligibility review
         ↓
-SQLite3 Plugin Review
+future SQLite3 / Generic DDS architecture-validation review
         ↓
-V1 Canonical Corpus
+V1 Canonical Corpus + ROS2-projectable qualification subset
         ↓
 更新 Normative Base 到冻结 Canonical Model 版本
         ↓
