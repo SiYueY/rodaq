@@ -236,7 +236,7 @@ Production baseline:
 - fmt 12.1.0 — static.
 - HdrHistogram_c 0.12.1 — core-only static.
 - yaml-cpp 0.9.0 — static + PIC.
-- expected-lite 0.10.0 — private implementation candidate only; must not leak through Public API.
+- expected-lite 0.10.0 — pinned Public C++ header dependency used directly by `rodaq::Result<T>`; see D-025.
 - mimalloc 3.6.1 — optional explicit allocator backend.
 
 Development:
@@ -244,7 +244,7 @@ Development:
 - GoogleTest 1.18.0.
 - Google Benchmark 1.10.0.
 
-The `rodaq::Result<T>` implementation choice remains an early M0 code decision; this does not authorize exposing expected-lite types publicly.
+The `rodaq::Result<T>` policy is frozen by D-025.
 
 **Reference:** system baseline.
 
@@ -442,6 +442,56 @@ SourceId remains different: it is already canonicalized by the Acquisition Mappi
 The snapshot can become stale immediately; subsequent Runtime registration/report/submit calls remain authoritative. Plugins do not continuously poll it.
 
 **Reference:** `docs/design/rodaq_plugin_system.md`, `docs/design/acquisition_plugin.md`.
+
+---
+
+## D-025 — RoDAQ V1 Result uses expected-lite directly
+
+**Status:** Accepted
+
+RoDAQ V1 freezes:
+
+```cpp
+namespace rodaq {
+
+template <typename T>
+using Result = nonstd::expected<T, Error>;
+
+}
+```
+
+The pinned dependency is expected-lite 0.10.0. RoDAQ does not maintain a custom
+`expected` implementation. expected-lite is an explicit Public C++ source-level
+header dependency because it is visible through the `rodaq::Result<T>` alias, but
+it must never appear in the Stable C Plugin ABI.
+
+V1 explicitly selects expected-lite's nonstd implementation. A consumer language
+mode or toolchain configuration must not silently switch the alias to
+`std::expected`. Migration to `std::expected` requires a future explicit decision.
+
+This decision is the only approved exception to the default rule that RoDAQ-owned
+Public C++ APIs do not expose third-party types. Stable C ABI contracts continue
+to prohibit all third-party types.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`.
+
+---
+
+## D-026 — Git gitlinks are the sole dependency commit authority
+
+**Status:** Accepted
+
+Exact third-party commit pins live only in the parent repository's Git submodule
+gitlinks. `cmake/dependencies.cmake` records human-readable release/tag metadata
+and build integration paths, but does not duplicate commit SHAs.
+
+Normal configure and build do not require a Git executable and do not perform
+network access. Developer qualification may use Git to inspect the gitlinks.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`,
+`docs/design/rodaq_plugin_system.md`.
+
+---
 
 ## Adding a decision
 

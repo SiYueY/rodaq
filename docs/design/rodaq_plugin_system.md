@@ -1111,12 +1111,22 @@ TYPE_MIN_STRUCT_SIZE
 例如：
 
 ```c
-#define RODAQ_ACQUISITION_MIN_STRUCT_SIZE     (offsetof(rodaq_acquisition_plugin, get_extension) +      sizeof(((rodaq_acquisition_plugin*)0)->get_extension))
+#define RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE \
+    (offsetof(rodaq_acquisition_plugin, get_extension) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_plugin, get_extension))
 ```
 
 冻结规则：
 
 > **同一个 Protocol Major 内，既有 MIN_STRUCT_SIZE 永远不能提高。**
+
+所有 minimum macro 使用完整类型名：
+
+```text
+RODAQ_<UPPER_SNAKE_TYPE>_MIN_STRUCT_SIZE
+```
+
+不提供简称别名。
 
 未来追加 tail field / slot 可以增大 provider/current `sizeof(type)`，但不得让旧合法对象突然低于 minimum floor。
 
@@ -1717,6 +1727,15 @@ rodaq.runtime.common.v1
 rodaq.runtime.canonical.v1
 rodaq.runtime.acquisition.v1
 rodaq.runtime.storage.v1
+```
+
+V1 Stable C ABI 同时提供 exact literal 常量：
+
+```c
+#define RODAQ_RUNTIME_COMMON_SERVICE_ID      "rodaq.runtime.common.v1"
+#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID   "rodaq.runtime.canonical.v1"
+#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition.v1"
+#define RODAQ_RUNTIME_STORAGE_SERVICE_ID     "rodaq.runtime.storage.v1"
 ```
 
 命名：
@@ -3782,6 +3801,12 @@ V1 Acquisition Plugin 必须暴露：
 rodaq.acquisition.control.v1
 ```
 
+ABI constant：
+
+```c
+#define RODAQ_ACQUISITION_CONTROL_EXTENSION_ID "rodaq.acquisition.control.v1"
+```
+
 该 extension 负责 core lifecycle 之外但 Runtime correctness 所必需的 Binding transition / quiescence coordination。
 
 ### Transition token
@@ -4018,6 +4043,12 @@ V1 Storage Plugin 必须暴露：
 
 ```text
 rodaq.storage.control.v1
+```
+
+ABI constant：
+
+```c
+#define RODAQ_STORAGE_CONTROL_EXTENSION_ID "rodaq.storage.control.v1"
 ```
 
 它负责：

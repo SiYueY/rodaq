@@ -1,0 +1,7 @@
+{
+  global:
+    rodaq_plugin_abi_version;
+    rodaq_get_acquisition_plugin;
+  local:
+    *;
+};

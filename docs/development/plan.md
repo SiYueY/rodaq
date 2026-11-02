@@ -37,6 +37,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 **Status:** ACTIVE
 
+**Current sub-phase:** **M0-B — PASS**. M0-A Review Closure and M0-B Stable C
+Plugin ABI are implemented, mechanically tested, sanitizer-tested and reviewed.
+M0-C Plugin Loading + Lifetime is next.
+
 ### Goal
 
 Create the buildable project foundation and implement the Stable Plugin boundary before any real backend is coupled to Runtime.
@@ -63,67 +67,75 @@ Create the buildable project foundation and implement the Stable Plugin boundary
 
 #### Project / CMake
 
-- [ ] Create top-level `CMakeLists.txt`.
-- [ ] Create `include/`.
-- [ ] Create `src/`.
-- [ ] Create `apps/`.
-- [ ] Create `tests/`.
-- [ ] Create `benchmarks/`.
-- [ ] Create `cmake/`.
-- [ ] Establish install/export/package skeleton.
-- [ ] Add warning configuration.
-- [ ] Add sanitizer options.
-- [ ] Integrate CTest.
+- [x] Create top-level `CMakeLists.txt`.
+- [x] Create `include/`.
+- [x] Create `src/`.
+- [x] Create `apps/`.
+- [x] Create `tests/`.
+- [x] Create `benchmarks/`.
+- [x] Create `cmake/`.
+- [x] Establish the header-install skeleton and package/export extension point;
+  linkable package export remains deferred.
+- [x] Add warning configuration.
+- [x] Add sanitizer options.
+- [x] Integrate CTest.
 
 #### Third-party baseline
 
-- [ ] Add approved Git submodules under `third_party/`.
-- [ ] Pin each submodule by commit.
-- [ ] Implement `cmake/dependencies.cmake`.
-- [ ] Verify no normal build-time network fetching.
-- [ ] Verify Public API / ABI does not expose dependency types.
+- [x] Add approved Git submodules under `third_party/`.
+- [x] Pin each submodule by commit.
+- [x] Implement `cmake/dependencies.cmake`.
+- [x] Verify no normal build-time network fetching.
+- [x] Verify the Stable C ABI exposes no third-party types.
+- [x] Verify the Public C++ API exposes no third-party types except the
+  D-025-frozen `rodaq::Result<T>` alias.
 
 Production baseline:
 
-- [ ] oneTBB 2022.3.0.
-- [ ] spdlog 1.17.0.
-- [ ] fmt 12.1.0.
-- [ ] HdrHistogram_c 0.12.1.
-- [ ] yaml-cpp 0.9.0.
-- [ ] expected-lite 0.10.0 only if retained as private backend.
-- [ ] mimalloc 3.6.1 optional.
+- [x] oneTBB 2022.3.0.
+- [x] spdlog 1.17.0.
+- [x] fmt 12.1.0.
+- [x] HdrHistogram_c 0.12.1.
+- [x] yaml-cpp 0.9.0.
+- [x] expected-lite 0.10.0 as the pinned Public C++ header dependency.
+- [x] mimalloc 3.6.1 optional.
 
 Development:
 
-- [ ] GoogleTest 1.18.0.
-- [ ] Google Benchmark 1.10.0.
+- [x] GoogleTest 1.18.0.
+- [x] Google Benchmark 1.10.0.
 
 #### Result / Error
 
-- [ ] Finalize implementation behind `rodaq::Result<T>`.
-- [ ] Ensure expected-lite, if used, remains private.
-- [ ] Implement/freeze error representation used by Public C++ APIs.
+- [x] Finalize `rodaq::Result<T>` as the direct expected-lite alias.
+- [x] Force expected-lite's nonstd implementation independently of consumer C++ mode.
+- [x] Keep expected-lite out of the Stable C ABI.
+- [x] Implement/freeze error representation used by Public C++ APIs.
 
 #### Stable ABI
 
-- [ ] Implement `include/rodaq/abi/abi.h`.
-- [ ] Implement `canonical.h`.
-- [ ] Implement `plugin.h`.
-- [ ] Implement `service.h`.
-- [ ] Implement `config.h`.
-- [ ] Implement `runtime.h`.
-- [ ] Implement `acquisition.h`.
-- [ ] Implement `storage.h`.
+- [x] Implement `include/rodaq/abi/abi.h`.
+- [x] Implement `canonical.h`.
+- [x] Implement `plugin.h`.
+- [x] Implement `service.h`.
+- [x] Implement `config.h`.
+- [x] Implement `runtime.h`.
+- [x] Implement `acquisition.h`.
+- [x] Implement `storage.h`.
 
 #### ABI tests
 
-- [ ] C compilation test.
-- [ ] C++17 compilation test.
-- [ ] `sizeof` sentinels.
-- [ ] `alignof` sentinels.
-- [ ] `offsetof` sentinels.
-- [ ] MIN_STRUCT_SIZE tests.
-- [ ] export-symbol allowlist test.
+- [x] C compilation tests for every ABI header.
+- [x] C++17 compilation tests for every ABI header.
+- [x] `sizeof` sentinels.
+- [x] `alignof` sentinels.
+- [x] `offsetof` sentinels.
+- [x] All 30 MIN_STRUCT_SIZE tests.
+- [x] Tail-field gating tests.
+- [x] Scalar and protocol value tests.
+- [x] Public ABI header isolation test.
+- [x] Installed C/C++/Result consumer tests.
+- [x] export-symbol allowlist test with good family fixtures.
 - [ ] wrong Boot ABI fixture.
 - [ ] wrong family protocol fixture.
 - [ ] too-small struct fixture.
@@ -158,10 +170,10 @@ Development:
 
 ### Deliverables
 
-- [ ] Clean buildable repository skeleton.
-- [ ] Pinned dependency graph.
-- [ ] Stable ABI headers.
-- [ ] ABI mechanical tests.
+- [x] Clean buildable repository skeleton.
+- [x] Pinned dependency graph.
+- [x] Stable ABI headers.
+- [x] ABI mechanical tests.
 - [ ] Plugin loader/infrastructure.
 - [ ] Service Registry / ConfigView.
 - [ ] Minimal C++ Plugin SDK.
@@ -172,9 +184,9 @@ Development:
 
 #### Acquisition ABI
 
-- [ ] `AdmissionOutcome` representable.
-- [ ] `RejectionReason` representable.
-- [ ] `PayloadDisposition` representable.
+- [x] `AdmissionOutcome` representable.
+- [x] `RejectionReason` representable.
+- [x] `PayloadDisposition` representable.
 - [ ] Rejection reason does not imply ownership.
 - [ ] ADOPT before transfer → CallerResponsible.
 - [ ] ADOPT after transfer → RuntimeResponsible.
@@ -192,12 +204,12 @@ Development:
 #### Storage ABI
 
 - [ ] submit non-OK means HandoffAccepted never established.
-- [ ] PayloadConsumed synchronous result representable.
-- [ ] PayloadPending representable.
-- [ ] PersistenceSucceeded synchronous result representable.
-- [ ] PersistenceFailed synchronous result representable.
-- [ ] PersistenceUnknown synchronous result representable.
-- [ ] PersistencePending representable.
+- [x] PayloadConsumed synchronous result representable.
+- [x] PayloadPending representable.
+- [x] PersistenceSucceeded synchronous result representable.
+- [x] PersistenceFailed synchronous result representable.
+- [x] PersistenceUnknown synchronous result representable.
+- [x] PersistencePending representable.
 - [ ] no same-stack reentrant callback; cross-thread completion race with submit return is reconciled correctly.
 - [ ] async publication forbidden before irreversible `OK + matching PENDING` decision.
 - [ ] early completion is buffered and cannot reclaim submit-call resources before return/reconcile.
@@ -264,10 +276,10 @@ Do not implement in M0:
 
 ### Immediate task order
 
-1. CMake/project skeleton.
-2. Third-party submodules/dependency CMake.
-3. `Result/Error`.
-4. ABI headers + ABI tests.
+1. [x] CMake/project skeleton.
+2. [x] Third-party submodules/dependency CMake.
+3. [x] `Result/Error`.
+4. [x] ABI headers + ABI tests.
 5. `SharedLibrary / PluginLibrary`.
 6. Service Registry / ConfigView.
 7. C++ Plugin SDK/trampolines.

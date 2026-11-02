@@ -212,19 +212,25 @@ Failure cutoff
 per-stream ordering
 ```
 
-### 第三方基础设施必须封装在 RoDAQ 内部
+### 第三方基础设施的 Public Boundary
 
-Public API 不直接暴露：
+Stable C Plugin ABI 绝不暴露任何第三方类型。
+
+Public C++ API 默认不暴露第三方类型：
 
 ```text
 tbb::*
 spdlog::*
 fmt::*
 YAML::Node
-nonstd::expected
 hdr_histogram*
 mi_heap_t
 ```
+
+D-025 明确冻结了一个例外：`rodaq::Result<T>` 直接 alias
+`nonstd::expected<T, Error>`。expected-lite 因此是 Public C++ source-level header
+dependency，但 RoDAQ-owned API 的 contract 仍是 `rodaq::Result<T>`；expected-lite
+不得进入 Stable C Plugin ABI。
 
 
 ## 1.3 Canonical Model：系统语义中心
@@ -4312,7 +4318,7 @@ AppImage
 | fmt | **12.1.0** | static | 是 | 与 spdlog 配套 |
 | HdrHistogram_c | **0.12.1** | core-only static | 是 | minimal core |
 | yaml-cpp | **0.9.0** | static + PIC | 是 | config frontend |
-| expected-lite | **0.10.0** | header-only | 是 | wrapped by RoDAQ |
+| expected-lite | **0.10.0** | header-only | 是 | Public C++ `Result<T>` alias dependency |
 | mimalloc | **3.6.1** | static | 否 | optional backend |
 | GoogleTest | **1.18.0** | test-only | 开发 | not shipped |
 | Google Benchmark | **1.10.0** | benchmark-only | 开发 | not shipped |
@@ -4452,25 +4458,31 @@ V1 当前依赖基线保留：
 expected-lite 0.10.0
 ```
 
-但 Public C++ API 必须是：
+V1 冻结的 Public C++ contract 是：
 
 ```text
 rodaq::Result<T>
 ```
 
-而不是：
+C++ implementation 和 alias target 直接使用：
 
 ```text
-nonstd::expected<T,E>
+nonstd::expected<T, Error>
 ```
 
-如果后续决定复用项目已有的冻结 `Result<T,E>` 实现：
+expected-lite 是显式 Public C++ header dependency，但：
 
 ```text
-只允许在实现冻结前替换 backend
+RoDAQ-owned API signatures 仍使用 rodaq::Result<T>
+expected-lite 不得进入 Stable C Plugin ABI
 ```
 
-不能让两套 Result 同时进入 Public API。
+V1 必须强制 expected-lite 使用 nonstd implementation。消费者切换 C++23 或
+toolchain 不得静默切换为 `std::expected`。迁移到 `std::expected` 需要未来显式决策。
+
+安装导出必须提供与仓库 pin 一致的 `nonstd/expected.hpp` 及其 license notice，
+使 installed Public header consumer 不需要自行安装任意版本，也不需要在构建时
+访问网络。
 
 ### mimalloc 3.6.1
 
@@ -4521,7 +4533,7 @@ Plugin SDK runtime closure
 
 ### Public Dependency Leakage Rule
 
-Public API / Plugin ABI 中禁止出现：
+Stable C Plugin ABI 中禁止出现：
 
 ```text
 tbb::*
@@ -4533,7 +4545,10 @@ hdr_histogram*
 mi_heap_t
 ```
 
-如果任何第三方类型进入：
+Public C++ API 默认同样禁止这些类型。D-025 冻结的唯一例外是
+`rodaq::Result<T>` 直接 alias `nonstd::expected<T, Error>`。
+
+如果新增任何第三方类型进入：
 
 ```text
 include/rodaq/
@@ -4770,7 +4785,7 @@ RoDAQ-owned config structs
 
 header-only。
 
-内部实现：
+V1 Public C++ implementation：
 
 ```text
 RoDAQ Result
@@ -4778,13 +4793,20 @@ RoDAQ Result
 expected-lite
 ```
 
-Public API 不直接暴露 `nonstd::expected`。
+`rodaq::Result<T>` 直接 alias `nonstd::expected<T, Error>`。RoDAQ-owned API
+signatures 使用 `rodaq::Result<T>`，并且 expected-lite 不得进入 Stable C Plugin
+ABI。
 
-未来 C++23 可切到：
+V1 固定使用 nonstd implementation。未来迁移到：
 
 ```text
 std::expected
 ```
+
+必须经过新的显式架构决策，不能因为消费者切换到 C++23 自动发生。
+
+`result.hpp` 必须机械验证 `expected_lite_MAJOR/MINOR/PATCH == 0/10/0`；错误版本
+和隐式 `std::expected` selection 都必须造成编译失败。
 
 ## 5.10 mimalloc
 
@@ -5366,7 +5388,7 @@ spdlog 1.17.0
 fmt 12.1.0
 HdrHistogram_c 0.12.1
 yaml-cpp 0.9.0
-expected-lite 0.10.0 if retained as private backend
+expected-lite 0.10.0 as Public C++ Result alias dependency
 mimalloc 3.6.1 optional
 GoogleTest 1.18.0
 Google Benchmark 1.10.0
@@ -5377,7 +5399,8 @@ Google Benchmark 1.10.0
 ```text
 Git submodule pinned by commit
 no build-time network fetching
-no third-party type leakage into Public API / Plugin ABI
+no third-party types in Stable ABI
+no third-party types in Public C++ API except the D-025 Result alias
 ```
 
 Result / Error：
@@ -5385,7 +5408,8 @@ Result / Error：
 ```text
 finalize rodaq::Result<T>
 freeze public error semantics
-avoid exposing nonstd::expected
+force expected-lite nonstd implementation
+keep expected-lite out of Stable ABI
 ```
 
 Stable ABI headers：

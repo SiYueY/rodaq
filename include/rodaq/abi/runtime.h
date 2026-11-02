@@ -1,0 +1,187 @@
+#ifndef RODAQ_RUNTIME_H
+#define RODAQ_RUNTIME_H
+
+#include <rodaq/abi/acquisition.h>
+#include <rodaq/abi/canonical.h>
+#include <rodaq/abi/config.h>
+#include <rodaq/abi/storage.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define RODAQ_RUNTIME_COMMON_SERVICE_ID "rodaq.runtime.common.v1"
+#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID "rodaq.runtime.canonical.v1"
+#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition.v1"
+#define RODAQ_RUNTIME_STORAGE_SERVICE_ID "rodaq.runtime.storage.v1"
+
+typedef uint32_t rodaq_log_level;
+
+#define RODAQ_LOG_TRACE UINT32_C(1)
+#define RODAQ_LOG_DEBUG UINT32_C(2)
+#define RODAQ_LOG_INFO UINT32_C(3)
+#define RODAQ_LOG_WARN UINT32_C(4)
+#define RODAQ_LOG_ERROR UINT32_C(5)
+#define RODAQ_LOG_CRITICAL UINT32_C(6)
+#define RODAQ_LOG_OFF UINT32_C(7)
+
+typedef uint32_t rodaq_diagnostic_severity;
+
+#define RODAQ_DIAGNOSTIC_INFO UINT32_C(1)
+#define RODAQ_DIAGNOSTIC_WARNING UINT32_C(2)
+#define RODAQ_DIAGNOSTIC_ERROR UINT32_C(3)
+#define RODAQ_DIAGNOSTIC_FATAL UINT32_C(4)
+
+typedef uint32_t rodaq_runtime_lifecycle_state;
+
+#define RODAQ_RUNTIME_CONFIGURED UINT32_C(1)
+#define RODAQ_RUNTIME_STARTING UINT32_C(2)
+#define RODAQ_RUNTIME_RUNNING UINT32_C(3)
+#define RODAQ_RUNTIME_STOPPING UINT32_C(4)
+#define RODAQ_RUNTIME_STOPPED UINT32_C(5)
+#define RODAQ_RUNTIME_FAILED UINT32_C(6)
+
+/* ABI-FROZEN: one Runtime lifecycle observation. */
+typedef struct rodaq_runtime_lifecycle_snapshot {
+    rodaq_runtime_lifecycle_state state;
+    rodaq_bool normal_acquisition_allowed;
+    uint64_t generation;
+} rodaq_runtime_lifecycle_snapshot;
+
+#define RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: Runtime common service table. */
+typedef struct rodaq_runtime_common_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    void (*log)(
+        void* context, rodaq_log_level level, rodaq_string_view category,
+        rodaq_string_view message) RODAQ_NOEXCEPT;
+
+    uint64_t (*monotonic_time_ns)(void* context) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_lifecycle_snapshot)(
+        void* context, rodaq_runtime_lifecycle_snapshot* out_snapshot,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    void (*report_diagnostic)(
+        void* context, rodaq_diagnostic_severity severity, rodaq_string_view code,
+        rodaq_string_view message) RODAQ_NOEXCEPT;
+} rodaq_runtime_common_v1;
+
+#define RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: read-only Canonical Runtime service table. */
+typedef struct rodaq_runtime_canonical_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*get_source)(
+        void* context, rodaq_source_handle handle, rodaq_source_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_clock)(
+        void* context, rodaq_clock_handle handle, rodaq_clock_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_schema)(
+        void* context, rodaq_schema_handle handle, rodaq_schema_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_timestamp_key_set)(
+        void* context, uint64_t timestamp_key_set_id, rodaq_timestamp_key_set_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_stream)(
+        void* context, rodaq_stream_handle handle, rodaq_stream_view* out_view,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_stream_descriptor)(
+        void* context, rodaq_stream_descriptor_handle handle,
+        rodaq_stream_descriptor_view* out_view, rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_canonical_v1;
+
+#define RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: Acquisition Runtime service table. */
+typedef struct rodaq_runtime_acquisition_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*register_source)(
+        void* context, const rodaq_source_registration* request, rodaq_source_handle* out_handle,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*register_clock)(
+        void* context, const rodaq_clock_registration* request, rodaq_clock_handle* out_handle,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*register_schema)(
+        void* context, const rodaq_schema_registration* request, rodaq_schema_handle* out_handle,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*register_stream)(
+        void* context, const rodaq_stream_registration* request, rodaq_stream_handle* out_handle,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*publish_stream_descriptor)(
+        void* context, const rodaq_stream_descriptor_registration* request,
+        rodaq_stream_descriptor_handle* out_handle, rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*report_source_availability)(
+        void* context, rodaq_source_handle source, rodaq_availability_state state,
+        const rodaq_error* diagnostic, rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*report_stream_availability)(
+        void* context, rodaq_stream_handle stream, rodaq_availability_state state,
+        const rodaq_error* diagnostic, rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*report_plugin_state)(
+        void* context, rodaq_acquisition_plugin_state state, const rodaq_error* diagnostic,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*submit)(
+        void* context, const rodaq_record_submission* submission,
+        rodaq_acquisition_submit_result* out_result, rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_acquisition_v1;
+
+#define RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: Storage Runtime completion service table. */
+typedef struct rodaq_runtime_storage_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    void (*payload_consumed)(void* context, rodaq_storage_operation operation) RODAQ_NOEXCEPT;
+
+    void (*persistence_completed)(
+        void* context, rodaq_storage_operation operation,
+        rodaq_storage_persistence_state terminal_state, rodaq_status status,
+        rodaq_string_view message) RODAQ_NOEXCEPT;
+
+    void (*report_failure)(void* context, rodaq_status status, rodaq_string_view message)
+        RODAQ_NOEXCEPT;
+} rodaq_runtime_storage_v1;
+
+#define RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE             \
+    (offsetof(rodaq_runtime_common_v1, report_diagnostic) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_common_v1, report_diagnostic))
+
+#define RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE                 \
+    (offsetof(rodaq_runtime_canonical_v1, get_stream_descriptor) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_canonical_v1, get_stream_descriptor))
+
+#define RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE  \
+    (offsetof(rodaq_runtime_acquisition_v1, submit) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_acquisition_v1, submit))
+
+#define RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_runtime_storage_v1, report_failure) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_storage_v1, report_failure))
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RODAQ_RUNTIME_H */
