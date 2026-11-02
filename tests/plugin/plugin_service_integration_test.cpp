@@ -589,3 +589,116 @@ TEST(PluginServiceIntegrationTest, IncompatibleControlInterfacesFailBind) {
     expect_storage_control_failure("RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL");
     expect_storage_control_failure("RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT");
 }
+
+TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
+    PluginManager manager;
+    ConfigTree config = make_config();
+
+    {
+        RuntimeServices services;
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_SDK_ACQUISITION")))));
+        EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.start().error().code());
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        ASSERT_TRUE(instance.start().has_value());
+        EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.start().error().code());
+
+        const auto control = instance.required_control_interface();
+        ASSERT_TRUE(control.has_value());
+        const auto* table =
+            static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
+        rodaq_error error{};
+        EXPECT_EQ(
+            RODAQ_STATUS_OK,
+            table->quiesce_stream(control.value().context, rodaq_stream_handle{1}, &error));
+        EXPECT_EQ(RODAQ_STATUS_OK, table->quiesce_plugin(control.value().context, &error));
+        ASSERT_TRUE(instance.stop().has_value());
+        EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.stop().error().code());
+    }
+
+    {
+        RuntimeServices services;
+        register_fixture_projection(services);
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_SDK_STORAGE")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+
+        const auto control = instance.required_control_interface();
+        ASSERT_TRUE(control.has_value());
+        const auto* table = static_cast<const rodaq_storage_control_v1*>(control.value().vtable);
+        rodaq_storage_capabilities capabilities{};
+        capabilities.struct_size = sizeof(capabilities);
+        rodaq_error error{};
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            table->get_capabilities(control.value().context, &capabilities, &error));
+        EXPECT_EQ(RODAQ_TRUE, capabilities.full_fidelity);
+        rodaq_descriptor_readiness_result readiness{};
+        readiness.struct_size = sizeof(readiness);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            table->ensure_descriptor_ready(
+                control.value().context, rodaq_stream_descriptor_handle{42}, &readiness, &error));
+        EXPECT_EQ(RODAQ_DESCRIPTOR_READY, readiness.state);
+
+        rodaq_storage_open_request open{};
+        open.struct_size = RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE;
+        const char session[] = "session";
+        const char target[] = "memory://fixture";
+        open.session_id = rodaq_string_view{session, sizeof(session) - 1};
+        open.target_uri = rodaq_string_view{target, sizeof(target) - 1};
+        ASSERT_TRUE(instance.open(open).has_value());
+        EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.open(open).error().code());
+
+        rodaq_storage_submission submission{};
+        submission.struct_size = RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE;
+        const auto submitted = instance.submit(submission);
+        ASSERT_TRUE(submitted.has_value());
+        EXPECT_EQ(RODAQ_STORAGE_PAYLOAD_CONSUMED, submitted.value().payload_state);
+        EXPECT_EQ(RODAQ_STORAGE_PERSISTENCE_SUCCEEDED, submitted.value().persistence_state);
+        ASSERT_TRUE(instance.flush().has_value());
+
+        rodaq_storage_close_request close{};
+        close.struct_size = RODAQ_STORAGE_CLOSE_REQUEST_MIN_STRUCT_SIZE;
+        close.disposition = RODAQ_STORAGE_CLOSE_NORMAL;
+        ASSERT_TRUE(instance.close(close).has_value());
+        EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.close(close).error().code());
+    }
+}
+
+TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained) {
+    PluginManager manager;
+    ConfigTree config = make_config();
+
+    {
+        RuntimeServices services;
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_SDK_EXCEPTION")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        const auto result = instance.start();
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(rodaq::ErrorCode::InternalError, result.error().code());
+        EXPECT_NE(std::string_view::npos, result.error().message().find("exception"));
+    }
+
+    {
+        RuntimeServices services;
+        register_fixture_projection(services);
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_SDK_OPEN_FAILURE")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        rodaq_storage_open_request open{};
+        open.struct_size = RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE;
+        const auto result = instance.open(open);
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(rodaq::ErrorCode::Unavailable, result.error().code());
+    }
+}

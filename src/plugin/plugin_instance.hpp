@@ -38,11 +38,24 @@ public:
     using ConfigureFunction = rodaq_status (*)(void*, rodaq_config_view, rodaq_error*) noexcept;
     using QueryInterfaceFunction =
         rodaq_status (*)(void*, rodaq_string_view, rodaq_interface*, rodaq_error*) noexcept;
+    using StartFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+    using StopFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+    using OpenFunction =
+        rodaq_status (*)(void*, const rodaq_storage_open_request*, rodaq_error*) noexcept;
+    using SubmitFunction =
+        rodaq_status (*)(
+            void*, const rodaq_storage_submission*, rodaq_storage_submit_result*,
+            rodaq_error*) noexcept;
+    using FlushFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+    using CloseFunction =
+        rodaq_status (*)(void*, const rodaq_storage_close_request*, rodaq_error*) noexcept;
 
     static std::shared_ptr<PluginInstanceState> create(
         const PluginLibraryLease& library_lease, void* instance, void (*destroy)(void*) noexcept,
         BindFunction bind_function, ConfigureFunction configure_function,
-        QueryInterfaceFunction query_interface_function);
+        QueryInterfaceFunction query_interface_function, StartFunction start_function,
+        StopFunction stop_function, OpenFunction open_function, SubmitFunction submit_function,
+        FlushFunction flush_function, CloseFunction close_function);
 
     static Result<void> bind(
         const std::shared_ptr<PluginInstanceState>& state, const rodaq_service_registry& services);
@@ -52,6 +65,19 @@ public:
 
     static Result<rodaq_interface> query_interface(
         const std::shared_ptr<PluginInstanceState>& state, std::string_view interface_id);
+
+    static Result<void> start(const std::shared_ptr<PluginInstanceState>& state);
+    static Result<void> stop(const std::shared_ptr<PluginInstanceState>& state);
+    static Result<void> open(
+        const std::shared_ptr<PluginInstanceState>& state,
+        const rodaq_storage_open_request& request);
+    static Result<rodaq_storage_submit_result> submit(
+        const std::shared_ptr<PluginInstanceState>& state,
+        const rodaq_storage_submission& submission);
+    static Result<void> flush(const std::shared_ptr<PluginInstanceState>& state);
+    static Result<void> close(
+        const std::shared_ptr<PluginInstanceState>& state,
+        const rodaq_storage_close_request& request);
 
     static void set_required_control_interface(
         const std::shared_ptr<PluginInstanceState>& state, rodaq_interface interface) noexcept;

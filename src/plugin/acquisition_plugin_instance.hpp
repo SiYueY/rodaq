@@ -25,6 +25,8 @@ public:
 
     Result<void> bind(const rodaq_service_registry& services);
     Result<void> configure(rodaq_config_view config);
+    Result<void> start();
+    Result<void> stop();
     Result<rodaq_interface> query_interface(std::string_view interface_id);
     Result<rodaq_interface> required_control_interface() const;
 

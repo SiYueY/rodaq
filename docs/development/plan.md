@@ -166,10 +166,10 @@ Development:
 - [x] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
 - [x] Implement ConfigView.
 - [x] Implement Plugin Interface Query plumbing.
-- [ ] Implement minimal C++17 Plugin SDK.
-- [ ] Implement exception trampolines.
-- [ ] Implement Plugin metadata generation.
-- [ ] Implement Plugin authoring CMake helper.
+- [x] Implement minimal C++17 Plugin SDK.
+- [x] Implement exception trampolines.
+- [x] Implement Plugin metadata generation.
+- [x] Implement Plugin authoring CMake helper.
 
 #### Minimal Fake DSOs
 
@@ -189,8 +189,8 @@ Development:
 - [x] ABI mechanical tests.
 - [x] Plugin loader/infrastructure for the M0-C boundary.
 - [x] Service Registry / ConfigView.
-- [ ] Minimal C++ Plugin SDK.
-- [ ] Minimal Fake Acquisition / Storage DSOs.
+- [x] Minimal C++ Plugin SDK.
+- [x] Minimal Fake Acquisition / Storage DSOs.
 - [ ] Initial ABI compatibility baseline.
 
 ### Verification
@@ -245,8 +245,8 @@ Development:
 - [x] ConfigView out-of-range index → NOT_FOUND.
 - [ ] caller-owned `rodaq_error` remains readable after ABI return.
 - [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
-- [ ] Plugin exception firewall.
-- [ ] raw noexcept violation subprocess death test.
+- [x] Plugin exception firewall.
+- [x] raw noexcept violation subprocess death test.
 - [ ] M2: control timeout/quiescence, stream isolation, overlapping mutation and quarantine behavior.
 - [x] live instance prevents unload.
 - [x] live lease prevents unload.
@@ -288,8 +288,8 @@ Do not implement in M0:
 4. [x] ABI headers + ABI tests.
 5. [x] `SharedLibrary / PluginLibrary`.
 6. [x] Service Registry / ConfigView and M0-D Runtime services.
-7. C++ Plugin SDK/trampolines.
-8. Minimal Fake Plugin lifecycle fixtures.
+7. [x] C++ Plugin SDK/trampolines.
+8. [x] Minimal Fake Plugin lifecycle fixtures.
 
 ---
 

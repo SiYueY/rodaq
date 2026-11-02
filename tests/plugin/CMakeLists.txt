@@ -53,6 +53,37 @@ rodaq_configure_plugin(
     FAMILY storage
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
 )
+
+add_library(
+    rodaq_test_plugin_sdk_exception
+    SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_acquisition_fixture.cpp"
+)
+target_compile_definitions(rodaq_test_plugin_sdk_exception PRIVATE RODAQ_SDK_THROW_START=1)
+rodaq_enable_warnings(rodaq_test_plugin_sdk_exception)
+rodaq_enable_sanitizers(rodaq_test_plugin_sdk_exception)
+rodaq_configure_plugin(
+    TARGET rodaq_test_plugin_sdk_exception
+    FAMILY acquisition
+    MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_acquisition_plugin.json"
+)
+
+add_library(
+    rodaq_test_plugin_sdk_storage_open_failure
+    SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_fixture.cpp"
+)
+target_compile_definitions(
+    rodaq_test_plugin_sdk_storage_open_failure
+    PRIVATE RODAQ_SDK_STORAGE_FAIL_OPEN=1
+)
+rodaq_enable_warnings(rodaq_test_plugin_sdk_storage_open_failure)
+rodaq_enable_sanitizers(rodaq_test_plugin_sdk_storage_open_failure)
+rodaq_configure_plugin(
+    TARGET rodaq_test_plugin_sdk_storage_open_failure
+    FAMILY storage
+    MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
+)
 rodaq_add_plugin_fixture(
     rodaq_test_plugin_valid_storage
     "${RODAQ_STORAGE_FIXTURE_SOURCE}"
@@ -409,6 +440,10 @@ add_dependencies(
     rodaq_test_plugin_control_null_context
     rodaq_test_plugin_storage_control_wrong_protocol
     rodaq_test_plugin_storage_control_missing_slot
+    rodaq_test_plugin_sdk_acquisition
+    rodaq_test_plugin_sdk_storage
+    rodaq_test_plugin_sdk_exception
+    rodaq_test_plugin_sdk_storage_open_failure
 )
 add_test(
     NAME rodaq.plugin.service_integration
@@ -418,7 +453,7 @@ set_tests_properties(
     rodaq.plugin.service_integration
     PROPERTIES
         ENVIRONMENT
-            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>;RODAQ_TEST_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_control_wrong_protocol>;RODAQ_TEST_CONTROL_TOO_SMALL=$<TARGET_FILE:rodaq_test_plugin_control_too_small>;RODAQ_TEST_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_control_missing_slot>;RODAQ_TEST_CONTROL_APPENDABLE=$<TARGET_FILE:rodaq_test_plugin_control_appendable>;RODAQ_TEST_CONTROL_NULL_CONTEXT=$<TARGET_FILE:rodaq_test_plugin_control_null_context>;RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_storage_control_wrong_protocol>;RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_storage_control_missing_slot>"
+            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>;RODAQ_TEST_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_control_wrong_protocol>;RODAQ_TEST_CONTROL_TOO_SMALL=$<TARGET_FILE:rodaq_test_plugin_control_too_small>;RODAQ_TEST_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_control_missing_slot>;RODAQ_TEST_CONTROL_APPENDABLE=$<TARGET_FILE:rodaq_test_plugin_control_appendable>;RODAQ_TEST_CONTROL_NULL_CONTEXT=$<TARGET_FILE:rodaq_test_plugin_control_null_context>;RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_storage_control_wrong_protocol>;RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_storage_control_missing_slot>;RODAQ_TEST_SDK_ACQUISITION=$<TARGET_FILE:rodaq_test_plugin_sdk_acquisition>;RODAQ_TEST_SDK_STORAGE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage>;RODAQ_TEST_SDK_EXCEPTION=$<TARGET_FILE:rodaq_test_plugin_sdk_exception>;RODAQ_TEST_SDK_OPEN_FAILURE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage_open_failure>"
 )
 
 add_executable(rodaq_plugin_loader_probe plugin_loader_probe.cpp)

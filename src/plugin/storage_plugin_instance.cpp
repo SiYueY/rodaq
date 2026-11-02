@@ -45,7 +45,8 @@ Result<StoragePluginInstance> StoragePluginInstance::create(PluginLibraryLease l
     try {
         auto state = PluginInstanceStateAccess::create(
             library_lease, raw_instance, protocol->destroy, protocol->bind, protocol->configure,
-            protocol->query_interface);
+            protocol->query_interface, nullptr, nullptr, protocol->open, protocol->submit,
+            protocol->flush, protocol->close);
         return StoragePluginInstance(std::move(state));
     } catch (const std::bad_alloc&) {
         protocol->destroy(raw_instance);
@@ -82,6 +83,21 @@ Result<void> StoragePluginInstance::bind(const rodaq_service_registry& services)
 
 Result<void> StoragePluginInstance::configure(rodaq_config_view config) {
     return PluginInstanceStateAccess::configure(state_, config);
+}
+
+Result<void> StoragePluginInstance::open(const rodaq_storage_open_request& request) {
+    return PluginInstanceStateAccess::open(state_, request);
+}
+
+Result<rodaq_storage_submit_result> StoragePluginInstance::submit(
+    const rodaq_storage_submission& submission) {
+    return PluginInstanceStateAccess::submit(state_, submission);
+}
+
+Result<void> StoragePluginInstance::flush() { return PluginInstanceStateAccess::flush(state_); }
+
+Result<void> StoragePluginInstance::close(const rodaq_storage_close_request& request) {
+    return PluginInstanceStateAccess::close(state_, request);
 }
 
 Result<rodaq_interface> StoragePluginInstance::query_interface(std::string_view interface_id) {
