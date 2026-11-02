@@ -130,6 +130,8 @@ execute_process(
         -B
         "${RODAQ_TEST_OBJECT_DIR}/sdk-plugin-consumer"
         "-DCMAKE_PREFIX_PATH=${RODAQ_TEST_INSTALL_PREFIX}"
+        "-DCMAKE_CXX_FLAGS=${RODAQ_TEST_CONSUMER_SANITIZER_FLAGS}"
+        "-DCMAKE_SHARED_LINKER_FLAGS=${RODAQ_TEST_CONSUMER_SANITIZER_FLAGS}"
     RESULT_VARIABLE configure_result
     OUTPUT_VARIABLE configure_stdout
     ERROR_VARIABLE configure_stderr

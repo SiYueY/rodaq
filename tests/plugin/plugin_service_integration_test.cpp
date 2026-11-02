@@ -702,3 +702,30 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         EXPECT_EQ(rodaq::ErrorCode::Unavailable, result.error().code());
     }
 }
+
+TEST(PluginServiceIntegrationTest, FrozenV1PluginsLoadInCurrentHost) {
+    PluginManager manager;
+    ConfigTree config = make_config();
+
+    {
+        RuntimeServices services;
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        AcquisitionPluginInstance instance = take(
+            manager.create_acquisition_plugin_instance(
+                take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_ACQUISITION")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        EXPECT_TRUE(instance.required_control_interface().has_value());
+    }
+    {
+        RuntimeServices services;
+        register_fixture_projection(services);
+        const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
+        StoragePluginInstance instance = take(
+            manager.create_storage_plugin_instance(
+                take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_STORAGE")))));
+        ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
+        ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        EXPECT_TRUE(instance.required_control_interface().has_value());
+    }
+}

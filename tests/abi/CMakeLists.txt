@@ -91,6 +91,14 @@ rodaq_enable_warnings(rodaq_abi_scalar_contract_test)
 rodaq_enable_sanitizers(rodaq_abi_scalar_contract_test)
 add_test(NAME rodaq.abi.scalar_contract COMMAND rodaq_abi_scalar_contract_test)
 
+set(RODAQ_CONSUMER_SANITIZER_FLAGS)
+if(RODAQ_ENABLE_ASAN)
+    string(APPEND RODAQ_CONSUMER_SANITIZER_FLAGS " -fsanitize=address")
+endif()
+if(RODAQ_ENABLE_UBSAN)
+    string(APPEND RODAQ_CONSUMER_SANITIZER_FLAGS " -fsanitize=undefined -fno-sanitize-recover=undefined")
+endif()
+
 add_test(
     NAME rodaq.abi.header_isolation
     COMMAND
@@ -147,6 +155,7 @@ add_test(
         "-DRODAQ_TEST_CPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/cpp_consumer.cpp"
         "-DRODAQ_TEST_RESULT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/result_consumer.cpp"
         "-DRODAQ_TEST_SDK_PLUGIN_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/sdk_plugin_consumer"
+        "-DRODAQ_TEST_CONSUMER_SANITIZER_FLAGS=${RODAQ_CONSUMER_SANITIZER_FLAGS}"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/run_install_smoke.cmake"
 )
@@ -202,3 +211,33 @@ add_test(
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/check_symbols.cmake"
 )
+
+add_library(
+    rodaq_compat_v1_acquisition
+    SHARED
+    compat/v1/acquisition_fixture.cpp
+)
+set_target_properties(rodaq_compat_v1_acquisition PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+target_link_options(rodaq_compat_v1_acquisition PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/compat/v1/acquisition_fixture.map")
+
+add_library(
+    rodaq_compat_v1_storage
+    SHARED
+    compat/v1/storage_fixture.cpp
+)
+set_target_properties(rodaq_compat_v1_storage PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+target_link_options(rodaq_compat_v1_storage PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/compat/v1/storage_fixture.map")
