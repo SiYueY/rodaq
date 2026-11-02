@@ -1,8 +1,9 @@
-#include "abi_support.hpp"
+#include <rodaq/plugin/abi_support.hpp>
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <string>
 
 namespace rodaq {
 namespace {
@@ -173,6 +174,59 @@ void assign_rodaq_error(const Error& error, rodaq_error* out_error) noexcept {
     assign_rodaq_error(
         status_from_error_code(error.code()), error.domain(), error.native_code(), error.message(),
         out_error);
+}
+
+Result<void> result_from_status(
+    rodaq_status status, const rodaq_error* status_error, std::string_view fallback_domain) {
+    if (status == RODAQ_STATUS_OK) {
+        return {};
+    }
+
+    ErrorCode code = ErrorCode::InternalError;
+    switch (status) {
+        case RODAQ_STATUS_INVALID_ARGUMENT:
+            code = ErrorCode::InvalidArgument;
+            break;
+        case RODAQ_STATUS_INVALID_STATE:
+            code = ErrorCode::InvalidState;
+            break;
+        case RODAQ_STATUS_NOT_FOUND:
+            code = ErrorCode::NotFound;
+            break;
+        case RODAQ_STATUS_CONFLICT:
+            code = ErrorCode::Conflict;
+            break;
+        case RODAQ_STATUS_RESOURCE_EXHAUSTED:
+            code = ErrorCode::ResourceExhausted;
+            break;
+        case RODAQ_STATUS_UNAVAILABLE:
+            code = ErrorCode::Unavailable;
+            break;
+        case RODAQ_STATUS_STORAGE_ERROR:
+            code = ErrorCode::StorageError;
+            break;
+        case RODAQ_STATUS_TIMEOUT:
+            code = ErrorCode::Timeout;
+            break;
+        default:
+            break;
+    }
+
+    std::string domain(fallback_domain);
+    std::int64_t native_code = 0;
+    std::string message = "plugin ABI call failed";
+    if (status_error != nullptr) {
+        if (status_error->domain_size > 0 &&
+            status_error->domain_size <= RODAQ_ERROR_DOMAIN_CAPACITY) {
+            domain.assign(status_error->domain, status_error->domain_size);
+        }
+        if (status_error->message_size > 0 &&
+            status_error->message_size <= RODAQ_ERROR_MESSAGE_CAPACITY) {
+            message.assign(status_error->message, status_error->message_size);
+        }
+        native_code = status_error->native_code;
+    }
+    return nonstd::make_unexpected(Error(code, std::move(domain), native_code, std::move(message)));
 }
 
 }  // namespace rodaq

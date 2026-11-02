@@ -8,6 +8,11 @@ add_library(rodaq_public_api INTERFACE)
 target_compile_features(rodaq_public_api INTERFACE cxx_std_17)
 target_link_libraries(rodaq_public_api INTERFACE rodaq_headers rodaq_expected_lite)
 
+add_library(rodaq_sdk INTERFACE)
+target_compile_features(rodaq_sdk INTERFACE cxx_std_17)
+target_link_libraries(rodaq_sdk INTERFACE rodaq_foundation)
+add_library(rodaq::sdk ALIAS rodaq_sdk)
+
 add_library(rodaq_foundation STATIC
     abi_support.cpp
     error.cpp

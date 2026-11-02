@@ -19,6 +19,14 @@ add_test(
     COMMAND rodaq_result_header_test
 )
 
+add_executable(rodaq_plugin_sdk_header_test compile/plugin_sdk_header_test.cpp)
+target_link_libraries(rodaq_plugin_sdk_header_test PRIVATE rodaq::sdk)
+rodaq_configure_test(rodaq_plugin_sdk_header_test)
+add_test(
+    NAME rodaq.compile.plugin_sdk_header
+    COMMAND rodaq_plugin_sdk_header_test
+)
+
 add_executable(rodaq_error_test unit/error_test.cpp)
 target_link_libraries(rodaq_error_test
     PRIVATE

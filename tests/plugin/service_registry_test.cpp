@@ -1,6 +1,6 @@
 #include "plugin/service_registry.hpp"
 
-#include "abi_support.hpp"
+#include <rodaq/plugin/abi_support.hpp>
 
 #include <gtest/gtest.h>
 

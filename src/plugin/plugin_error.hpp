@@ -1,8 +1,8 @@
 #ifndef RODAQ_PLUGIN_PLUGIN_ERROR_HPP_
 #define RODAQ_PLUGIN_PLUGIN_ERROR_HPP_
 
-#include <rodaq/plugin/abi/common.h>
 #include <rodaq/error.hpp>
+#include <rodaq/plugin/abi_support.hpp>
 #include <rodaq/result.hpp>
 
 #include <string>

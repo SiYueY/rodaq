@@ -1,6 +1,6 @@
 #include "plugin/plugin_instance.hpp"
 
-#include "abi_support.hpp"
+#include <rodaq/plugin/abi_support.hpp>
 #include "plugin/plugin_error.hpp"
 #include "plugin/plugin_library.hpp"
 

@@ -1,6 +1,6 @@
 #include "runtime/clock_correlation.hpp"
 
-#include "abi_support.hpp"
+#include <rodaq/plugin/abi_support.hpp>
 
 #include <rodaq/error.hpp>
 

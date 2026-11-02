@@ -1,6 +1,6 @@
 #include "runtime/interop_projection_registry.hpp"
 
-#include "abi_support.hpp"
+#include <rodaq/plugin/abi_support.hpp>
 
 #include <rodaq/error.hpp>
 
