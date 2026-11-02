@@ -18,6 +18,8 @@ void report_failure(void*, const rodaq_error*) noexcept {}
 TEST(ScalarContractTest, ServiceAndInterfaceIdsMatchFrozenStrings) {
     EXPECT_STREQ(RODAQ_RUNTIME_COMMON_SERVICE_ID, "rodaq.runtime.common.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_CANONICAL_SERVICE_ID, "rodaq.runtime.canonical.v1");
+    EXPECT_STREQ(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, "rodaq.runtime.projection.v1");
+    EXPECT_STREQ(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, "rodaq.runtime.clock_correlation.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, "rodaq.runtime.acquisition.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_STORAGE_SERVICE_ID, "rodaq.runtime.storage.v1");
     EXPECT_STREQ(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID, "rodaq.acquisition.control.v1");

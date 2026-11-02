@@ -12,6 +12,8 @@ extern "C" {
 
 #define RODAQ_RUNTIME_COMMON_SERVICE_ID "rodaq.runtime.common.v1"
 #define RODAQ_RUNTIME_CANONICAL_SERVICE_ID "rodaq.runtime.canonical.v1"
+#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID "rodaq.runtime.projection.v1"
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID "rodaq.runtime.clock_correlation.v1"
 #define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition.v1"
 #define RODAQ_RUNTIME_STORAGE_SERVICE_ID "rodaq.runtime.storage.v1"
 
@@ -102,6 +104,64 @@ typedef struct rodaq_runtime_canonical_v1 {
         rodaq_stream_descriptor_view* out_view, rodaq_error* out_error) RODAQ_NOEXCEPT;
 } rodaq_runtime_canonical_v1;
 
+#define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: one immutable typed interoperability projection. */
+typedef struct rodaq_projection_registration {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_stream_descriptor_handle descriptor;
+    rodaq_string_view projection_id;
+    rodaq_bytes_view payload;
+} rodaq_projection_registration;
+
+/* ABI-APPENDABLE: borrowed immutable projection data. */
+typedef struct rodaq_projection_view {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_stream_descriptor_handle descriptor;
+    rodaq_string_view projection_id;
+    rodaq_bytes_view payload;
+} rodaq_projection_view;
+
+/* ABI-APPENDABLE: projection Runtime service table. */
+typedef struct rodaq_runtime_projection_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*register_projection)(
+        void* context, const rodaq_projection_registration* request,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+
+    rodaq_status (*get_projection)(
+        void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
+        rodaq_projection_view* out_view, rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_projection_v1;
+
+/* ABI-APPENDABLE: activation-scoped ingress Clock to Unix epoch correlation. */
+typedef struct rodaq_unix_epoch_clock_anchor {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    rodaq_clock_handle clock;
+    int64_t clock_reading;
+    uint64_t unix_anchor_ns;
+} rodaq_unix_epoch_clock_anchor;
+
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION UINT32_C(1)
+
+/* ABI-APPENDABLE: read-only clock-correlation Runtime service table. */
+typedef struct rodaq_runtime_clock_correlation_v1 {
+    uint32_t protocol_version;
+    uint32_t struct_size;
+
+    rodaq_status (*get_unix_epoch_anchor)(
+        void* context, rodaq_clock_handle clock, rodaq_unix_epoch_clock_anchor* out_anchor,
+        rodaq_error* out_error) RODAQ_NOEXCEPT;
+} rodaq_runtime_clock_correlation_v1;
+
 #define RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
 
 /* ABI-APPENDABLE: Acquisition Runtime service table. */
@@ -169,6 +229,26 @@ typedef struct rodaq_runtime_storage_v1 {
 #define RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE                 \
     (offsetof(rodaq_runtime_canonical_v1, get_stream_descriptor) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_runtime_canonical_v1, get_stream_descriptor))
+
+#define RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE   \
+    (offsetof(rodaq_projection_registration, payload) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_projection_registration, payload))
+
+#define RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE   \
+    (offsetof(rodaq_projection_view, payload) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_projection_view, payload))
+
+#define RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_runtime_projection_v1, get_projection) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_projection_v1, get_projection))
+
+#define RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_unix_epoch_clock_anchor, unix_anchor_ns) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_unix_epoch_clock_anchor, unix_anchor_ns))
+
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE                 \
+    (offsetof(rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor))
 
 #define RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE  \
     (offsetof(rodaq_runtime_acquisition_v1, submit) + \

@@ -56,6 +56,17 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_runtime_canonical_v1, get_stream_descriptor,
         RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(
+        rodaq_projection_registration, payload, RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_projection_view, payload, RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(
+        rodaq_runtime_projection_v1, get_projection, RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(
+        rodaq_unix_epoch_clock_anchor, unix_anchor_ns,
+        RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(
+        rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor,
+        RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_config_vtable, as_string, RODAQ_CONFIG_VTABLE_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_acquisition_control_v1, quiesce_plugin, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
