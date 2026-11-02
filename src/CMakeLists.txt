@@ -14,3 +14,5 @@ set_target_properties(rodaq_foundation PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 rodaq_enable_warnings(rodaq_foundation)
 rodaq_enable_sanitizers(rodaq_foundation)
+
+add_subdirectory(plugin)
