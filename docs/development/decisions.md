@@ -653,3 +653,12 @@ must not be reported as full M0 PASS.
 
 **Reference:** `docs/design/rodaq_plugin_system.md`, `runtime.md`,
 `docs/design/rodaq_v1_system_design.md`, `docs/development/plan.md`.
+
+## D-033 — M0 plugin foundation is frozen for V1 implementation
+
+**Status:** Accepted
+
+M0 PASS freezes the Stable ABI core prefix, Service Registry, ConfigView,
+Plugin Interface Query, C++ SDK authoring surface, exception firewall,
+metadata/CMake authoring pipeline and initial V1 compatibility fixtures.
+M1/M2 own behavioral ownership, quiescence, timeout and completion proof.

@@ -10,9 +10,9 @@ This file records factual current repository state. Keep it concise and update i
 
 **M0 — Foundation + Plugin ABI**
 
-Status: **ACTIVE**
+Status: **PASS**
 
-Current sub-phase: **M0-D — PASS**. M0-E is next.
+Current sub-phase: **M0-E — PASS**. M0 Final Qualification is complete.
 
 The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
 

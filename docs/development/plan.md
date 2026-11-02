@@ -35,12 +35,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 ## M0 — Foundation + Plugin ABI
 
-**Status:** ACTIVE
+**Status:** PASS
 
-**Current sub-phase:** **M0-D — PASS**. M0-A Review Closure, M0-B Stable C
-Plugin ABI, M0-C Plugin Loading + Lifetime and M0-D Runtime Services + ConfigView
-are implemented, mechanically tested and sanitizer-tested. M0-E C++ Plugin SDK,
-exception trampolines and complete Fake lifecycle qualification is next.
+**Current sub-phase:** **M0-E — PASS**. M0-A through M0-E and M0 Final
+Qualification are complete. M1 is next.
 
 ### Goal
 
@@ -191,7 +189,7 @@ Development:
 - [x] Service Registry / ConfigView.
 - [x] Minimal C++ Plugin SDK.
 - [x] Minimal Fake Acquisition / Storage DSOs.
-- [ ] Initial ABI compatibility baseline.
+- [x] Initial ABI compatibility baseline.
 
 ### Verification
 
