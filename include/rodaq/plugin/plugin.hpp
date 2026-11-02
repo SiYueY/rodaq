@@ -50,6 +50,12 @@ rodaq_status invoke_interface(
             assign_rodaq_error(result.error(), out_error);
             return status_from_error_code(result.error().code());
         }
+        if (!result.value().Valid()) {
+            assign_rodaq_error(
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "Plugin returned an incomplete interface",
+                out_error);
+            return RODAQ_STATUS_INVALID_ARGUMENT;
+        }
         *out_interface = result.value().Abi();
         return RODAQ_STATUS_OK;
     } catch (const std::bad_alloc&) {

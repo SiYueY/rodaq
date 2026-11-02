@@ -337,6 +337,29 @@ rodaq_enable_warnings(rodaq_config_view_test)
 rodaq_enable_sanitizers(rodaq_config_view_test)
 add_test(NAME rodaq.plugin.config_view COMMAND rodaq_config_view_test)
 
+add_executable(rodaq_plugin_exception_test plugin_exception_test.cpp)
+target_link_libraries(rodaq_plugin_exception_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq::sdk
+)
+rodaq_enable_warnings(rodaq_plugin_exception_test)
+rodaq_enable_sanitizers(rodaq_plugin_exception_test)
+add_test(NAME rodaq.plugin.exception_firewall COMMAND rodaq_plugin_exception_test)
+
+add_executable(rodaq_raw_noexcept_probe raw_noexcept_probe.cpp)
+target_compile_options(rodaq_raw_noexcept_probe PRIVATE -Wno-terminate)
+rodaq_enable_warnings(rodaq_raw_noexcept_probe)
+rodaq_enable_sanitizers(rodaq_raw_noexcept_probe)
+add_test(
+    NAME rodaq.plugin.raw_noexcept_violation
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DRODAQ_TEST_COMMAND=$<TARGET_FILE:rodaq_raw_noexcept_probe>"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/run_expect_failure.cmake"
+)
+
 add_executable(
     rodaq_plugin_service_integration_test
     plugin_service_integration_test.cpp
