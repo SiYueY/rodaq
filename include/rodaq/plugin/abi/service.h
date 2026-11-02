@@ -1,7 +1,7 @@
-#ifndef RODAQ_SERVICE_H
-#define RODAQ_SERVICE_H
+#ifndef RODAQ_PLUGIN_ABI_SERVICE_H_
+#define RODAQ_PLUGIN_ABI_SERVICE_H_
 
-#include <rodaq/abi/abi.h>
+#include <rodaq/plugin/abi/common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,4 +33,4 @@ typedef struct rodaq_service_registry {
 }
 #endif
 
-#endif /* RODAQ_SERVICE_H */
+#endif /* RODAQ_PLUGIN_ABI_SERVICE_H_ */

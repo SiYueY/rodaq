@@ -19,8 +19,21 @@ if(NOT install_result EQUAL 0)
 endif()
 
 set(include_dir "${RODAQ_TEST_INSTALL_PREFIX}/include")
+set(plugin_abi_dir "${include_dir}/rodaq/plugin/abi")
+set(legacy_abi_dir "${include_dir}/rodaq/abi")
 set(expected_license
     "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/expected-lite/LICENSE.txt")
+
+foreach(header_name common canonical service config runtime acquisition storage plugin)
+    if(NOT EXISTS "${plugin_abi_dir}/${header_name}.h")
+        message(FATAL_ERROR
+            "Installed Plugin ABI header is missing: ${header_name}.h")
+    endif()
+endforeach()
+
+if(EXISTS "${legacy_abi_dir}")
+    message(FATAL_ERROR "Legacy installed ABI directory still exists: ${legacy_abi_dir}")
+endif()
 
 if(NOT EXISTS "${expected_license}")
     message(FATAL_ERROR "Installed expected-lite license is missing")

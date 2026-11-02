@@ -1,3 +1,3 @@
-#include <rodaq/abi/service.h>
+#include <rodaq/plugin/abi/service.h>
 
 int main() { return 0; }

@@ -1,3 +1,3 @@
-#include <rodaq/abi/storage.h>
+#include <rodaq/plugin/abi/storage.h>
 
 int main(void) { return 0; }

@@ -1,7 +1,7 @@
 #ifndef RODAQ_TESTS_ABI_FROZEN_LAYOUT_CHECKS_H
 #define RODAQ_TESTS_ABI_FROZEN_LAYOUT_CHECKS_H
 
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 #if defined(__cplusplus)
 #define RODAQ_TEST_STATIC_ASSERT static_assert

@@ -1,10 +1,10 @@
-#ifndef RODAQ_RUNTIME_H
-#define RODAQ_RUNTIME_H
+#ifndef RODAQ_PLUGIN_ABI_RUNTIME_H_
+#define RODAQ_PLUGIN_ABI_RUNTIME_H_
 
-#include <rodaq/abi/acquisition.h>
-#include <rodaq/abi/canonical.h>
-#include <rodaq/abi/config.h>
-#include <rodaq/abi/storage.h>
+#include <rodaq/plugin/abi/acquisition.h>
+#include <rodaq/plugin/abi/canonical.h>
+#include <rodaq/plugin/abi/config.h>
+#include <rodaq/plugin/abi/storage.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -184,4 +184,4 @@ typedef struct rodaq_runtime_storage_v1 {
 }
 #endif
 
-#endif /* RODAQ_RUNTIME_H */
+#endif /* RODAQ_PLUGIN_ABI_RUNTIME_H_ */

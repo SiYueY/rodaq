@@ -1,5 +1,5 @@
 set(RODAQ_ABI_HEADER_NAMES
-    abi
+    common
     canonical
     service
     config
@@ -95,7 +95,7 @@ add_test(
     NAME rodaq.abi.header_isolation
     COMMAND
         "${CMAKE_COMMAND}"
-        "-DRODAQ_TEST_ABI_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include/rodaq/abi"
+        "-DRODAQ_TEST_ABI_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include/rodaq/plugin/abi"
         "-DRODAQ_TEST_PUBLIC_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include/rodaq"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/check_header_isolation.cmake"

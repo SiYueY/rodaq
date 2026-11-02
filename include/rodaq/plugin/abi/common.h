@@ -1,5 +1,5 @@
-#ifndef RODAQ_ABI_H
-#define RODAQ_ABI_H
+#ifndef RODAQ_PLUGIN_ABI_COMMON_H_
+#define RODAQ_PLUGIN_ABI_COMMON_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -95,4 +95,4 @@ typedef struct rodaq_interface {
 }
 #endif
 
-#endif /* RODAQ_ABI_H */
+#endif /* RODAQ_PLUGIN_ABI_COMMON_H_ */

@@ -1,7 +1,7 @@
-#ifndef RODAQ_PLUGIN_H
-#define RODAQ_PLUGIN_H
+#ifndef RODAQ_PLUGIN_ABI_PLUGIN_H_
+#define RODAQ_PLUGIN_ABI_PLUGIN_H_
 
-#include <rodaq/abi/abi.h>
+#include <rodaq/plugin/abi/common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,4 +36,4 @@ RODAQ_PLUGIN_EXPORT const rodaq_storage_plugin* rodaq_get_storage_plugin(void) R
 }
 #endif
 
-#endif /* RODAQ_PLUGIN_H */
+#endif /* RODAQ_PLUGIN_ABI_PLUGIN_H_ */

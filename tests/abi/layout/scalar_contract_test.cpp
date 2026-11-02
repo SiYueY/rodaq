@@ -6,13 +6,13 @@
 
 #include <cstdint>
 
-TEST(ScalarContractTest, ServiceAndExtensionIdsMatchFrozenStrings) {
+TEST(ScalarContractTest, ServiceAndInterfaceIdsMatchFrozenStrings) {
     EXPECT_STREQ(RODAQ_RUNTIME_COMMON_SERVICE_ID, "rodaq.runtime.common.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_CANONICAL_SERVICE_ID, "rodaq.runtime.canonical.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, "rodaq.runtime.acquisition.v1");
     EXPECT_STREQ(RODAQ_RUNTIME_STORAGE_SERVICE_ID, "rodaq.runtime.storage.v1");
-    EXPECT_STREQ(RODAQ_ACQUISITION_CONTROL_EXTENSION_ID, "rodaq.acquisition.control.v1");
-    EXPECT_STREQ(RODAQ_STORAGE_CONTROL_EXTENSION_ID, "rodaq.storage.control.v1");
+    EXPECT_STREQ(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID, "rodaq.acquisition.control.v1");
+    EXPECT_STREQ(RODAQ_STORAGE_CONTROL_INTERFACE_ID, "rodaq.storage.control.v1");
 }
 
 TEST(ScalarContractTest, CppErrorTaxonomyMatchesStableStatusValues) {

@@ -1,7 +1,7 @@
 #ifndef RODAQ_TESTS_ABI_MINIMUM_PREFIX_CHECKS_H
 #define RODAQ_TESTS_ABI_MINIMUM_PREFIX_CHECKS_H
 
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 #if defined(__cplusplus)
 #define RODAQ_TEST_STATIC_ASSERT static_assert
@@ -150,10 +150,10 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_acquisition_plugin, get_extension, 64, 72, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
+    rodaq_acquisition_plugin, query_interface, 64, 72, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_storage_plugin, get_extension, 80, 88, RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE);
+    rodaq_storage_plugin, query_interface, 80, 88, RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_storage_open_request, target_uri, 24, 40, RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE);

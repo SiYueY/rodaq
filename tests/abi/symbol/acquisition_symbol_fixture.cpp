@@ -1,4 +1,4 @@
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 namespace {
 
@@ -71,23 +71,23 @@ const rodaq_acquisition_control_v1 control = {
     quiesce_plugin,
 };
 
-rodaq_status get_extension(
-    void* instance, rodaq_string_view extension_id, rodaq_interface* out_extension,
+rodaq_status query_interface(
+    void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
     rodaq_error*) noexcept {
-    if (out_extension == nullptr) {
+    if (out_interface == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
-    out_extension->context = nullptr;
-    out_extension->vtable = nullptr;
+    out_interface->context = nullptr;
+    out_interface->vtable = nullptr;
 
-    const char expected_id[] = RODAQ_ACQUISITION_CONTROL_EXTENSION_ID;
-    if (!string_equals(extension_id, expected_id, sizeof(expected_id) - 1)) {
+    const char expected_id[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;
+    if (!string_equals(interface_id, expected_id, sizeof(expected_id) - 1)) {
         return RODAQ_STATUS_NOT_FOUND;
     }
 
-    out_extension->context = instance;
-    out_extension->vtable = &control;
+    out_interface->context = instance;
+    out_interface->vtable = &control;
     return RODAQ_STATUS_OK;
 }
 
@@ -110,7 +110,7 @@ const rodaq_acquisition_plugin plugin = {
     configure_instance,
     start_instance,
     stop_instance,
-    get_extension,
+    query_interface,
 };
 
 }  // namespace

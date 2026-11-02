@@ -1,7 +1,7 @@
 #ifndef RODAQ_TESTS_ABI_SCALAR_CHECKS_H
 #define RODAQ_TESTS_ABI_SCALAR_CHECKS_H
 
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 #if defined(__cplusplus)
 #define RODAQ_TEST_STATIC_ASSERT static_assert
@@ -139,10 +139,10 @@ RODAQ_TEST_STATIC_ASSERT(
     sizeof(RODAQ_RUNTIME_STORAGE_SERVICE_ID) == sizeof("rodaq.runtime.storage.v1"),
     "storage service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_ACQUISITION_CONTROL_EXTENSION_ID) == sizeof("rodaq.acquisition.control.v1"),
+    sizeof(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID) == sizeof("rodaq.acquisition.control.v1"),
     "acquisition control ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_STORAGE_CONTROL_EXTENSION_ID) == sizeof("rodaq.storage.control.v1"),
+    sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) == sizeof("rodaq.storage.control.v1"),
     "storage control ID");
 
 #endif /* RODAQ_TESTS_ABI_SCALAR_CHECKS_H */

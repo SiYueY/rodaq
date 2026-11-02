@@ -1,7 +1,7 @@
-#ifndef RODAQ_CANONICAL_H
-#define RODAQ_CANONICAL_H
+#ifndef RODAQ_PLUGIN_ABI_CANONICAL_H_
+#define RODAQ_PLUGIN_ABI_CANONICAL_H_
 
-#include <rodaq/abi/abi.h>
+#include <rodaq/plugin/abi/common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,11 +31,6 @@ typedef struct rodaq_stream_handle {
 typedef struct rodaq_stream_descriptor_handle {
     uint64_t value;
 } rodaq_stream_descriptor_handle;
-
-/* ABI-FROZEN: zero is never a valid operation handle. */
-typedef struct rodaq_storage_operation {
-    uint64_t value;
-} rodaq_storage_operation;
 
 /* ABI-FROZEN: Canonical timestamp key and Clock lookup handle. */
 typedef struct rodaq_timestamp_key {
@@ -247,4 +242,4 @@ typedef struct rodaq_stream_descriptor_view {
 }
 #endif
 
-#endif /* RODAQ_CANONICAL_H */
+#endif /* RODAQ_PLUGIN_ABI_CANONICAL_H_ */

@@ -54,6 +54,21 @@ foreach(header IN LISTS abi_headers)
     endif()
 endforeach()
 
+set(canonical_header "${RODAQ_TEST_ABI_INCLUDE_DIR}/canonical.h")
+set(storage_header "${RODAQ_TEST_ABI_INCLUDE_DIR}/storage.h")
+file(READ "${canonical_header}" canonical_contents)
+file(READ "${storage_header}" storage_contents)
+
+string(FIND "${canonical_contents}" "typedef struct rodaq_storage_operation" canonical_operation)
+if(NOT canonical_operation EQUAL -1)
+    message(FATAL_ERROR "rodaq_storage_operation must not be defined in canonical.h")
+endif()
+
+string(FIND "${storage_contents}" "typedef struct rodaq_storage_operation" storage_operation)
+if(storage_operation EQUAL -1)
+    message(FATAL_ERROR "rodaq_storage_operation must be defined in storage.h")
+endif()
+
 file(GLOB public_cpp_headers "${RODAQ_TEST_PUBLIC_INCLUDE_DIR}/*.hpp")
 set(nonstd_exposures)
 

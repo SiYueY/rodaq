@@ -1,4 +1,4 @@
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 #include <gtest/gtest.h>
 
@@ -69,9 +69,9 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_storage_control_v1, ensure_descriptor_ready,
         RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_acquisition_plugin, get_extension, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
+        rodaq_acquisition_plugin, query_interface, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_storage_plugin, get_extension, RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE);
+        rodaq_storage_plugin, query_interface, RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_storage_open_request, target_uri, RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(

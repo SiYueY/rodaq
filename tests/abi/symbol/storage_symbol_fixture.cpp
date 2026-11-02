@@ -1,4 +1,4 @@
-#include <rodaq/abi/runtime.h>
+#include <rodaq/plugin/abi/runtime.h>
 
 namespace {
 
@@ -67,6 +67,8 @@ rodaq_status ensure_descriptor_ready(
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     *out_result = {};
+    out_result->struct_size = sizeof(*out_result);
+    out_result->state = RODAQ_DESCRIPTOR_READY;
     return RODAQ_STATUS_OK;
 }
 
@@ -77,23 +79,23 @@ const rodaq_storage_control_v1 control = {
     ensure_descriptor_ready,
 };
 
-rodaq_status get_extension(
-    void* instance, rodaq_string_view extension_id, rodaq_interface* out_extension,
+rodaq_status query_interface(
+    void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
     rodaq_error*) noexcept {
-    if (out_extension == nullptr) {
+    if (out_interface == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
-    out_extension->context = nullptr;
-    out_extension->vtable = nullptr;
+    out_interface->context = nullptr;
+    out_interface->vtable = nullptr;
 
-    const char expected_id[] = RODAQ_STORAGE_CONTROL_EXTENSION_ID;
-    if (!string_equals(extension_id, expected_id, sizeof(expected_id) - 1)) {
+    const char expected_id[] = RODAQ_STORAGE_CONTROL_INTERFACE_ID;
+    if (!string_equals(interface_id, expected_id, sizeof(expected_id) - 1)) {
         return RODAQ_STATUS_NOT_FOUND;
     }
 
-    out_extension->context = instance;
-    out_extension->vtable = &control;
+    out_interface->context = instance;
+    out_interface->vtable = &control;
     return RODAQ_STATUS_OK;
 }
 
@@ -118,7 +120,7 @@ const rodaq_storage_plugin plugin = {
     submit_record,
     flush_storage,
     close_storage,
-    get_extension,
+    query_interface,
 };
 
 }  // namespace

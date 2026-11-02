@@ -1,3 +1,3 @@
-#include <rodaq/abi/canonical.h>
+#include <rodaq/plugin/abi/canonical.h>
 
 int main(void) { return 0; }

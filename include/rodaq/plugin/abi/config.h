@@ -1,7 +1,7 @@
-#ifndef RODAQ_CONFIG_H
-#define RODAQ_CONFIG_H
+#ifndef RODAQ_PLUGIN_ABI_CONFIG_H_
+#define RODAQ_PLUGIN_ABI_CONFIG_H_
 
-#include <rodaq/abi/abi.h>
+#include <rodaq/plugin/abi/common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,4 +69,4 @@ struct rodaq_config_view {
 }
 #endif
 
-#endif /* RODAQ_CONFIG_H */
+#endif /* RODAQ_PLUGIN_ABI_CONFIG_H_ */

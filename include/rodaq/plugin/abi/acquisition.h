@@ -1,16 +1,16 @@
-#ifndef RODAQ_ACQUISITION_H
-#define RODAQ_ACQUISITION_H
+#ifndef RODAQ_PLUGIN_ABI_ACQUISITION_H_
+#define RODAQ_PLUGIN_ABI_ACQUISITION_H_
 
-#include <rodaq/abi/canonical.h>
-#include <rodaq/abi/config.h>
-#include <rodaq/abi/plugin.h>
-#include <rodaq/abi/service.h>
+#include <rodaq/plugin/abi/canonical.h>
+#include <rodaq/plugin/abi/config.h>
+#include <rodaq/plugin/abi/plugin.h>
+#include <rodaq/plugin/abi/service.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define RODAQ_ACQUISITION_CONTROL_EXTENSION_ID "rodaq.acquisition.control.v1"
+#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control.v1"
 
 typedef uint32_t rodaq_payload_mode;
 
@@ -116,7 +116,7 @@ typedef uint32_t rodaq_binding_abort_disposition;
 
 #define RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: required Acquisition control extension table. */
+/* ABI-APPENDABLE: required Acquisition control interface table. */
 typedef struct rodaq_acquisition_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
@@ -163,8 +163,8 @@ struct rodaq_acquisition_plugin {
 
     rodaq_status (*stop)(void* instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_extension)(
-        void* instance, rodaq_string_view extension_id, rodaq_interface* out_extension,
+    rodaq_status (*query_interface)(
+        void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 };
 
@@ -180,12 +180,12 @@ struct rodaq_acquisition_plugin {
     (offsetof(rodaq_acquisition_control_v1, quiesce_plugin) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_control_v1, quiesce_plugin))
 
-#define RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE         \
-    (offsetof(rodaq_acquisition_plugin, get_extension) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_plugin, get_extension))
+#define RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE           \
+    (offsetof(rodaq_acquisition_plugin, query_interface) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_plugin, query_interface))
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* RODAQ_ACQUISITION_H */
+#endif /* RODAQ_PLUGIN_ABI_ACQUISITION_H_ */

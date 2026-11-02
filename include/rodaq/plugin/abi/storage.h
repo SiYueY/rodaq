@@ -1,16 +1,16 @@
-#ifndef RODAQ_STORAGE_H
-#define RODAQ_STORAGE_H
+#ifndef RODAQ_PLUGIN_ABI_STORAGE_H_
+#define RODAQ_PLUGIN_ABI_STORAGE_H_
 
-#include <rodaq/abi/canonical.h>
-#include <rodaq/abi/config.h>
-#include <rodaq/abi/plugin.h>
-#include <rodaq/abi/service.h>
+#include <rodaq/plugin/abi/canonical.h>
+#include <rodaq/plugin/abi/config.h>
+#include <rodaq/plugin/abi/plugin.h>
+#include <rodaq/plugin/abi/service.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define RODAQ_STORAGE_CONTROL_EXTENSION_ID "rodaq.storage.control.v1"
+#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control.v1"
 
 typedef uint32_t rodaq_storage_close_disposition;
 
@@ -29,6 +29,11 @@ typedef uint32_t rodaq_storage_persistence_state;
 #define RODAQ_STORAGE_PERSISTENCE_SUCCEEDED UINT32_C(2)
 #define RODAQ_STORAGE_PERSISTENCE_FAILED UINT32_C(3)
 #define RODAQ_STORAGE_PERSISTENCE_UNKNOWN UINT32_C(4)
+
+/* ABI-FROZEN: zero is never a valid operation handle. */
+typedef struct rodaq_storage_operation {
+    uint64_t value;
+} rodaq_storage_operation;
 
 typedef uint32_t rodaq_descriptor_readiness;
 
@@ -66,7 +71,7 @@ typedef struct rodaq_descriptor_readiness_result {
 
 #define RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: required Storage control extension table. */
+/* ABI-APPENDABLE: required Storage control interface table. */
 typedef struct rodaq_storage_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
@@ -166,8 +171,8 @@ struct rodaq_storage_plugin {
         void* instance, const rodaq_storage_close_request* request,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_extension)(
-        void* instance, rodaq_string_view extension_id, rodaq_interface* out_extension,
+    rodaq_status (*query_interface)(
+        void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 };
 
@@ -199,12 +204,12 @@ struct rodaq_storage_plugin {
     (offsetof(rodaq_storage_submit_result, persistence_error) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_storage_submit_result, persistence_error))
 
-#define RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE         \
-    (offsetof(rodaq_storage_plugin, get_extension) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_storage_plugin, get_extension))
+#define RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE           \
+    (offsetof(rodaq_storage_plugin, query_interface) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_storage_plugin, query_interface))
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* RODAQ_STORAGE_H */
+#endif /* RODAQ_PLUGIN_ABI_STORAGE_H_ */
