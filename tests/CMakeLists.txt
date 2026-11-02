@@ -44,3 +44,4 @@ add_test(
 )
 
 add_subdirectory(abi)
+add_subdirectory(plugin)
