@@ -146,6 +146,7 @@ add_test(
         "-DRODAQ_TEST_C_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/c_consumer.c"
         "-DRODAQ_TEST_CPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/cpp_consumer.cpp"
         "-DRODAQ_TEST_RESULT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/result_consumer.cpp"
+        "-DRODAQ_TEST_SDK_PLUGIN_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/sdk_plugin_consumer"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/run_install_smoke.cmake"
 )

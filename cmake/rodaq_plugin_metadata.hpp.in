@@ -1,0 +1,24 @@
+#ifndef RODAQ_GENERATED_PLUGIN_METADATA_HPP_
+#define RODAQ_GENERATED_PLUGIN_METADATA_HPP_
+
+#include <rodaq/plugin/abi/plugin.h>
+
+namespace rodaq::plugin::generated::@RODAQ_METADATA_NAMESPACE@ {
+
+inline constexpr char kPluginId[] = "@RODAQ_METADATA_ID@";
+inline constexpr char kPluginName[] = "@RODAQ_METADATA_NAME@";
+inline constexpr char kPluginVersion[] = "@RODAQ_METADATA_VERSION@";
+inline constexpr char kPluginDescription[] = "@RODAQ_METADATA_DESCRIPTION@";
+
+inline constexpr rodaq_plugin_descriptor descriptor = {
+    RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE,
+    0,
+    {kPluginId, sizeof(kPluginId) - 1},
+    {kPluginName, sizeof(kPluginName) - 1},
+    {kPluginVersion, sizeof(kPluginVersion) - 1},
+    {kPluginDescription, sizeof(kPluginDescription) - 1},
+};
+
+}  // namespace rodaq::plugin::generated::@RODAQ_METADATA_NAMESPACE@
+
+#endif  // RODAQ_GENERATED_PLUGIN_METADATA_HPP_

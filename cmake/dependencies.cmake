@@ -46,7 +46,8 @@ target_compile_features(rodaq_expected_lite INTERFACE cxx_std_17)
 target_include_directories(rodaq_expected_lite
     SYSTEM
         INTERFACE
-            "${RODAQ_EXPECTED_LITE_INCLUDE_DIR}"
+            "$<BUILD_INTERFACE:${RODAQ_EXPECTED_LITE_INCLUDE_DIR}>"
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_compile_definitions(rodaq_expected_lite
     INTERFACE

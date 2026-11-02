@@ -1,0 +1,7 @@
+{
+  "id": "rodaq.acquisition.installed_consumer",
+  "name": "Installed SDK Consumer",
+  "version": "0.1.0",
+  "family": "acquisition",
+  "description": "Installed RoDAQ SDK plugin smoke"
+}

@@ -1,6 +1,7 @@
 include_guard(GLOBAL)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/"
@@ -17,6 +18,43 @@ install(
     DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/expected-lite"
 )
 
-# M0-A intentionally exports no linkable target or CMake package. The package
-# configuration and production library target are established once their
-# ownership and SONAME are frozen.
+install(TARGETS
+    rodaq_headers
+    rodaq_public_api
+    rodaq_expected_lite
+    rodaq_foundation
+    rodaq_sdk
+    EXPORT RoDAQTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+
+install(EXPORT RoDAQTargets
+    NAMESPACE rodaq::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/rodaq"
+)
+
+configure_package_config_file(
+    "${PROJECT_SOURCE_DIR}/cmake/RoDAQConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/rodaq"
+)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion
+)
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/rodaq"
+)
+install(
+    FILES
+        "${PROJECT_SOURCE_DIR}/cmake/rodaq_plugin.cmake"
+        "${PROJECT_SOURCE_DIR}/cmake/rodaq_plugin_metadata.hpp.in"
+        "${PROJECT_SOURCE_DIR}/cmake/check_plugin_symbols.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/rodaq"
+)

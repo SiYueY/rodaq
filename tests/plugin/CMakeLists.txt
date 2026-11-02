@@ -27,6 +27,32 @@ rodaq_add_plugin_fixture(
     rodaq_test_plugin_valid_acquisition
     "${RODAQ_ACQUISITION_FIXTURE_SOURCE}"
 )
+
+add_library(
+    rodaq_test_plugin_sdk_acquisition
+    SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_acquisition_fixture.cpp"
+)
+rodaq_enable_warnings(rodaq_test_plugin_sdk_acquisition)
+rodaq_enable_sanitizers(rodaq_test_plugin_sdk_acquisition)
+rodaq_configure_plugin(
+    TARGET rodaq_test_plugin_sdk_acquisition
+    FAMILY acquisition
+    MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_acquisition_plugin.json"
+)
+
+add_library(
+    rodaq_test_plugin_sdk_storage
+    SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_fixture.cpp"
+)
+rodaq_enable_warnings(rodaq_test_plugin_sdk_storage)
+rodaq_enable_sanitizers(rodaq_test_plugin_sdk_storage)
+rodaq_configure_plugin(
+    TARGET rodaq_test_plugin_sdk_storage
+    FAMILY storage
+    MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
+)
 rodaq_add_plugin_fixture(
     rodaq_test_plugin_valid_storage
     "${RODAQ_STORAGE_FIXTURE_SOURCE}"

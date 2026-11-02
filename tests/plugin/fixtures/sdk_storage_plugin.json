@@ -1,0 +1,7 @@
+{
+  "id": "rodaq.storage.sdk_fixture",
+  "name": "SDK Storage Fixture",
+  "version": "0.1.0",
+  "family": "storage",
+  "description": "M0 SDK lifecycle fixture"
+}

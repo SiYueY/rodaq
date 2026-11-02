@@ -2,6 +2,7 @@ add_library(rodaq_headers INTERFACE)
 target_include_directories(rodaq_headers
     INTERFACE
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 
 add_library(rodaq_public_api INTERFACE)
@@ -12,6 +13,7 @@ add_library(rodaq_sdk INTERFACE)
 target_compile_features(rodaq_sdk INTERFACE cxx_std_17)
 target_link_libraries(rodaq_sdk INTERFACE rodaq_foundation)
 add_library(rodaq::sdk ALIAS rodaq_sdk)
+set_target_properties(rodaq_sdk PROPERTIES EXPORT_NAME sdk)
 
 add_library(rodaq_foundation STATIC
     abi_support.cpp

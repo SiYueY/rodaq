@@ -31,6 +31,19 @@ foreach(header_name common canonical service config runtime acquisition storage 
     endif()
 endforeach()
 
+foreach(sdk_header
+        abi_support.hpp
+        config_view.hpp
+        service_registry.hpp
+        runtime_services.hpp
+        plugin.hpp
+        acquisition_plugin.hpp
+        storage_plugin.hpp)
+    if(NOT EXISTS "${include_dir}/rodaq/plugin/${sdk_header}")
+        message(FATAL_ERROR "Installed SDK header is missing: ${sdk_header}")
+    endif()
+endforeach()
+
 if(EXISTS "${legacy_abi_dir}")
     message(FATAL_ERROR "Legacy installed ABI directory still exists: ${legacy_abi_dir}")
 endif()
@@ -107,4 +120,37 @@ if(NOT result_result EQUAL 0)
     message(FATAL_ERROR
         "Installed Result consumer failed to compile.\n"
         "${result_stdout}\n${result_stderr}")
+endif()
+
+execute_process(
+    COMMAND
+        "${RODAQ_TEST_CMAKE_COMMAND}"
+        -S
+        "${RODAQ_TEST_SDK_PLUGIN_SOURCE_DIR}"
+        -B
+        "${RODAQ_TEST_OBJECT_DIR}/sdk-plugin-consumer"
+        "-DCMAKE_PREFIX_PATH=${RODAQ_TEST_INSTALL_PREFIX}"
+    RESULT_VARIABLE configure_result
+    OUTPUT_VARIABLE configure_stdout
+    ERROR_VARIABLE configure_stderr
+)
+if(NOT configure_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed SDK Plugin consumer failed to configure.\n"
+        "${configure_stdout}\n${configure_stderr}")
+endif()
+
+execute_process(
+    COMMAND
+        "${RODAQ_TEST_CMAKE_COMMAND}"
+        --build
+        "${RODAQ_TEST_OBJECT_DIR}/sdk-plugin-consumer"
+    RESULT_VARIABLE sdk_build_result
+    OUTPUT_VARIABLE sdk_build_stdout
+    ERROR_VARIABLE sdk_build_stderr
+)
+if(NOT sdk_build_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed SDK Plugin consumer failed to build.\n"
+        "${sdk_build_stdout}\n${sdk_build_stderr}")
 endif()

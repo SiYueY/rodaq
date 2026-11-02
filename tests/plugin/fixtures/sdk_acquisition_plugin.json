@@ -1,0 +1,7 @@
+{
+  "id": "rodaq.acquisition.sdk_fixture",
+  "name": "SDK Acquisition Fixture",
+  "version": "0.1.0",
+  "family": "acquisition",
+  "description": "M0 SDK lifecycle fixture"
+}

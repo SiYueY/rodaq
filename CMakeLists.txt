@@ -14,12 +14,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(CTest)
+include(GNUInstallDirs)
 include(options)
 include(warnings)
 include(sanitizers)
 include(dependencies)
 
 add_subdirectory(src)
+include(rodaq_plugin)
 
 if(BUILD_TESTING AND RODAQ_BUILD_TESTS)
     add_subdirectory(tests)
