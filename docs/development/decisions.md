@@ -95,7 +95,8 @@ Use separate Acquisition and Storage entrypoints/protocols.
 
 Plugin -> Runtime extensibility uses the minimal Service Registry.
 
-Runtime -> Plugin optional capability discovery uses Plugin Extension Query.
+Runtime -> Plugin capability discovery uses Plugin Interface Query. Optional
+capabilities are represented as optional extension interfaces.
 
 New optional capability should not expand the core family protocol unless it is truly part of every implementation's base contract.
 
@@ -327,11 +328,13 @@ RejectionReason must never be used to infer Payload responsibility.
 
 ---
 
-## D-017 — V1 required control extensions are part of family conformance
+## D-017 — V1 required control interfaces are part of family conformance
 
 **Status:** Accepted
 
-V1 Acquisition and Storage keep small core family vtables, but correctness-critical control protocols are required extensions:
+V1 Acquisition and Storage keep small core family vtables, while
+`query_interface()` discovers typed Plugin interfaces. Correctness-critical
+control protocols are required interfaces:
 
 ```text
 rodaq.acquisition.control.v1
@@ -340,7 +343,9 @@ rodaq.storage.control.v1
 
 Acquisition control carries Binding-switch and two-level quiescence coordination. `quiesce_stream()` is stream-local; `quiesce_plugin()` is the required instance-wide **non-destructive** barrier used before Runtime drain. Destructive native shutdown remains in core `stop()` and is invoked only after Runtime/Storage drain and Plugin-origin Payload anchors no longer require native release capability. Binding abort carries explicit `KEEP_PAUSED / RESUME_OLD` disposition.
 
-Storage control carries capability negotiation and Descriptor readiness. Missing required control extension is protocol incompatibility, not optional feature absence.
+Storage control carries capability negotiation and Descriptor readiness. Missing
+or incompatible required control interface is protocol incompatibility, not
+optional feature absence.
 
 **Reference:** `docs/design/rodaq_plugin_system.md`, `docs/design/acquisition_plugin.md`, `docs/design/storage_plugin.md`.
 
@@ -490,6 +495,67 @@ network access. Developer qualification may use Git to inspect the gitlinks.
 
 **Reference:** `docs/design/rodaq_v1_system_design.md`,
 `docs/design/rodaq_plugin_system.md`.
+
+---
+
+## D-027 — Plugin loader identity and failure classification
+
+**Status:** Accepted
+
+Plugin IDs contain at least two non-empty dot-separated segments. Each segment
+contains only ASCII `a-z`, `0-9`, `_` or `-`. Plugin versions use complete
+SemVer 2.0 syntax. Plugin `id`, `name` and `version` are non-empty valid UTF-8
+without embedded NUL; description may be empty.
+
+Loader failures use the existing ErrorCode taxonomy:
+
+- missing file or symbol: `NotFound`,
+- `dlopen` or loader-runtime failure: `Unavailable`,
+- malformed ABI, protocol, descriptor, family or symbol provenance:
+  `InvalidArgument`,
+- duplicate Plugin ID from a different canonical DSO: `Conflict`,
+- lifecycle misuse: `InvalidState`,
+- invariant failure: `InternalError`.
+
+No loader-specific ErrorCode family is introduced.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`.
+
+---
+
+## D-028 — Plugin-facing public headers use the rodaq/plugin hierarchy
+
+**Status:** Accepted
+
+The Stable C Plugin ABI is installed under `include/rodaq/plugin/abi/*.h`.
+Common Plugin ABI primitives are defined in `common.h`. The future C++17 Plugin
+SDK uses `include/rodaq/plugin/*.hpp` and may depend on the Stable C ABI; the
+Stable C ABI must not depend on the C++ SDK.
+
+The former `include/rodaq/abi/` source path is removed without compatibility
+headers during the pre-release phase.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`,
+`docs/design/rodaq_v1_system_design.md`.
+
+---
+
+## D-029 — Storage domain outcomes use the full Stable ABI Error representation
+
+**Status:** Accepted
+
+Synchronous persistence failure, asynchronous persistence failure, Descriptor
+readiness failure, and systemic Storage failures use `rodaq_error` for
+self-contained diagnostics.
+
+Function-level `out_error` remains reserved for ABI/control-call failure.
+Domain outcomes and call-boundary failures must remain distinct.
+
+`rodaq_error` pointers passed through Storage Runtime callbacks are borrowed for
+the callback duration. The Runtime must copy the value before retaining it.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`,
+`docs/design/storage_plugin.md`.
 
 ---
 

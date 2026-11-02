@@ -434,7 +434,7 @@ open
 submit
 flush
 close
-get_extension
+query_interface
 destroy
 ```
 
@@ -479,7 +479,7 @@ Quiesce after Failure
 
 属于领域 capability / Runtime coordination step，**不是**要求继续向 `rodaq_storage_plugin` core vtable 增加同名 ABI slot。
 
-V1 correctness 所必需的 capability negotiation 与 Descriptor readiness 必须通过 required extension：
+V1 correctness 所必需的 capability negotiation 与 Descriptor readiness 必须通过 required interface：
 
 ```text
 rodaq.storage.control.v1
@@ -1140,7 +1140,7 @@ Storage Plugin：
 
 ## 3.3 Descriptor Readiness Operation
 
-Runtime 通过 required Storage control extension 调用：
+Runtime 通过 required Storage control interface 调用：
 
 ```text
 rodaq.storage.control.v1::ensure_descriptor_ready(...)
@@ -1157,6 +1157,10 @@ Unsupported
 
 Failed
 ```
+
+`Ready` and `Unsupported` carry `failure.code == OK`. `Failed` carries a non-OK
+`rodaq_error` value with the backend domain, native code and message. The
+function-level `out_error` remains reserved for ABI/control-call failure.
 
 ---
 
@@ -2608,9 +2612,13 @@ payload_consumed(operation)
 persistence_completed(
     operation,
     terminal_state,
-    status,
-    message)
+    error)
 ```
+
+`error` is borrowed for the callback duration and is a complete
+`rodaq_error` value. On `SUCCEEDED` it is `NULL`; on `FAILED` or `UNKNOWN` it
+is non-NULL with a non-OK status. Runtime must copy the value before retaining
+it.
 
 而不是一个把 Payload 与 Persistence 混在一起的通用 `complete()`。
 
@@ -4568,7 +4576,7 @@ open
 submit
 flush
 close
-get_extension
+query_interface
 destroy
 ```
 
@@ -5607,8 +5615,7 @@ PERSISTENCE_PENDING
 persistence_completed(
     operation,
     PERSISTENCE_SUCCEEDED,
-    OK,
-    ...)
+    NULL)
 ```
 
 如果 persistence 已能在 `submit()` 内同步确定成功，则允许 result 直接返回 `PERSISTENCE_SUCCEEDED`，并验证之后没有 callback。
@@ -5641,8 +5648,7 @@ uncommitted transaction
 persistence_completed(
     operation,
     PERSISTENCE_FAILED,
-    non-OK status,
-    diagnostic)
+    &error)
 ```
 
 并验证：
@@ -5665,8 +5671,7 @@ transaction / backend outcome indeterminate。
 persistence_completed(
     operation,
     PERSISTENCE_UNKNOWN,
-    non-OK status,
-    diagnostic)
+    &error)
 ```
 
 并验证：

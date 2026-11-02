@@ -815,6 +815,16 @@ rodaq/
 │       │   └── payload_view.hpp
 │       │
 │       ├── plugin/
+│       │   ├── abi/
+│       │   │   ├── common.h
+│       │   │   ├── canonical.h
+│       │   │   ├── service.h
+│       │   │   ├── config.h
+│       │   │   ├── runtime.h
+│       │   │   ├── acquisition.h
+│       │   │   ├── storage.h
+│       │   │   └── plugin.h
+│       │   │
 │       │   ├── plugin.hpp
 │       │   ├── config.hpp
 │       │   ├── runtime.hpp
@@ -824,18 +834,9 @@ rodaq/
 │       │   └── detail/
 │       │       └── trampolines.hpp
 │       │
-│       ├── logging/
+│       └── logging/
 │       │   └── logger.hpp
 │       │
-│       └── abi/
-│           ├── abi.h
-│           ├── plugin.h
-│           ├── service.h
-│           ├── config.h
-│           ├── runtime.h
-│           ├── acquisition.h
-│           └── storage.h
-│
 ├── src/
 │   ├── canonical/
 │   │   ├── clock.cpp
@@ -877,10 +878,10 @@ rodaq/
 │   │   ├── plugin_manager.cpp
 │   │   ├── plugin_catalog.hpp
 │   │   ├── plugin_catalog.cpp
-│   │   ├── acquisition_instance.hpp
-│   │   ├── acquisition_instance.cpp
-│   │   ├── storage_instance.hpp
-│   │   └── storage_instance.cpp
+│   │   ├── acquisition_plugin_instance.hpp
+│   │   ├── acquisition_plugin_instance.cpp
+│   │   ├── storage_plugin_instance.hpp
+│   │   └── storage_plugin_instance.cpp
 │   │
 │   ├── logging/
 │   │   ├── logger.cpp
@@ -1064,7 +1065,7 @@ src/runtime/admission.hpp
 > `include/` = installed / public
 > `src/` = implementation / private
 
-### `include/rodaq/abi/`
+### `include/rodaq/plugin/abi/`
 
 该目录定义 RoDAQ 动态插件的长期二进制边界，不设置 `v1/` 子目录。ABI 版本由协议本身表达，而不是由目录名表达：
 
@@ -1078,7 +1079,7 @@ service / extension version
 文件职责：
 
 ```text
-abi.h
+common.h
     status、error、string/bytes view、opaque handle、export/noexcept 等基础 ABI primitive
 
 plugin.h
@@ -1114,7 +1115,7 @@ storage.h
 同时明确两层接口：
 
 ```text
-include/rodaq/abi/
+include/rodaq/plugin/abi/
     stable binary contract
 
 include/rodaq/plugin/
@@ -1496,8 +1497,8 @@ Process / Runtime lifetime
     Registries
 
 Plugin Instance lifetime
-    AcquisitionInstance
-    StorageInstance
+    AcquisitionPluginInstance
+    StoragePluginInstance
     Runtime Service bindings
 
 Activation / Session lifetime
@@ -3237,7 +3238,7 @@ bind
 configure
 start
 stop
-get_extension
+query_interface
 destroy
 ```
 
@@ -3288,7 +3289,7 @@ no future descriptor registration
 no Plugin worker 使用 Acquisition Runtime service
 ```
 
-V1 还要求 Acquisition Plugin 暴露 required control extension：
+V1 还要求 Acquisition Plugin 暴露 required control interface：
 
 ```text
 rodaq.acquisition.control.v1
@@ -3343,7 +3344,7 @@ open
 submit
 flush
 close
-get_extension
+query_interface
 destroy
 ```
 
@@ -3392,8 +3393,13 @@ PERSISTENCE_UNKNOWN
 
 ```text
 payload_consumed()
-persistence_completed()
+persistence_completed(..., const rodaq_error* error)
 ```
+
+`persistence_completed()` 的 `error` 是 callback-duration borrowed、
+self-contained diagnostic：成功时必须为 `NULL`，`FAILED/UNKNOWN` 时必须
+非空且 code 非 OK。Storage systemic failure 的 `report_failure()` 同样携带
+完整 `rodaq_error` diagnostic。
 
 V1 禁止 same-stack synchronous reentrant callback，但允许真正的 cross-thread completion 与 `submit()` return 发生竞态。Runtime 必须在调用 `submit()` 前建立 operation tracking，并在 return 后 reconcile synchronous result 与可能已经到达的 completion event。
 
@@ -3407,7 +3413,7 @@ duplicate axis completion
 callback after close/quiescence
 ```
 
-Storage V1 还要求 required control extension：
+Storage V1 还要求 required control interface：
 
 ```text
 rodaq.storage.control.v1
@@ -3517,22 +3523,22 @@ rodaq.runtime.clock_correlation.v1
 
 原则上不需要修改 Acquisition / Storage core protocol。
 
-## 3.8 Plugin Extension Query：Runtime → Plugin
+## 3.8 Plugin Interface Query：Runtime → Plugin
 
-Runtime 查询 Plugin 扩展能力统一使用：
+Runtime 查询 Plugin Interface 与 optional extension 统一使用：
 
 ```text
-get_extension()
+query_interface()
 ```
 
 调用方向：
 
 ```text
 Runtime → Plugin
-    Extension Query
+    Plugin Interface Query
 ```
 
-V1 分为 required control extension 与 optional feature extension。
+V1 分为 required control interface 与 optional feature extension。
 
 Required：
 
@@ -3541,7 +3547,7 @@ rodaq.acquisition.control.v1
 rodaq.storage.control.v1
 ```
 
-它们是 V1 correctness contract 的组成部分；family Plugin 缺失 required control extension 属于 protocol incompatibility。
+它们是 V1 correctness contract 的组成部分；family Plugin 缺失 required control interface 属于 protocol incompatibility。
 
 Optional：
 
@@ -3553,13 +3559,14 @@ rodaq.storage.rotation.v1
 rodaq.storage.durability.v1
 ```
 
-Extension Set 在 bind 后冻结，Runtime 可以缓存 presence/absence。
+Plugin interface set（包括 optional extension interfaces）在 bind 后冻结，
+Runtime 可以缓存 presence/absence。
 
 这样：
 
 ```text
 旧 Runtime
-    不知道新 extension → 不查询
+    不知道新 Interface / Extension → 不查询
 
 新 Runtime + 旧 Plugin
     query → NOT_FOUND
@@ -3631,7 +3638,7 @@ PluginLibrary
     owns validated descriptor / family vtable
     owns SharedLibrary
 
-AcquisitionInstance / StorageInstance
+AcquisitionPluginInstance / StoragePluginInstance
     owns PluginLibrary lease
 
 Plugin-backed Payload / callback token
@@ -3818,7 +3825,7 @@ docs/design/rodaq_plugin_system.md
 该文档必须至少完整定义：
 
 ```text
-abi.h
+common.h
 canonical.h
 plugin.h
 service.h
@@ -3895,7 +3902,7 @@ abidw / abidiff baseline
 真实 Plugin 开发前至少完成：
 
 ```text
-abi.h / plugin.h / service.h / config.h / runtime.h
+common.h / plugin.h / service.h / config.h / runtime.h
 acquisition.h / storage.h
 
 Boot ABI marker
@@ -3907,7 +3914,7 @@ tail-slot gating
 
 Service Registry
 Runtime common/acquisition/storage services
-Plugin Extension Query
+Plugin Interface Query
 ConfigView
 
 Acquisition lifecycle
@@ -5415,7 +5422,7 @@ keep expected-lite out of Stable ABI
 Stable ABI headers：
 
 ```text
-abi.h
+common.h
 canonical.h
 plugin.h
 service.h
@@ -5433,15 +5440,15 @@ PluginLibrary
 PluginCatalog
 PluginManager
 
-AcquisitionInstance
-StorageInstance
+AcquisitionPluginInstance
+StoragePluginInstance
 
 PluginLibraryLease
 PluginInstanceLease
 
 Service Registry
 ConfigView
-Extension Query
+Plugin Interface Query
 
 C++17 Plugin SDK
 exception trampolines
@@ -5664,7 +5671,7 @@ M0 只有同时满足以下条件才 PASS：
 
 [PASS] Runtime Common log/diagnostic scalar values and lifecycle snapshot ABI are frozen/tested
 
-[PASS] required Acquisition/Storage control extensions pass protocol/minimum-prefix/required-slot tests
+[PASS] required Acquisition/Storage control interfaces pass protocol/minimum-prefix/required-slot tests
 
 [PASS] valid Fake Acquisition lifecycle:
        load → create → bind → configure → destroy → unload
@@ -7484,7 +7491,7 @@ Plugin ABI / Service Registry / Runtime Services
 include/rodaq/
     = Public C++ API
 
-include/rodaq/abi/
+include/rodaq/plugin/abi/
     = Stable C-compatible binary boundary
 
 src/

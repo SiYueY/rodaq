@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-02
 **Branch:** `develop`
-**Base HEAD:** `404da89e76cd31142aaa293df79da090a79a508f` — `docs: freeze RoDAQ V1 design baseline`
+**Base HEAD:** `98b9423` — `feat: implement RoDAQ stable plugin ABI foundation`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -16,19 +16,24 @@ The design phase is sufficiently mature to begin implementation. The first imple
 
 ## Current repository state
 
-M0-A Review Closure and M0-B Stable C Plugin ABI are complete and validated.
-The repository now contains:
+M0-A Review Closure, M0-B Stable C Plugin ABI and M0-C Plugin Loading + Lifetime
+are complete and validated. The repository now contains:
 
 - a C++17 CMake project foundation,
 - warning, sanitizer, CTest, dependency and install support,
 - Public `rodaq::Error` and `rodaq::Result<T>` primitives,
-- eight Stable C ABI headers under `include/rodaq/abi/`,
+- eight Stable C ABI headers under `include/rodaq/plugin/abi/`, with
+  `common.h` as the shared primitive header,
 - C11/C++17 ABI compilation, layout, minimum-prefix and symbol qualification,
+- a private Linux Plugin loader with Boot ABI, family, descriptor and provenance validation,
+- private DSO and instance lease ownership with bounded normal unload behavior,
+- catalog/manager orchestration and explicit quarantine retention,
 - pinned dependency submodules with no normal-build network access,
 - header-only install validation for `rodaq::Error` and `rodaq::Result<T>`.
 
-`third_party/` contains all nine approved pinned submodules. No Plugin Loader,
-linkable RoDAQ package target or production shared library has been introduced.
+`third_party/` contains all nine approved pinned submodules. No Service Registry,
+ConfigView, C++ Plugin SDK, linkable RoDAQ package target or production shared
+library has been introduced.
 
 ## Design baseline
 
@@ -79,7 +84,7 @@ The common Runtime and Plugin infrastructure must be validated with Fake Plugins
   - family-specific Acquisition / Storage protocols,
   - Boot ABI marker,
   - Service Registry,
-  - Extension Query,
+  - Plugin Interface Query,
   - Runtime-owned ConfigView,
   - explicit lifecycle/thread/ownership contracts,
   - Acquisition `AdmissionOutcome + RejectionReason + PayloadDisposition`,
@@ -109,18 +114,85 @@ The common Runtime and Plugin infrastructure must be validated with Fake Plugins
   - wired `RODAQ_BUILD_BENCHMARKS` to the benchmarks subtree,
   - made Git submodule gitlinks the sole dependency commit authority.
 - M0-B Stable C Plugin ABI implemented:
-  - `abi.h`, `canonical.h`, `service.h`, `config.h`, `runtime.h`,
+  - `common.h`, `canonical.h`, `service.h`, `config.h`, `runtime.h`,
     `acquisition.h`, `storage.h` and `plugin.h`,
-  - required Service and control-extension ID constants,
+  - required Service and control-interface ID constants,
+  - `query_interface()` family slots for required interfaces and optional extensions,
+  - complete `rodaq_error` diagnostics for Storage completion and failure callbacks,
+  - Descriptor readiness results carrying inline failure diagnostics,
+  - `rodaq_storage_operation` owned by the Storage ABI,
   - all 30 V1 APPENDABLE minimum-prefix constants,
   - FROZEN layout sentinels,
   - C11 and C++17 independent header compilation,
   - hidden-visibility Acquisition and Storage symbol fixtures,
   - installed C, C++ ABI and Result consumer qualification.
+- M0-C Plugin Loading + Lifetime implemented:
+  - `SharedLibrary` with `RTLD_NOW | RTLD_LOCAL`, canonical paths and RAII unload,
+  - Boot ABI and `dlinfo` / `dladdr` symbol provenance validation,
+  - mutually exclusive Acquisition / Storage family detection,
+  - family minimum-prefix and required-slot validation,
+  - Plugin ID, UTF-8 and complete SemVer 2.0 descriptor validation,
+  - `PluginLibraryLease` and `PluginInstanceLease` lifetime separation,
+  - `AcquisitionPluginInstance` / `StoragePluginInstance` create and exactly-once destroy,
+  - `PluginCatalog` path merge and duplicate-ID conflict handling,
+  - minimal `PluginManager` explicit-path orchestration,
+  - process-lifetime quarantine without unsafe destroy or unload,
+  - `AcquisitionPluginInstance` / `StoragePluginInstance` private owner handles,
+  - direct private state types without a `detail` namespace,
+  - `plugin_error` status conversion helpers without an `abi_` prefix,
+  - isolated DSO fixture matrix and subprocess lifecycle verification.
+
+M0-B post-PASS structural convergence:
+
+```text
+include/rodaq/abi/
+    → include/rodaq/plugin/abi/
+
+include/rodaq/abi/abi.h
+    → include/rodaq/plugin/abi/common.h
+```
+
+The path-only step did not change binary ABI semantics. The old public include
+path and compatibility headers were removed because RoDAQ has no released
+consumer for that path. The following pre-freeze convergence then applied the
+intentional ABI changes.
+
+M0-B pre-freeze ABI convergence:
+
+- family `get_extension` slots became `query_interface`;
+- control extension IDs became control interface IDs with unchanged strings;
+- `rodaq_storage_operation` moved from Canonical to Storage ownership;
+- Storage async/systemic failures now carry complete `rodaq_error` diagnostics;
+- Descriptor readiness failures now use inline `rodaq_error`, producing the
+  converged `336`-byte result layout;
+- D-017 terminology and D-029 Storage-diagnostics policy are recorded.
+
+Structural convergence validation:
+
+- GCC 11 Debug, ASan, UBSan and combined ASan+UBSan each passed 65/65 CTest
+  entries.
+- All eight C11/C++17 standalone header tests passed under the new path,
+  including FROZEN layout, 30 minimum-prefix constants, scalar/protocol values
+  and symbol allowlists.
+- Install smoke verified all eight headers under
+  `<prefix>/include/rodaq/plugin/abi/` and confirmed the legacy
+  `<prefix>/include/rodaq/abi/` directory is absent.
+- Active source/tests/build references contain no legacy include path, old
+  guard or old header test name; the only retained old-path text is the
+  migration record in this status file and D-028.
+- Catalog-removal regressions verify live instance and live library lease
+  lifetime independent of catalog ownership.
+- CMake matrix verified `BUILD_TESTING=OFF` and `RODAQ_BUILD_TESTS=OFF` each
+  produce zero RoDAQ tests; the enabled matrix produces all 65 tests.
+- Network audit recorded no network syscalls during a fresh configure/build.
+- Production ABI/code contains no `get_extension`, `CONTROL_EXTENSION_ID` or
+  `required control extension` terminology; `rodaq_storage_operation` is
+  defined only by `storage.h`.
+- clang-format, `git diff --check`, whitespace and recursive submodule audits
+  passed.
 
 ## Not started
 
-- SharedLibrary / PluginLibrary / PluginManager.
 - Service Registry implementation.
 - ConfigView implementation.
 - Minimal C++ Plugin SDK.
@@ -160,7 +232,7 @@ Closed areas include:
 
 ```text
 Canonical Record identity / Source / Clock / Timestamp projection
-required Acquisition / Storage control extensions
+required Acquisition / Storage control interfaces
 instance-wide non-destructive Acquisition quiesce before destructive Stop
 Binding abort KEEP_PAUSED / RESUME_OLD disposition
 Runtime lifecycle snapshot for recovery gating
@@ -180,10 +252,11 @@ three-level Semantic / ABI / Backend qualification freeze model
 
 No remaining known P0/P1 static design blocker prevents M0 Foundation + Plugin ABI implementation. M0 may proceed from the repaired contract set.
 
-The Stable C ABI is implemented and mechanically qualified. No Plugin Loader,
-Runtime, Plugin lifecycle or backend round-trip has been executed. ROS2/MCAP
-executable qualification remains an M3 gate, and DDS/SQLite3 qualification
-remains an M5 gate.
+The Stable C ABI and private Plugin loading/lifetime boundary are implemented and
+mechanically qualified. No Service Registry, ConfigView, Plugin SDK, Runtime data
+plane or backend round-trip has been executed. ROS2/MCAP executable
+qualification remains an M3 gate, and DDS/SQLite3 qualification remains an M5
+gate.
 
 The Result policy is now frozen by D-025:
 
@@ -194,12 +267,11 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M0-C — Plugin Loading + Lifetime.
-2. Implement SharedLibrary / PluginLibrary / PluginManager.
-3. Implement actual Boot ABI, protocol, symbol and duplicate-ID rejection.
-4. Implement PluginLibraryLease / PluginInstanceLease.
-5. Implement minimal Service Registry and ConfigView.
-6. Build Fake Acquisition / Storage loading/lifecycle tests.
+1. Begin M0-D — Service Registry + ConfigView + C++ Plugin SDK.
+2. Implement minimal Service Registry and ConfigView runtime behavior.
+3. Implement the C++17 Plugin SDK and exception trampolines.
+4. Add Plugin metadata generation and authoring CMake helpers.
+5. Build Fake Acquisition / Storage lifecycle tests for M0-E.
 
 ## Validation state
 
@@ -229,6 +301,18 @@ M0-B
     MINIMUM-PREFIX TESTED
     SYMBOL TESTED
     INSTALL HEADER TESTED
+    ASAN TESTED
+    UBSAN TESTED
+    REVIEWED
+    PASS
+
+M0-C
+    IMPLEMENTED
+    COMPILED
+    UNIT TESTED
+    INTEGRATION TESTED
+    DSO LIFETIME TESTED
+    QUARANTINE TESTED
     ASAN TESTED
     UBSAN TESTED
     REVIEWED
@@ -266,7 +350,7 @@ amd64:
   below HdrHistogram_c report clean worktrees at their pinned commits.
 - Formatting and scope audit: clang-format 14 dry-run passed for all new C/C++
   files, `git diff --check` passed, whitespace audit passed, and the
-  `include/rodaq/abi/` tree passed forbidden-type isolation checks.
+  `include/rodaq/plugin/abi/` tree passed forbidden-type isolation checks.
 
 M0-A Review Closure and M0-B validation:
 
@@ -293,3 +377,35 @@ M0-A Review Closure and M0-B validation:
   optional mimalloc configured and built successfully.
 - ASan, UBSan and combined ASan+UBSan: 34/34 CTest entries passed in each build;
   ASan runs used `setarch x86_64 -R` for the documented host workaround.
+
+M0-C validation:
+
+- `cmake --build build/debug --parallel 2` followed by
+  `ctest --test-dir build/debug --output-on-failure --parallel 2`: 65/65 CTest
+  entries passed with GCC 11 Debug and warnings-as-errors.
+- `cmake --build build/asan --parallel 2`, `cmake --build build/ubsan --parallel 2`
+  and `cmake --build build/asan-ubsan --parallel 2`: all builds passed. Their
+  CTest runs each passed 65/65; ASan and combined builds used
+  `setarch "$(uname -m)" -R ctest ...` for the documented host workaround.
+- Loader rejection matrix passed for missing/wrong Boot ABI, missing/dual/
+  mismatched family, wrong protocol, too-small family, null required slot,
+  malformed descriptors, invalid ID/SemVer/UTF-8, duplicate Plugin ID and
+  dependency-provided symbols.
+- `dlinfo` load-base versus `dladdr` defining-object checks rejected both marker
+  and family-entrypoint provenance violations.
+- Test-only lifecycle event logs verified load/unload/create/destroy ordering,
+  exactly-once destroy, same-path catalog merge and final-lease unload.
+- Quarantine subprocess verified no subsequent instance creation, no destroy and
+  no DSO unload before process exit.
+- Failed load/create paths passed under ASan without leaked DSO handles or
+  plugin-code use after unload.
+- `clang-format --dry-run --Werror` over `src/plugin/` and `tests/plugin/`,
+  `git diff --check`, and the whitespace scan all passed without findings.
+- `git submodule status --recursive` reported all approved pins, and the
+  recursive per-submodule worktree check reported no modifications.
+- No `FetchContent`, `ExternalProject_Add`, clone, curl, wget or download command
+  was found in the build, source or test trees. `cmake/` and `third_party/`
+  have no worktree changes; the intentional public ABI convergence is recorded
+  above.
+- Naming audit found no forbidden placeholder namespaces, former family owner
+  class names, ABI-prefixed error helper, or legacy status conversion references.

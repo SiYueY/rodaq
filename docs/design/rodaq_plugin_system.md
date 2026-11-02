@@ -6,7 +6,7 @@
 >
 > 本文的目标不是证明 RoDAQ 可以动态加载 `.so`，而是在 ROS 2 Acquisition、DDS Acquisition、MCAP Storage、SQLite3 Storage 开始正式实现之前，建立一套足够稳定的插件契约，使 Runtime 后续内部重构和功能扩展尽量不会迫使已经开发的插件重新适配。
 >
-> 本文中的 `V1` 指 RoDAQ 产品阶段，不等同于某一个 ABI、Service 或 Extension 的版本号。源码目录中不设置 `v1/` 层级；需要版本化的协议通过 ABI 常量、Protocol Version、Service ID 和 Extension ID 显式表达。
+> 本文中的 `V1` 指 RoDAQ 产品阶段，不等同于某一个 ABI、Service 或 Interface 的版本号。源码目录中不设置 `v1/` 层级；需要版本化的协议通过 ABI 常量、Protocol Version、Service ID 和 Interface / optional Extension ID 显式表达。
 
 ---
 
@@ -185,7 +185,7 @@ Plugin → Runtime
 ```text
 Runtime → Plugin
     Family Protocol
-    Plugin Extension Query
+    Plugin Interface Query
 ```
 
 新增 Runtime capability 不修改 Plugin family core。
@@ -252,7 +252,7 @@ flowchart TD
 对应源码：
 
 ```text
-include/rodaq/abi/
+include/rodaq/plugin/abi/
     Binary ABI
 
 include/rodaq/plugin/
@@ -368,7 +368,7 @@ PlotJuggler 当前插件体系最值得 RoDAQ 参考的不是具体业务接口�
 | minimum vtable floor | 采用 | 采用 |
 | tail-slot gating | 采用 | 采用 |
 | Service Registry | 采用 | 简化采用 |
-| Plugin Extension Query | 采用 | 采用 |
+| Plugin Interface Query | 采用 | 采用 |
 | RAII DSO lifetime | 采用 | 采用 |
 | hidden export surface | 采用 | 采用 |
 | ABI baseline CI | 采用 | 采用 |
@@ -468,21 +468,22 @@ WASM Plugin runtime
 ```text
 include/
 └── rodaq/
-    └── abi/
-        ├── abi.h
-        ├── canonical.h
-        ├── plugin.h
-        ├── service.h
-        ├── config.h
-        ├── runtime.h
-        ├── acquisition.h
-        └── storage.h
+    └── plugin/
+        └── abi/
+            ├── common.h
+            ├── canonical.h
+            ├── plugin.h
+            ├── service.h
+            ├── config.h
+            ├── runtime.h
+            ├── acquisition.h
+            └── storage.h
 ```
 
 职责：
 
 ```text
-abi.h
+common.h
     最基础 ABI primitive
 
 canonical.h
@@ -510,7 +511,7 @@ storage.h
 不设置：
 
 ```text
-abi/v1/
+plugin/abi/v1/
 ```
 
 协议版本显式存在于：
@@ -519,7 +520,7 @@ abi/v1/
 ABI constant
 Protocol Version
 Service ID
-Extension ID
+Interface / optional Extension ID
 ```
 
 而不是目录名中。
@@ -528,7 +529,7 @@ Extension ID
 
 ## 2.2 ABI Header 必须可由 C 编译器解析
 
-`include/rodaq/abi/*.h` 必须满足：
+`include/rodaq/plugin/abi/*.h` 必须满足：
 
 ```text
 C-compatible
@@ -555,11 +556,11 @@ third-party C++ type
 
 ## 2.3 基础 ABI 定义
 
-`abi.h`：
+`common.h`：
 
 ```c
-#ifndef RODAQ_ABI_H
-#define RODAQ_ABI_H
+#ifndef RODAQ_PLUGIN_ABI_COMMON_H_
+#define RODAQ_PLUGIN_ABI_COMMON_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -658,7 +659,8 @@ UTF-8
 ```text
 Plugin ID
 Service ID
-Extension ID
+Interface ID
+optional Extension ID
 Stream Name
 Schema Format
 ```
@@ -813,7 +815,7 @@ typedef struct rodaq_interface {
 
 ```text
 Runtime Service
-Plugin Extension
+Plugin Interface
 ```
 
 成功返回 Interface 时：
@@ -852,10 +854,10 @@ typedef struct rodaq_stream_descriptor_handle {
     uint64_t value;
 } rodaq_stream_descriptor_handle;
 
-typedef struct rodaq_storage_operation {
-    uint64_t value;
-} rodaq_storage_operation;
 ```
+
+`rodaq_storage_operation` belongs to the Storage family contract in
+`storage.h`; it is not a Canonical identity.
 
 统一：
 
@@ -940,7 +942,7 @@ copied byte-for-byte within one ABI major
 Plugin Descriptor
 Family VTable
 Service VTable
-Extension VTable
+Plugin Interface / Extension VTable
 Config VTable
 
 Registration Request
@@ -1112,13 +1114,17 @@ TYPE_MIN_STRUCT_SIZE
 
 ```c
 #define RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE \
-    (offsetof(rodaq_acquisition_plugin, get_extension) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_plugin, get_extension))
+    (offsetof(rodaq_acquisition_plugin, query_interface) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_plugin, query_interface))
 ```
 
 冻结规则：
 
 > **同一个 Protocol Major 内，既有 MIN_STRUCT_SIZE 永远不能提高。**
+
+本次 M0-B pre-freeze convergence deliberately changes the unfinalized
+Descriptor-readiness layout. After the converged ABI requalification passes,
+the resulting minimum floors become frozen for the remainder of V1.
 
 所有 minimum macro 使用完整类型名：
 
@@ -1167,10 +1173,10 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 | `rodaq_config_vtable` | `as_string` | all V1 ConfigView slots non-NULL |
 | `rodaq_acquisition_control_v1` | `quiesce_plugin` | all V1 control slots non-NULL |
 | `rodaq_storage_capabilities` | `close_progress_timeout_ns` | all bounded-capability fields initialized |
-| `rodaq_descriptor_readiness_result` | `status` | state/status combination valid |
+| `rodaq_descriptor_readiness_result` | `failure` | state/failure combination valid |
 | `rodaq_storage_control_v1` | `ensure_descriptor_ready` | both V1 control slots non-NULL |
-| `rodaq_acquisition_plugin` | `get_extension` | all core lifecycle slots non-NULL |
-| `rodaq_storage_plugin` | `get_extension` | all core lifecycle slots non-NULL |
+| `rodaq_acquisition_plugin` | `query_interface` | all core lifecycle slots non-NULL |
+| `rodaq_storage_plugin` | `query_interface` | all core lifecycle slots non-NULL |
 | `rodaq_storage_open_request` | `target_uri` | flags/reserved validation |
 | `rodaq_storage_close_request` | `disposition` | disposition recognized; reserved tail zero when present |
 | `rodaq_storage_submission` | `payload` | operation/descriptor/count/presence relationships valid |
@@ -1471,6 +1477,15 @@ ASCII lowercase
 全局稳定
 ```
 
+V1 机械语法进一步冻结为：
+
+```text
+at least two non-empty dot-separated segments
+each segment characters: a-z 0-9 _ -
+```
+
+空段、空白、斜杠、反斜杠、大写字母和其他字符均拒绝。
+
 ### Plugin Version
 
 Semantic Version：
@@ -1479,6 +1494,17 @@ Semantic Version：
 1.0.0
 1.2.3
 ```
+
+V1 使用完整 SemVer 2.0 语法：
+
+```text
+MAJOR.MINOR.PATCH
+optional -prerelease
+optional +build
+```
+
+Core 与 numeric prerelease identifier 禁止 leading zero；numeric build
+identifier 允许 leading zero。
 
 它表示：
 
@@ -3761,29 +3787,29 @@ Config string pointer
 
 ---
 
-## 3.30 Plugin Extension Query
+## 3.30 Plugin Interface Query
 
-Runtime → Plugin 的扩展 capability 统一通过：
+Runtime → Plugin 的 capability discovery 统一通过：
 
 ```c
-rodaq_status (*get_extension)(
+rodaq_status (*query_interface)(
     void* instance,
-    rodaq_string_view extension_id,
-    rodaq_interface* out_extension,
+    rodaq_string_view interface_id,
+    rodaq_interface* out_interface,
     rodaq_error* out_error) RODAQ_NOEXCEPT;
 ```
 
-V1 Extension 分两类：
+V1 Plugin Interface 查询分两类：
 
 ```text
-required family control extension
+required family control interface
     → V1 conforming family Plugin MUST expose
 
 optional feature extension
     → Plugin MAY expose
 ```
 
-这两类都使用同一个 `get_extension()` 机制，但 required extension 缺失是：
+这两类都使用同一个 `query_interface()` 机制，但 required interface 缺失是：
 
 ```text
 protocol incompatibility
@@ -3793,7 +3819,7 @@ protocol incompatibility
 
 ---
 
-## 3.31 Required Acquisition Control Extension
+## 3.31 Required Acquisition Control Interface
 
 V1 Acquisition Plugin 必须暴露：
 
@@ -3804,10 +3830,10 @@ rodaq.acquisition.control.v1
 ABI constant：
 
 ```c
-#define RODAQ_ACQUISITION_CONTROL_EXTENSION_ID "rodaq.acquisition.control.v1"
+#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control.v1"
 ```
 
-该 extension 负责 core lifecycle 之外但 Runtime correctness 所必需的 Binding transition / quiescence coordination。
+该 interface 负责 core lifecycle 之外但 Runtime correctness 所必需的 Binding transition / quiescence coordination。
 
 ### Transition token
 
@@ -4037,7 +4063,7 @@ protocol incompatibility
 
 ---
 
-## 3.32 Required Storage Control Extension
+## 3.32 Required Storage Control Interface
 
 V1 Storage Plugin 必须暴露：
 
@@ -4048,7 +4074,7 @@ rodaq.storage.control.v1
 ABI constant：
 
 ```c
-#define RODAQ_STORAGE_CONTROL_EXTENSION_ID "rodaq.storage.control.v1"
+#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control.v1"
 ```
 
 它负责：
@@ -4122,10 +4148,14 @@ typedef struct rodaq_descriptor_readiness_result {
     uint32_t struct_size;
     rodaq_descriptor_readiness state;
 
-    rodaq_status status;
-    uint32_t reserved;
+    rodaq_error failure;
 } rodaq_descriptor_readiness_result;
 ```
+
+`READY` and `UNSUPPORTED` require `failure.code == RODAQ_STATUS_OK`.
+`FAILED` requires a non-OK `failure` value carrying the complete domain, native
+code and message diagnostic. Function-level `out_error` remains reserved for
+ABI/control-call failure.
 
 ### Storage control vtable
 
@@ -4206,7 +4236,7 @@ Experimental：
 rodaq.experimental.<name>.draft-<N>
 ```
 
-Required control extension：
+Required control interface：
 
 ```text
 rodaq.acquisition.control.v1
@@ -4217,17 +4247,17 @@ rodaq.storage.control.v1
 
 ---
 
-## 3.34 Extension Availability Freeze
+## 3.34 Plugin Interface Availability Freeze
 
 V1 规定：
 
-> **Extension Set 在成功 `bind()` 后冻结，直到 `destroy()` 不得改变。**
+> **Plugin interface set（包括 optional extension interfaces）在成功 `bind()` 后冻结，直到 `destroy()` 不得改变。**
 
 因此 Runtime 在 Bound 之后：
 
 ```text
-可以缓存 Extension presence
-可以缓存 Extension absence
+可以缓存 interface presence
+可以缓存 interface absence
 ```
 
 禁止 Plugin：
@@ -4240,21 +4270,21 @@ Configure 后突然出现
 如果某 optional 能力取决于 Config：
 
 ```text
-Extension 仍然应该存在
+Interface 仍然应该存在
 ```
 
-但 Extension operation 可以根据当前 Config 返回：
+但 Interface operation 可以根据当前 Config 返回：
 
 ```text
 INVALID_STATE
 UNAVAILABLE
 ```
 
-Required control extension 在 bind 后缺失直接导致 protocol incompatibility。
+Required control interface 在 bind 后缺失直接导致 protocol incompatibility。
 
 ---
 
-## 3.35 Extension Lifetime
+## 3.35 Plugin Interface 与 Optional Extension Lifetime
 
 成功返回：
 
@@ -4283,9 +4313,9 @@ C++ SDK wrapper 如果允许 extension object 跨普通调用保存：
 
 Extension 本身不能让 Runtime Service fat pointer 反向拥有 Plugin，从而形成 ownership cycle。
 
-## 3.36 Extension VTable
+## 3.36 Plugin Interface VTable
 
-每个 Extension VTable 必须：
+每个 Plugin Interface / Extension VTable 必须：
 
 ```text
 protocol_version
@@ -4340,10 +4370,10 @@ typedef struct rodaq_acquisition_plugin {
         void* instance,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_extension)(
+    rodaq_status (*query_interface)(
         void* instance,
-        rodaq_string_view extension_id,
-        rodaq_interface* out_extension,
+        rodaq_string_view interface_id,
+        rodaq_interface* out_interface,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_acquisition_plugin;
@@ -4695,10 +4725,10 @@ typedef struct rodaq_storage_plugin {
         const struct rodaq_storage_close_request* request,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_extension)(
+    rodaq_status (*query_interface)(
         void* instance,
-        rodaq_string_view extension_id,
-        rodaq_interface* out_extension,
+        rodaq_string_view interface_id,
+        rodaq_interface* out_interface,
         rodaq_error* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_storage_plugin;
@@ -5053,6 +5083,15 @@ typedef uint32_t rodaq_storage_persistence_state;
 #define RODAQ_STORAGE_PERSISTENCE_UNKNOWN    UINT32_C(4)
 ```
 
+```c
+typedef struct rodaq_storage_operation {
+    uint64_t value;
+} rodaq_storage_operation;
+```
+
+`rodaq_storage_operation` is the FROZEN Storage handoff/completion handle.
+`value == 0` is invalid.
+
 Submit result：
 
 ```c
@@ -5079,8 +5118,8 @@ PERSISTENCE_SUCCEEDED
     persistence_error.code == OK
 
 PERSISTENCE_FAILED / UNKNOWN
-    persistence_error.code SHOULD be non-OK
-    domain/native_code/message MAY provide self-contained diagnostic
+    persistence_error.code MUST be non-OK
+    domain/native_code/message MUST provide self-contained diagnostic
 ```
 
 `persistence_error.reserved[]` 必须为 0；message truncation 使用统一 Error flag。
@@ -5318,13 +5357,11 @@ typedef struct rodaq_runtime_storage_v1 {
         void* context,
         rodaq_storage_operation operation,
         rodaq_storage_persistence_state terminal_state,
-        rodaq_status status,
-        rodaq_string_view message) RODAQ_NOEXCEPT;
+        const rodaq_error* error) RODAQ_NOEXCEPT;
 
     void (*report_failure)(
         void* context,
-        rodaq_status status,
-        rodaq_string_view message) RODAQ_NOEXCEPT;
+        const rodaq_error* error) RODAQ_NOEXCEPT;
 
 } rodaq_runtime_storage_v1;
 ```
@@ -5344,13 +5381,27 @@ thread-safe
 只允许对应 submit result 为 PERSISTENCE_PENDING 的 operation
 exactly once
 terminal_state != PENDING
+
+PERSISTENCE_SUCCEEDED
+    error == NULL
+
+PERSISTENCE_FAILED / PERSISTENCE_UNKNOWN
+    error != NULL
+    error->code != RODAQ_STATUS_OK
 ```
+
+`error` is borrowed for the callback duration. Runtime must copy the
+self-contained `rodaq_error` value before retaining it.
 
 `report_failure()`：
 
 ```text
 报告不对应单一 Record outcome 的后台/systemic Storage failure
+error != NULL
+error->code != RODAQ_STATUS_OK
 ```
+
+The diagnostic pointer is borrowed for the callback duration.
 
 例如：
 
@@ -5539,7 +5590,7 @@ Control Plane serialized
 create
 bind
 configure
-get_extension
+query_interface
 destroy
 ```
 
@@ -5882,7 +5933,7 @@ persistence_pending_count == 0
 
 ---
 
-## 4.29 Extension Lifetime 与 Instance Lifetime
+## 4.29 Plugin Interface 与 Instance Lifetime
 
 Extension 是：
 
@@ -5974,7 +6025,7 @@ SharedLibrary
     ↓
 PluginLibrary
     ↓
-AcquisitionInstance / StorageInstance
+AcquisitionPluginInstance / StoragePluginInstance
     ↓
 PluginManager
 ```
@@ -6033,7 +6084,7 @@ SharedLibrary ownership
 
 ---
 
-## 5.4 `AcquisitionInstance`
+## 5.4 `AcquisitionPluginInstance`
 
 保存：
 
@@ -6048,7 +6099,7 @@ bound Runtime Services
 
 ---
 
-## 5.5 `StorageInstance`
+## 5.5 `StoragePluginInstance`
 
 保存：
 
@@ -6239,6 +6290,33 @@ search path order wins
 合并为同一个 PluginLibrary
 ```
 
+## 5.12.1 Loader Error Classification
+
+Loader 不创建新的 error taxonomy，使用既有 `rodaq::ErrorCode`：
+
+```text
+missing file / required symbol
+    → NotFound
+
+dlopen / loader-runtime failure
+    → Unavailable
+
+ABI / protocol / descriptor / family / symbol provenance invalid
+    → InvalidArgument
+
+duplicate Plugin ID from a different canonical DSO
+    → Conflict
+
+lifecycle misuse
+    → InvalidState
+
+internal invariant failure
+    → InternalError
+```
+
+Plugin family `create()` 的非 OK status 映射到对应既有 taxonomy，并保留
+caller-owned `rodaq_error` 的 domain、native code 和 message。
+
 ---
 
 ## 5.13 Plugin Metadata
@@ -6318,7 +6396,7 @@ include/rodaq/plugin/
 而不是：
 
 ```text
-include/rodaq/abi/
+include/rodaq/plugin/abi/
 ```
 
 直接开发。
@@ -6483,7 +6561,7 @@ bind
 configure
 start / stop
 open / submit / flush / close
-get_extension
+query_interface
 ```
 
 并负责：
@@ -6494,8 +6572,8 @@ Result → rodaq_status
 caller-owned rodaq_error formatting
 ConfigView wrapper
 Service wrapper
-required Acquisition control extension wrapper
-required Storage control extension wrapper
+required Acquisition control interface wrapper
+required Storage control interface wrapper
 Storage close-disposition wrapper
 ```
 
@@ -6749,7 +6827,7 @@ MIN_STRUCT_SIZE
 覆盖：
 
 ```text
-abi.h
+common.h
 canonical.h
 plugin.h
 service.h
@@ -6931,11 +7009,11 @@ Plugin：
 
 ---
 
-## 6.8 Extension Compatibility Matrix
+## 6.8 Plugin Interface Compatibility Matrix
 
-必须区分 required family control extension 与 optional feature extension。
+必须区分 required family control interface 与 optional feature extension。
 
-### Optional Extension
+### Optional Extension Interface
 
 新 Plugin + 旧 Runtime：
 
@@ -6953,7 +7031,7 @@ query optional Extension
 → Runtime 使用已定义 fallback / feature unavailable
 ```
 
-### Required V1 Control Extension
+### Required V1 Control Interface
 
 对：
 
@@ -6964,7 +7042,7 @@ rodaq.storage.control.v1
 
 不存在 optional fallback。
 
-Runtime 在 family `bind()` 成功后查询 required control extension：
+Runtime 在 family `bind()` 成功后查询 required control interface：
 
 ```text
 present + compatible
@@ -7368,7 +7446,7 @@ AppImage 打包
 
 ```text
 ABI
-    [ ] abi.h
+    [ ] common.h
     [ ] canonical.h
     [ ] plugin.h
     [ ] service.h
@@ -7382,7 +7460,7 @@ Versioning
     [ ] Acquisition Protocol
     [ ] Storage Protocol
     [ ] Service ID grammar
-    [ ] Extension ID grammar
+    [ ] Interface / optional Extension ID grammar
 
 Evolution
     [ ] ABI-FROZEN classification
@@ -7417,7 +7495,7 @@ Configuration
     [ ] exact scalar conversion rules
 
 Extensions
-    [ ] get_extension()
+    [ ] query_interface()
     [ ] Extension lifetime
     [ ] Extension availability freeze
 
@@ -7621,7 +7699,7 @@ RoDAQ V1 Plugin System 最终形态：
 ```text
 Runtime → Plugin
     Family Protocol
-    Extension Query
+    Plugin Interface Query
 ```
 
 ```text
@@ -7713,7 +7791,7 @@ Minimal Service Registry
 +
 Canonical Runtime Service
 +
-Plugin Extension Query
+Plugin Interface Query
 +
 Runtime-owned ConfigView
 +

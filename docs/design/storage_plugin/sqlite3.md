@@ -1061,8 +1061,7 @@ out_result.persistence_state
 rodaq.runtime.storage.v1::persistence_completed(
     operation,
     RODAQ_STORAGE_PERSISTENCE_SUCCEEDED,
-    RODAQ_STATUS_OK,
-    empty_message)
+    NULL)
 ```
 
 如果 transaction 被明确 rollback：

@@ -775,7 +775,7 @@ start
     → 完成 required canonical registration / Binding readiness
     → Runtime Activation Commit 后才允许 normal Submit
 
-quiesce_plugin (required control extension)
+quiesce_plugin (required control interface)
     → instance-wide non-destructive barrier
     → blocks current/future DDS receive/discovery routing into Runtime submit
     → preserves DDS-native release capability needed by Runtime-owned Payload anchors

@@ -671,7 +671,7 @@ bind
 configure
 start
 stop
-get_extension
+query_interface
 destroy
 ```
 
@@ -723,7 +723,7 @@ Report Recovery
 
 它们**不是**要求在 `rodaq_acquisition_plugin` core vtable 中继续增加同名 ABI slot。
 
-V1 correctness 所必需的 Binding switch / stream-local quiescence 通过 required extension：
+V1 correctness 所必需的 Binding switch / stream-local quiescence 通过 required interface：
 
 ```text
 rodaq.acquisition.control.v1
@@ -3977,7 +3977,7 @@ bind
 configure
 start
 stop
-get_extension
+query_interface
 destroy
 ```
 
@@ -4030,7 +4030,7 @@ required rodaq.acquisition.control.v1
 optional versioned Extensions
 ```
 
-Binding switch 的 ReadyToCommit / CommitComplete / abort / stream quiescence 不得只存在于实现内部；它们必须通过 required control extension 跨 DSO 可调用。
+Binding switch 的 ReadyToCommit / CommitComplete / abort / stream quiescence 不得只存在于实现内部；它们必须通过 required control interface 跨 DSO 可调用。
 
 配置通过 Runtime-owned：
 

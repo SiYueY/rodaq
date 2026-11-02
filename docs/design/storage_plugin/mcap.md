@@ -381,7 +381,7 @@ destroy
 
 MCAP / mcap-cpp C++ 类型：
 
-> 只存在于 Plugin implementation 内，不进入 `include/rodaq/abi/*` 或 Runtime Public API。
+> 只存在于 Plugin implementation 内，不进入 `include/rodaq/plugin/abi/*` 或 Runtime Public API。
 
 ---
 
@@ -1216,8 +1216,7 @@ Batch commit 成功后，对每个仍 Pending 的 operation exactly-once 调用�
 rodaq.runtime.storage.v1::persistence_completed(
     operation,
     RODAQ_STORAGE_PERSISTENCE_SUCCEEDED,
-    RODAQ_STATUS_OK,
-    empty_message)
+    NULL)
 ```
 
 失败时根据可证明结果报告：

@@ -85,7 +85,8 @@ SocketCAN and other backends are future extensions and are not part of the curre
 - Plugin binary boundary is stable C ABI; the C++17 Plugin SDK is an authoring facade only.
 - Acquisition and Storage use family-specific protocols, not one generic Plugin vtable.
 - Plugin -> Runtime extensibility uses the Service Registry.
-- Runtime -> Plugin optional capabilities use Extension Query.
+- Runtime -> Plugin capability discovery uses Plugin Interface Query; optional
+  capabilities are optional extension interfaces.
 - Storage submit semantics use independent Payload and Persistence axes as defined in `rodaq_plugin_system.md`: HandoffAccepted is established by successful `submit()`, Payload is `Pending/Consumed`, Persistence is `Pending/Succeeded/Failed/Unknown`, and each pending axis has its own exactly-once terminal notification.
 - A DSO cannot be unloaded while any instance, callback, retained/adopted Payload release path, pending operation, or extension view can still execute Plugin code.
 
@@ -97,6 +98,7 @@ SocketCAN and other backends are future extensions and are not part of the curre
 - Third-party production dependencies live under `third_party/` as pinned Git submodules; normal builds must not fetch from the network.
 - Do not expose third-party implementation types in Public API or Plugin ABI.
 - Keep implementation in `src/`; public/installable contracts belong in `include/rodaq/`.
+- Stable C Plugin ABI headers live under `include/rodaq/plugin/abi/`; the C++17 Plugin SDK belongs under `include/rodaq/plugin/`.
 - Avoid implementation-heavy headers unless templates or compile-time requirements make them necessary.
 - Optimize only after a representative benchmark or profile identifies a bottleneck.
 - Do not weaken correctness, boundedness, shutdown, or ABI contracts for a local performance optimization.

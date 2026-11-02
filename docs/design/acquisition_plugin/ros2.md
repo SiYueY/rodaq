@@ -906,7 +906,7 @@ start
     → 完成 required registration / Binding readiness
     → 只有 Runtime Activation Commit / Gate Open 后才 normal Submit
 
-quiesce_plugin (required control extension)
+quiesce_plugin (required control interface)
     → instance-wide non-destructive barrier
     → blocks current/future ROS callback / take routing into Runtime submit
     → preserves ROS-native release capability needed by Runtime-owned Payload anchors

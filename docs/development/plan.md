@@ -37,9 +37,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 **Status:** ACTIVE
 
-**Current sub-phase:** **M0-B — PASS**. M0-A Review Closure and M0-B Stable C
-Plugin ABI are implemented, mechanically tested, sanitizer-tested and reviewed.
-M0-C Plugin Loading + Lifetime is next.
+**Current sub-phase:** **M0-C — PASS**. M0-A Review Closure, M0-B Stable C
+Plugin ABI and M0-C Plugin Loading + Lifetime are implemented, mechanically
+tested, sanitizer-tested and reviewed. M0-D Service Registry + ConfigView + C++
+Plugin SDK is next.
 
 ### Goal
 
@@ -114,7 +115,9 @@ Development:
 
 #### Stable ABI
 
-- [x] Implement `include/rodaq/abi/abi.h`.
+- [x] Finalize the Plugin ABI header namespace/path.
+- [x] Rename the common ABI primitive header to `common.h`.
+- [x] Implement `include/rodaq/plugin/abi/common.h`.
 - [x] Implement `canonical.h`.
 - [x] Implement `plugin.h`.
 - [x] Implement `service.h`.
@@ -122,6 +125,10 @@ Development:
 - [x] Implement `runtime.h`.
 - [x] Implement `acquisition.h`.
 - [x] Implement `storage.h`.
+- [x] Re-run full M0-B mechanical qualification after the ABI path convergence.
+- [x] Finalize `query_interface()` terminology and required control interface IDs.
+- [x] Move `rodaq_storage_operation` to Storage ABI ownership.
+- [x] Unify Storage completion, systemic failure and Descriptor readiness diagnostics.
 
 #### ABI tests
 
@@ -136,26 +143,27 @@ Development:
 - [x] Public ABI header isolation test.
 - [x] Installed C/C++/Result consumer tests.
 - [x] export-symbol allowlist test with good family fixtures.
-- [ ] wrong Boot ABI fixture.
-- [ ] wrong family protocol fixture.
-- [ ] too-small struct fixture.
-- [ ] missing-symbol fixture.
-- [ ] duplicate Plugin ID fixture.
-- [ ] symbol provenance test.
+- [x] wrong Boot ABI fixture.
+- [x] wrong family protocol fixture.
+- [x] too-small struct fixture.
+- [x] missing-symbol fixture.
+- [x] duplicate Plugin ID fixture.
+- [x] symbol provenance test.
 
 #### Plugin infrastructure
 
-- [ ] Implement `SharedLibrary`.
-- [ ] Implement `PluginLibrary`.
-- [ ] Implement `PluginCatalog`.
-- [ ] Implement minimal `PluginManager`.
-- [ ] Implement `AcquisitionInstance`.
-- [ ] Implement `StorageInstance`.
-- [ ] Implement `PluginLibraryLease`.
-- [ ] Implement `PluginInstanceLease`.
+- [x] Implement `SharedLibrary`.
+- [x] Implement `PluginLibrary`.
+- [x] Implement `PluginCatalog`.
+- [x] Implement minimal `PluginManager`.
+- [x] Implement `AcquisitionPluginInstance`.
+- [x] Implement `StoragePluginInstance`.
+- [x] Implement `PluginLibraryLease`.
+- [x] Implement `PluginInstanceLease`.
+- [x] Reject Acquisition/Storage instance creation through the wrong family lease.
 - [ ] Implement Service Registry.
 - [ ] Implement ConfigView.
-- [ ] Implement Extension Query plumbing.
+- [ ] Implement Plugin Interface Query plumbing.
 - [ ] Implement minimal C++17 Plugin SDK.
 - [ ] Implement exception trampolines.
 - [ ] Implement Plugin metadata generation.
@@ -163,10 +171,12 @@ Development:
 
 #### Minimal Fake DSOs
 
-- [ ] Fake Acquisition loads and validates.
-- [ ] Fake Storage loads and validates.
+- [x] Fake Acquisition loads and validates.
+- [x] Fake Storage loads and validates.
 - [ ] create/bind/configure/destroy lifecycle works.
-- [ ] DSO unload occurs only after last lease.
+- [x] create/destroy lifetime works for the M0-C fixture scope.
+- [x] DSO unload occurs only after last lease.
+- [x] Catalog removal preserves live instance and library-lease lifetime.
 
 ### Deliverables
 
@@ -174,7 +184,7 @@ Development:
 - [x] Pinned dependency graph.
 - [x] Stable ABI headers.
 - [x] ABI mechanical tests.
-- [ ] Plugin loader/infrastructure.
+- [x] Plugin loader/infrastructure for the M0-C boundary.
 - [ ] Service Registry / ConfigView.
 - [ ] Minimal C++ Plugin SDK.
 - [ ] Minimal Fake Acquisition / Storage DSOs.
@@ -210,6 +220,8 @@ Development:
 - [x] PersistenceFailed synchronous result representable.
 - [x] PersistenceUnknown synchronous result representable.
 - [x] PersistencePending representable.
+- [x] Asynchronous/systemic Storage diagnostics use complete `rodaq_error` values.
+- [x] Descriptor readiness FAILED carries complete diagnostics.
 - [ ] no same-stack reentrant callback; cross-thread completion race with submit return is reconciled correctly.
 - [ ] async publication forbidden before irreversible `OK + matching PENDING` decision.
 - [ ] early completion is buffered and cannot reclaim submit-call resources before return/reconcile.
@@ -220,21 +232,21 @@ Development:
 - [ ] optional Service absence.
 - [ ] required `rodaq.acquisition.control.v1` present/compatible.
 - [ ] required `rodaq.storage.control.v1` present/compatible.
-- [ ] missing/incompatible required control extension prevents activation.
+- [ ] missing/incompatible required control interface prevents activation.
 - [ ] `quiesce_plugin()` blocks all current/future Submit routing without destroying native release capability.
 - [ ] normal Stop order is quiesce → drain/anchor release → destructive stop.
 - [ ] abort KEEP_PAUSED never restores old routing.
 - [ ] abort RESUME_OLD restores only Runtime-proven valid old routing.
 - [ ] repeated terminal abort/commit on one transition → INVALID_STATE.
 - [ ] Runtime lifecycle snapshot gates one recovery attempt and stale snapshot is rejected by later Runtime state checks.
-- [ ] protocol/struct-size validation.
+- [x] protocol/struct-size validation.
 - [ ] caller-owned APPENDABLE output: old/new caller/callee compatibility.
 - [ ] flags/reserved validation.
 - [ ] ConfigView MAP/LIST/scalar tests.
 - [ ] ConfigView exact-type conversion.
 - [ ] ConfigView out-of-range index → NOT_FOUND.
 - [ ] caller-owned `rodaq_error` remains readable after ABI return.
-- [ ] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
+- [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
 - [ ] Plugin exception firewall.
 - [ ] raw noexcept violation subprocess death test.
 - [ ] control-call timeout does not imply quiescence.
@@ -242,9 +254,9 @@ Development:
 - [ ] stream-local timeout escalates only when shared synchronization/native/memory-safety guarantees are lost.
 - [ ] timed-out call remains in-flight; overlapping control mutation is forbidden.
 - [ ] timed-out unquiesced Plugin instance/DSO is retained/quarantined.
-- [ ] live instance prevents unload.
-- [ ] live lease prevents unload.
-- [ ] relevant ASan/UBSan suite clean.
+- [x] live instance prevents unload.
+- [x] live lease prevents unload.
+- [x] relevant ASan/UBSan suite clean.
 
 ### Exit Gate
 
@@ -280,7 +292,7 @@ Do not implement in M0:
 2. [x] Third-party submodules/dependency CMake.
 3. [x] `Result/Error`.
 4. [x] ABI headers + ABI tests.
-5. `SharedLibrary / PluginLibrary`.
+5. [x] `SharedLibrary / PluginLibrary`.
 6. Service Registry / ConfigView.
 7. C++ Plugin SDK/trampolines.
 8. Minimal Fake Plugin lifecycle fixtures.
