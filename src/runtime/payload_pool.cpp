@@ -106,6 +106,10 @@ Result<Payload> PayloadPool::Acquire(std::size_t bytes) {
 }
 
 Result<Payload> PayloadPool::Acquire(std::size_t bytes, PayloadView source) {
+    if (!source.Valid()) {
+        return nonstd::make_unexpected(
+            Error(ErrorCode::InvalidArgument, "payload source view is structurally invalid"));
+    }
     if (source.Size() != bytes) {
         return nonstd::make_unexpected(Error(
             ErrorCode::InvalidArgument, "payload source size does not match the requested size"));

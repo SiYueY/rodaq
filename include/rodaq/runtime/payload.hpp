@@ -19,13 +19,15 @@ public:
     constexpr PayloadView() noexcept = default;
 
     constexpr PayloadView(const std::uint8_t* data, std::size_t size) noexcept
-    : data_(size == 0 ? nullptr : data), size_(data == nullptr ? 0 : size) {}
+    : data_(data), size_(size) {}
 
     constexpr const std::uint8_t* Data() const noexcept { return data_; }
 
     constexpr std::size_t Size() const noexcept { return size_; }
 
     constexpr bool Empty() const noexcept { return size_ == 0; }
+
+    constexpr bool Valid() const noexcept { return size_ == 0 || data_ != nullptr; }
 
 private:
     const std::uint8_t* data_ = nullptr;

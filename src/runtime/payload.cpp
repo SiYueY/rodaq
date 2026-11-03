@@ -7,6 +7,10 @@
 namespace rodaq {
 
 Result<Payload> Payload::Adopt(PayloadView view, void* owner_context, PayloadRelease release) {
+    if (!view.Valid()) {
+        return nonstd::make_unexpected(
+            Error(ErrorCode::InvalidArgument, "adopted payload view is structurally invalid"));
+    }
     if (release == nullptr) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "adopted payload requires a release capability"));
@@ -15,6 +19,10 @@ Result<Payload> Payload::Adopt(PayloadView view, void* owner_context, PayloadRel
 }
 
 Result<Payload> Payload::Retain(PayloadView view, void* owner_context, PayloadRelease release) {
+    if (!view.Valid()) {
+        return nonstd::make_unexpected(
+            Error(ErrorCode::InvalidArgument, "retained payload view is structurally invalid"));
+    }
     if (release == nullptr) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "retained payload requires a release capability"));

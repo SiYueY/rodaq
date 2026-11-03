@@ -24,6 +24,15 @@ TEST(PayloadViewTest, EmptyAndNonEmptyViews) {
     EXPECT_FALSE(view.Empty());
     EXPECT_EQ(view.Data(), bytes.data());
     EXPECT_EQ(view.Size(), 3U);
+    EXPECT_TRUE(view.Valid());
+}
+
+TEST(PayloadViewTest, PreservesInvalidNonEmptyView) {
+    const PayloadView invalid(nullptr, 4);
+    EXPECT_FALSE(invalid.Empty());
+    EXPECT_FALSE(invalid.Valid());
+    EXPECT_EQ(invalid.Data(), nullptr);
+    EXPECT_EQ(invalid.Size(), 4U);
 }
 
 TEST(PayloadTest, MoveTransfersOwnershipAndLeavesSourceEmpty) {
@@ -129,6 +138,41 @@ TEST(PayloadTest, ExternalModesRejectMissingReleaseCapability) {
     EXPECT_EQ(retained.error().code(), ErrorCode::InvalidArgument);
 }
 
+TEST(PayloadTest, AdoptAndRetainValidateBeforeAcquiringResponsibility) {
+    ReleaseProbe probe;
+    const PayloadView invalid(nullptr, 3);
+
+    const auto adopted = Payload::Adopt(invalid, &probe, &release_probe);
+    ASSERT_FALSE(adopted.has_value());
+    EXPECT_EQ(adopted.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(probe.calls, 0);
+
+    const auto retained = Payload::Retain(invalid, &probe, &release_probe);
+    ASSERT_FALSE(retained.has_value());
+    EXPECT_EQ(retained.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(probe.calls, 0);
+}
+
+TEST(PayloadTest, EmptyExternalPayloadStillOwnsItsAnchor) {
+    ReleaseProbe adopt_probe;
+    {
+        auto adopted = Payload::Adopt(PayloadView(), &adopt_probe, &release_probe);
+        ASSERT_TRUE(adopted.has_value());
+        EXPECT_TRUE(adopted.value().Empty());
+        EXPECT_EQ(adopt_probe.calls, 0);
+    }
+    EXPECT_EQ(adopt_probe.calls, 1);
+
+    ReleaseProbe retain_probe;
+    {
+        auto retained = Payload::Retain(PayloadView(), &retain_probe, &release_probe);
+        ASSERT_TRUE(retained.has_value());
+        EXPECT_TRUE(retained.value().Empty());
+        EXPECT_EQ(retain_probe.calls, 0);
+    }
+    EXPECT_EQ(retain_probe.calls, 1);
+}
+
 TEST(PayloadPoolTest, OwnsExactLogicalBytes) {
     auto pool = PayloadPool::Create(32, 2);
     ASSERT_TRUE(pool.has_value());
@@ -219,6 +263,16 @@ TEST(PayloadPoolTest, RejectsMismatchedSourceSize) {
     const auto mismatch = pool.value().Acquire(3, PayloadView(source.data(), source.size()));
     ASSERT_FALSE(mismatch.has_value());
     EXPECT_EQ(mismatch.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(pool.value().UsedBytes(), 0U);
+}
+
+TEST(PayloadPoolTest, CopyRejectsInvalidSourceWithoutConsumingStorage) {
+    auto pool = PayloadPool::Create(4, 1);
+    ASSERT_TRUE(pool.has_value());
+
+    const auto invalid = pool.value().Acquire(4, PayloadView(nullptr, 4));
+    ASSERT_FALSE(invalid.has_value());
+    EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
     EXPECT_EQ(pool.value().UsedBytes(), 0U);
 }
 
