@@ -721,3 +721,31 @@ discipline.
 
 **Reference:** `docs/design/rodaq_v1_system_design.md` M1/M2 scope,
 `docs/design/admission.md`, `docs/development/plan.md`.
+
+## D-037 — Uncertain Plugin progress uses process-lifetime activation quarantine
+
+**Status:** Accepted
+
+M2 executes potentially blocking Plugin lifecycle calls (`quiesce_plugin`,
+`flush`, `close`, `stop`) on deadline-supervised workers. C++ cannot cancel a
+thread executing Plugin code, so a timed-out call:
+
+```text
+returns Runtime Failed within the configured bound
+retains the joinable worker object and captured activation
+retains Plugin instances and DSO leases
+retains all unsafe-to-release Payload and operation state
+blocks Runtime restart
+```
+
+This is intentional process-lifetime quarantine, not ordinary shutdown.
+Destroying an activation while Plugin code may still access it is never an
+acceptable timeout response.
+
+ASan/LSan ignores only the explicit quarantine roots. The M2 E2E CTest entry
+disables TSan thread-leak reporting because fault tests intentionally retain
+quarantined joinable threads; TSan data-race reporting remains enabled. Normal
+leak detection and normal plugin symbol validation remain active.
+
+**Reference:** `docs/design/runtime.md`, `docs/design/rodaq_plugin_system.md`,
+`docs/design/acquisition_plugin.md`, `docs/development/status.md`.

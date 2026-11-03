@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **M2 — ACTIVE**
+Current milestone: **M3 — ACTIVE**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -202,17 +202,17 @@ Development:
 - [x] `RejectionReason` representable.
 - [x] `PayloadDisposition` representable.
 - [x] Rejection reason is a separate ABI field and does not encode ownership.
-- [ ] M1: ADOPT before/after transfer ownership behavior.
-- [ ] M1: RETAIN acquisition-point and original-native-owner behavior.
-- [ ] M2: Gate-pass/AcceptanceSequence ordering and PreAdmissionRejected behavior.
-- [ ] M1: Clock/Stream native registration idempotence, conflict and generation behavior.
-- [ ] M1: identical native_id in different Plugin instances remains isolated.
+- [x] M1: ADOPT before/after transfer ownership behavior.
+- [x] M1: RETAIN acquisition-point and original-native-owner behavior.
+- [x] M2: Gate-pass/AcceptanceSequence ordering and PreAdmissionRejected behavior.
+- [x] M1: Clock/Stream native registration idempotence, conflict and generation behavior.
+- [x] M1: identical native_id in different Plugin instances remains isolated.
 
 #### Storage ABI
 
 - M0 qualifies ABI representability. Handoff reconciliation and asynchronous
   completion behavior is assigned to M1/M2.
-- [ ] M2: submit non-OK means HandoffAccepted never established.
+- [x] M2: submit non-OK means HandoffAccepted never established.
 - [x] PayloadConsumed synchronous result representable.
 - [x] PayloadPending representable.
 - [x] PersistenceSucceeded synchronous result representable.
@@ -221,8 +221,8 @@ Development:
 - [x] PersistencePending representable.
 - [x] Asynchronous/systemic Storage diagnostics use complete `rodaq_error` values.
 - [x] Descriptor readiness FAILED carries complete diagnostics.
-- [ ] M2: no same-stack reentrant callback; cross-thread completion race reconciliation.
-- [ ] M2: async publication and early-completion buffering rules.
+- [x] M2: no same-stack reentrant callback; cross-thread completion race reconciliation.
+- [x] M2: async publication and early-completion buffering rules.
 
 #### Service / Config / lifetime
 
@@ -231,10 +231,10 @@ Development:
 - [x] required `rodaq.acquisition.control.v1` present/compatible.
 - [x] required `rodaq.storage.control.v1` present/compatible.
 - [x] missing/incompatible required control interface prevents activation.
-- [ ] M2: `quiesce_plugin()` blocks current/future Submit routing.
-- [ ] M2: normal Stop quiesce → drain → destructive stop behavior.
-- [ ] M2: Binding abort KEEP_PAUSED / RESUME_OLD and terminal transition state.
-- [ ] M1/M2: Runtime lifecycle snapshot recovery gating and stale-state rejection.
+- [x] M2: `quiesce_plugin()` blocks current/future Submit routing.
+- [x] M2: normal Stop quiesce → drain → destructive stop behavior.
+- [x] M2: Binding abort KEEP_PAUSED / RESUME_OLD and terminal transition state.
+- [x] M1/M2: Runtime lifecycle snapshot recovery gating and stale-state rejection.
 - [x] protocol/struct-size validation.
 - [x] caller-owned APPENDABLE output: old/new caller/callee compatibility.
 - [x] flags/reserved validation.
@@ -245,7 +245,7 @@ Development:
 - [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
 - [x] Plugin exception firewall.
 - [x] raw noexcept violation subprocess death test.
-- [ ] M2: control timeout/quiescence, stream isolation, overlapping mutation and quarantine behavior.
+- [x] M2: control timeout/quiescence, stream isolation, overlapping mutation and quarantine behavior.
 - [x] live instance prevents unload.
 - [x] live lease prevents unload.
 - [x] relevant ASan/UBSan suite clean.
@@ -397,7 +397,7 @@ Do not implement in M1:
 
 ## M2 — Fake End-to-End Runtime
 
-**Status:** ACTIVE
+**Status:** PASS
 
 ### Goal
 
@@ -412,98 +412,98 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 
 #### Runtime Pipeline
 
-- [ ] Binding validation.
-- [ ] Ingress.
-- [ ] Admission.
-- [ ] Payload materialization.
-- [ ] Gate Pass.
-- [ ] AcceptanceSequence.
-- [ ] ordered Accepted publication.
-- [ ] Dispatch Queue.
-- [ ] single logical Storage Dispatch Lane.
-- [ ] Storage operation tracking.
-- [ ] Completion Queue.
-- [ ] Completion Domain.
-- [ ] Stop.
-- [ ] Failure cutoff.
-- [ ] Quiescence.
+- [x] Binding validation.
+- [x] Ingress.
+- [x] Admission.
+- [x] Payload materialization.
+- [x] Gate Pass.
+- [x] AcceptanceSequence.
+- [x] ordered Accepted publication.
+- [x] Dispatch Queue.
+- [x] single logical Storage Dispatch Lane.
+- [x] Storage operation tracking.
+- [x] Completion Queue.
+- [x] Completion Domain.
+- [x] Stop.
+- [x] Failure cutoff.
+- [x] Quiescence.
 
 #### Fake Acquisition
 
-- [ ] single producer.
-- [ ] multi producer.
-- [ ] single Stream.
-- [ ] multiple Streams.
-- [ ] descriptor changes.
-- [ ] Copy.
-- [ ] Adopt.
-- [ ] Retain.
-- [ ] CallerResponsible.
-- [ ] RuntimeResponsible.
-- [ ] burst.
-- [ ] high-rate.
-- [ ] out-of-order producer timing.
-- [ ] blocked Admission Wait.
-- [ ] Stop while submitting.
+- [x] single producer.
+- [x] multi producer.
+- [x] single Stream.
+- [x] multiple Streams.
+- [x] descriptor changes.
+- [x] Copy.
+- [x] Adopt.
+- [x] Retain.
+- [x] CallerResponsible.
+- [x] RuntimeResponsible.
+- [x] burst.
+- [x] high-rate.
+- [x] out-of-order producer timing.
+- [x] blocked Admission Wait.
+- [x] Stop while submitting.
 
 #### Fake Storage
 
-- [ ] submit non-OK before HandoffAccepted.
-- [ ] synchronous PayloadConsumed.
-- [ ] PayloadPending → async PayloadConsumed.
-- [ ] synchronous PersistenceSucceeded.
-- [ ] synchronous PersistenceFailed.
-- [ ] synchronous PersistenceUnknown.
-- [ ] PersistencePending → async Succeeded.
-- [ ] PersistencePending → async Failed.
-- [ ] PersistencePending → async Unknown.
-- [ ] independent Payload/Persistence ordering.
-- [ ] Storage stall.
-- [ ] background fatal failure.
-- [ ] flush.
-- [ ] close.
-- [ ] duplicate callback violation.
-- [ ] missing callback scenario.
-- [ ] same-stack reentrant callback violation.
-- [ ] callback after close violation.
+- [x] submit non-OK before HandoffAccepted.
+- [x] synchronous PayloadConsumed.
+- [x] PayloadPending → async PayloadConsumed.
+- [x] synchronous PersistenceSucceeded.
+- [x] synchronous PersistenceFailed.
+- [x] synchronous PersistenceUnknown.
+- [x] PersistencePending → async Succeeded.
+- [x] PersistencePending → async Failed.
+- [x] PersistencePending → async Unknown.
+- [x] independent Payload/Persistence ordering.
+- [x] Storage stall.
+- [x] background fatal failure.
+- [x] flush.
+- [x] close.
+- [x] duplicate callback violation.
+- [x] missing callback scenario.
+- [x] same-stack reentrant callback violation.
+- [x] callback after close violation.
 
 ### Deliverables
 
-- [ ] Complete Fake E2E pipeline.
-- [ ] Runtime Stop/Failure convergence.
-- [ ] Fake Plugin correctness suite.
-- [ ] E2E stress suite.
+- [x] Complete Fake E2E pipeline.
+- [x] Runtime Stop/Failure convergence.
+- [x] Fake Plugin correctness suite.
+- [x] E2E stress suite.
 
 ### Verification
 
-- [ ] Gate-pass Accepted cannot be dropped by ordinary pressure.
-- [ ] same-Stream AcceptanceSequence order == Storage handoff order.
-- [ ] no false global ordering across Streams.
-- [ ] PAYLOAD_PENDING → exactly one `payload_consumed()`.
-- [ ] synchronous PayloadConsumed → no payload callback.
-- [ ] PERSISTENCE_PENDING → exactly one `persistence_completed()`.
-- [ ] synchronous persistence terminal → no persistence callback.
-- [ ] PayloadConsumed + PersistencePending releases Payload early.
-- [ ] duplicate callback detected.
-- [ ] same-stack reentrant callback detected; cross-thread race reconciled without false violation.
-- [ ] post-close callback detected.
-- [ ] Stop under multi-producer load converges.
-- [ ] Stop with PayloadPending converges.
-- [ ] Stop with PersistencePending converges.
-- [ ] primary failure preserved.
-- [ ] secondary cleanup errors separately reported.
-- [ ] Plugin-origin lifetime prevents premature destroy/unload.
+- [x] Gate-pass Accepted cannot be dropped by ordinary pressure.
+- [x] same-Stream AcceptanceSequence order == Storage handoff order.
+- [x] no false global ordering across Streams.
+- [x] PAYLOAD_PENDING → exactly one `payload_consumed()`.
+- [x] synchronous PayloadConsumed → no payload callback.
+- [x] PERSISTENCE_PENDING → exactly one `persistence_completed()`.
+- [x] synchronous persistence terminal → no persistence callback.
+- [x] PayloadConsumed + PersistencePending releases Payload early.
+- [x] duplicate callback detected.
+- [x] same-stack reentrant callback detected; cross-thread race reconciled without false violation.
+- [x] post-close callback detected.
+- [x] Stop under multi-producer load converges.
+- [x] Stop with PayloadPending converges.
+- [x] Stop with PersistencePending converges.
+- [x] primary failure preserved.
+- [x] secondary cleanup errors separately reported.
+- [x] Plugin-origin lifetime prevents premature destroy/unload.
 
 ### Exit Gate
 
-- [ ] Accepted no-drop invariant proven.
-- [ ] per-Stream ordering proven.
-- [ ] Runtime permits/counters converge after Stop.
-- [ ] both Storage axes exactly-once rules proven.
-- [ ] Payload early-release case proven.
-- [ ] all completion contract violations detected.
-- [ ] Stop/failure reaches quiescence.
-- [ ] required ASan/UBSan/TSan stress suite clean.
+- [x] Accepted no-drop invariant proven.
+- [x] per-Stream ordering proven.
+- [x] Runtime permits/counters converge after Stop.
+- [x] both Storage axes exactly-once rules proven.
+- [x] Payload early-release case proven.
+- [x] all completion contract violations detected.
+- [x] Stop/failure reaches quiescence.
+- [x] required ASan/UBSan/TSan stress suite clean.
 
 ### Out of Scope
 
@@ -520,7 +520,7 @@ Do not implement in M2:
 
 ## M3 — ROS2 Acquisition + MCAP Storage Vertical Slice
 
-**Status:** NOT STARTED
+**Status:** ACTIVE
 
 ### Goal
 
@@ -530,7 +530,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 
 - [x] M0 PASS.
 - [x] M1 PASS.
-- [ ] M2 PASS.
+- [x] M2 PASS.
 - [ ] ROS2 mapping reviewed against current ABI.
 - [ ] MCAP mapping reviewed against current ABI and a directly pinned RoDAQ mcap-cpp version/commit (no ROS2 mcap_vendor runtime dependency).
 

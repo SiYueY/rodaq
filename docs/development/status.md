@@ -4,12 +4,13 @@
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
+**M2 closure implementation baseline:** `9120762` — `feat: enforce storage capability bounds`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
 ## Current milestone
 
-**M2 — Fake End-to-End Runtime**
+**M3 — ROS2 Acquisition + MCAP Storage Vertical Slice**
 
 Status: **ACTIVE**
 
@@ -17,8 +18,9 @@ M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
 M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. M2 Fake
-End-to-End Runtime is now the only ACTIVE milestone. M2 implementation has not
-started.
+End-to-End Runtime is **PASS**, including normal, ASan, UBSan and Clang TSan
+qualification. M3 ROS2 Acquisition + MCAP Storage is now the only ACTIVE
+milestone.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -57,10 +59,11 @@ contains:
 `third_party/` contains all nine approved pinned submodules. M0 also includes a
 bounded Service Registry, ConfigView, activation-lifetime InteropProjection and
 ClockCorrelation services, Fake Plugin lifecycle integration, plugin authoring
-CMake support and an installed SDK consumer smoke. A production Runtime shared
-library and full data path remain future milestones. M1 Runtime primitives are
-implemented as a static Runtime target and qualified independently of the M2
-pipeline.
+CMake support and an installed SDK consumer smoke. M1 Runtime primitives and the
+M2 production Runtime core are implemented as a static Runtime target. M2 adds
+the complete Stable-ABI-backed Fake Acquisition-to-Storage data path,
+Activation/Binding lifecycle, bounded Admission and Dispatch, independent
+Payload/Persistence completion axes, and bounded Stop/Failure quarantine.
 
 ## Design baseline
 
@@ -232,11 +235,33 @@ Structural convergence validation:
 - clang-format, `git diff --check`, whitespace and recursive submodule audits
   passed.
 
+## M2 completed
+
+- Production Runtime lifecycle, activation-local Canonical registries and
+  generation-protected handles.
+- Complete Stable Runtime Service provider path for Acquisition registration,
+  report, submit, projection, clock correlation and Storage completion.
+- Descriptor readiness and Acquisition-coordinated Binding transitions,
+  including initial Binding prepare/commit and `KEEP_PAUSED` / `RESUME_OLD`
+  abort behavior.
+- Concurrent ingress with per-Stream Admission Commit, irreversible
+  AcceptanceSequence allocation and ordered no-drop dispatch publication.
+- Preallocated bounded Dispatch and operation slots, one Storage Dispatch Lane,
+  one Completion Domain, early cross-thread reconciliation, exact completion
+  validation and uncertain-work quarantine.
+- Storage capability negotiation now freezes effective Payload, record, byte,
+  completion and progress-timeout limits for each activation.
+- Independent Payload-byte and operation-record accounting, with Payload release
+  proven while Persistence remains pending.
+- Real DSO-backed Fake Acquisition and Fake Storage qualification, including
+  Copy/Adopt/Retain, mixed modes, stale-handle rejection, immutable views,
+  descriptor transitions, saturation, timeout, stall, close/flush and contract
+  violation matrices.
+- Bounded Stop/quiesce and primary/secondary failure convergence, with
+  process-lifetime quarantine when unsafe teardown cannot be proven.
+
 ## Not started
 
-- M2 Fake End-to-End Runtime.
-- Dispatch / Completion implementation.
-- Full Fake Acquisition / Storage runtime data path.
 - ROS 2 Acquisition implementation.
 - MCAP Storage implementation.
 - FastDDS Acquisition implementation.
@@ -287,14 +312,15 @@ RoDAQ-native logging design
 three-level Semantic / ABI / Backend qualification freeze model
 ```
 
-No remaining known P0/P1 static design blocker prevents M1 implementation.
+No remaining known P0/P1 static design blocker prevents M3 implementation.
 
 The Stable C ABI and private Plugin loading/lifetime boundary are implemented and
 mechanically qualified. Service Registry, ConfigView, the C++17 Plugin SDK,
 Runtime Service wrappers and Fake Plugin lifecycle are implemented. The Runtime
-data plane and real backend round trips have not been executed. ROS2/MCAP
-executable qualification remains an M3 gate; FastDDS/MCAP interoperability is the
-M4 gate; production hardening/release qualification is M5. SQLite3 is a future
+generic data plane is implemented and qualified through Stable-ABI Fake Plugins.
+Real backend round trips have not been executed. ROS2/MCAP executable
+qualification is the active M3 gate; FastDDS/MCAP interoperability is the M4
+gate; production hardening/release qualification is M5. SQLite3 is a future
 design-validation target rather than a V1 release gate.
 
 The Result policy is now frozen by D-025:
@@ -306,7 +332,7 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M2 — Fake End-to-End Runtime.
+1. Begin M3 — ROS2 Acquisition + MCAP Storage Vertical Slice.
 2. Native arm64 closure evidence remains deferred until a runner is available.
 
 ## Validation state
@@ -593,7 +619,78 @@ M1 closure review answers:
 15. Yes. Normal, ASan, UBSan and required Clang TSan checks pass.
 16. No. No known P0/P1 issue remains.
 
-Current qualification count: **87/87** on Ubuntu 22.04 amd64 for normal, ASan
-and UBSan builds. Clang TSan concurrency qualification passed 4/4 selected
-CTest entries. The fixed-block PayloadPool baseline is
-`benchmarks/payload_pool_benchmark.cpp`. M0 and M1 are PASS; M2 is ACTIVE.
+M2 Production Core Runtime closure validation:
+
+- GCC 11.4.0 normal, ASan with LeakSanitizer and UBSan each passed 88/88 CTest
+  entries with warnings-as-errors.
+- Clang 14 TSan passed the admission, PayloadPool, observability, M1 integration
+  and complete M2 runtime pipeline subset: 5/5 CTest entries.
+- The M2 E2E executable currently contains 32 Stable-ABI-backed tests covering
+  lifecycle, Copy/Adopt/Retain, mixed payload modes, immutable canonical views,
+  stale handles, multi-producer ordering, Binding switch and abort, saturation,
+  blocked Wait timeout, every Payload/Persistence completion ordering,
+  early-completion reconciliation, contract violations, bounded stalls,
+  primary/secondary failure preservation, Stop under load and restart.
+- Descriptor readiness, initial prepare/commit, switch prepare/commit failure,
+  `KEEP_PAUSED`, `RESUME_OLD`, registration capacity and quarantine paths are
+  covered.
+- ASan ignores only explicitly retained quarantine roots. TSan thread-leak
+  reporting is disabled only for the E2E executable because fault scenarios
+  intentionally retain joinable Plugin workers and activation state for process
+  lifetime; data-race reporting remains enabled.
+- M2 benchmark baselines on the qualification host were approximately 58.9k
+  records/s for one producer and 88.4k records/s for four producers x four
+  streams in a Debug build. These are engineering baselines, not M5 SLOs.
+- `clang-format`, `git diff --check`, source review and status/plan consistency
+  checks passed.
+
+M2 final review answers:
+
+1. No. Dispatch capacity and operation/completion bookkeeping are reserved
+   before Gate pass.
+2. No. A full queue only rejects or waits before Gate pass; accepted publication
+   cannot fail for ordinary capacity.
+3. No. Post-Gate publication uses the already reserved record, ring slot and
+   operation slot without ordinary heap growth.
+4. No. Sequence allocation and dispatch publication share the per-Stream commit
+   domain.
+5. No. Only per-Stream order is promised; cross-Stream interleaving is not a
+   contract.
+6. No. Cross-thread completion is staged before submit return and reconciled
+   after return.
+7. No. A thread-local call frame distinguishes same-stack callbacks from legal
+   early cross-thread callbacks.
+8. No. Duplicate callbacks enter the fail-closed path.
+9. No. A callback for a synchronous-terminal axis enters the fail-closed path.
+10. No. Payload backing and logical byte accounting are released at
+    PayloadConsumed even while Persistence remains pending.
+11. No. Payload release follows Storage's consumed boundary.
+12. No. PersistencePending retains only operation bookkeeping, not the large
+    Payload backing charge.
+13. No. Activation, Plugin instances and DSO leases remain retained whenever an
+    Acquisition-owned release callback may still be reachable.
+14. No. Uncertain Storage callbacks retain the complete activation and Storage
+    DSO as process-lifetime quarantine.
+15. No. Stop uses per-phase progress deadlines and bounded callback/quiescence
+    barriers.
+16. No. Fatal Storage failure closes the Gate and admission cutoff.
+17. No. Accepted history is never rewritten as rejected; persistence failure is
+    a separate outcome.
+18. No. Primary failure is latched first; subsequent cleanup failures remain
+    separately queryable secondary failures.
+19. No. Post-close callbacks are detected and force failure/quarantine.
+20. No. Activation generation is encoded into handles and stale activation
+    handles are rejected through plugin-facing services.
+21. No. Binding activation requires descriptor readiness and coordinated
+    prepare/commit; failed prepare uses the explicit abort disposition.
+22. No. M2 Runtime Core has no ROS2, FastDDS, MCAP or SQLite3 dependency.
+23. Yes. Every production E2E record enters and completes through Stable ABI
+    Plugin boundaries.
+24. Yes. Normal, ASan, UBSan and Clang TSan qualification is clean.
+25. No. No known P0/P1 issue remains.
+
+Current qualification count: **88/88** on Ubuntu 22.04 amd64 for normal, ASan
+and UBSan builds. Clang TSan concurrency qualification passed 5/5 selected
+CTest entries. M2 baselines are
+`benchmarks/runtime_pipeline_benchmark.cpp` and
+`benchmarks/payload_pool_benchmark.cpp`. M0, M1 and M2 are PASS; M3 is ACTIVE.
