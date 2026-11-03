@@ -1,3 +1,8 @@
-# RoDAQ benchmarks are added here when representative workloads exist. Keeping
-# this subtree wired to RODAQ_BUILD_BENCHMARKS makes dependency configuration
-# and benchmark ownership consistent without adding placeholder benchmarks.
+add_executable(rodaq_payload_pool_benchmark payload_pool_benchmark.cpp)
+target_link_libraries(rodaq_payload_pool_benchmark
+    PRIVATE
+        benchmark::benchmark
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_payload_pool_benchmark)
+rodaq_enable_sanitizers(rodaq_payload_pool_benchmark)
