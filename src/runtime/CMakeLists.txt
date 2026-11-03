@@ -5,6 +5,7 @@ add_library(rodaq_runtime STATIC
     payload.cpp
     payload_pool.cpp
     resource_budget.cpp
+    runtime_record.cpp
     structural_arena.cpp
 )
 

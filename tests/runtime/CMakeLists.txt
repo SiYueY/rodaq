@@ -67,3 +67,13 @@ target_link_libraries(rodaq_admission_test
 rodaq_enable_warnings(rodaq_admission_test)
 rodaq_enable_sanitizers(rodaq_admission_test)
 add_test(NAME rodaq.runtime.admission COMMAND rodaq_admission_test)
+
+add_executable(rodaq_runtime_record_test runtime_record_test.cpp)
+target_link_libraries(rodaq_runtime_record_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_runtime_record_test)
+rodaq_enable_sanitizers(rodaq_runtime_record_test)
+add_test(NAME rodaq.runtime.runtime_record COMMAND rodaq_runtime_record_test)
