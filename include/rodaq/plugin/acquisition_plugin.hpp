@@ -90,6 +90,9 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_configure(                                                  \
         void* instance, rodaq_config_view config, rodaq_error* out_error) noexcept {               \
+        if (instance == nullptr) {                                                                 \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, config] {                                                                   \
                 auto view = rodaq::ConfigView::FromAbi(config);                                    \
@@ -122,6 +125,9 @@ public:
         void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,            \
         rodaq_stream_descriptor_handle old_descriptor,                                             \
         rodaq_stream_descriptor_handle new_descriptor, rodaq_error* out_error) noexcept {          \
+        if (context == nullptr) {                                                                  \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, stream, old_descriptor, new_descriptor] {                        \
                 return static_cast<PluginType*>(context)->PrepareBindingSwitch(                    \
@@ -131,6 +137,9 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_commit(                                                     \
         void* context, rodaq_binding_transition transition, rodaq_error* out_error) noexcept {     \
+        if (context == nullptr) {                                                                  \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition] {                                                                \
                 return static_cast<PluginType*>(context)->CommitBindingSwitch(transition);         \
@@ -140,6 +149,9 @@ public:
     rodaq_status rodaq_sdk_acquisition_abort(                                                      \
         void* context, rodaq_binding_transition transition,                                        \
         rodaq_binding_abort_disposition disposition, rodaq_error* out_error) noexcept {            \
+        if (context == nullptr) {                                                                  \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, disposition] {                                                   \
                 return static_cast<PluginType*>(context)->AbortBindingSwitch(                      \
@@ -149,6 +161,9 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_quiesce_stream(                                             \
         void* context, rodaq_stream_handle stream, rodaq_error* out_error) noexcept {              \
+        if (context == nullptr) {                                                                  \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, stream] {                                                                    \
                 return static_cast<PluginType*>(context)->QuiesceStream(stream);                   \
@@ -157,6 +172,9 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_quiesce_plugin(                                             \
         void* context, rodaq_error* out_error) noexcept {                                          \
+        if (context == nullptr) {                                                                  \
+            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context] { return static_cast<PluginType*>(context)->QuiescePlugin(); }, out_error);  \
     }                                                                                              \
@@ -172,9 +190,15 @@ public:
     rodaq_status rodaq_sdk_acquisition_query(                                                      \
         void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,            \
         rodaq_error* out_error) noexcept {                                                         \
+        if (instance == nullptr || out_interface == nullptr) {                                     \
+            return rodaq::plugin::invalid_input("interface query input is invalid", out_error);    \
+        }                                                                                          \
+        std::string_view parsed_id;                                                                \
+        if (!rodaq::parse_abi_string(interface_id, &parsed_id)) {                                  \
+            return rodaq::plugin::invalid_input("interface id is invalid", out_error);             \
+        }                                                                                          \
         const char required[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;                            \
-        if (interface_id.size == sizeof(required) - 1 &&                                           \
-            std::string_view(interface_id.data, interface_id.size) == required) {                  \
+        if (parsed_id == required) {                                                               \
             return rodaq::plugin::invoke_interface(                                                \
                 [instance] {                                                                       \
                     return rodaq::Result<rodaq::InterfaceView>(rodaq::InterfaceView(               \
@@ -183,9 +207,8 @@ public:
                 out_interface, out_error);                                                         \
         }                                                                                          \
         return rodaq::plugin::invoke_interface(                                                    \
-            [instance, interface_id] {                                                             \
-                return static_cast<PluginType*>(instance)->QueryInterface(                         \
-                    std::string_view(interface_id.data, interface_id.size));                       \
+            [instance, parsed_id] {                                                                \
+                return static_cast<PluginType*>(instance)->QueryInterface(parsed_id);              \
             },                                                                                     \
             out_interface, out_error);                                                             \
     }                                                                                              \

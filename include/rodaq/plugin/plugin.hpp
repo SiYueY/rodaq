@@ -83,6 +83,46 @@ rodaq_status invoke_interface(
     }
 }
 
+inline rodaq_status invalid_input(const char* message, rodaq_error* out_error) noexcept {
+    assign_rodaq_error(RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, message, out_error);
+    return RODAQ_STATUS_INVALID_ARGUMENT;
+}
+
+template <typename Output, typename Function, typename Writer>
+rodaq_status invoke_struct_output(
+    Output* output, std::uint32_t minimum_size, Function&& function, Writer&& writer,
+    rodaq_error* out_error) noexcept {
+    if (output == nullptr) {
+        return invalid_input("struct output is null", out_error);
+    }
+    const std::uint32_t capacity = output->struct_size;
+    if (capacity < minimum_size) {
+        return invalid_input("struct output capacity is below the V1 minimum", out_error);
+    }
+    try {
+        auto result = std::forward<Function>(function)();
+        if (!result.has_value()) {
+            assign_rodaq_error(result.error(), out_error);
+            return status_from_error_code(result.error().code());
+        }
+        std::forward<Writer>(writer)(output, capacity, result.value());
+        return RODAQ_STATUS_OK;
+    } catch (const std::bad_alloc&) {
+        assign_rodaq_error(
+            RODAQ_STATUS_RESOURCE_EXHAUSTED, "sdk", 0,
+            "Plugin SDK output operation exhausted memory", out_error);
+        return RODAQ_STATUS_RESOURCE_EXHAUSTED;
+    } catch (const std::exception& error) {
+        assign_rodaq_error(RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, error.what(), out_error);
+        return RODAQ_STATUS_INTERNAL_ERROR;
+    } catch (...) {
+        assign_rodaq_error(
+            RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0,
+            "Plugin SDK output operation caught an unknown exception", out_error);
+        return RODAQ_STATUS_INTERNAL_ERROR;
+    }
+}
+
 }  // namespace rodaq::plugin
 
 #endif  // RODAQ_PLUGIN_PLUGIN_HPP_
