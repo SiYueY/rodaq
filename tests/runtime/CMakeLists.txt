@@ -87,3 +87,13 @@ target_link_libraries(rodaq_observability_test
 rodaq_enable_warnings(rodaq_observability_test)
 rodaq_enable_sanitizers(rodaq_observability_test)
 add_test(NAME rodaq.runtime.observability COMMAND rodaq_observability_test)
+
+add_executable(rodaq_m1_integration_test m1_integration_test.cpp)
+target_link_libraries(rodaq_m1_integration_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_m1_integration_test)
+rodaq_enable_sanitizers(rodaq_m1_integration_test)
+add_test(NAME rodaq.runtime.m1_integration COMMAND rodaq_m1_integration_test)
