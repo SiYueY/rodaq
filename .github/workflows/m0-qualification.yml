@@ -1,0 +1,47 @@
+name: M0 Qualification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-22-amd64:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        sanitizer: [normal, asan, ubsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: |
+          args=""
+          if [ "${{ matrix.sanitizer }}" = asan ]; then args="-DRODAQ_ENABLE_ASAN=ON"; fi
+          if [ "${{ matrix.sanitizer }}" = ubsan ]; then args="-DRODAQ_ENABLE_UBSAN=ON"; fi
+          cmake -S . -B build -DRODAQ_BUILD_TESTS=ON -DRODAQ_WARNINGS_AS_ERRORS=ON $args
+      - name: Build
+        run: cmake --build build -j2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  ubuntu-24-amd64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: cmake -S . -B build -DRODAQ_BUILD_TESTS=ON -DRODAQ_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build -j2
+      - run: ctest --test-dir build --output-on-failure
+
+  ubuntu-22-arm64-native:
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: cmake -S . -B build -DRODAQ_BUILD_TESTS=ON -DRODAQ_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build -j2
+      - run: ctest --test-dir build --output-on-failure
