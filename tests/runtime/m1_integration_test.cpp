@@ -65,6 +65,8 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     ASSERT_TRUE(admission.has_value());
     ASSERT_EQ(admission.value().outcome, AdmissionGateOutcome::Granted);
 
+    // This test composes M1 primitives explicitly. M2 owns the atomic
+    // per-stream Admission Commit that combines Gate pass and publication.
     auto sequence = sequences.Allocate(kStream);
     ASSERT_TRUE(sequence.has_value());
     TimestampState timestamps;
