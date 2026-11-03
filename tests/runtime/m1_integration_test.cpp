@@ -63,7 +63,7 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     request.mode = AdmissionMode::Reject;
     auto admission = gate.Admit(request);
     ASSERT_TRUE(admission.has_value());
-    ASSERT_EQ(admission.value().outcome, AdmissionOutcome::Accepted);
+    ASSERT_EQ(admission.value().outcome, AdmissionGateOutcome::Granted);
 
     auto sequence = sequences.Allocate(kStream);
     ASSERT_TRUE(sequence.has_value());
@@ -102,7 +102,7 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     EXPECT_GE(final.high_water_bytes, source.size());
 }
 
-TEST(M1IntegrationTest, RejectionDoesNotConsumeAcceptanceSequence) {
+TEST(M1IntegrationTest, ResourceUnavailableDoesNotConsumeAcceptanceSequence) {
     auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
     ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
@@ -117,14 +117,14 @@ TEST(M1IntegrationTest, RejectionDoesNotConsumeAcceptanceSequence) {
     AdmissionRequest request;
     request.resources = ResourceAmount{1, 4};
     request.mode = AdmissionMode::Reject;
-    auto rejected = gate.Admit(request);
-    ASSERT_TRUE(rejected.has_value());
-    EXPECT_EQ(rejected.value().outcome, AdmissionOutcome::Rejected);
+    auto unavailable = gate.Admit(request);
+    ASSERT_TRUE(unavailable.has_value());
+    EXPECT_EQ(unavailable.value().outcome, AdmissionGateOutcome::ResourceUnavailable);
 
     holder.value().Release();
     auto accepted = gate.Admit(request);
     ASSERT_TRUE(accepted.has_value());
-    ASSERT_EQ(accepted.value().outcome, AdmissionOutcome::Accepted);
+    ASSERT_EQ(accepted.value().outcome, AdmissionGateOutcome::Granted);
     auto first_sequence = sequences.Allocate(kStream);
     ASSERT_TRUE(first_sequence.has_value());
     EXPECT_EQ(first_sequence.value(), 0U);
@@ -205,17 +205,17 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
                     failures.fetch_add(1);
                     continue;
                 }
-                if (admission.value().outcome == AdmissionOutcome::Rejected) {
+                if (admission.value().outcome == AdmissionGateOutcome::ResourceUnavailable) {
                     rejected.fetch_add(1);
                     stats.RecordRejected();
                     continue;
                 }
-                if (admission.value().outcome == AdmissionOutcome::Timeout) {
+                if (admission.value().outcome == AdmissionGateOutcome::Timeout) {
                     timed_out.fetch_add(1);
                     stats.RecordTimedOut();
                     continue;
                 }
-                if (admission.value().outcome != AdmissionOutcome::Accepted) {
+                if (admission.value().outcome != AdmissionGateOutcome::Granted) {
                     failures.fetch_add(1);
                     continue;
                 }

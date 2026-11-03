@@ -1,14 +1,15 @@
 #include "rodaq/runtime/admission.hpp"
 
 #include <chrono>
+#include <limits>
 #include <mutex>
 
 namespace rodaq {
 
 namespace {
 
-AdmissionDecision decision(AdmissionOutcome outcome, AdmissionRejectionReason reason) {
-    return AdmissionDecision{outcome, reason, Reservation()};
+AdmissionGateDecision decision(AdmissionGateOutcome outcome) {
+    return AdmissionGateDecision{outcome, Reservation()};
 }
 
 }  // namespace
@@ -24,29 +25,32 @@ bool AdmissionCancellation::IsCancelled() const noexcept { return cancelled_.loa
 
 AdmissionGate::AdmissionGate(ResourceBudget& budget) noexcept : budget_(budget) {}
 
-Result<AdmissionDecision> AdmissionGate::Admit(const AdmissionRequest& request) {
+AdmissionGate::AdmissionGate(ResourceBudget& budget, std::uint64_t initial_generation) noexcept
+: budget_(budget), generation_(initial_generation) {}
+
+Result<AdmissionGateDecision> AdmissionGate::Admit(const AdmissionRequest& request) {
     return AdmitWithCancellation(request, nullptr);
 }
 
-Result<AdmissionDecision> AdmissionGate::Admit(
+Result<AdmissionGateDecision> AdmissionGate::Admit(
     const AdmissionRequest& request, const AdmissionCancellation& cancellation) {
     return AdmitWithCancellation(request, &cancellation);
 }
 
 void AdmissionGate::Open() noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
-    if (!open_) {
-        open_ = true;
-        ++generation_;
-        budget_.wait_condition_.notify_all();
+    if (open_ || generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        return;
     }
+    open_ = AdvanceGenerationLocked();
+    budget_.wait_condition_.notify_all();
 }
 
 void AdmissionGate::Close() noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     if (open_) {
         open_ = false;
-        ++generation_;
+        static_cast<void>(AdvanceGenerationLocked());
         budget_.wait_condition_.notify_all();
     }
 }
@@ -66,7 +70,7 @@ std::size_t AdmissionGate::WaitingCount() const noexcept {
     return waiting_count_;
 }
 
-Result<AdmissionDecision> AdmissionGate::AdmitWithCancellation(
+Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
     const AdmissionRequest& request, const AdmissionCancellation* cancellation) {
     if (request.mode != AdmissionMode::Reject && request.mode != AdmissionMode::Wait) {
         return nonstd::make_unexpected(
@@ -84,50 +88,55 @@ Result<AdmissionDecision> AdmissionGate::AdmitWithCancellation(
 
     std::unique_lock<std::mutex> lock(budget_.mutex_);
     if (!open_) {
-        return decision(AdmissionOutcome::GateClosed, AdmissionRejectionReason::GateClosed);
+        return decision(AdmissionGateOutcome::GateClosed);
     }
     if (cancellation != nullptr && cancellation->IsCancelled()) {
-        return decision(AdmissionOutcome::Cancelled, AdmissionRejectionReason::Cancelled);
+        return decision(AdmissionGateOutcome::Cancelled);
     }
 
     if (request.mode == AdmissionMode::Reject) {
         const ResourceBudget::ReserveResult reserved = budget_.TryReserveLocked(request.resources);
         if (!reserved.reserved) {
-            return decision(
-                AdmissionOutcome::Rejected, AdmissionRejectionReason::ResourceUnavailable);
+            return decision(AdmissionGateOutcome::ResourceUnavailable);
         }
-        return AdmissionDecision{
-            AdmissionOutcome::Accepted,
-            AdmissionRejectionReason::None,
-            Reservation(budget_, request.resources),
-        };
+        return AdmissionGateDecision{
+            AdmissionGateOutcome::Granted, Reservation(budget_, request.resources)};
     }
 
     const std::uint64_t waiting_generation = generation_;
     const std::chrono::steady_clock::time_point deadline = *request.deadline;
     while (true) {
         if (cancellation != nullptr && cancellation->IsCancelled()) {
-            return decision(AdmissionOutcome::Cancelled, AdmissionRejectionReason::Cancelled);
+            return decision(AdmissionGateOutcome::Cancelled);
         }
         if (!open_ || generation_ != waiting_generation) {
-            return decision(AdmissionOutcome::GateClosed, AdmissionRejectionReason::GateClosed);
+            return decision(AdmissionGateOutcome::GateClosed);
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            return decision(AdmissionOutcome::Timeout, AdmissionRejectionReason::WaitTimeout);
+            return decision(AdmissionGateOutcome::Timeout);
         }
 
         const ResourceBudget::ReserveResult reserved = budget_.TryReserveLocked(request.resources);
         if (reserved.reserved) {
-            return AdmissionDecision{
-                AdmissionOutcome::Accepted,
-                AdmissionRejectionReason::None,
-                Reservation(budget_, request.resources),
-            };
+            return AdmissionGateDecision{
+                AdmissionGateOutcome::Granted, Reservation(budget_, request.resources)};
         }
         ++waiting_count_;
         budget_.wait_condition_.wait_until(lock, deadline);
         --waiting_count_;
     }
+}
+
+bool AdmissionGate::AdvanceGenerationLocked() noexcept {
+    if (generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        return false;
+    }
+    if (generation_ == std::numeric_limits<std::uint64_t>::max() - 1U) {
+        generation_ = std::numeric_limits<std::uint64_t>::max();
+        return false;
+    }
+    ++generation_;
+    return true;
 }
 
 }  // namespace rodaq

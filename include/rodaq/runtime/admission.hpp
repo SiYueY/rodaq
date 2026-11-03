@@ -16,18 +16,10 @@ enum class AdmissionMode {
     Wait,
 };
 
-enum class AdmissionOutcome {
-    Accepted,
-    Rejected,
-    Timeout,
-    Cancelled,
-    GateClosed,
-};
-
-enum class AdmissionRejectionReason {
-    None,
+enum class AdmissionGateOutcome {
+    Granted,
     ResourceUnavailable,
-    WaitTimeout,
+    Timeout,
     Cancelled,
     GateClosed,
 };
@@ -38,9 +30,8 @@ struct AdmissionRequest {
     std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
-struct AdmissionDecision {
-    AdmissionOutcome outcome = AdmissionOutcome::Rejected;
-    AdmissionRejectionReason reason = AdmissionRejectionReason::ResourceUnavailable;
+struct AdmissionGateDecision {
+    AdmissionGateOutcome outcome = AdmissionGateOutcome::ResourceUnavailable;
     Reservation reservation;
 };
 
@@ -74,14 +65,15 @@ private:
 class AdmissionGate final {
 public:
     explicit AdmissionGate(ResourceBudget& budget) noexcept;
+    AdmissionGate(ResourceBudget& budget, std::uint64_t initial_generation) noexcept;
 
     AdmissionGate(const AdmissionGate&) = delete;
     AdmissionGate& operator=(const AdmissionGate&) = delete;
     AdmissionGate(AdmissionGate&&) = delete;
     AdmissionGate& operator=(AdmissionGate&&) = delete;
 
-    Result<AdmissionDecision> Admit(const AdmissionRequest& request);
-    Result<AdmissionDecision> Admit(
+    Result<AdmissionGateDecision> Admit(const AdmissionRequest& request);
+    Result<AdmissionGateDecision> Admit(
         const AdmissionRequest& request, const AdmissionCancellation& cancellation);
 
     void Open() noexcept;
@@ -91,8 +83,9 @@ public:
     std::size_t WaitingCount() const noexcept;
 
 private:
-    Result<AdmissionDecision> AdmitWithCancellation(
+    Result<AdmissionGateDecision> AdmitWithCancellation(
         const AdmissionRequest& request, const AdmissionCancellation* cancellation);
+    bool AdvanceGenerationLocked() noexcept;
 
     ResourceBudget& budget_;
     bool open_ = false;

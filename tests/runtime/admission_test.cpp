@@ -1,10 +1,12 @@
 #include <rodaq/runtime/admission.hpp>
+#include <rodaq/runtime/runtime_record.hpp>
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -39,29 +41,26 @@ TEST(AdmissionGateTest, ClosedGateDoesNotReserveResources) {
 
     auto result = gate.Admit(reject_request(ResourceAmount{1, 8}));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result.value().outcome, AdmissionOutcome::GateClosed);
-    EXPECT_EQ(result.value().reason, AdmissionRejectionReason::GateClosed);
+    EXPECT_EQ(result.value().outcome, AdmissionGateOutcome::GateClosed);
     EXPECT_FALSE(result.value().reservation.Active());
     EXPECT_EQ(budget.Used(), ResourceAmount{});
 }
 
-TEST(AdmissionGateTest, AcceptAndRejectReportNormalDomainOutcomes) {
+TEST(AdmissionGateTest, ReportsGrantOrResourceUnavailable) {
     auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 8});
     ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
 
-    auto accepted = gate.Admit(reject_request(ResourceAmount{1, 8}));
-    ASSERT_TRUE(accepted.has_value());
-    EXPECT_EQ(accepted.value().outcome, AdmissionOutcome::Accepted);
-    EXPECT_EQ(accepted.value().reason, AdmissionRejectionReason::None);
-    EXPECT_TRUE(accepted.value().reservation.Active());
+    auto granted = gate.Admit(reject_request(ResourceAmount{1, 8}));
+    ASSERT_TRUE(granted.has_value());
+    EXPECT_EQ(granted.value().outcome, AdmissionGateOutcome::Granted);
+    EXPECT_TRUE(granted.value().reservation.Active());
 
-    auto rejected = gate.Admit(reject_request(ResourceAmount{1, 1}));
-    ASSERT_TRUE(rejected.has_value());
-    EXPECT_EQ(rejected.value().outcome, AdmissionOutcome::Rejected);
-    EXPECT_EQ(rejected.value().reason, AdmissionRejectionReason::ResourceUnavailable);
-    EXPECT_FALSE(rejected.value().reservation.Active());
+    auto unavailable = gate.Admit(reject_request(ResourceAmount{1, 1}));
+    ASSERT_TRUE(unavailable.has_value());
+    EXPECT_EQ(unavailable.value().outcome, AdmissionGateOutcome::ResourceUnavailable);
+    EXPECT_FALSE(unavailable.value().reservation.Active());
 }
 
 TEST(AdmissionGateTest, WaitIsWokenByResourceRelease) {
@@ -72,13 +71,13 @@ TEST(AdmissionGateTest, WaitIsWokenByResourceRelease) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::optional<AdmissionDecision> result;
+    std::optional<AdmissionGateDecision> result;
     std::thread waiter([&]() { result = gate.Admit(wait_request(ResourceAmount{1, 4})).value(); });
     held.value().Release();
     waiter.join();
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->outcome, AdmissionOutcome::Accepted);
+    EXPECT_EQ(result->outcome, AdmissionGateOutcome::Granted);
     EXPECT_EQ(result->reservation.Amount(), (ResourceAmount{1, 4}));
 }
 
@@ -92,8 +91,7 @@ TEST(AdmissionGateTest, WaitTimesOutWithoutAcquiringResources) {
 
     auto result = gate.Admit(wait_request(ResourceAmount{1, 4}, std::chrono::milliseconds(20)));
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result.value().outcome, AdmissionOutcome::Timeout);
-    EXPECT_EQ(result.value().reason, AdmissionRejectionReason::WaitTimeout);
+    EXPECT_EQ(result.value().outcome, AdmissionGateOutcome::Timeout);
     EXPECT_FALSE(result.value().reservation.Active());
     EXPECT_EQ(budget.ActiveReservations(), 1U);
 }
@@ -107,7 +105,7 @@ TEST(AdmissionGateTest, CancellationWakesWaiter) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::optional<AdmissionDecision> result;
+    std::optional<AdmissionGateDecision> result;
     std::thread waiter([&]() {
         result = gate.Admit(wait_request(ResourceAmount{1, 4}), cancellation).value();
     });
@@ -116,8 +114,7 @@ TEST(AdmissionGateTest, CancellationWakesWaiter) {
     waiter.join();
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->outcome, AdmissionOutcome::Cancelled);
-    EXPECT_EQ(result->reason, AdmissionRejectionReason::Cancelled);
+    EXPECT_EQ(result->outcome, AdmissionGateOutcome::Cancelled);
     EXPECT_FALSE(result->reservation.Active());
 }
 
@@ -129,13 +126,13 @@ TEST(AdmissionGateTest, GateCloseWakesWaiter) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::optional<AdmissionDecision> result;
+    std::optional<AdmissionGateDecision> result;
     std::thread waiter([&]() { result = gate.Admit(wait_request(ResourceAmount{1, 4})).value(); });
     gate.Close();
     waiter.join();
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->outcome, AdmissionOutcome::GateClosed);
+    EXPECT_EQ(result->outcome, AdmissionGateOutcome::GateClosed);
     EXPECT_FALSE(result->reservation.Active());
 }
 
@@ -148,7 +145,7 @@ TEST(AdmissionGateTest, GenerationChangeRejectsAnOldWaiterAfterReopen) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::optional<AdmissionDecision> result;
+    std::optional<AdmissionGateDecision> result;
     std::thread waiter([&]() { result = gate.Admit(wait_request(ResourceAmount{1, 4})).value(); });
     const auto wait_deadline = Clock::now() + std::chrono::seconds(2);
     while (gate.WaitingCount() == 0 && Clock::now() < wait_deadline) {
@@ -159,7 +156,7 @@ TEST(AdmissionGateTest, GenerationChangeRejectsAnOldWaiterAfterReopen) {
     waiter.join();
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->outcome, AdmissionOutcome::GateClosed);
+    EXPECT_EQ(result->outcome, AdmissionGateOutcome::GateClosed);
     EXPECT_GT(gate.Generation(), initial_generation);
     EXPECT_TRUE(gate.IsOpen());
 }
@@ -172,7 +169,7 @@ TEST(AdmissionGateTest, MultipleWaitersEachFinishExactlyOnce) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::atomic<int> accepted_count{0};
+    std::atomic<int> granted_count{0};
     std::atomic<int> closed_count{0};
     std::atomic<int> other_count{0};
     std::atomic<bool> release_success{false};
@@ -182,12 +179,12 @@ TEST(AdmissionGateTest, MultipleWaitersEachFinishExactlyOnce) {
             const auto result = gate.Admit(wait_request(ResourceAmount{1, 4}));
             if (!result.has_value()) {
                 other_count.fetch_add(1);
-            } else if (result.value().outcome == AdmissionOutcome::Accepted) {
-                accepted_count.fetch_add(1);
+            } else if (result.value().outcome == AdmissionGateOutcome::Granted) {
+                granted_count.fetch_add(1);
                 while (!release_success.load()) {
                     std::this_thread::yield();
                 }
-            } else if (result.value().outcome == AdmissionOutcome::GateClosed) {
+            } else if (result.value().outcome == AdmissionGateOutcome::GateClosed) {
                 closed_count.fetch_add(1);
             } else {
                 other_count.fetch_add(1);
@@ -209,7 +206,7 @@ TEST(AdmissionGateTest, MultipleWaitersEachFinishExactlyOnce) {
         waiter.join();
     }
 
-    EXPECT_EQ(accepted_count.load(), 1);
+    EXPECT_EQ(granted_count.load(), 1);
     EXPECT_EQ(closed_count.load(), 2);
     EXPECT_EQ(other_count.load(), 0);
     EXPECT_EQ(budget.ActiveReservations(), 0U);
@@ -223,14 +220,14 @@ TEST(AdmissionGateTest, ShutdownWithWaitersDoesNotLeaveAReservation) {
     auto held = budget.TryReserve(ResourceAmount{1, 4});
     ASSERT_TRUE(held.has_value());
 
-    std::optional<AdmissionDecision> result;
+    std::optional<AdmissionGateDecision> result;
     std::thread waiter([&]() { result = gate.Admit(wait_request(ResourceAmount{1, 4})).value(); });
     gate.Close();
     waiter.join();
     held.value().Release();
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->outcome, AdmissionOutcome::GateClosed);
+    EXPECT_EQ(result->outcome, AdmissionGateOutcome::GateClosed);
     EXPECT_EQ(budget.Used(), ResourceAmount{});
     EXPECT_EQ(budget.ActiveReservations(), 0U);
 }
@@ -242,7 +239,7 @@ TEST(AdmissionGateTest, ResourcesAndGateGenerationRemainConsistentUnderRaces) {
 
     for (int iteration = 0; iteration < 100; ++iteration) {
         gate.Open();
-        std::optional<AdmissionDecision> result;
+        std::optional<AdmissionGateDecision> result;
         std::thread submitter([&]() {
             result = gate.Admit(wait_request(ResourceAmount{1, 4}, std::chrono::milliseconds(50)))
                          .value();
@@ -252,8 +249,8 @@ TEST(AdmissionGateTest, ResourcesAndGateGenerationRemainConsistentUnderRaces) {
 
         ASSERT_TRUE(result.has_value());
         EXPECT_TRUE(
-            result->outcome == AdmissionOutcome::Accepted ||
-            result->outcome == AdmissionOutcome::GateClosed);
+            result->outcome == AdmissionGateOutcome::Granted ||
+            result->outcome == AdmissionGateOutcome::GateClosed);
         result.reset();
         EXPECT_EQ(budget.Used(), ResourceAmount{});
         EXPECT_EQ(budget.ActiveReservations(), 0U);
@@ -279,6 +276,46 @@ TEST(AdmissionGateTest, RejectsInvalidWaitConfigurationAndForeignCancellation) {
         gate.Admit(reject_request(ResourceAmount{1, 4}), foreign_cancellation);
     ASSERT_FALSE(wrong_budget.has_value());
     EXPECT_EQ(wrong_budget.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(AdmissionGateTest, GrantDoesNotAllocateAcceptanceSequence) {
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
+    AdmissionGate gate(budget);
+    auto sequences_result = AcceptanceSequenceAllocator::Create(1);
+    ASSERT_TRUE(sequences_result.has_value());
+    AcceptanceSequenceAllocator sequences(std::move(sequences_result.value()));
+    gate.Open();
+
+    const auto granted = gate.Admit(reject_request(ResourceAmount{1, 4}));
+    ASSERT_TRUE(granted.has_value());
+    ASSERT_EQ(granted.value().outcome, AdmissionGateOutcome::Granted);
+
+    const auto first_sequence = sequences.Allocate(StreamHandle::FromRaw(1));
+    ASSERT_TRUE(first_sequence.has_value());
+    EXPECT_EQ(first_sequence.value(), 0U);
+}
+
+TEST(AdmissionGateTest, GenerationExhaustionIsTerminalAndDoesNotWrap) {
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
+    constexpr std::uint64_t kTerminal = std::numeric_limits<std::uint64_t>::max();
+    AdmissionGate gate(budget, kTerminal - 2U);
+
+    gate.Open();
+    EXPECT_TRUE(gate.IsOpen());
+    EXPECT_EQ(gate.Generation(), kTerminal - 1U);
+    gate.Close();
+    EXPECT_FALSE(gate.IsOpen());
+    EXPECT_EQ(gate.Generation(), kTerminal);
+
+    gate.Open();
+    EXPECT_FALSE(gate.IsOpen());
+    EXPECT_EQ(gate.Generation(), kTerminal);
+
+    const auto closed = gate.Admit(reject_request(ResourceAmount{1, 4}));
+    ASSERT_TRUE(closed.has_value());
+    EXPECT_EQ(closed.value().outcome, AdmissionGateOutcome::GateClosed);
 }
 
 }  // namespace
