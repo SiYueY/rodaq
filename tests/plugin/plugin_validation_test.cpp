@@ -22,22 +22,37 @@ TEST(PluginIdValidationTest, RejectsMalformedIdentifiers) {
 }
 
 TEST(SemVerValidationTest, AcceptsSemVerTwo) {
-    EXPECT_TRUE(rodaq::plugin::is_valid_semantic_version("0.0.0"));
-    EXPECT_TRUE(rodaq::plugin::is_valid_semantic_version("1.2.3"));
-    EXPECT_TRUE(rodaq::plugin::is_valid_semantic_version("1.2.3-alpha.1+build.5"));
-    EXPECT_TRUE(rodaq::plugin::is_valid_semantic_version("1.2.3+001"));
+    for (const std::string_view version : {
+             "1.0.0",
+             "1.0.0-alpha",
+             "1.0.0-alpha.1",
+             "1.0.0+build.5",
+             "1.0.0+build-01",
+             "1.0.0-alpha.1+build.5",
+             "1.0.0-alpha+build-01",
+             "1.0.0+001",
+         }) {
+        EXPECT_TRUE(rodaq::plugin::is_valid_semantic_version(version)) << version;
+    }
 }
 
 TEST(SemVerValidationTest, RejectsMalformedVersions) {
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version(""));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("01.2.3"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.02.3"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2.03"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2.3-"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2.3-alpha..1"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2.3-alpha.01"));
-    EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version("1.2.3+"));
+    for (const std::string_view version : {
+             "",
+             "1.0",
+             "01.0.0",
+             "1.01.0",
+             "1.0.01",
+             "1.0.0-alpha.01",
+             "1.0.0-alpha..1",
+             "1.0.0-",
+             "1.0.0+",
+             "1.0.0-alpha+",
+             "1.0.0+bad_metadata",
+             "1.0.0+bad..metadata",
+         }) {
+        EXPECT_FALSE(rodaq::plugin::is_valid_semantic_version(version)) << version;
+    }
 }
 
 TEST(Utf8ValidationTest, AcceptsUnicodeWithoutNul) {

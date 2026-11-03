@@ -1,11 +1,161 @@
 #include "frozen_outputs.h"
 
+#include "rodaq/plugin/storage_plugin.hpp"
+
 #include "runtime/clock_correlation.hpp"
 #include "runtime/interop_projection_registry.hpp"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstring>
+#include <memory>
+#include <utility>
+
+static_assert(sizeof(frozen_projection_view_v1) == sizeof(rodaq_projection_view));
+static_assert(alignof(frozen_projection_view_v1) == alignof(rodaq_projection_view));
+static_assert(
+    offsetof(frozen_projection_view_v1, descriptor) == offsetof(rodaq_projection_view, descriptor));
+static_assert(
+    offsetof(frozen_projection_view_v1, projection_id) ==
+    offsetof(rodaq_projection_view, projection_id));
+static_assert(
+    offsetof(frozen_projection_view_v1, payload) == offsetof(rodaq_projection_view, payload));
+
+static_assert(sizeof(frozen_clock_anchor_v1) == sizeof(rodaq_unix_epoch_clock_anchor));
+static_assert(alignof(frozen_clock_anchor_v1) == alignof(rodaq_unix_epoch_clock_anchor));
+static_assert(
+    offsetof(frozen_clock_anchor_v1, clock) == offsetof(rodaq_unix_epoch_clock_anchor, clock));
+static_assert(
+    offsetof(frozen_clock_anchor_v1, clock_reading) ==
+    offsetof(rodaq_unix_epoch_clock_anchor, clock_reading));
+static_assert(
+    offsetof(frozen_clock_anchor_v1, unix_anchor_ns) ==
+    offsetof(rodaq_unix_epoch_clock_anchor, unix_anchor_ns));
+
+static_assert(sizeof(frozen_storage_capabilities_v1) == sizeof(rodaq_storage_capabilities));
+static_assert(alignof(frozen_storage_capabilities_v1) == alignof(rodaq_storage_capabilities));
+static_assert(
+    offsetof(frozen_storage_capabilities_v1, maximum_payload_bytes) ==
+    offsetof(rodaq_storage_capabilities, maximum_payload_bytes));
+static_assert(
+    offsetof(frozen_storage_capabilities_v1, close_progress_timeout_ns) ==
+    offsetof(rodaq_storage_capabilities, close_progress_timeout_ns));
+
+static_assert(
+    sizeof(frozen_descriptor_readiness_result_v1) == sizeof(rodaq_descriptor_readiness_result));
+static_assert(
+    alignof(frozen_descriptor_readiness_result_v1) == alignof(rodaq_descriptor_readiness_result));
+static_assert(
+    offsetof(frozen_descriptor_readiness_result_v1, failure) ==
+    offsetof(rodaq_descriptor_readiness_result, failure));
+
+static_assert(sizeof(frozen_storage_submit_result_v1) == sizeof(rodaq_storage_submit_result));
+static_assert(alignof(frozen_storage_submit_result_v1) == alignof(rodaq_storage_submit_result));
+static_assert(
+    offsetof(frozen_storage_submit_result_v1, persistence_error) ==
+    offsetof(rodaq_storage_submit_result, persistence_error));
+
+namespace {
+
+constexpr std::uint8_t kCanary = 0xA5;
+
+const rodaq_plugin_descriptor compatibility_descriptor = {
+    RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE,
+    0,
+    {"rodaq.storage.output_compat", sizeof("rodaq.storage.output_compat") - 1},
+    {"Output Compatibility", sizeof("Output Compatibility") - 1},
+    {"1.0.0", sizeof("1.0.0") - 1},
+    {"", 0},
+};
+
+class CompatibilityStoragePlugin final : public rodaq::StoragePlugin {
+public:
+    rodaq::Result<void> Bind(rodaq::StorageRuntime) override { return {}; }
+    rodaq::Result<void> Configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> Open(const rodaq_storage_open_request&) override { return {}; }
+    rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+        rodaq_storage_capabilities value{};
+        value.struct_size = sizeof(value);
+        value.flags = 7;
+        value.full_fidelity = RODAQ_TRUE;
+        value.maximum_payload_bytes = 11;
+        value.maximum_inflight_records = 12;
+        value.maximum_inflight_bytes = 13;
+        value.handoff_progress_timeout_ns = 14;
+        value.descriptor_progress_timeout_ns = 15;
+        value.flush_progress_timeout_ns = 16;
+        value.close_progress_timeout_ns = 17;
+        return value;
+    }
+    rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
+        rodaq_stream_descriptor_handle) override {
+        rodaq_descriptor_readiness_result value{};
+        value.struct_size = sizeof(value);
+        value.state = RODAQ_DESCRIPTOR_READY;
+        return value;
+    }
+    rodaq::Result<rodaq_storage_submit_result> Submit(const rodaq_storage_submission&) override {
+        rodaq_storage_submit_result value{};
+        value.struct_size = sizeof(value);
+        value.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
+        value.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
+        return value;
+    }
+    rodaq::Result<void> Flush() override { return {}; }
+    rodaq::Result<void> Close(rodaq_storage_close_disposition) override { return {}; }
+};
+
+struct StorageAbiInstance {
+    const rodaq_storage_plugin* protocol = nullptr;
+    void* instance = nullptr;
+
+    StorageAbiInstance() = default;
+    StorageAbiInstance(const StorageAbiInstance&) = delete;
+    StorageAbiInstance& operator=(const StorageAbiInstance&) = delete;
+    StorageAbiInstance(StorageAbiInstance&& other) noexcept
+    : protocol(other.protocol), instance(std::exchange(other.instance, nullptr)) {}
+    StorageAbiInstance& operator=(StorageAbiInstance&& other) noexcept {
+        if (this != &other) {
+            if (instance != nullptr) {
+                protocol->destroy(instance);
+            }
+            protocol = other.protocol;
+            instance = std::exchange(other.instance, nullptr);
+        }
+        return *this;
+    }
+
+    ~StorageAbiInstance() {
+        if (instance != nullptr) {
+            protocol->destroy(instance);
+        }
+    }
+};
+
+StorageAbiInstance create_storage_instance() {
+    StorageAbiInstance owner;
+    owner.protocol = rodaq_get_storage_plugin();
+    EXPECT_NE(nullptr, owner.protocol);
+    if (owner.protocol == nullptr) {
+        return owner;
+    }
+    rodaq_error error{};
+    EXPECT_EQ(RODAQ_STATUS_OK, owner.protocol->create(&owner.instance, &error));
+    return owner;
+}
+
+void expect_canary(const std::uint8_t* bytes, std::size_t size) {
+    for (std::size_t index = 0; index < size; ++index) {
+        EXPECT_EQ(kCanary, bytes[index]);
+    }
+}
+
+void fill_canary(std::uint8_t* bytes, std::size_t size) { std::memset(bytes, kCanary, size); }
+
+}  // namespace
+
+RODAQ_EXPORT_STORAGE_PLUGIN(CompatibilityStoragePlugin, compatibility_descriptor)
 
 TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
     rodaq::runtime::InteropProjectionRegistry registry({64, 4, 128, 256});
@@ -34,6 +184,38 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
         EXPECT_EQ(0xA5, byte);
     }
 
+    {
+        struct {
+            std::uint32_t struct_size;
+            std::uint8_t canary[16];
+        } too_small{};
+        fill_canary(too_small.canary, sizeof(too_small.canary));
+        too_small.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE - 1;
+        EXPECT_EQ(
+            RODAQ_STATUS_INVALID_ARGUMENT,
+            projection->get_projection(
+                interface.context, rodaq_stream_descriptor_handle{7},
+                rodaq_string_view{"rodaq.test.projection.v1", 24},
+                reinterpret_cast<rodaq_projection_view*>(&too_small), &error));
+        expect_canary(too_small.canary, sizeof(too_small.canary));
+    }
+
+    {
+        struct {
+            rodaq_projection_view value;
+            std::uint8_t canary[32];
+        } larger{};
+        fill_canary(larger.canary, sizeof(larger.canary));
+        larger.value.struct_size = sizeof(larger.value) + sizeof(larger.canary);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            projection->get_projection(
+                interface.context, rodaq_stream_descriptor_handle{7},
+                rodaq_string_view{"rodaq.test.projection.v1", 24}, &larger.value, &error));
+        EXPECT_EQ(sizeof(rodaq_projection_view), larger.value.struct_size);
+        expect_canary(larger.canary, sizeof(larger.canary));
+    }
+
     auto clock = rodaq::runtime::ClockCorrelation::FromAnchor(
         rodaq::runtime::UnixEpochClockAnchor{rodaq_clock_handle{3}, 10, 1'000});
     ASSERT_TRUE(clock.has_value());
@@ -54,5 +236,227 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
             reinterpret_cast<rodaq_unix_epoch_clock_anchor*>(&clock_buffer.value), &error));
     for (std::uint8_t byte : clock_buffer.canary) {
         EXPECT_EQ(0xA5, byte);
+    }
+
+    {
+        struct {
+            std::uint32_t struct_size;
+            std::uint8_t canary[16];
+        } too_small{};
+        fill_canary(too_small.canary, sizeof(too_small.canary));
+        too_small.struct_size = RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE - 1;
+        EXPECT_EQ(
+            RODAQ_STATUS_INVALID_ARGUMENT,
+            clock_table->get_unix_epoch_anchor(
+                clock_interface.context, rodaq_clock_handle{3},
+                reinterpret_cast<rodaq_unix_epoch_clock_anchor*>(&too_small), &error));
+        expect_canary(too_small.canary, sizeof(too_small.canary));
+    }
+
+    {
+        struct {
+            rodaq_unix_epoch_clock_anchor value;
+            std::uint8_t canary[32];
+        } larger{};
+        fill_canary(larger.canary, sizeof(larger.canary));
+        larger.value.struct_size = sizeof(larger.value) + sizeof(larger.canary);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            clock_table->get_unix_epoch_anchor(
+                clock_interface.context, rodaq_clock_handle{3}, &larger.value, &error));
+        EXPECT_EQ(sizeof(rodaq_unix_epoch_clock_anchor), larger.value.struct_size);
+        expect_canary(larger.canary, sizeof(larger.canary));
+    }
+}
+
+TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
+    rodaq_error error{};
+    StorageAbiInstance owner = create_storage_instance();
+    ASSERT_NE(nullptr, owner.instance);
+    rodaq_interface interface {};
+    ASSERT_EQ(
+        RODAQ_STATUS_OK,
+        owner.protocol->query_interface(
+            owner.instance,
+            rodaq_string_view{
+                RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
+            &interface, &error));
+    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    ASSERT_NE(nullptr, control);
+
+    {
+        struct {
+            frozen_storage_capabilities_v1 value;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            control->get_capabilities(
+                interface.context, reinterpret_cast<rodaq_storage_capabilities*>(&buffer.value),
+                &error));
+        EXPECT_EQ(sizeof(rodaq_storage_capabilities), buffer.value.struct_size);
+        EXPECT_EQ(7U, buffer.value.flags);
+        EXPECT_EQ(17U, buffer.value.close_progress_timeout_ns);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            std::uint32_t struct_size;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.struct_size = RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE - 1;
+        EXPECT_EQ(
+            RODAQ_STATUS_INVALID_ARGUMENT,
+            control->get_capabilities(
+                interface.context, reinterpret_cast<rodaq_storage_capabilities*>(&buffer), &error));
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_storage_capabilities value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK, control->get_capabilities(interface.context, &buffer.value, &error));
+        EXPECT_EQ(sizeof(rodaq_storage_capabilities), buffer.value.struct_size);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+}
+
+TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
+    rodaq_error error{};
+    StorageAbiInstance owner = create_storage_instance();
+    ASSERT_NE(nullptr, owner.instance);
+    rodaq_interface interface {};
+    ASSERT_EQ(
+        RODAQ_STATUS_OK,
+        owner.protocol->query_interface(
+            owner.instance,
+            rodaq_string_view{
+                RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
+            &interface, &error));
+    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    ASSERT_NE(nullptr, control);
+
+    {
+        struct {
+            frozen_descriptor_readiness_result_v1 value;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            control->ensure_descriptor_ready(
+                interface.context, rodaq_stream_descriptor_handle{42},
+                reinterpret_cast<rodaq_descriptor_readiness_result*>(&buffer.value), &error));
+        EXPECT_EQ(sizeof(rodaq_descriptor_readiness_result), buffer.value.struct_size);
+        EXPECT_EQ(RODAQ_DESCRIPTOR_READY, buffer.value.state);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            std::uint32_t struct_size;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.struct_size = RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE - 1;
+        EXPECT_EQ(
+            RODAQ_STATUS_INVALID_ARGUMENT,
+            control->ensure_descriptor_ready(
+                interface.context, rodaq_stream_descriptor_handle{42},
+                reinterpret_cast<rodaq_descriptor_readiness_result*>(&buffer), &error));
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_descriptor_readiness_result value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            control->ensure_descriptor_ready(
+                interface.context, rodaq_stream_descriptor_handle{42}, &buffer.value, &error));
+        EXPECT_EQ(sizeof(rodaq_descriptor_readiness_result), buffer.value.struct_size);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+}
+
+TEST(FrozenV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
+    rodaq_error error{};
+    StorageAbiInstance owner = create_storage_instance();
+    ASSERT_NE(nullptr, owner.instance);
+    rodaq_storage_open_request open{};
+    open.struct_size = sizeof(open);
+    const char session[] = "session";
+    const char target[] = "memory://compat";
+    open.session_id = rodaq_string_view{session, sizeof(session) - 1};
+    open.target_uri = rodaq_string_view{target, sizeof(target) - 1};
+    ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &open, &error));
+
+    rodaq_storage_submission submission{};
+    submission.struct_size = sizeof(submission);
+    submission.operation.value = 1;
+    submission.stream.value = 2;
+    submission.descriptor.value = 3;
+    submission.source_present = RODAQ_FALSE;
+    submission.source_sequence_present = RODAQ_FALSE;
+
+    {
+        struct {
+            frozen_storage_submit_result_v1 value;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            owner.protocol->submit(
+                owner.instance, &submission,
+                reinterpret_cast<rodaq_storage_submit_result*>(&buffer.value), &error));
+        EXPECT_EQ(sizeof(rodaq_storage_submit_result), buffer.value.struct_size);
+        EXPECT_EQ(RODAQ_STORAGE_PAYLOAD_CONSUMED, buffer.value.payload_state);
+        EXPECT_EQ(RODAQ_STORAGE_PERSISTENCE_SUCCEEDED, buffer.value.persistence_state);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            std::uint32_t struct_size;
+            std::uint8_t canary[16];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.struct_size = RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE - 1;
+        EXPECT_EQ(
+            RODAQ_STATUS_INVALID_ARGUMENT,
+            owner.protocol->submit(
+                owner.instance, &submission,
+                reinterpret_cast<rodaq_storage_submit_result*>(&buffer), &error));
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_storage_submit_result value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            owner.protocol->submit(owner.instance, &submission, &buffer.value, &error));
+        EXPECT_EQ(sizeof(rodaq_storage_submit_result), buffer.value.struct_size);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 }

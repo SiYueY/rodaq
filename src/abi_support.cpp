@@ -127,6 +127,22 @@ bool parse_abi_bytes(
     return true;
 }
 
+bool is_valid_abi_bool(rodaq_bool value) noexcept {
+    return value == RODAQ_FALSE || value == RODAQ_TRUE;
+}
+
+bool is_valid_timestamp_values(const rodaq_timestamp_value* values, std::uint32_t count) noexcept {
+    if (count != 0 && values == nullptr) {
+        return false;
+    }
+    for (std::uint32_t index = 0; index < count; ++index) {
+        if (!is_valid_abi_bool(values[index].present) || values[index].reserved != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 rodaq_status status_from_error_code(ErrorCode code) noexcept {
     switch (code) {
         case ErrorCode::InvalidArgument:

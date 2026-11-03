@@ -250,19 +250,40 @@ Development:
 - [x] live lease prevents unload.
 - [x] relevant ASan/UBSan suite clean.
 
+#### M0 Closure Repair
+
+- [x] All callable Plugin SDK entrypoints audited for required pointers, views,
+  counts, flags and reserved fields.
+- [x] Storage Open / Submit structural validation added before Plugin C++
+  implementation entry.
+- [x] Acquisition control and Runtime Service request/input validation added.
+- [x] All public Runtime Service wrappers are default-invalid safe.
+- [x] `MonotonicTimeNs()` returns typed `InvalidState`.
+- [x] Frozen V1 Storage output definitions are independent of current ABI
+  headers.
+- [x] Storage / Projection / Clock APPENDABLE capacity matrices and canaries
+  pass.
+- [x] Existing current-host / frozen-Plugin fixtures remain passing.
+- [x] CMake and Runtime SemVer validators share the same accepted/rejected
+  boundary corpus.
+- [x] Storage Submit / Capabilities / Descriptor readiness 3x3 exception matrix
+  passes through actual ABI entrypoints.
+- [x] Ubuntu 22.04 normal / ASan / UBSan and Ubuntu 24.04 normal amd64
+  qualification each pass 79/79.
+
 ### Exit Gate
 
 M0 PASS only when the authoritative M0 Exit Gate in `rodaq_v1_system_design.md` is satisfied.
 
 Evidence to record before marking PASS:
 
-- [ ] build commands/results.
-- [ ] ABI test results.
-- [ ] Fake Plugin lifecycle results.
-- [ ] Service/Config tests.
-- [ ] lifetime tests.
-- [ ] sanitizer results.
-- [ ] no unresolved P0/P1 Plugin ABI conflict.
+- [x] build commands/results.
+- [x] ABI test results.
+- [x] Fake Plugin lifecycle results.
+- [x] Service/Config tests.
+- [x] lifetime tests.
+- [x] sanitizer results.
+- [x] no unresolved P0/P1 Plugin ABI conflict.
 
 ### Out of Scope
 

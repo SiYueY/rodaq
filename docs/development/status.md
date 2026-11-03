@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-03
 **Branch:** `develop`
-**Pre-integration checkpoint:** `9996e2b` — `runtime: implement projection and clock correlation services`
+**M0 closure baseline:** `9bb1dbc` — `docs: accept deferred arm64 and close M0`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -21,9 +21,9 @@ The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition
 
 ## Current repository state
 
-M0-A Review Closure, M0-B Stable C Plugin ABI, M0-C Plugin Loading + Lifetime
-and M0-D Runtime Services + ConfigView are complete and validated. The
-repository now contains:
+M0-A Review Closure, M0-B Stable C Plugin ABI, M0-C Plugin Loading + Lifetime,
+M0-D Runtime Services + ConfigView and M0-E SDK / Closure Repair are complete
+and validated. The repository now contains:
 
 - a C++17 CMake project foundation,
 - warning, sanitizer, CTest, dependency and install support,
@@ -35,13 +35,21 @@ repository now contains:
 - private DSO and instance lease ownership with bounded normal unload behavior,
 - catalog/manager orchestration and explicit quarantine retention,
 - pinned dependency submodules with no normal-build network access,
-- header-only install validation for `rodaq::Error` and `rodaq::Result<T>`.
+- installed-header validation for `rodaq::Error`, `rodaq::Result<T>` and the
+  C++17 Plugin SDK,
+- a complete C++17 Acquisition / Storage Plugin SDK,
+- Runtime Service wrappers with invalid-state protection,
+- Storage / Acquisition ABI structural input validation,
+- frozen caller-output compatibility fixtures and bidirectional APPENDABLE
+  capacity qualification,
+- exception-firewall matrices for Storage Submit, Capabilities and Descriptor
+  readiness.
 
-`third_party/` contains all nine approved pinned submodules. M0-D adds bounded
-Service Registry and ConfigView implementations, activation-lifetime
-InteropProjection and ClockCorrelation services, and Fake Plugin
-`bind/configure` integration. No C++ Plugin SDK, linkable installed RoDAQ
-package target or production shared library has been introduced.
+`third_party/` contains all nine approved pinned submodules. M0 also includes a
+bounded Service Registry, ConfigView, activation-lifetime InteropProjection and
+ClockCorrelation services, Fake Plugin lifecycle integration, plugin authoring
+CMake support and an installed SDK consumer smoke. A production Runtime shared
+library and full data path remain future milestones.
 
 ## Design baseline
 
@@ -271,14 +279,15 @@ RoDAQ-native logging design
 three-level Semantic / ABI / Backend qualification freeze model
 ```
 
-No remaining known P0/P1 static design blocker prevents M0 Foundation + Plugin ABI implementation. M0 may proceed from the repaired contract set.
+No remaining known P0/P1 static design blocker prevents M1 implementation.
 
 The Stable C ABI and private Plugin loading/lifetime boundary are implemented and
-mechanically qualified. No Service Registry, ConfigView, Plugin SDK, Runtime data
-plane or backend round-trip has been executed. ROS2/MCAP executable
-qualification remains an M3 gate; FastDDS/MCAP interoperability is the M4 gate;
-production hardening/release qualification is M5. SQLite3 is now a future design
-validation target rather than a V1 release gate.
+mechanically qualified. Service Registry, ConfigView, the C++17 Plugin SDK,
+Runtime Service wrappers and Fake Plugin lifecycle are implemented. The Runtime
+data plane and real backend round trips have not been executed. ROS2/MCAP
+executable qualification remains an M3 gate; FastDDS/MCAP interoperability is the
+M4 gate; production hardening/release qualification is M5. SQLite3 is a future
+design-validation target rather than a V1 release gate.
 
 The Result policy is now frozen by D-025:
 
@@ -345,6 +354,16 @@ M0-D Runtime Services + ConfigView
     FAKE PLUGIN INTEGRATION TESTED
     ASAN TESTED
     UBSAN TESTED
+    PASS
+
+M0-E Plugin SDK + Closure Repair
+    IMPLEMENTED
+    ABI INPUT VALIDATION TESTED
+    INVALID-STATE WRAPPER TESTED
+    FROZEN APPENDABLE CAPACITY TESTED
+    SEMVER PARITY TESTED
+    STORAGE EXCEPTION MATRIX TESTED
+    NORMAL / ASAN / UBSAN TESTED
     PASS
 ```
 
@@ -457,3 +476,34 @@ M0-D validation:
   above.
 - Naming audit found no forbidden placeholder namespaces, former family owner
   class names, ABI-prefixed error helper, or legacy status conversion references.
+
+M0-E / Closure Repair validation:
+
+- Clean GCC 11.4.0 Debug with warnings-as-errors: build passed; 79/79 CTest
+  entries passed.
+- Clean ASan Debug with warnings-as-errors: build passed; 79/79 CTest entries
+  passed with `ASAN_OPTIONS=detect_leaks=0` and `setarch x86_64 -R`. The host
+  requires the ASLR wrapper for the GCC 11 ASan shadow mapping; LeakSanitizer is
+  disabled because the environment reports ptrace incompatibility.
+- Clean UBSan Debug with non-recovering undefined behavior and
+  warnings-as-errors: build passed; 79/79 CTest entries passed.
+- Clean Ubuntu 24.04 amd64 container with GCC 13.3.0 and
+  warnings-as-errors: configure and build passed; 79/79 CTest entries passed.
+- SDK validation covers null pointers, `struct_size`, flags, reserved fields,
+  invalid UTF-8, pointer/count pairs, boolean/presence relationships, nonzero
+  handles, timestamp arrays, payload views and control dispositions.
+- Runtime wrapper tests cover all six public service families in invalid and
+  valid states, including no-op void callbacks and `MonotonicTimeNs()` typed
+  `InvalidState`.
+- Frozen V1 output tests cover Storage capabilities, Descriptor readiness,
+  Storage submit result, Projection and Clock outputs at minimum-minus-one,
+  frozen-prefix, current-size and oversized capacities with intact tail canaries.
+- Storage exception tests pass the 3 methods x 3 exception-type matrix through
+  actual SDK ABI entrypoints with complete caller-owned diagnostics.
+- Runtime and CMake SemVer validators accept the same boundary corpus, including
+  build metadata `1.0.0+build-01`, and reject prerelease numeric leading zeros.
+- Installed SDK consumer smoke passed.
+
+Current qualification count: **79/79** on Ubuntu 22.04 amd64 for normal, ASan
+and UBSan builds, and **79/79** on Ubuntu 24.04 amd64 for normal Debug. Native
+arm64 remains deferred by D-034 and is not reported as PASS.

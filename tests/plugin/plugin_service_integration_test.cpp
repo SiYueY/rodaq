@@ -655,7 +655,12 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.open(open).error().code());
 
         rodaq_storage_submission submission{};
-        submission.struct_size = RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE;
+        submission.struct_size = sizeof(submission);
+        submission.operation.value = 1;
+        submission.stream.value = 1;
+        submission.descriptor.value = 42;
+        submission.source_present = RODAQ_FALSE;
+        submission.source_sequence_present = RODAQ_FALSE;
         const auto submitted = instance.submit(submission);
         ASSERT_TRUE(submitted.has_value());
         EXPECT_EQ(RODAQ_STORAGE_PAYLOAD_CONSUMED, submitted.value().payload_state);
@@ -710,9 +715,8 @@ TEST(PluginServiceIntegrationTest, FrozenV1PluginsLoadInCurrentHost) {
     {
         RuntimeServices services;
         const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
-        AcquisitionPluginInstance instance = take(
-            manager.create_acquisition_plugin_instance(
-                take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_ACQUISITION")))));
+        AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_ACQUISITION")))));
         ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
         ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
         EXPECT_TRUE(instance.required_control_interface().has_value());
@@ -721,9 +725,8 @@ TEST(PluginServiceIntegrationTest, FrozenV1PluginsLoadInCurrentHost) {
         RuntimeServices services;
         register_fixture_projection(services);
         const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
-        StoragePluginInstance instance = take(
-            manager.create_storage_plugin_instance(
-                take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_STORAGE")))));
+        StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
+            take(manager.load_library(plugin_path("RODAQ_TEST_COMPAT_STORAGE")))));
         ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
         ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
         EXPECT_TRUE(instance.required_control_interface().has_value());

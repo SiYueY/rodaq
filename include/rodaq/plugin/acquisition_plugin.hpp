@@ -125,8 +125,9 @@ public:
         void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,            \
         rodaq_stream_descriptor_handle old_descriptor,                                             \
         rodaq_stream_descriptor_handle new_descriptor, rodaq_error* out_error) noexcept {          \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        if (context == nullptr || transition.value == 0 || stream.value == 0 ||                    \
+            new_descriptor.value == 0) {                                                           \
+            return rodaq::plugin::invalid_input("binding prepare input is invalid", out_error);    \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, stream, old_descriptor, new_descriptor] {                        \
@@ -137,8 +138,8 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_commit(                                                     \
         void* context, rodaq_binding_transition transition, rodaq_error* out_error) noexcept {     \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        if (context == nullptr || transition.value == 0) {                                         \
+            return rodaq::plugin::invalid_input("binding commit input is invalid", out_error);     \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition] {                                                                \
@@ -149,8 +150,10 @@ public:
     rodaq_status rodaq_sdk_acquisition_abort(                                                      \
         void* context, rodaq_binding_transition transition,                                        \
         rodaq_binding_abort_disposition disposition, rodaq_error* out_error) noexcept {            \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        if (context == nullptr || transition.value == 0 ||                                         \
+            (disposition != RODAQ_BINDING_ABORT_KEEP_PAUSED &&                                     \
+             disposition != RODAQ_BINDING_ABORT_RESUME_OLD)) {                                     \
+            return rodaq::plugin::invalid_input("binding abort input is invalid", out_error);      \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, disposition] {                                                   \
@@ -161,8 +164,8 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_quiesce_stream(                                             \
         void* context, rodaq_stream_handle stream, rodaq_error* out_error) noexcept {              \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        if (context == nullptr || stream.value == 0) {                                             \
+            return rodaq::plugin::invalid_input("stream quiesce input is invalid", out_error);     \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, stream] {                                                                    \

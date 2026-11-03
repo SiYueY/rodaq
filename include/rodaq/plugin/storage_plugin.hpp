@@ -34,6 +34,39 @@ public:
 
 namespace rodaq::plugin {
 
+inline bool is_valid_storage_open_request(const rodaq_storage_open_request& request) noexcept {
+    if (request.struct_size < RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE || request.flags != 0) {
+        return false;
+    }
+    std::string_view session_id;
+    std::string_view target_uri;
+    return parse_abi_string(request.session_id, &session_id) &&
+           parse_abi_string(request.target_uri, &target_uri);
+}
+
+inline bool is_valid_storage_submission(const rodaq_storage_submission& submission) noexcept {
+    if (submission.struct_size < RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE ||
+        submission.flags != 0 || submission.reserved != 0 || submission.operation.value == 0 ||
+        submission.stream.value == 0 || submission.descriptor.value == 0 ||
+        !rodaq::is_valid_abi_bool(submission.source_present) ||
+        !rodaq::is_valid_abi_bool(submission.source_sequence_present)) {
+        return false;
+    }
+    if (!submission.source_present && submission.source_sequence_present) {
+        return false;
+    }
+    if (submission.source_present && submission.source.value == 0) {
+        return false;
+    }
+    if (!rodaq::is_valid_timestamp_values(
+            submission.timestamp_values, submission.timestamp_value_count)) {
+        return false;
+    }
+    const std::uint8_t* payload_data = nullptr;
+    std::size_t payload_size = 0;
+    return parse_abi_bytes(submission.payload, &payload_data, &payload_size);
+}
+
 inline void write_storage_capabilities(
     rodaq_storage_capabilities* output, std::uint32_t capacity,
     const rodaq_storage_capabilities& value) noexcept {
@@ -164,8 +197,7 @@ inline void write_descriptor_readiness_result(
         void* instance, const rodaq_storage_open_request* request,                                 \
         rodaq_error* out_error) noexcept {                                                         \
         if (instance == nullptr || request == nullptr ||                                           \
-            request->struct_size < RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE ||                   \
-            request->flags != 0) {                                                                 \
+            !rodaq::plugin::is_valid_storage_open_request(*request)) {                             \
             rodaq::assign_rodaq_error(                                                             \
                 RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "open input is invalid", out_error);      \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
@@ -178,8 +210,7 @@ inline void write_descriptor_readiness_result(
         void* instance, const rodaq_storage_submission* submission,                                \
         rodaq_storage_submit_result* out_result, rodaq_error* out_error) noexcept {                \
         if (instance == nullptr || submission == nullptr || out_result == nullptr ||               \
-            submission->struct_size < RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE ||                  \
-            submission->flags != 0 || submission->reserved != 0) {                                 \
+            !rodaq::plugin::is_valid_storage_submission(*submission)) {                            \
             rodaq::assign_rodaq_error(                                                             \
                 RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "submit input is invalid", out_error);    \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
@@ -237,8 +268,9 @@ inline void write_descriptor_readiness_result(
     rodaq_status rodaq_sdk_storage_ready(                                                          \
         void* context, rodaq_stream_descriptor_handle descriptor,                                  \
         rodaq_descriptor_readiness_result* out_result, rodaq_error* out_error) noexcept {          \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
+        if (context == nullptr || descriptor.value == 0) {                                         \
+            return rodaq::plugin::invalid_input(                                                   \
+                "descriptor readiness input is invalid", out_error);                               \
         }                                                                                          \
         return rodaq::plugin::invoke_struct_output(                                                \
             out_result, RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE,                         \

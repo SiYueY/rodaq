@@ -5640,8 +5640,12 @@ Dependency/platform：
 
 ```text
 Ubuntu 22.04 amd64 build
-Ubuntu 22.04 arm64 build or qualified native runner
 Ubuntu 24.04 runtime smoke
+
+native arm64:
+    DEFERRED according to D-034
+    not treated as PASS
+    not replaced by x86_64 cross-compilation evidence
 
 oneTBB init/shutdown smoke
 dlopen/dlclose smoke

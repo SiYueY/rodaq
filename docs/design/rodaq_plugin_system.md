@@ -6647,6 +6647,17 @@ Log / Diagnostic / MonotonicTime
 
 `LifecycleSnapshot()` 返回一次性 observation，不返回持久 capability token；后续 Runtime operation 仍重新验证当前 lifecycle/admission state。
 
+所有 public Runtime Service wrapper 提供 `Valid()` 并使用统一 invalid-state
+语义：`Result<T>` / `Result<void>` API 返回 `ErrorCode::InvalidState`，
+`Log()` / `Diagnostic()` 以及 Storage completion callbacks 安全 no-op。
+Monotonic time 不能假定 `0` 是 error sentinel，因此 SDK surface 为：
+
+```cpp
+Result<std::uint64_t> MonotonicTimeNs() const;
+```
+
+Default-constructed 或缺失 context/vtable 的 wrapper 不得解引用 Service table。
+
 示意：
 
 ```cpp
@@ -6778,6 +6789,10 @@ virtual 仅存在 Plugin binary 内部 SDK 层
 
 不会作为跨 DSO ABI。
 
+Storage Runtime completion wrapper 的 invalid-state 行为是安全 no-op；
+有效的 `PayloadConsumed()`、`PersistenceCompleted()` 和 `ReportFailure()`
+仍保持原有 callback 顺序与 ownership 语义。
+
 ---
 
 ## 5.18 SDK Trampoline
@@ -6815,6 +6830,13 @@ function table
 struct_size
 error out-param
 ```
+
+SDK generated entrypoint 在进入 Plugin C++ implementation 前验证 ABI
+structural contract：required pointer、`struct_size`、flags、reserved、
+string/bytes view、pointer/count pair、presence relationship 和 caller-owned
+APPENDABLE output capacity。非法输入返回 `INVALID_ARGUMENT`，不调用 Plugin
+implementation。ABI 无法验证 caller 声明的 address range 是否真实可读；该
+obligation 仍由 caller 承担。
 
 ---
 

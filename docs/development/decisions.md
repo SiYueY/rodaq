@@ -674,3 +674,21 @@ job remains available for later evidence without reopening the frozen ABI.
 
 **Reference:** `.github/workflows/m0-qualification.yml`,
 `docs/design/rodaq_v1_system_design.md`.
+
+## D-035 — Runtime Service wrappers use typed invalid-state semantics
+
+**Status:** Accepted
+
+Default-constructed or incompletely bound public Runtime Service wrappers must
+remain safe. Result-returning APIs report `ErrorCode::InvalidState`; void log,
+diagnostic and Storage completion APIs are no-ops. Monotonic time cannot use a
+numeric error sentinel, so:
+
+```cpp
+Result<std::uint64_t> MonotonicTimeNs() const;
+```
+
+This is a C++ SDK source-level contract only. It does not change the Stable C
+ABI table or any frozen layout.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`.

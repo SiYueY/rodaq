@@ -2,6 +2,10 @@
 
 #include "rodaq_test_plugin_sdk_storage_metadata.hpp"
 
+#include <exception>
+#include <new>
+#include <stdexcept>
+
 #ifndef RODAQ_SDK_STORAGE_FAIL_OPEN
 #define RODAQ_SDK_STORAGE_FAIL_OPEN 0
 #endif
@@ -11,8 +15,44 @@
 #ifndef RODAQ_SDK_STORAGE_FAIL_CLOSE
 #define RODAQ_SDK_STORAGE_FAIL_CLOSE 0
 #endif
+#ifndef RODAQ_SDK_STORAGE_THROW_METHOD
+#define RODAQ_SDK_STORAGE_THROW_METHOD 0
+#endif
+#ifndef RODAQ_SDK_STORAGE_THROW_KIND
+#define RODAQ_SDK_STORAGE_THROW_KIND 0
+#endif
+#ifndef RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN
+#define RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN 0
+#endif
 
 namespace {
+
+enum class ThrowMethod : int {
+    None = 0,
+    Submit = 1,
+    Capabilities = 2,
+    DescriptorReady = 3,
+};
+
+[[noreturn]] void throw_storage_exception() {
+#if RODAQ_SDK_STORAGE_THROW_KIND == 1
+    throw std::bad_alloc();
+#elif RODAQ_SDK_STORAGE_THROW_KIND == 2
+    throw std::runtime_error("fixture storage runtime exception");
+#elif RODAQ_SDK_STORAGE_THROW_KIND == 3
+    throw 42;
+#else
+    std::terminate();
+#endif
+}
+
+void maybe_throw(ThrowMethod method) {
+    if constexpr (RODAQ_SDK_STORAGE_THROW_METHOD != 0) {
+        if (static_cast<int>(method) == RODAQ_SDK_STORAGE_THROW_METHOD) {
+            throw_storage_exception();
+        }
+    }
+}
 
 class SdkStorageFixture final : public rodaq::StoragePlugin {
 public:
@@ -32,6 +72,12 @@ public:
         return {};
     }
     rodaq::Result<void> Open(const rodaq_storage_open_request&) override {
+#if RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN
+        if (stage_ == Stage::Created) {
+            stage_ = Stage::Opened;
+            return {};
+        }
+#endif
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
@@ -42,6 +88,7 @@ public:
         return {};
     }
     rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+        maybe_throw(ThrowMethod::Capabilities);
         rodaq_storage_capabilities value{};
         value.struct_size = sizeof(value);
         value.full_fidelity = RODAQ_TRUE;
@@ -56,12 +103,14 @@ public:
     }
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
         rodaq_stream_descriptor_handle) override {
+        maybe_throw(ThrowMethod::DescriptorReady);
         rodaq_descriptor_readiness_result value{};
         value.struct_size = sizeof(value);
         value.state = RODAQ_DESCRIPTOR_READY;
         return value;
     }
     rodaq::Result<rodaq_storage_submit_result> Submit(const rodaq_storage_submission&) override {
+        maybe_throw(ThrowMethod::Submit);
         if (stage_ != Stage::Opened) {
             return invalid_state_value();
         }

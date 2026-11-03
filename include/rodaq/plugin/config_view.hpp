@@ -33,11 +33,11 @@ public:
     }
 
     ConfigKind Kind() const noexcept {
-        return view_.vtable == nullptr ? RODAQ_CONFIG_NULL : view_.vtable->kind(view_.context);
+        return Valid() ? view_.vtable->kind(view_.context) : RODAQ_CONFIG_NULL;
     }
     bool Valid() const noexcept { return view_.context != nullptr && view_.vtable != nullptr; }
     std::size_t Size() const noexcept {
-        const std::uint64_t value = view_.vtable == nullptr ? 0 : view_.vtable->size(view_.context);
+        const std::uint64_t value = Valid() ? view_.vtable->size(view_.context) : 0;
         return static_cast<std::size_t>(value);
     }
     Result<ConfigView> Find(std::string_view key) const {

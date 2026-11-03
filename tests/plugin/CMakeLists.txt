@@ -54,6 +54,70 @@ rodaq_configure_plugin(
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
 )
 
+set(RODAQ_STORAGE_EXCEPTION_TARGETS)
+function(rodaq_add_storage_exception_fixture target method kind)
+    add_library(
+        "${target}"
+        SHARED
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_fixture.cpp"
+    )
+    target_compile_definitions(
+        "${target}"
+        PRIVATE
+            "RODAQ_SDK_STORAGE_THROW_METHOD=${method}"
+            "RODAQ_SDK_STORAGE_THROW_KIND=${kind}"
+            RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN=1
+    )
+    rodaq_enable_warnings("${target}")
+    rodaq_enable_sanitizers("${target}")
+    rodaq_configure_plugin(
+        TARGET "${target}"
+        FAMILY storage
+        MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
+    )
+    list(APPEND RODAQ_STORAGE_EXCEPTION_TARGETS "${target}")
+    set(RODAQ_STORAGE_EXCEPTION_TARGETS "${RODAQ_STORAGE_EXCEPTION_TARGETS}" PARENT_SCOPE)
+endfunction()
+
+foreach(exception_spec
+        "bad_alloc:1"
+        "runtime_error:2"
+        "unknown:3")
+    string(REPLACE ":" ";" exception_parts "${exception_spec}")
+    list(GET exception_parts 0 exception_name)
+    list(GET exception_parts 1 exception_kind)
+    foreach(method_spec
+            "submit:1"
+            "capabilities:2"
+            "ready:3")
+        string(REPLACE ":" ";" method_parts "${method_spec}")
+        list(GET method_parts 0 method_name)
+        list(GET method_parts 1 method_value)
+        rodaq_add_storage_exception_fixture(
+            "rodaq_test_plugin_storage_exception_${exception_name}_${method_name}"
+            "${method_value}"
+            "${exception_kind}"
+        )
+    endforeach()
+endforeach()
+
+add_library(
+    rodaq_test_plugin_sdk_storage_inputs
+    SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_fixture.cpp"
+)
+target_compile_definitions(
+    rodaq_test_plugin_sdk_storage_inputs
+    PRIVATE RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN=1
+)
+rodaq_enable_warnings(rodaq_test_plugin_sdk_storage_inputs)
+rodaq_enable_sanitizers(rodaq_test_plugin_sdk_storage_inputs)
+rodaq_configure_plugin(
+    TARGET rodaq_test_plugin_sdk_storage_inputs
+    FAMILY storage
+    MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sdk_storage_plugin.json"
+)
+
 add_library(
     rodaq_test_plugin_sdk_exception
     SHARED
@@ -403,6 +467,101 @@ target_link_libraries(rodaq_plugin_exception_test
 rodaq_enable_warnings(rodaq_plugin_exception_test)
 rodaq_enable_sanitizers(rodaq_plugin_exception_test)
 add_test(NAME rodaq.plugin.exception_firewall COMMAND rodaq_plugin_exception_test)
+
+add_executable(rodaq_runtime_services_test runtime_services_test.cpp)
+target_link_libraries(rodaq_runtime_services_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq::sdk
+)
+rodaq_enable_warnings(rodaq_runtime_services_test)
+rodaq_enable_sanitizers(rodaq_runtime_services_test)
+add_test(NAME rodaq.plugin.runtime_services COMMAND rodaq_runtime_services_test)
+
+add_executable(
+    rodaq_storage_input_validation_test
+    storage_input_validation_test.cpp
+)
+target_link_libraries(rodaq_storage_input_validation_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+)
+rodaq_enable_warnings(rodaq_storage_input_validation_test)
+rodaq_enable_sanitizers(rodaq_storage_input_validation_test)
+add_dependencies(
+    rodaq_storage_input_validation_test
+    rodaq_test_plugin_sdk_storage_inputs
+)
+add_test(
+    NAME rodaq.plugin.storage_input_validation
+    COMMAND rodaq_storage_input_validation_test
+)
+set_tests_properties(
+    rodaq.plugin.storage_input_validation
+    PROPERTIES
+        ENVIRONMENT
+            "RODAQ_TEST_SDK_STORAGE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage_inputs>"
+)
+
+add_executable(
+    rodaq_acquisition_input_validation_test
+    acquisition_input_validation_test.cpp
+)
+target_link_libraries(rodaq_acquisition_input_validation_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+)
+rodaq_enable_warnings(rodaq_acquisition_input_validation_test)
+rodaq_enable_sanitizers(rodaq_acquisition_input_validation_test)
+add_dependencies(
+    rodaq_acquisition_input_validation_test
+    rodaq_test_plugin_sdk_acquisition
+)
+add_test(
+    NAME rodaq.plugin.acquisition_input_validation
+    COMMAND rodaq_acquisition_input_validation_test
+)
+set_tests_properties(
+    rodaq.plugin.acquisition_input_validation
+    PROPERTIES
+        ENVIRONMENT
+            "RODAQ_TEST_SDK_ACQUISITION=$<TARGET_FILE:rodaq_test_plugin_sdk_acquisition>"
+)
+
+add_executable(
+    rodaq_storage_exception_matrix_test
+    storage_exception_matrix_test.cpp
+)
+target_link_libraries(rodaq_storage_exception_matrix_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_plugin
+)
+rodaq_enable_warnings(rodaq_storage_exception_matrix_test)
+rodaq_enable_sanitizers(rodaq_storage_exception_matrix_test)
+add_dependencies(
+    rodaq_storage_exception_matrix_test
+    ${RODAQ_STORAGE_EXCEPTION_TARGETS}
+)
+set(RODAQ_STORAGE_EXCEPTION_ENVIRONMENT)
+foreach(exception_target IN LISTS RODAQ_STORAGE_EXCEPTION_TARGETS)
+    string(REPLACE "rodaq_test_plugin_storage_exception_" "" exception_suffix
+        "${exception_target}")
+    string(TOUPPER "${exception_suffix}" exception_environment_name)
+    list(APPEND RODAQ_STORAGE_EXCEPTION_ENVIRONMENT
+        "RODAQ_TEST_STORAGE_EXCEPTION_${exception_environment_name}=$<TARGET_FILE:${exception_target}>"
+    )
+endforeach()
+add_test(
+    NAME rodaq.plugin.storage_exception_matrix
+    COMMAND rodaq_storage_exception_matrix_test
+)
+set_tests_properties(
+    rodaq.plugin.storage_exception_matrix
+    PROPERTIES ENVIRONMENT "${RODAQ_STORAGE_EXCEPTION_ENVIRONMENT}"
+)
 
 add_executable(rodaq_raw_noexcept_probe raw_noexcept_probe.cpp)
 target_compile_options(rodaq_raw_noexcept_probe PRIVATE -Wno-terminate)
