@@ -704,3 +704,20 @@ This is a C++ SDK source-level contract only. It does not change the Stable C
 ABI table or any frozen layout.
 
 **Reference:** `docs/design/rodaq_plugin_system.md`.
+
+## D-036 — M1 ResourceBudget dimensions follow the implemented primitives
+
+**Status:** Accepted
+
+M1 `ResourceAmount` accounts for Runtime record slots and logical payload bytes;
+`PayloadPool` separately owns physical block and byte bounds. Dispatch,
+completion-bookkeeping and Storage in-flight dimensions are introduced with
+their owning M2 mechanisms instead of existing as unused M1 counters.
+
+This keeps a single owner for each configured resource metric and prevents M1
+from claiming enforcement for a mechanism it does not yet implement. All
+dimensions added later must participate in the same all-or-nothing reservation
+discipline.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md` M1/M2 scope,
+`docs/design/admission.md`, `docs/development/plan.md`.

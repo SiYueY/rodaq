@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **M1 — ACTIVE**
+Current milestone: **M2 — ACTIVE**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -314,7 +314,7 @@ Do not implement in M0:
 
 ## M1 — Runtime Core Primitives
 
-**Status:** ACTIVE
+**Status:** PASS
 
 ### Goal
 
@@ -326,59 +326,63 @@ Implement bounded, independently testable Runtime correctness primitives.
 
 ### Scope
 
-- [ ] Handles.
-- [ ] bounded Registry.
-- [ ] Structural Arena.
-- [ ] ResourceBudget.
-- [ ] all-or-nothing Reservation.
-- [ ] Admission Gate / generation.
-- [ ] Reject / interruptible Wait / deadline.
-- [ ] Payload.
-- [ ] PayloadView.
-- [ ] PayloadPool.
-- [ ] RuntimeRecord.
-- [ ] RuntimeStats.
-- [ ] LatencyHistogram.
-- [ ] Logger facade.
+- [x] Handles.
+- [x] bounded Registry.
+- [x] Structural Arena.
+- [x] ResourceBudget.
+- [x] all-or-nothing Reservation.
+- [x] Admission Gate / generation.
+- [x] Reject / interruptible Wait / deadline.
+- [x] Payload.
+- [x] PayloadView.
+- [x] PayloadPool.
+- [x] RuntimeRecord.
+- [x] RuntimeStats.
+- [x] LatencyHistogram.
+- [x] Logger facade.
 
 ### Deliverables
 
-- [ ] Unit-tested Handle/Registry implementation.
-- [ ] ResourceBudget/Reservation implementation.
-- [ ] Payload ownership implementation.
-- [ ] bounded PayloadPool.
-- [ ] metrics/high-water primitives.
-- [ ] stress/sanitizer targets.
+- [x] Unit-tested Handle/Registry implementation.
+- [x] ResourceBudget/Reservation implementation.
+- [x] Payload ownership implementation.
+- [x] bounded PayloadPool.
+- [x] metrics/high-water primitives.
+- [x] stress/sanitizer targets.
 
 ### Verification
 
-- [ ] resource exhaustion.
-- [ ] partial reservation rollback.
-- [ ] concurrent waiters.
-- [ ] timeout.
-- [ ] Stop wakeup.
-- [ ] Failure wakeup.
-- [ ] Gate generation change.
-- [ ] Copy lifetime.
-- [ ] Adopt transfer-point cases.
-- [ ] Retain acquisition-point cases.
-- [ ] exactly-once release.
-- [ ] retained byte accounting.
-- [ ] Payload object exhaustion.
-- [ ] no unbounded allocator fallback.
-- [ ] ASan clean.
-- [ ] UBSan clean.
-- [ ] TSan clean for required concurrency tests.
+- [x] resource exhaustion.
+- [x] partial reservation rollback.
+- [x] concurrent waiters.
+- [x] timeout.
+- [x] Stop wakeup.
+- [x] Failure wakeup.
+- [x] Gate generation change.
+- [x] Copy lifetime.
+- [x] Adopt transfer-point cases.
+- [x] Retain acquisition-point cases.
+- [x] exactly-once release.
+- [x] retained byte accounting.
+- [x] Payload object exhaustion.
+- [x] no unbounded allocator fallback.
+- [x] ASan clean.
+- [x] UBSan clean.
+- [x] TSan clean for required concurrency tests.
+
+M1 ResourceBudget covers the configured `records` and logical `bytes`
+dimensions required by these primitives. Dispatch, completion and Storage
+in-flight dimensions are added with their owning M2 mechanisms.
 
 ### Exit Gate
 
-- [ ] All configured critical resources proven bounded.
-- [ ] Reservation rollback proven non-failing and leak-free.
-- [ ] Wait paths proven Stop/Failure interruptible.
-- [ ] Payload ownership tests pass.
-- [ ] Registry/Handle tests pass.
-- [ ] required sanitizers clean.
-- [ ] no backend-specific type in Runtime primitives.
+- [x] All configured critical resources proven bounded.
+- [x] Reservation rollback proven non-failing and leak-free.
+- [x] Wait paths proven Stop/Failure interruptible.
+- [x] Payload ownership tests pass.
+- [x] Registry/Handle tests pass.
+- [x] required sanitizers clean.
+- [x] no backend-specific type in Runtime primitives.
 
 ### Out of Scope
 
@@ -393,7 +397,7 @@ Do not implement in M1:
 
 ## M2 — Fake End-to-End Runtime
 
-**Status:** NOT STARTED
+**Status:** ACTIVE
 
 ### Goal
 
@@ -402,7 +406,7 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 ### Prerequisites
 
 - [x] M0 PASS.
-- [ ] M1 PASS.
+- [x] M1 PASS.
 
 ### Scope
 
@@ -525,7 +529,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 ### Prerequisites
 
 - [x] M0 PASS.
-- [ ] M1 PASS.
+- [x] M1 PASS.
 - [ ] M2 PASS.
 - [ ] ROS2 mapping reviewed against current ABI.
 - [ ] MCAP mapping reviewed against current ABI and a directly pinned RoDAQ mcap-cpp version/commit (no ROS2 mcap_vendor runtime dependency).

@@ -1,22 +1,23 @@
 # RoDAQ Development Status
 
-**Updated:** 2026-11-03
+**Updated:** 2026-11-04
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
+**M1 implementation baseline:** `83c8458` — `feat: add external payload lifetime anchors`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
 ## Current milestone
 
-**M1 — Runtime Core Primitives**
+**M2 — Fake End-to-End Runtime**
 
 Status: **ACTIVE**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-M1 Runtime Core Primitives is now the only ACTIVE milestone. No M1 Runtime
-primitive implementation has started yet.
+M1 Runtime Core Primitives is **PASS** and qualified. M2 Fake End-to-End Runtime
+is now the only ACTIVE milestone. M2 implementation has not started.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -45,13 +46,20 @@ contains:
 - frozen caller-output compatibility fixtures and bidirectional APPENDABLE
   capacity qualification,
 - exception-firewall matrices for Storage Submit, Capabilities and Descriptor
-  readiness.
+  readiness,
+- bounded Runtime handles, generation-protected Registry, PMR Structural Arena,
+  Payload/PayloadView/PayloadPool with Copy/Adopt/Retain lifetime anchors,
+  ResourceBudget/Reservation, AdmissionGate, RuntimeRecord,
+  AcceptanceSequenceAllocator, RuntimeStats, HdrHistogram latency wrapper and a
+  no-throw Logger facade.
 
 `third_party/` contains all nine approved pinned submodules. M0 also includes a
 bounded Service Registry, ConfigView, activation-lifetime InteropProjection and
 ClockCorrelation services, Fake Plugin lifecycle integration, plugin authoring
 CMake support and an installed SDK consumer smoke. A production Runtime shared
-library and full data path remain future milestones.
+library and full data path remain future milestones. M1 Runtime primitives are
+implemented as a static Runtime target and qualified independently of the M2
+pipeline.
 
 ## Design baseline
 
@@ -225,10 +233,7 @@ Structural convergence validation:
 
 ## Not started
 
-- M1 Runtime Core Primitives.
 - M2 Fake End-to-End Runtime.
-- Runtime ResourceBudget / Admission implementation.
-- Payload / PayloadPool implementation.
 - Dispatch / Completion implementation.
 - Full Fake Acquisition / Storage runtime data path.
 - ROS 2 Acquisition implementation.
@@ -300,7 +305,7 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M1 — Runtime Core Primitives.
+1. Begin M2 — Fake End-to-End Runtime.
 2. Native arm64 closure evidence remains deferred until a runner is available.
 
 ## Validation state
@@ -376,6 +381,14 @@ M0 Final Contract Correction
     UBUNTU 22 NORMAL / ASAN / UBSAN TESTED
     UBUNTU 24 TESTED
     ARM64 DEFERRED BY D-034
+    PASS
+
+M1 Runtime Core Primitives
+    IMPLEMENTED
+    UNIT / CONCURRENCY / INTEGRATION TESTED
+    NORMAL / ASAN / UBSAN TESTED
+    CLANG TSAN CONCURRENCY TESTED
+    REVIEWED
     PASS
 ```
 
@@ -535,6 +548,43 @@ M0 Final Contract Correction validation:
 - clang-format, `git diff --check`, whitespace and recursive submodule audits
   passed.
 
-Current qualification count: **79/79** on Ubuntu 22.04 amd64 for normal, ASan
-and UBSan builds, and **79/79** on Ubuntu 24.04 amd64 for normal Debug. M0 is
-PASS; M1 Runtime Core Primitives is ACTIVE.
+M1 Runtime Core Primitives validation:
+
+- GCC 11.4.0 Debug with warnings-as-errors: 87/87 CTest entries passed.
+- ASan: 87/87 CTest entries passed.
+- UBSan with non-recovering undefined behavior: 87/87 CTest entries passed.
+- Clang 14 TSan: admission, observability, payload and M1 integration
+  concurrency tests passed with no reports. This Linux 6.8 host still requires
+  the existing ASLR workaround. The GCC 11 TSan runtime reports mutex-ownership
+  findings that Clang TSan does not reproduce.
+- Handle and Registry tests cover invalid, capacity-exhausted, stale,
+  double-erased and reused-slot handles.
+- Payload tests cover Copy storage, Adopt and Retain external anchors, moved-from
+  state, exact byte equality, pool reuse, exhaustion and exactly-once release.
+- Admission tests cover Reject, deadline Wait, cancellation, Gate close,
+  generation change, multiple waiters, Stop-style cutoff and repeated races.
+- M1 integration verifies rejection does not consume an AcceptanceSequence,
+  retained bytes stay budgeted, payload and reservation ownership compose, and
+  all capacity returns to baseline after destruction.
+- ResourceBudget arithmetic was tested at `UINT64_MAX`; PayloadPool setup and
+  Registry creation convert allocation and length failures to RoDAQ errors.
+- `clang-format`, `git diff --check`, source review and status/plan consistency
+  checks passed.
+
+M1 final review:
+
+1. No M1 container can grow without a configured bound.
+2. No Payload allocation silently falls back to an unbounded heap.
+3. A stale Handle cannot resolve to a new Registry object.
+4. A Reservation cannot leak through ordinary destruction or double-release.
+5. Admission Wait cannot block forever after Gate close/Stop cutoff.
+6. Reject does not consume an AcceptanceSequence.
+7. An accepted sequence is never rolled back or reused.
+8. No callback executes while an Admission internal lock is held.
+9. RuntimeRecord destruction releases Payload and ResourceBudget ownership.
+10. No M1 Runtime type depends on ROS2, FastDDS, MCAP or SQLite3.
+11. Normal, ASan and UBSan pass; required concurrency tests pass under Clang TSan.
+12. No known P0/P1 issue is unresolved.
+
+Current qualification count: **87/87** on Ubuntu 22.04 amd64 for normal, ASan
+and UBSan builds. M0 and M1 are PASS; M2 Fake End-to-End Runtime is ACTIVE.

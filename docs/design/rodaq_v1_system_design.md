@@ -5892,16 +5892,10 @@ LatencyHistogram
 Logger facade
 ```
 
-ResourceBudget 至少覆盖：
-
-```text
-payload objects
-payload bytes
-RuntimeRecord slots
-dispatch slots
-completion bookkeeping
-storage inflight
-```
+M1 ResourceBudget 覆盖 RuntimeRecord slots 与 logical Payload bytes；
+PayloadPool 独立约束 physical block count / bytes。Dispatch slots、
+completion bookkeeping 与 Storage inflight 维度随其对应的 M2 机制一起引入，
+并在引入时遵守同一 all-or-nothing reservation / reverse rollback 规则。
 
 Reservation：
 
