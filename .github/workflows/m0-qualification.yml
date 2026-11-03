@@ -1,4 +1,4 @@
-name: M0 Qualification
+name: RoDAQ Qualification
 
 on:
   push:
@@ -32,9 +32,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: cmake -S . -B build -DRODAQ_BUILD_TESTS=ON -DRODAQ_WARNINGS_AS_ERRORS=ON
+      - run: cmake -S . -B build -DRODAQ_BUILD_TESTS=ON -DRODAQ_BUILD_BENCHMARKS=ON -DRODAQ_WARNINGS_AS_ERRORS=ON
       - run: cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
+
+  ubuntu-22-clang-tsan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang-14
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_C_COMPILER=clang-14 \
+            -DCMAKE_CXX_COMPILER=clang++-14 \
+            -DRODAQ_BUILD_TESTS=ON \
+            -DRODAQ_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -fno-pie" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -fno-pie" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -no-pie" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build runtime tests
+        run: |
+          cmake --build build -j2 \
+            --target rodaq_admission_test rodaq_payload_pool_test \
+              rodaq_observability_test rodaq_m1_integration_test
+      - name: Run TSan tests
+        run: |
+          setarch "$(uname -m)" -R ctest --test-dir build \
+            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration)' \
+            --output-on-failure
 
   ubuntu-22-arm64-native:
     if: github.event_name == 'workflow_dispatch'
