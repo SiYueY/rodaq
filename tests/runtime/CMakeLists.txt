@@ -37,3 +37,13 @@ target_link_libraries(rodaq_structural_arena_test
 rodaq_enable_warnings(rodaq_structural_arena_test)
 rodaq_enable_sanitizers(rodaq_structural_arena_test)
 add_test(NAME rodaq.runtime.structural_arena COMMAND rodaq_structural_arena_test)
+
+add_executable(rodaq_payload_pool_test payload_pool_test.cpp)
+target_link_libraries(rodaq_payload_pool_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_payload_pool_test)
+rodaq_enable_sanitizers(rodaq_payload_pool_test)
+add_test(NAME rodaq.runtime.payload_pool COMMAND rodaq_payload_pool_test)
