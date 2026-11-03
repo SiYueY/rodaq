@@ -153,3 +153,21 @@ TEST(AbiSupportTest, ConvertsAndTruncatesCallerOwnedDiagnostics) {
     EXPECT_EQ('d', output.domain[0]);
     EXPECT_EQ('m', output.message[0]);
 }
+
+TEST(AbiSupportTest, CallerOwnedErrorSurvivesCalleeLifetime) {
+    rodaq_error output{};
+    {
+        const rodaq::Error temporary(
+            rodaq::ErrorCode::Unavailable, std::string("temporary-domain"), 1234,
+            std::string("temporary-message"));
+        rodaq::assign_rodaq_error(temporary, &output);
+    }
+    for (int index = 0; index < 32; ++index) {
+        const std::string churn(4096, static_cast<char>('a' + index));
+        ASSERT_EQ(4096U, churn.size());
+    }
+    EXPECT_EQ(RODAQ_STATUS_UNAVAILABLE, output.code);
+    EXPECT_EQ(1234, output.native_code);
+    EXPECT_EQ("temporary-domain", std::string_view(output.domain, output.domain_size));
+    EXPECT_EQ("temporary-message", std::string_view(output.message, output.message_size));
+}
