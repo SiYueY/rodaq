@@ -54,6 +54,7 @@ add_test(
 add_subdirectory(abi)
 add_subdirectory(plugin)
 add_subdirectory(runtime)
+add_subdirectory(integration)
 
 add_test(
     NAME rodaq.cmake.plugin_manifest_matrix
