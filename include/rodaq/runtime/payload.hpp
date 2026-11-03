@@ -1,6 +1,8 @@
 #ifndef RODAQ_RUNTIME_PAYLOAD_HPP_
 #define RODAQ_RUNTIME_PAYLOAD_HPP_
 
+#include <rodaq/result.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -8,6 +10,8 @@
 namespace rodaq {
 
 class PayloadPoolState;
+
+using PayloadRelease = void (*)(void* owner_context) noexcept;
 
 /// A non-owning view of one contiguous immutable byte range.
 class PayloadView final {
@@ -34,6 +38,9 @@ private:
 /// once. Move operations transfer ownership and leave the source empty.
 class Payload final {
 public:
+    static Result<Payload> Adopt(PayloadView view, void* owner_context, PayloadRelease release);
+    static Result<Payload> Retain(PayloadView view, void* owner_context, PayloadRelease release);
+
     Payload() noexcept = default;
     Payload(const Payload&) = delete;
     Payload& operator=(const Payload&) = delete;
@@ -52,6 +59,9 @@ private:
     Payload(
         std::shared_ptr<PayloadPoolState> pool_state, std::uint8_t* data, std::size_t size,
         std::size_t block_index) noexcept;
+    Payload(
+        const std::uint8_t* data, std::size_t size, void* owner_context,
+        PayloadRelease release) noexcept;
 
     void ReleaseCurrent() noexcept;
 
@@ -59,6 +69,8 @@ private:
     std::uint8_t* data_ = nullptr;
     std::size_t size_ = 0;
     std::size_t block_index_ = 0;
+    void* owner_context_ = nullptr;
+    PayloadRelease release_ = nullptr;
 };
 
 }  // namespace rodaq

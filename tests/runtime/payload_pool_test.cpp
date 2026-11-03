@@ -74,6 +74,61 @@ TEST(PayloadTest, MoveAssignmentReleasesPreviousPayload) {
     EXPECT_EQ(second_attempt.value().View().Data()[0], 2U);
 }
 
+namespace {
+
+struct ReleaseProbe {
+    int calls = 0;
+};
+
+void release_probe(void* owner_context) noexcept {
+    auto* probe = static_cast<ReleaseProbe*>(owner_context);
+    ++probe->calls;
+}
+
+}  // namespace
+
+TEST(PayloadTest, AdoptTransfersExternalLifetimeAnchorExactlyOnce) {
+    const std::array<std::uint8_t, 3> source{4, 5, 6};
+    ReleaseProbe probe;
+    {
+        auto adopted =
+            Payload::Adopt(PayloadView(source.data(), source.size()), &probe, &release_probe);
+        ASSERT_TRUE(adopted.has_value());
+        EXPECT_EQ(adopted.value().View().Data(), source.data());
+
+        Payload moved(std::move(adopted.value()));
+        EXPECT_TRUE(adopted.value().Empty());
+        EXPECT_EQ(probe.calls, 0);
+        EXPECT_EQ(moved.Size(), source.size());
+    }
+    EXPECT_EQ(probe.calls, 1);
+}
+
+TEST(PayloadTest, RetainKeepsExternalAnchorExactlyOnce) {
+    const std::array<std::uint8_t, 2> source{7, 8};
+    ReleaseProbe probe;
+    {
+        auto retained =
+            Payload::Retain(PayloadView(source.data(), source.size()), &probe, &release_probe);
+        ASSERT_TRUE(retained.has_value());
+        EXPECT_EQ(retained.value().View().Data(), source.data());
+    }
+    EXPECT_EQ(probe.calls, 1);
+}
+
+TEST(PayloadTest, ExternalModesRejectMissingReleaseCapability) {
+    const std::array<std::uint8_t, 1> source{1};
+    const auto adopted =
+        Payload::Adopt(PayloadView(source.data(), source.size()), nullptr, nullptr);
+    ASSERT_FALSE(adopted.has_value());
+    EXPECT_EQ(adopted.error().code(), ErrorCode::InvalidArgument);
+
+    const auto retained =
+        Payload::Retain(PayloadView(source.data(), source.size()), nullptr, nullptr);
+    ASSERT_FALSE(retained.has_value());
+    EXPECT_EQ(retained.error().code(), ErrorCode::InvalidArgument);
+}
+
 TEST(PayloadPoolTest, OwnsExactLogicalBytes) {
     auto pool = PayloadPool::Create(32, 2);
     ASSERT_TRUE(pool.has_value());

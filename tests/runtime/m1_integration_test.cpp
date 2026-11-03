@@ -28,6 +28,15 @@ constexpr StreamHandle kStream = StreamHandle::FromRaw(100);
 constexpr StreamDescriptorHandle kDescriptor = StreamDescriptorHandle::FromRaw(101);
 constexpr ClockHandle kClock = ClockHandle::FromRaw(102);
 
+struct RetainProbe {
+    int releases = 0;
+};
+
+void release_retain_probe(void* owner_context) noexcept {
+    auto* probe = static_cast<RetainProbe*>(owner_context);
+    ++probe->releases;
+}
+
 TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     auto registry = Registry<std::string>::Create(2);
     ASSERT_TRUE(registry.has_value());
@@ -120,6 +129,31 @@ TEST(M1IntegrationTest, RejectionDoesNotConsumeAcceptanceSequence) {
     auto first_sequence = sequences.Allocate(kStream);
     ASSERT_TRUE(first_sequence.has_value());
     EXPECT_EQ(first_sequence.value(), 0U);
+}
+
+TEST(M1IntegrationTest, RetainedBytesRemainBudgetedUntilRecordDestruction) {
+    const std::array<std::uint8_t, 4> source{1, 2, 3, 4};
+    RetainProbe probe;
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, source.size()});
+    ResourceBudget& budget = *budget_owner;
+    auto reservation = budget.TryReserve(ResourceAmount{1, source.size()});
+    ASSERT_TRUE(reservation.has_value());
+    auto retained =
+        Payload::Retain(PayloadView(source.data(), source.size()), &probe, &release_retain_probe);
+    ASSERT_TRUE(retained.has_value());
+
+    {
+        auto record = RuntimeRecord::Create(
+            kStream, kDescriptor, 0, std::nullopt, std::nullopt, TimestampState{},
+            std::move(retained.value()), std::move(reservation.value()));
+        ASSERT_TRUE(record.has_value());
+        EXPECT_EQ(budget.Used(), (ResourceAmount{1, source.size()}));
+        EXPECT_EQ(probe.releases, 0);
+    }
+
+    EXPECT_EQ(probe.releases, 1);
+    EXPECT_EQ(budget.Used(), ResourceAmount{});
+    EXPECT_EQ(budget.ActiveReservations(), 0U);
 }
 
 TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
