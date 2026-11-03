@@ -1,4 +1,5 @@
 add_library(rodaq_runtime STATIC
+    admission.cpp
     clock_correlation.cpp
     interop_projection_registry.cpp
     payload.cpp

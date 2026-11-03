@@ -42,6 +42,7 @@ public:
     void Release() noexcept;
 
 private:
+    friend class AdmissionGate;
     friend class ResourceBudget;
 
     Reservation(ResourceBudget& budget, ResourceAmount amount) noexcept;

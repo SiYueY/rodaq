@@ -57,3 +57,13 @@ target_link_libraries(rodaq_resource_budget_test
 rodaq_enable_warnings(rodaq_resource_budget_test)
 rodaq_enable_sanitizers(rodaq_resource_budget_test)
 add_test(NAME rodaq.runtime.resource_budget COMMAND rodaq_resource_budget_test)
+
+add_executable(rodaq_admission_test admission_test.cpp)
+target_link_libraries(rodaq_admission_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_admission_test)
+rodaq_enable_sanitizers(rodaq_admission_test)
+add_test(NAME rodaq.runtime.admission COMMAND rodaq_admission_test)
