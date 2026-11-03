@@ -726,9 +726,10 @@ discipline.
 
 **Status:** Accepted
 
-M2 executes potentially blocking Plugin lifecycle calls (`quiesce_plugin`,
-`flush`, `close`, `stop`) on deadline-supervised workers. C++ cannot cancel a
-thread executing Plugin code, so a timed-out call:
+M2 executes potentially blocking Plugin activation and lifecycle calls
+(`create`, `bind`, `configure`, `open`, capability query, Descriptor readiness,
+`start`, `quiesce_plugin`, `flush`, `close`, `stop`) on deadline-supervised
+workers. C++ cannot cancel a thread executing Plugin code, so a timed-out call:
 
 ```text
 returns Runtime Failed within the configured bound
@@ -737,6 +738,9 @@ retains Plugin instances and DSO leases
 retains all unsafe-to-release Payload and operation state
 blocks Runtime restart
 ```
+
+Retained calls own or hold shared ownership of every input view and activation
+object they can still access after the supervising Runtime call returns.
 
 This is intentional process-lifetime quarantine, not ordinary shutdown.
 Destroying an activation while Plugin code may still access it is never an

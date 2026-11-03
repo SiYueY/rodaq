@@ -4,7 +4,7 @@
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
-**M2 closure implementation baseline:** `9120762` — `feat: enforce storage capability bounds`
+**M2 closure implementation baseline:** `6282c24` — `feat: bound plugin activation startup`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -259,6 +259,9 @@ Structural convergence validation:
   violation matrices.
 - Bounded Stop/quiesce and primary/secondary failure convergence, with
   process-lifetime quarantine when unsafe teardown cannot be proven.
+- Activation creation, bind/configure/open, capability/readiness query and
+  Acquisition start calls are deadline-supervised; stalled Starting cleanup is
+  quarantined rather than destructively released.
 
 ## Not started
 
@@ -625,7 +628,7 @@ M2 Production Core Runtime closure validation:
   entries with warnings-as-errors.
 - Clang 14 TSan passed the admission, PayloadPool, observability, M1 integration
   and complete M2 runtime pipeline subset: 5/5 CTest entries.
-- The M2 E2E executable currently contains 32 Stable-ABI-backed tests covering
+- The M2 E2E executable currently contains 33 Stable-ABI-backed tests covering
   lifecycle, Copy/Adopt/Retain, mixed payload modes, immutable canonical views,
   stale handles, multi-producer ordering, Binding switch and abort, saturation,
   blocked Wait timeout, every Payload/Persistence completion ordering,
