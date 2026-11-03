@@ -42,6 +42,10 @@ public:
     }
 
     Result<InterfaceView> Query(std::string_view service_id) const {
+        if (registry_.context == nullptr || registry_.vtable == nullptr) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "ServiceRegistryView is invalid"));
+        }
         rodaq_interface interface {};
         rodaq_error error{};
         const rodaq_status status = registry_.vtable->query(
