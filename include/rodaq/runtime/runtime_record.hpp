@@ -15,28 +15,24 @@
 
 namespace rodaq {
 
-struct TimestampReading {
-    ClockHandle clock;
-    std::int64_t value = 0;
-};
-
 /// Fixed-capacity timestamp state in StreamDescriptor slot order.
 ///
-/// A present reading with value zero remains distinct from an absent reading.
+/// Binding state owns slot interpretation. A present value of zero remains
+/// distinct from an absent value.
 class TimestampState final {
 public:
     static constexpr std::size_t kMaxSlots = 4;
 
-    Result<void> Set(std::size_t slot, ClockHandle clock, std::int64_t value);
+    Result<void> Set(std::size_t slot, std::int64_t value);
 
     bool Present(std::size_t slot) const noexcept;
-    const TimestampReading* Reading(std::size_t slot) const noexcept;
+    std::optional<std::int64_t> Value(std::size_t slot) const noexcept;
     std::uint8_t PresentMask() const noexcept { return present_mask_; }
     std::size_t SlotCount() const noexcept { return kMaxSlots; }
 
 private:
     std::uint8_t present_mask_ = 0;
-    std::array<TimestampReading, kMaxSlots> readings_{};
+    std::array<std::int64_t, kMaxSlots> readings_{};
 };
 
 /// Allocates monotonic AcceptanceSequence values independently per Stream.
@@ -84,19 +80,17 @@ private:
 class RuntimeRecord final {
 public:
     static Result<RuntimeRecord> Create(
-        StreamHandle stream, StreamDescriptorHandle stream_descriptor,
-        std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
-        std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
-        Reservation reservation);
+        BindingHandle binding, std::uint64_t acceptance_sequence,
+        std::optional<SourceHandle> source, std::optional<std::uint64_t> source_sequence,
+        TimestampState timestamps, Payload payload, Reservation reservation);
 
     RuntimeRecord(const RuntimeRecord&) = delete;
     RuntimeRecord& operator=(const RuntimeRecord&) = delete;
-    RuntimeRecord(RuntimeRecord&&) noexcept = default;
-    RuntimeRecord& operator=(RuntimeRecord&&) noexcept = default;
+    RuntimeRecord(RuntimeRecord&& other) noexcept;
+    RuntimeRecord& operator=(RuntimeRecord&&) = delete;
     ~RuntimeRecord() = default;
 
-    StreamHandle Stream() const noexcept { return stream_; }
-    StreamDescriptorHandle StreamDescriptor() const noexcept { return stream_descriptor_; }
+    BindingHandle Binding() const noexcept { return binding_; }
     std::uint64_t AcceptanceSequence() const noexcept { return acceptance_sequence_; }
     std::optional<SourceHandle> Source() const noexcept { return source_; }
     std::optional<std::uint64_t> SourceSequence() const noexcept { return source_sequence_; }
@@ -106,13 +100,11 @@ public:
 
 private:
     RuntimeRecord(
-        StreamHandle stream, StreamDescriptorHandle stream_descriptor,
-        std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
-        std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
-        Reservation reservation) noexcept;
+        BindingHandle binding, std::uint64_t acceptance_sequence,
+        std::optional<SourceHandle> source, std::optional<std::uint64_t> source_sequence,
+        TimestampState timestamps, Payload payload, Reservation reservation) noexcept;
 
-    StreamHandle stream_;
-    StreamDescriptorHandle stream_descriptor_;
+    BindingHandle binding_;
     std::uint64_t acceptance_sequence_ = 0;
     std::optional<SourceHandle> source_;
     std::optional<std::uint64_t> source_sequence_;

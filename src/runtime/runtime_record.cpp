@@ -22,17 +22,13 @@ std::size_t hash_stream(StreamHandle stream) noexcept {
 
 }  // namespace
 
-Result<void> TimestampState::Set(std::size_t slot, ClockHandle clock, std::int64_t value) {
+Result<void> TimestampState::Set(std::size_t slot, std::int64_t value) {
     if (slot >= kMaxSlots) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "timestamp slot is out of range"));
     }
-    if (!clock.Valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "timestamp clock handle is invalid"));
-    }
 
-    readings_[slot] = TimestampReading{clock, value};
+    readings_[slot] = value;
     const auto bit = static_cast<std::uint8_t>(1U << slot);
     present_mask_ = static_cast<std::uint8_t>(present_mask_ | bit);
     return {};
@@ -42,11 +38,11 @@ bool TimestampState::Present(std::size_t slot) const noexcept {
     return slot < kMaxSlots && (present_mask_ & static_cast<std::uint8_t>(1U << slot)) != 0;
 }
 
-const TimestampReading* TimestampState::Reading(std::size_t slot) const noexcept {
+std::optional<std::int64_t> TimestampState::Value(std::size_t slot) const noexcept {
     if (!Present(slot)) {
-        return nullptr;
+        return std::nullopt;
     }
-    return &readings_[slot];
+    return readings_[slot];
 }
 
 Result<AcceptanceSequenceAllocator> AcceptanceSequenceAllocator::Create(
@@ -152,13 +148,12 @@ AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindLocked(
 }
 
 Result<RuntimeRecord> RuntimeRecord::Create(
-    StreamHandle stream, StreamDescriptorHandle stream_descriptor,
-    std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
+    BindingHandle binding, std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
     Reservation reservation) {
-    if (!stream.Valid() || !stream_descriptor.Valid()) {
+    if (!binding.Valid()) {
         return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "runtime record stream identity is invalid"));
+            Error(ErrorCode::InvalidArgument, "runtime record binding handle is invalid"));
     }
     if (source_sequence.has_value() && !source.has_value()) {
         return nonstd::make_unexpected(
@@ -174,22 +169,29 @@ Result<RuntimeRecord> RuntimeRecord::Create(
     }
 
     return RuntimeRecord(
-        stream, stream_descriptor, acceptance_sequence, source, source_sequence, timestamps,
-        std::move(payload), std::move(reservation));
+        binding, acceptance_sequence, source, source_sequence, timestamps, std::move(payload),
+        std::move(reservation));
 }
 
 RuntimeRecord::RuntimeRecord(
-    StreamHandle stream, StreamDescriptorHandle stream_descriptor,
-    std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
+    BindingHandle binding, std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
     Reservation reservation) noexcept
-: stream_(stream),
-  stream_descriptor_(stream_descriptor),
+: binding_(binding),
   acceptance_sequence_(acceptance_sequence),
   source_(source),
   source_sequence_(source_sequence),
   timestamps_(timestamps),
   reservation_(std::move(reservation)),
   payload_(std::move(payload)) {}
+
+RuntimeRecord::RuntimeRecord(RuntimeRecord&& other) noexcept
+: binding_(other.binding_),
+  acceptance_sequence_(other.acceptance_sequence_),
+  source_(other.source_),
+  source_sequence_(other.source_sequence_),
+  timestamps_(other.timestamps_),
+  reservation_(std::move(other.reservation_)),
+  payload_(std::move(other.payload_)) {}
 
 }  // namespace rodaq

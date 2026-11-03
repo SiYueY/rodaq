@@ -25,8 +25,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr StreamHandle kStream = StreamHandle::FromRaw(100);
-constexpr StreamDescriptorHandle kDescriptor = StreamDescriptorHandle::FromRaw(101);
-constexpr ClockHandle kClock = ClockHandle::FromRaw(102);
+constexpr BindingHandle kBinding = BindingHandle::FromRaw(101);
 
 struct RetainProbe {
     int releases = 0;
@@ -69,10 +68,10 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     auto sequence = sequences.Allocate(kStream);
     ASSERT_TRUE(sequence.has_value());
     TimestampState timestamps;
-    ASSERT_TRUE(timestamps.Set(0, kClock, 1234).has_value());
+    ASSERT_TRUE(timestamps.Set(0, 1234).has_value());
     {
         auto record = RuntimeRecord::Create(
-            kStream, kDescriptor, sequence.value(), std::nullopt, std::nullopt, timestamps,
+            kBinding, sequence.value(), std::nullopt, std::nullopt, timestamps,
             std::move(payload.value()), std::move(admission.value().reservation));
         ASSERT_TRUE(record.has_value());
         stats.RecordAccepted(record.value().RecordPayload().Size());
@@ -144,8 +143,8 @@ TEST(M1IntegrationTest, RetainedBytesRemainBudgetedUntilRecordDestruction) {
 
     {
         auto record = RuntimeRecord::Create(
-            kStream, kDescriptor, 0, std::nullopt, std::nullopt, TimestampState{},
-            std::move(retained.value()), std::move(reservation.value()));
+            kBinding, 0, std::nullopt, std::nullopt, TimestampState{}, std::move(retained.value()),
+            std::move(reservation.value()));
         ASSERT_TRUE(record.has_value());
         EXPECT_EQ(budget.Used(), (ResourceAmount{1, source.size()}));
         EXPECT_EQ(probe.releases, 0);
@@ -231,9 +230,8 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
                     observed_sequences.push_back(sequence.value());
                 }
                 auto record = RuntimeRecord::Create(
-                    kStream, kDescriptor, sequence.value(), std::nullopt, std::nullopt,
-                    TimestampState{}, std::move(payload.value()),
-                    std::move(admission.value().reservation));
+                    kBinding, sequence.value(), std::nullopt, std::nullopt, TimestampState{},
+                    std::move(payload.value()), std::move(admission.value().reservation));
                 if (!record.has_value()) {
                     failures.fetch_add(1);
                     continue;
