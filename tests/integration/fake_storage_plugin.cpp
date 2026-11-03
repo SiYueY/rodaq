@@ -124,6 +124,16 @@ public:
             SchedulePayload(submission.operation);
             return result;
         }
+        if (scenario_ == "async_payload_async_persistence") {
+            ScheduleDualCompletion(submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            return result;
+        }
+        if (scenario_ == "persistence_first") {
+            result.payload_state = RODAQ_STORAGE_PAYLOAD_PENDING;
+            ScheduleDualCompletion(
+                submission.operation, false, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            return result;
+        }
         if (scenario_ == "persistence_failed") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
             SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_FAILED);
@@ -137,7 +147,11 @@ public:
         if (scenario_ == "missing_callback") {
             return result;
         }
+        if (scenario_ == "callback_after_close") {
+            return result;
+        }
         if (scenario_ == "duplicate_payload") {
+            result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
             SchedulePayload(submission.operation);
             SchedulePayload(submission.operation);
             return result;
@@ -149,7 +163,15 @@ public:
             return result;
         }
         if (scenario_ == "callback_before_error") {
-            runtime_.storage.PayloadConsumed(submission.operation);
+            std::atomic<bool> callback_done{false};
+            workers_.emplace_back([this, operation = submission.operation, &callback_done] {
+                runtime_.storage.PayloadConsumed(operation);
+                callback_done.store(true);
+            });
+            while (!callback_done.load()) {
+                std::this_thread::yield();
+            }
+            JoinWorkers();
             return nonstd::make_unexpected(rodaq::Error(
                 rodaq::ErrorCode::StorageError, "fake_storage", 0,
                 "callback before configured submit failure"));
@@ -168,8 +190,7 @@ public:
             return result;
         }
 
-        SchedulePayload(submission.operation);
-        SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+        ScheduleDualCompletion(submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
         return result;
     }
 
@@ -218,6 +239,7 @@ private:
         std::lock_guard<std::mutex> lock(log_mutex_);
         std::ofstream output(event_log_, std::ios::app);
         output << "record stream=" << submission.stream.value
+               << " descriptor=" << submission.descriptor.value
                << " sequence=" << submission.acceptance_sequence
                << " bytes=" << submission.payload.size << " checksum=" << checksum << '\n';
     }
@@ -226,6 +248,33 @@ private:
         workers_.emplace_back([this, operation] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
             runtime_.storage.PayloadConsumed(operation);
+        });
+    }
+
+    void ScheduleDualCompletion(
+        rodaq_storage_operation operation, bool payload_first,
+        rodaq_storage_persistence_state persistence_state) {
+        workers_.emplace_back([this, operation, payload_first, persistence_state] {
+            std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
+            auto payload = [this, operation] { runtime_.storage.PayloadConsumed(operation); };
+            auto persistence = [this, operation, persistence_state] {
+                rodaq_error error{};
+                if (persistence_state != RODAQ_STORAGE_PERSISTENCE_SUCCEEDED) {
+                    rodaq::assign_rodaq_error(
+                        RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
+                        "configured persistence failure", &error);
+                    runtime_.storage.PersistenceCompleted(operation, persistence_state, &error);
+                } else {
+                    runtime_.storage.PersistenceCompleted(operation, persistence_state, nullptr);
+                }
+            };
+            if (payload_first) {
+                payload();
+                persistence();
+            } else {
+                persistence();
+                payload();
+            }
         });
     }
 

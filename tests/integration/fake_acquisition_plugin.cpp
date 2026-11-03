@@ -64,6 +64,7 @@ public:
         producer_threads_ = static_cast<std::size_t>(config_int(config, "producer_threads", 1));
         payload_size_ = static_cast<std::size_t>(config_int(config, "payload_size", 16));
         payload_mode_ = config_string(config, "payload_mode", "copy");
+        descriptor_change_after_ = config_int(config, "descriptor_change_after", -1);
         event_log_ = config_string(config, "event_log", "");
         if (stream_count_ == 0 || records_per_stream_ == 0 || producer_threads_ == 0 ||
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
@@ -99,6 +100,7 @@ public:
         if (!clock.has_value()) {
             return fail(clock.error());
         }
+        clock_ = clock.value();
         auto schema = runtime_.acquisition.RegisterSchema(rodaq_schema_registration{
             RODAQ_SCHEMA_REGISTRATION_MIN_STRUCT_SIZE,
             RODAQ_FALSE,
@@ -111,6 +113,7 @@ public:
         if (!schema.has_value()) {
             return fail(schema.error());
         }
+        schema_ = schema.value();
 
         streams_.clear();
         descriptors_.clear();
@@ -127,24 +130,7 @@ public:
             if (!stream.has_value()) {
                 return fail(stream.error());
             }
-            const std::string name = "fake/" + std::to_string(index);
-            const rodaq_timestamp_key timestamp_key{
-                fixture_string("sample_time"),
-                clock.value(),
-            };
-            auto descriptor =
-                runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
-                    RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE,
-                    RODAQ_TRUE,
-                    0,
-                    stream.value(),
-                    rodaq_string_view{name.data(), name.size()},
-                    schema.value(),
-                    fixture_string("raw"),
-                    &timestamp_key,
-                    1,
-                    0,
-                });
+            auto descriptor = PublishDescriptor(stream.value(), "fake/0");
             if (!descriptor.has_value()) {
                 return fail(descriptor.error());
             }
@@ -234,6 +220,17 @@ private:
     }
 
     void SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
+        if (descriptor_change_after_ >= 0 &&
+            record_index == static_cast<std::size_t>(descriptor_change_after_)) {
+            bool expected = false;
+            if (switched_.compare_exchange_strong(expected, true)) {
+                auto descriptor = PublishDescriptor(streams_[stream_index], "fake/switched");
+                if (!descriptor.has_value()) {
+                    return;
+                }
+                descriptors_[stream_index] = descriptor.value();
+            }
+        }
         std::vector<std::uint8_t> source(payload_size_);
         for (std::size_t index = 0; index < source.size(); ++index) {
             source[index] =
@@ -297,6 +294,26 @@ private:
         return rodaq_string_view{value.data(), value.size()};
     }
 
+    rodaq::Result<rodaq_stream_descriptor_handle> PublishDescriptor(
+        rodaq_stream_handle stream, std::string_view name) {
+        const rodaq_timestamp_key timestamp_key{
+            fixture_string("sample_time"),
+            clock_,
+        };
+        return runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
+            RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE,
+            RODAQ_TRUE,
+            0,
+            stream,
+            rodaq_string_view{name.data(), name.size()},
+            schema_,
+            fixture_string("raw"),
+            &timestamp_key,
+            1,
+            0,
+        });
+    }
+
     static rodaq::Result<void> invalid_state() {
         return nonstd::make_unexpected(
             rodaq::Error(rodaq::ErrorCode::InvalidState, "fake_acquisition", 0, "invalid state"));
@@ -318,12 +335,16 @@ private:
     std::size_t producer_threads_ = 1;
     std::size_t payload_size_ = 16;
     std::string payload_mode_ = "copy";
+    std::int64_t descriptor_change_after_ = -1;
     std::string event_log_;
     std::mutex log_mutex_;
     std::atomic<bool> stopping_{false};
+    std::atomic<bool> switched_{false};
     std::vector<std::thread> producers_;
     std::vector<rodaq_stream_handle> streams_;
     std::vector<rodaq_stream_descriptor_handle> descriptors_;
+    rodaq_clock_handle clock_{};
+    rodaq_schema_handle schema_{};
     std::optional<rodaq_source_handle> source_;
 };
 

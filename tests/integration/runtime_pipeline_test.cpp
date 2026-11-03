@@ -51,13 +51,15 @@ plugin::ConfigTree map_config(std::vector<plugin::ConfigTree::MapEntry> entries)
 RuntimeOptions options(
     std::string_view name, std::string storage_scenario, std::string payload_mode, int streams,
     int records, int producers, std::string event_log,
-    std::chrono::milliseconds stop_timeout = std::chrono::milliseconds(500)) {
+    std::chrono::milliseconds stop_timeout = std::chrono::milliseconds(500),
+    int descriptor_change_after = -1, std::int64_t payload_size = 16,
+    std::size_t block_bytes = 64U * 1024U) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
-    value.payload_block_bytes = 64U * 1024U;
+    value.payload_block_bytes = block_bytes;
     value.payload_block_count = 16;
-    value.max_single_payload_bytes = 64U * 1024U;
+    value.max_single_payload_bytes = block_bytes;
     value.dispatch_capacity = 8;
     value.operation_capacity = 8;
     value.completion_capacity = 8;
@@ -75,8 +77,9 @@ RuntimeOptions options(
         {"streams", plugin::ConfigTree::Int64(streams)},
         {"records_per_stream", plugin::ConfigTree::Int64(records)},
         {"producer_threads", plugin::ConfigTree::Int64(producers)},
-        {"payload_size", plugin::ConfigTree::Int64(16)},
+        {"payload_size", plugin::ConfigTree::Int64(payload_size)},
         {"payload_mode", plugin::ConfigTree::String(std::move(payload_mode))},
+        {"descriptor_change_after", plugin::ConfigTree::Int64(descriptor_change_after)},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -115,6 +118,43 @@ bool wait_for_records(
     return false;
 }
 
+std::size_t record_count(const std::string& path) {
+    const auto lines = read_lines(path);
+    return static_cast<std::size_t>(std::count_if(
+        lines.begin(), lines.end(),
+        [](const std::string& line) { return line.rfind("record ", 0) == 0; }));
+}
+
+void expect_clean_scenario(
+    std::string_view name, std::string storage_scenario, std::string payload_mode,
+    int records = 4) {
+    const std::string log = unique_log_path(std::string(name));
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(
+        options(name, std::move(storage_scenario), std::move(payload_mode), 1, records, 1, log));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, static_cast<std::size_t>(records)));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
+    EXPECT_EQ(record_count(log), static_cast<std::size_t>(records));
+}
+
+void expect_failed_scenario(
+    std::string_view name, std::string storage_scenario, std::chrono::milliseconds stop_timeout) {
+    const std::string log = unique_log_path(std::string(name));
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(name, std::move(storage_scenario), "copy", 1, 1, 1, log, stop_timeout));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    EXPECT_TRUE(runtime.PrimaryFailure().has_value());
+}
+
 TEST(RuntimePipelineTest, RejectsInvalidLifecycleTransitions) {
     const auto log = unique_log_path("lifecycle");
     Runtime runtime(options("lifecycle", "sync", "copy", 1, 0, 1, log));
@@ -140,6 +180,12 @@ TEST(RuntimePipelineTest, CopiesRecordsThroughStableAbiAndStopsCleanly) {
     ASSERT_TRUE(snapshot.has_value());
     EXPECT_EQ(snapshot->accepted_records, 3U);
     EXPECT_EQ(snapshot->accepted_bytes, 48U);
+    EXPECT_EQ(snapshot->inflight_records, 0U);
+    EXPECT_EQ(snapshot->inflight_bytes, 0U);
+    EXPECT_GE(snapshot->high_water_records, 1U);
+    EXPECT_LE(snapshot->high_water_records, 3U);
+    EXPECT_GE(snapshot->high_water_bytes, 16U);
+    EXPECT_LE(snapshot->high_water_bytes, 48U);
     std::vector<std::string> records;
     for (const std::string& line : read_lines(log)) {
         if (line.rfind("record ", 0) == 0) {
@@ -163,6 +209,24 @@ TEST(RuntimePipelineTest, RetainsPayloadThroughAsynchronousDualCompletion) {
     ASSERT_TRUE(wait_for_records(runtime, log, 4));
     ASSERT_TRUE(runtime.Stop().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 4U);
+    EXPECT_EQ(snapshot->accepted_bytes, 64U);
+    EXPECT_EQ(snapshot->inflight_records, 0U);
+    EXPECT_EQ(snapshot->inflight_bytes, 0U);
+}
+
+TEST(RuntimePipelineTest, QualifiesIndependentCompletionAxes) {
+    expect_clean_scenario(
+        "sync_payload_async_persistence", "sync_payload_async_persistence", "copy");
+    expect_clean_scenario(
+        "async_payload_sync_persistence", "async_payload_sync_persistence", "adopt");
+    expect_clean_scenario(
+        "async_payload_async_persistence", "async_payload_async_persistence", "retain");
+    expect_clean_scenario("persistence_first", "persistence_first", "copy");
+    expect_clean_scenario("persistence_failed", "persistence_failed", "retain");
+    expect_clean_scenario("persistence_unknown", "persistence_unknown", "adopt");
 }
 
 TEST(RuntimePipelineTest, PreservesPerStreamSequenceOrderAcrossProducers) {
@@ -203,6 +267,45 @@ TEST(RuntimePipelineTest, PreservesPerStreamSequenceOrderAcrossProducers) {
     }
 }
 
+TEST(RuntimePipelineTest, SwitchesDescriptorWithoutBreakingStreamOrdering) {
+    const auto log = unique_log_path("descriptor_switch");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "descriptor_switch", "sync", "copy", 1, 6, 1, log, std::chrono::milliseconds(500), 2));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 6));
+    ASSERT_TRUE(runtime.Stop().has_value());
+
+    std::vector<std::uint64_t> descriptors;
+    std::vector<std::uint64_t> sequences;
+    for (const std::string& line : read_lines(log)) {
+        if (line.rfind("record ", 0) != 0) {
+            continue;
+        }
+        std::istringstream input(line);
+        std::string token;
+        while (input >> token) {
+            if (token.rfind("descriptor=", 0) == 0) {
+                descriptors.push_back(std::stoull(token.substr(11)));
+            } else if (token.rfind("sequence=", 0) == 0) {
+                sequences.push_back(std::stoull(token.substr(9)));
+            }
+        }
+    }
+    ASSERT_EQ(descriptors.size(), 6U);
+    ASSERT_EQ(sequences.size(), 6U);
+    EXPECT_EQ(
+        static_cast<std::size_t>(std::count_if(
+            descriptors.begin(), descriptors.end(),
+            [&descriptors](std::uint64_t value) { return value == descriptors.front(); })),
+        2U);
+    for (std::size_t index = 1; index < sequences.size(); ++index) {
+        EXPECT_GT(sequences[index], sequences[index - 1U]);
+    }
+}
+
 TEST(RuntimePipelineTest, ReconcilesEarlyCrossThreadPayloadCompletion) {
     const auto log = unique_log_path("early");
     std::error_code removed;
@@ -212,6 +315,50 @@ TEST(RuntimePipelineTest, ReconcilesEarlyCrossThreadPayloadCompletion) {
     ASSERT_TRUE(runtime.Configure().has_value());
     ASSERT_TRUE(runtime.Start().has_value());
     ASSERT_TRUE(wait_for_records(runtime, log, 4));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
+}
+
+TEST(RuntimePipelineTest, HandlesZeroLengthAndLargePayloads) {
+    const std::string zero_log = unique_log_path("zero_payload");
+    std::error_code zero_removed;
+    fs::remove(zero_log, zero_removed);
+    Runtime zero_runtime(options(
+        "zero_payload", "sync", "copy", 1, 1, 1, zero_log, std::chrono::milliseconds(500), -1, 0));
+    ASSERT_TRUE(zero_runtime.Configure().has_value());
+    ASSERT_TRUE(zero_runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(zero_runtime, zero_log, 1));
+    ASSERT_TRUE(zero_runtime.Stop().has_value());
+
+    const std::string log = unique_log_path("large_payload");
+    std::error_code removed;
+    fs::remove(log, removed);
+    constexpr std::int64_t kLargeBytes = 2700 * 1024;
+    Runtime runtime(options(
+        "large_payload", "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(500), -1,
+        kLargeBytes, 3U * 1024U * 1024U));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto lines = read_lines(log);
+    const auto record = std::find_if(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("record ", 0) == 0;
+    });
+    ASSERT_NE(record, lines.end());
+    EXPECT_NE(record->find("bytes=2764800"), std::string::npos);
+}
+
+TEST(RuntimePipelineTest, StopDuringActiveProducerConverges) {
+    const auto log = unique_log_path("stop_active");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "stop_active", "async_payload_async_persistence", "retain", 2, 200, 4, log,
+        std::chrono::milliseconds(500)));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
     ASSERT_TRUE(runtime.Stop().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
 }
@@ -232,6 +379,30 @@ TEST(RuntimePipelineTest, DetectsSameStackCompletionAndFailsClosed) {
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
     EXPECT_FALSE(runtime.Stop().has_value());
     EXPECT_TRUE(runtime.PrimaryFailure().has_value());
+}
+
+TEST(RuntimePipelineTest, DetectsCompletionBeforeNonOkReturn) {
+    expect_failed_scenario(
+        "callback_before_error", "callback_before_error", std::chrono::milliseconds(100));
+}
+
+TEST(RuntimePipelineTest, DetectsDuplicatePayloadCompletion) {
+    expect_failed_scenario(
+        "duplicate_payload", "duplicate_payload", std::chrono::milliseconds(100));
+}
+
+TEST(RuntimePipelineTest, DetectsDuplicatePersistenceCompletion) {
+    expect_failed_scenario(
+        "duplicate_persistence", "duplicate_persistence", std::chrono::milliseconds(100));
+}
+
+TEST(RuntimePipelineTest, MissingCallbacksDoNotHangStop) {
+    expect_failed_scenario("missing_callback", "missing_callback", std::chrono::milliseconds(100));
+}
+
+TEST(RuntimePipelineTest, CallbackAfterCloseFailsClosed) {
+    expect_failed_scenario(
+        "callback_after_close", "callback_after_close", std::chrono::milliseconds(100));
 }
 
 TEST(RuntimePipelineTest, RestartCreatesFreshActivation) {

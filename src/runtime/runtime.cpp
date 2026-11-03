@@ -231,6 +231,12 @@ public:
 
         stop_acquisition_plugins();
         const bool unresolved = pipeline != nullptr && pipeline->HasUnresolvedOperations();
+        if (!unresolved) {
+            for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+                active_->acquisition_instance(index).reset();
+            }
+            active_->storage_instance().reset();
+        }
         const bool failed =
             active_->state() == RuntimeState::Failed || active_->PrimaryFailure().has_value();
         last_stats_ = active_->Stats();
@@ -243,10 +249,6 @@ public:
             quarantined_ = std::move(active_);
             state_ = RuntimeState::Failed;
         } else {
-            for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-                active_->acquisition_instance(index).reset();
-            }
-            active_->storage_instance().reset();
             active_.reset();
             state_ = failed ? RuntimeState::Failed : RuntimeState::Stopped;
         }

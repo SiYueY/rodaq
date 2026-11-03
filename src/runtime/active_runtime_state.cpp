@@ -778,6 +778,12 @@ Result<void> ActiveRuntimeState::InitializePipeline(
         pipeline_ = std::make_unique<StoragePipeline>(
             options_.operation_capacity, effective_payload_limit, storage, progress_timeout,
             [this](Error error) { RequestFailure(std::move(error)); },
+            [this](std::size_t bytes) noexcept {
+                if (!stats_.RecordInflightReleased(bytes)) {
+                    RequestFailure(runtime_error(
+                        ErrorCode::InternalError, "Runtime inflight byte accounting underflowed"));
+                }
+            },
             [this](
                 const RuntimeRecord& record, rodaq_storage_operation operation,
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
@@ -1856,6 +1862,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
                     deferred_result.emplace(submit_result(
                         RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
                 } else {
+                    stats_.RecordInflightAcquired(static_cast<std::uint64_t>(payload_size));
                     pipeline_->Publish(std::move(reservation), std::move(record.value()));
                     stats_.RecordAccepted(payload_size);
                     --admission_inflight_;

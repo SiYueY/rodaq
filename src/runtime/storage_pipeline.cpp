@@ -65,6 +65,7 @@ struct StoragePipeline::Slot {
     bool persistence_diagnostic_present = false;
     rodaq_error persistence_diagnostic{};
     bool scheduled = false;
+    std::size_t payload_size = 0;
 };
 
 PipelineReservation::PipelineReservation(
@@ -130,12 +131,13 @@ void PipelineReservation::Cancel() noexcept {
 StoragePipeline::StoragePipeline(
     std::size_t capacity, std::size_t maximum_payload_bytes, plugin::StoragePluginInstance* storage,
     std::chrono::nanoseconds progress_timeout, FailureSink failure_sink,
-    SubmissionBuilder submission_builder)
+    CompletionSink completion_sink, SubmissionBuilder submission_builder)
 : capacity_(capacity),
   maximum_payload_bytes_(maximum_payload_bytes),
   progress_timeout_(progress_timeout),
   storage_(storage),
   failure_sink_(std::move(failure_sink)),
+  completion_sink_(std::move(completion_sink)),
   submission_builder_(std::move(submission_builder)),
   record_budget_(ResourceAmount{static_cast<std::uint64_t>(capacity), 0}),
   payload_budget_(ResourceAmount{
@@ -148,7 +150,7 @@ StoragePipeline::StoragePipeline(
   dispatch_ring_(capacity),
   completion_ring_(capacity) {
     if (capacity == 0 || maximum_payload_bytes == 0 || storage == nullptr || !failure_sink_ ||
-        !submission_builder_) {
+        !completion_sink_ || !submission_builder_) {
         throw std::invalid_argument("StoragePipeline configuration is invalid");
     }
     if (capacity > kOperationIndexMask) {
@@ -260,6 +262,7 @@ Result<PreGateAcquireResult> StoragePipeline::AcquirePreGate(
             slot.persistence_event_seen = false;
             slot.persistence_diagnostic_present = false;
             slot.scheduled = false;
+            slot.payload_size = payload_bytes;
             return PreGateAcquireResult{
                 PreGateAcquireOutcome::Acquired,
                 PipelineReservation(
@@ -515,6 +518,7 @@ void StoragePipeline::CompleteSubmit(
         }
     }
 
+    NotifyOperationCompleted(effects);
     if (effects.violation.has_value()) {
         Fail(std::move(effects.violation.value()));
     }
@@ -648,6 +652,7 @@ void StoragePipeline::CompletionLoop() {
             continue;
         }
         CompletionEffects effects = ProcessCompletion(index);
+        NotifyOperationCompleted(effects);
         if (effects.violation.has_value()) {
             Fail(std::move(effects.violation.value()));
         }
@@ -731,14 +736,33 @@ void StoragePipeline::ReleasePayloadLocked(Slot& slot, CompletionEffects& effect
 
 void StoragePipeline::TerminalizeOperationLocked(
     std::size_t index, Slot& slot, CompletionEffects& effects) noexcept {
+    if (!slot.operation_active) {
+        return;
+    }
     if (slot.record.has_value()) {
         effects.record_to_destroy.emplace(std::move(slot.record.value()));
         slot.record.reset();
     }
+    effects.operation_completed = true;
+    effects.completed_bytes = slot.payload_size;
+    slot.payload_size = 0;
     slot.operation_active = false;
     slot.dispatch_state = Slot::DispatchState::Free;
     slot.scheduled = false;
     ReturnIndexLocked(index);
+}
+
+void StoragePipeline::NotifyOperationCompleted(const CompletionEffects& effects) noexcept {
+    if (!effects.operation_completed) {
+        return;
+    }
+    try {
+        completion_sink_(effects.completed_bytes);
+    } catch (...) {
+        Fail(Error(
+            ErrorCode::InternalError, "storage", 0,
+            "Storage-completion observer raised an exception"));
+    }
 }
 
 void StoragePipeline::ReturnIndexLocked(std::size_t index) noexcept {

@@ -75,6 +75,7 @@ struct PreGateAcquireResult {
 class StoragePipeline final {
 public:
     using FailureSink = std::function<void(Error)>;
+    using CompletionSink = std::function<void(std::size_t)>;
     using SubmissionBuilder = std::function<Result<rodaq_storage_submission>(
         const RuntimeRecord&, rodaq_storage_operation,
         std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>&)>;
@@ -82,7 +83,8 @@ public:
     StoragePipeline(
         std::size_t capacity, std::size_t maximum_payload_bytes,
         plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout,
-        FailureSink failure_sink, SubmissionBuilder submission_builder);
+        FailureSink failure_sink, CompletionSink completion_sink,
+        SubmissionBuilder submission_builder);
 
     StoragePipeline(const StoragePipeline&) = delete;
     StoragePipeline& operator=(const StoragePipeline&) = delete;
@@ -147,6 +149,8 @@ private:
         Payload payload_to_release;
         std::optional<RuntimeRecord> record_to_destroy;
         std::optional<Error> violation;
+        bool operation_completed = false;
+        std::size_t completed_bytes = 0;
     };
 
     static constexpr std::size_t kInvalidIndex = std::numeric_limits<std::size_t>::max();
@@ -162,6 +166,7 @@ private:
     void ReleasePayloadLocked(Slot& slot, CompletionEffects& effects) noexcept;
     void TerminalizeOperationLocked(
         std::size_t index, Slot& slot, CompletionEffects& effects) noexcept;
+    void NotifyOperationCompleted(const CompletionEffects& effects) noexcept;
     void DispatchLoop();
     void DispatchOne(std::size_t index);
     void CompletionLoop();
@@ -175,6 +180,7 @@ private:
     const std::chrono::nanoseconds progress_timeout_;
     plugin::StoragePluginInstance* storage_;
     FailureSink failure_sink_;
+    CompletionSink completion_sink_;
     SubmissionBuilder submission_builder_;
 
     ResourceBudget record_budget_;
