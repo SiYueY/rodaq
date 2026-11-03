@@ -112,8 +112,7 @@ TEST(RegistryTest, InvalidAndForeignHandlesDoNotResolve) {
 
     EXPECT_EQ(registry.Find(BindingHandle{}), nullptr);
     EXPECT_EQ(
-        registry.Find(BindingHandle::FromRaw(std::numeric_limits<std::uint64_t>::max())),
-        nullptr);
+        registry.Find(BindingHandle::FromRaw(std::numeric_limits<std::uint64_t>::max())), nullptr);
 }
 
 TEST(RegistryTest, SupportsNonPowerOfTwoCapacity) {
