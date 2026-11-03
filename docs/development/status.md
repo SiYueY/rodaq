@@ -641,8 +641,8 @@ M2 Production Core Runtime closure validation:
   reporting is disabled only for the E2E executable because fault scenarios
   intentionally retain joinable Plugin workers and activation state for process
   lifetime; data-race reporting remains enabled.
-- M2 benchmark baselines on the qualification host were approximately 58.9k
-  records/s for one producer and 88.4k records/s for four producers x four
+- M2 benchmark baselines on the qualification host were approximately 46.5k
+  records/s for one producer and 94.6k records/s for four producers x four
   streams in a Debug build. These are engineering baselines, not M5 SLOs.
 - `clang-format`, `git diff --check`, source review and status/plan consistency
   checks passed.
