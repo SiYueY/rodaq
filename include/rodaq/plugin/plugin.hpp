@@ -7,16 +7,17 @@
 #include <exception>
 #include <cstring>
 #include <new>
-#include <algorithm>
 #include <utility>
 
 namespace rodaq::plugin {
 
 template <typename Struct>
-void clear_output_prefix(Struct* output, std::uint32_t capacity) noexcept {
-    if (output != nullptr && capacity != 0) {
-        std::memset(output, 0, std::min<std::size_t>(capacity, sizeof(Struct)));
+std::uint32_t clear_output_prefix(Struct* output, std::uint32_t capacity) noexcept {
+    const std::uint32_t initialized = rodaq::initialized_prefix_size<Struct>(capacity);
+    if (output != nullptr && initialized != 0) {
+        std::memset(output, 0, initialized);
     }
+    return initialized;
 }
 
 template <typename Function>

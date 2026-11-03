@@ -70,9 +70,9 @@ inline bool is_valid_storage_submission(const rodaq_storage_submission& submissi
 inline void write_storage_capabilities(
     rodaq_storage_capabilities* output, std::uint32_t capacity,
     const rodaq_storage_capabilities& value) noexcept {
-    clear_output_prefix(output, capacity);
-    output->struct_size = sizeof(rodaq_storage_capabilities);
-    output->flags = value.flags;
+    const std::uint32_t initialized = clear_output_prefix(output, capacity);
+    output->struct_size = initialized;
+    output->flags = 0;
     output->full_fidelity = value.full_fidelity;
     output->reserved = 0;
     if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_payload_bytes)) {
@@ -103,8 +103,8 @@ inline void write_storage_capabilities(
 inline void write_storage_submit_result(
     rodaq_storage_submit_result* output, std::uint32_t capacity,
     const rodaq_storage_submit_result& value) noexcept {
-    clear_output_prefix(output, capacity);
-    output->struct_size = sizeof(rodaq_storage_submit_result);
+    const std::uint32_t initialized = clear_output_prefix(output, capacity);
+    output->struct_size = initialized;
     output->reserved = 0;
     output->payload_state = value.payload_state;
     output->persistence_state = value.persistence_state;
@@ -116,8 +116,8 @@ inline void write_storage_submit_result(
 inline void write_descriptor_readiness_result(
     rodaq_descriptor_readiness_result* output, std::uint32_t capacity,
     const rodaq_descriptor_readiness_result& value) noexcept {
-    clear_output_prefix(output, capacity);
-    output->struct_size = sizeof(rodaq_descriptor_readiness_result);
+    const std::uint32_t initialized = clear_output_prefix(output, capacity);
+    output->struct_size = initialized;
     output->state = value.state;
     if (RODAQ_HAS_FIELD_CAPACITY(rodaq_descriptor_readiness_result, capacity, failure)) {
         output->failure = value.failure;

@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -358,8 +359,11 @@ rodaq_status get_capabilities(
         out_capabilities->struct_size < RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    *out_capabilities = {};
-    out_capabilities->struct_size = sizeof(rodaq_storage_capabilities);
+    const std::uint32_t capacity = out_capabilities->struct_size;
+    const std::uint32_t initialized = static_cast<std::uint32_t>(
+        std::min<std::size_t>(capacity, sizeof(rodaq_storage_capabilities)));
+    std::memset(out_capabilities, 0, initialized);
+    out_capabilities->struct_size = initialized;
     out_capabilities->full_fidelity = RODAQ_TRUE;
     out_capabilities->maximum_payload_bytes = 1024;
     out_capabilities->maximum_inflight_records = 8;
@@ -378,8 +382,11 @@ rodaq_status get_capabilities(
         out_result->struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    *out_result = {};
-    out_result->struct_size = sizeof(rodaq_descriptor_readiness_result);
+    const std::uint32_t capacity = out_result->struct_size;
+    const std::uint32_t initialized = static_cast<std::uint32_t>(
+        std::min<std::size_t>(capacity, sizeof(rodaq_descriptor_readiness_result)));
+    std::memset(out_result, 0, initialized);
+    out_result->struct_size = initialized;
     out_result->state =
         descriptor.value == 0 ? RODAQ_DESCRIPTOR_UNSUPPORTED : RODAQ_DESCRIPTOR_READY;
     return RODAQ_STATUS_OK;

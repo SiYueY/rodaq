@@ -12,53 +12,89 @@
 #include <memory>
 #include <utility>
 
-static_assert(sizeof(frozen_projection_view_v1) == sizeof(rodaq_projection_view));
+#define RODAQ_ASSERT_FROZEN_PREFIX_FIELD(Frozen, Current, field)                          \
+    static_assert(offsetof(Frozen, field) == offsetof(Current, field), #field " offset"); \
+    static_assert(                                                                        \
+        sizeof(std::declval<Frozen&>().field) == sizeof(std::declval<Current&>().field),  \
+        #field " width")
+
+static_assert(sizeof(frozen_projection_view_v1) <= sizeof(rodaq_projection_view));
 static_assert(alignof(frozen_projection_view_v1) == alignof(rodaq_projection_view));
-static_assert(
-    offsetof(frozen_projection_view_v1, descriptor) == offsetof(rodaq_projection_view, descriptor));
-static_assert(
-    offsetof(frozen_projection_view_v1, projection_id) ==
-    offsetof(rodaq_projection_view, projection_id));
-static_assert(
-    offsetof(frozen_projection_view_v1, payload) == offsetof(rodaq_projection_view, payload));
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, struct_size);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, reserved);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, descriptor);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, projection_id);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, payload);
 
-static_assert(sizeof(frozen_clock_anchor_v1) == sizeof(rodaq_unix_epoch_clock_anchor));
+static_assert(sizeof(frozen_clock_anchor_v1) <= sizeof(rodaq_unix_epoch_clock_anchor));
 static_assert(alignof(frozen_clock_anchor_v1) == alignof(rodaq_unix_epoch_clock_anchor));
-static_assert(
-    offsetof(frozen_clock_anchor_v1, clock) == offsetof(rodaq_unix_epoch_clock_anchor, clock));
-static_assert(
-    offsetof(frozen_clock_anchor_v1, clock_reading) ==
-    offsetof(rodaq_unix_epoch_clock_anchor, clock_reading));
-static_assert(
-    offsetof(frozen_clock_anchor_v1, unix_anchor_ns) ==
-    offsetof(rodaq_unix_epoch_clock_anchor, unix_anchor_ns));
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, struct_size);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, reserved);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, clock);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, clock_reading);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, unix_anchor_ns);
 
-static_assert(sizeof(frozen_storage_capabilities_v1) == sizeof(rodaq_storage_capabilities));
+static_assert(sizeof(frozen_storage_capabilities_v1) <= sizeof(rodaq_storage_capabilities));
 static_assert(alignof(frozen_storage_capabilities_v1) == alignof(rodaq_storage_capabilities));
-static_assert(
-    offsetof(frozen_storage_capabilities_v1, maximum_payload_bytes) ==
-    offsetof(rodaq_storage_capabilities, maximum_payload_bytes));
-static_assert(
-    offsetof(frozen_storage_capabilities_v1, close_progress_timeout_ns) ==
-    offsetof(rodaq_storage_capabilities, close_progress_timeout_ns));
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, struct_size);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_storage_capabilities_v1, rodaq_storage_capabilities, flags);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, full_fidelity);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, reserved);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_payload_bytes);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_inflight_records);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_inflight_bytes);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, handoff_progress_timeout_ns);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, descriptor_progress_timeout_ns);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, flush_progress_timeout_ns);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_capabilities_v1, rodaq_storage_capabilities, close_progress_timeout_ns);
 
 static_assert(
-    sizeof(frozen_descriptor_readiness_result_v1) == sizeof(rodaq_descriptor_readiness_result));
+    sizeof(frozen_descriptor_readiness_result_v1) <= sizeof(rodaq_descriptor_readiness_result));
 static_assert(
     alignof(frozen_descriptor_readiness_result_v1) == alignof(rodaq_descriptor_readiness_result));
-static_assert(
-    offsetof(frozen_descriptor_readiness_result_v1, failure) ==
-    offsetof(rodaq_descriptor_readiness_result, failure));
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, struct_size);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, state);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, failure);
 
-static_assert(sizeof(frozen_storage_submit_result_v1) == sizeof(rodaq_storage_submit_result));
+static_assert(sizeof(frozen_storage_submit_result_v1) <= sizeof(rodaq_storage_submit_result));
 static_assert(alignof(frozen_storage_submit_result_v1) == alignof(rodaq_storage_submit_result));
-static_assert(
-    offsetof(frozen_storage_submit_result_v1, persistence_error) ==
-    offsetof(rodaq_storage_submit_result, persistence_error));
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_submit_result_v1, rodaq_storage_submit_result, struct_size);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_submit_result_v1, rodaq_storage_submit_result, reserved);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_submit_result_v1, rodaq_storage_submit_result, payload_state);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_submit_result_v1, rodaq_storage_submit_result, persistence_state);
+RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
+    frozen_storage_submit_result_v1, rodaq_storage_submit_result, persistence_error);
+
+#undef RODAQ_ASSERT_FROZEN_PREFIX_FIELD
 
 namespace {
 
 constexpr std::uint8_t kCanary = 0xA5;
+
+template <typename Struct>
+constexpr std::uint32_t expected_initialized_prefix(std::uint32_t capacity) noexcept {
+    return static_cast<std::uint32_t>(capacity < sizeof(Struct) ? capacity : sizeof(Struct));
+}
 
 const rodaq_plugin_descriptor compatibility_descriptor = {
     RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE,
@@ -172,7 +208,8 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
         std::uint8_t canary[32];
     } projection_buffer{};
     std::memset(projection_buffer.canary, 0xA5, sizeof(projection_buffer.canary));
-    projection_buffer.value.struct_size = sizeof(projection_buffer.value);
+    const std::uint32_t frozen_projection_capacity = sizeof(projection_buffer.value);
+    projection_buffer.value.struct_size = frozen_projection_capacity;
     rodaq_error error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK,
@@ -180,8 +217,29 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
             interface.context, rodaq_stream_descriptor_handle{7},
             rodaq_string_view{"rodaq.test.projection.v1", 24},
             reinterpret_cast<rodaq_projection_view*>(&projection_buffer.value), &error));
-    for (std::uint8_t byte : projection_buffer.canary) {
-        EXPECT_EQ(0xA5, byte);
+    EXPECT_EQ(
+        expected_initialized_prefix<rodaq_projection_view>(frozen_projection_capacity),
+        projection_buffer.value.struct_size);
+    EXPECT_EQ(0U, projection_buffer.value.reserved);
+    expect_canary(projection_buffer.canary, sizeof(projection_buffer.canary));
+
+    {
+        struct {
+            rodaq_projection_view value;
+            std::uint8_t canary[32];
+        } current{};
+        fill_canary(current.canary, sizeof(current.canary));
+        const std::uint32_t current_capacity = sizeof(current.value);
+        current.value.struct_size = current_capacity;
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            projection->get_projection(
+                interface.context, rodaq_stream_descriptor_handle{7},
+                rodaq_string_view{"rodaq.test.projection.v1", 24}, &current.value, &error));
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_projection_view>(current_capacity),
+            current.value.struct_size);
+        expect_canary(current.canary, sizeof(current.canary));
     }
 
     {
@@ -206,13 +264,16 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
             std::uint8_t canary[32];
         } larger{};
         fill_canary(larger.canary, sizeof(larger.canary));
-        larger.value.struct_size = sizeof(larger.value) + sizeof(larger.canary);
+        const std::uint32_t larger_capacity = sizeof(larger.value) + sizeof(larger.canary);
+        larger.value.struct_size = larger_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             projection->get_projection(
                 interface.context, rodaq_stream_descriptor_handle{7},
                 rodaq_string_view{"rodaq.test.projection.v1", 24}, &larger.value, &error));
-        EXPECT_EQ(sizeof(rodaq_projection_view), larger.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_projection_view>(larger_capacity),
+            larger.value.struct_size);
         expect_canary(larger.canary, sizeof(larger.canary));
     }
 
@@ -228,14 +289,35 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
         std::uint8_t canary[32];
     } clock_buffer{};
     std::memset(clock_buffer.canary, 0xA5, sizeof(clock_buffer.canary));
-    clock_buffer.value.struct_size = sizeof(clock_buffer.value);
+    const std::uint32_t frozen_clock_capacity = sizeof(clock_buffer.value);
+    clock_buffer.value.struct_size = frozen_clock_capacity;
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         clock_table->get_unix_epoch_anchor(
             clock_interface.context, rodaq_clock_handle{3},
             reinterpret_cast<rodaq_unix_epoch_clock_anchor*>(&clock_buffer.value), &error));
-    for (std::uint8_t byte : clock_buffer.canary) {
-        EXPECT_EQ(0xA5, byte);
+    EXPECT_EQ(
+        expected_initialized_prefix<rodaq_unix_epoch_clock_anchor>(frozen_clock_capacity),
+        clock_buffer.value.struct_size);
+    EXPECT_EQ(0U, clock_buffer.value.reserved);
+    expect_canary(clock_buffer.canary, sizeof(clock_buffer.canary));
+
+    {
+        struct {
+            rodaq_unix_epoch_clock_anchor value;
+            std::uint8_t canary[32];
+        } current{};
+        fill_canary(current.canary, sizeof(current.canary));
+        const std::uint32_t current_capacity = sizeof(current.value);
+        current.value.struct_size = current_capacity;
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            clock_table->get_unix_epoch_anchor(
+                clock_interface.context, rodaq_clock_handle{3}, &current.value, &error));
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_unix_epoch_clock_anchor>(current_capacity),
+            current.value.struct_size);
+        expect_canary(current.canary, sizeof(current.canary));
     }
 
     {
@@ -259,12 +341,15 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
             std::uint8_t canary[32];
         } larger{};
         fill_canary(larger.canary, sizeof(larger.canary));
-        larger.value.struct_size = sizeof(larger.value) + sizeof(larger.canary);
+        const std::uint32_t larger_capacity = sizeof(larger.value) + sizeof(larger.canary);
+        larger.value.struct_size = larger_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             clock_table->get_unix_epoch_anchor(
                 clock_interface.context, rodaq_clock_handle{3}, &larger.value, &error));
-        EXPECT_EQ(sizeof(rodaq_unix_epoch_clock_anchor), larger.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_unix_epoch_clock_anchor>(larger_capacity),
+            larger.value.struct_size);
         expect_canary(larger.canary, sizeof(larger.canary));
     }
 }
@@ -290,15 +375,36 @@ TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value);
+        const std::uint32_t frozen_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = frozen_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             control->get_capabilities(
                 interface.context, reinterpret_cast<rodaq_storage_capabilities*>(&buffer.value),
                 &error));
-        EXPECT_EQ(sizeof(rodaq_storage_capabilities), buffer.value.struct_size);
-        EXPECT_EQ(7U, buffer.value.flags);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_capabilities>(frozen_capacity),
+            buffer.value.struct_size);
+        EXPECT_EQ(0U, buffer.value.flags);
+        EXPECT_EQ(0U, buffer.value.reserved);
         EXPECT_EQ(17U, buffer.value.close_progress_timeout_ns);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_storage_capabilities value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        const std::uint32_t current_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = current_capacity;
+        ASSERT_EQ(
+            RODAQ_STATUS_OK, control->get_capabilities(interface.context, &buffer.value, &error));
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_capabilities>(current_capacity),
+            buffer.value.struct_size);
+        EXPECT_EQ(0U, buffer.value.flags);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 
@@ -322,10 +428,13 @@ TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
             std::uint8_t canary[32];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        const std::uint32_t larger_capacity = sizeof(buffer.value) + sizeof(buffer.canary);
+        buffer.value.struct_size = larger_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK, control->get_capabilities(interface.context, &buffer.value, &error));
-        EXPECT_EQ(sizeof(rodaq_storage_capabilities), buffer.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_capabilities>(larger_capacity),
+            buffer.value.struct_size);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 }
@@ -351,14 +460,35 @@ TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value);
+        const std::uint32_t frozen_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = frozen_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             control->ensure_descriptor_ready(
                 interface.context, rodaq_stream_descriptor_handle{42},
                 reinterpret_cast<rodaq_descriptor_readiness_result*>(&buffer.value), &error));
-        EXPECT_EQ(sizeof(rodaq_descriptor_readiness_result), buffer.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_descriptor_readiness_result>(frozen_capacity),
+            buffer.value.struct_size);
         EXPECT_EQ(RODAQ_DESCRIPTOR_READY, buffer.value.state);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_descriptor_readiness_result value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        const std::uint32_t current_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = current_capacity;
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            control->ensure_descriptor_ready(
+                interface.context, rodaq_stream_descriptor_handle{42}, &buffer.value, &error));
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_descriptor_readiness_result>(current_capacity),
+            buffer.value.struct_size);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 
@@ -383,12 +513,15 @@ TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
             std::uint8_t canary[32];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        const std::uint32_t larger_capacity = sizeof(buffer.value) + sizeof(buffer.canary);
+        buffer.value.struct_size = larger_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             control->ensure_descriptor_ready(
                 interface.context, rodaq_stream_descriptor_handle{42}, &buffer.value, &error));
-        EXPECT_EQ(sizeof(rodaq_descriptor_readiness_result), buffer.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_descriptor_readiness_result>(larger_capacity),
+            buffer.value.struct_size);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 }
@@ -419,15 +552,37 @@ TEST(FrozenV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value);
+        const std::uint32_t frozen_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = frozen_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             owner.protocol->submit(
                 owner.instance, &submission,
                 reinterpret_cast<rodaq_storage_submit_result*>(&buffer.value), &error));
-        EXPECT_EQ(sizeof(rodaq_storage_submit_result), buffer.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_submit_result>(frozen_capacity),
+            buffer.value.struct_size);
+        EXPECT_EQ(0U, buffer.value.reserved);
         EXPECT_EQ(RODAQ_STORAGE_PAYLOAD_CONSUMED, buffer.value.payload_state);
         EXPECT_EQ(RODAQ_STORAGE_PERSISTENCE_SUCCEEDED, buffer.value.persistence_state);
+        expect_canary(buffer.canary, sizeof(buffer.canary));
+    }
+
+    {
+        struct {
+            rodaq_storage_submit_result value;
+            std::uint8_t canary[32];
+        } buffer{};
+        fill_canary(buffer.canary, sizeof(buffer.canary));
+        const std::uint32_t current_capacity = sizeof(buffer.value);
+        buffer.value.struct_size = current_capacity;
+        ASSERT_EQ(
+            RODAQ_STATUS_OK,
+            owner.protocol->submit(owner.instance, &submission, &buffer.value, &error));
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_submit_result>(current_capacity),
+            buffer.value.struct_size);
+        EXPECT_EQ(0U, buffer.value.reserved);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 
@@ -452,11 +607,14 @@ TEST(FrozenV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
             std::uint8_t canary[32];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
-        buffer.value.struct_size = sizeof(buffer.value) + sizeof(buffer.canary);
+        const std::uint32_t larger_capacity = sizeof(buffer.value) + sizeof(buffer.canary);
+        buffer.value.struct_size = larger_capacity;
         ASSERT_EQ(
             RODAQ_STATUS_OK,
             owner.protocol->submit(owner.instance, &submission, &buffer.value, &error));
-        EXPECT_EQ(sizeof(rodaq_storage_submit_result), buffer.value.struct_size);
+        EXPECT_EQ(
+            expected_initialized_prefix<rodaq_storage_submit_result>(larger_capacity),
+            buffer.value.struct_size);
         expect_canary(buffer.canary, sizeof(buffer.canary));
     }
 }

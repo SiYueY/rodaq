@@ -154,7 +154,9 @@ rodaq_status ClockCorrelation::get_unix_epoch_anchor(
             "Clock anchor output capacity is below the V1 minimum", out_error);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    std::memset(out_anchor, 0, std::min<std::size_t>(capacity, sizeof(*out_anchor)));
+    const std::uint32_t initialized =
+        rodaq::initialized_prefix_size<rodaq_unix_epoch_clock_anchor>(capacity);
+    std::memset(out_anchor, 0, initialized);
     if (context == nullptr) {
         assign_rodaq_error(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
@@ -170,7 +172,7 @@ rodaq_status ClockCorrelation::get_unix_epoch_anchor(
                 "No correlation exists for the requested Clock", out_error);
             return RODAQ_STATUS_NOT_FOUND;
         }
-        out_anchor->struct_size = sizeof(rodaq_unix_epoch_clock_anchor);
+        out_anchor->struct_size = initialized;
         out_anchor->reserved = 0;
         if (RODAQ_HAS_FIELD_CAPACITY(rodaq_unix_epoch_clock_anchor, capacity, clock)) {
             out_anchor->clock = state->anchor.clock;

@@ -1,5 +1,9 @@
 #include <rodaq/plugin/abi/runtime.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+
 namespace {
 
 #define RODAQ_TEST_VIEW(value) \
@@ -66,8 +70,14 @@ rodaq_status ensure_descriptor_ready(
     if (out_result == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    *out_result = {};
-    out_result->struct_size = sizeof(*out_result);
+    const std::uint32_t capacity = out_result->struct_size;
+    const std::uint32_t initialized = static_cast<std::uint32_t>(
+        std::min<std::size_t>(capacity, sizeof(rodaq_descriptor_readiness_result)));
+    if (initialized < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
+        return RODAQ_STATUS_INVALID_ARGUMENT;
+    }
+    std::memset(out_result, 0, initialized);
+    out_result->struct_size = initialized;
     out_result->state = RODAQ_DESCRIPTOR_READY;
     return RODAQ_STATUS_OK;
 }

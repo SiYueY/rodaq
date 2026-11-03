@@ -12,6 +12,12 @@
 
 namespace rodaq {
 
+template <typename Struct>
+constexpr std::uint32_t initialized_prefix_size(std::uint32_t capacity) noexcept {
+    constexpr std::size_t struct_size = sizeof(Struct);
+    return static_cast<std::uint32_t>(capacity < struct_size ? capacity : struct_size);
+}
+
 bool is_valid_utf8_without_nul(std::string_view value) noexcept;
 bool parse_abi_string(rodaq_string_view value, std::string_view* out_value) noexcept;
 bool parse_abi_bytes(

@@ -355,9 +355,21 @@ optional feature absence.
 
 **Status:** Accepted
 
-`rodaq_error` uses fixed inline caller-owned storage. No callee-owned diagnostic string pointer may escape an ABI call.
+`rodaq_error` uses fixed inline caller-owned storage. No callee-owned
+diagnostic string pointer may escape an ABI call.
 
-Caller-owned APPENDABLE outputs use `struct_size` as entry capacity and return initialized-prefix size. APPENDABLE structs are not embedded or passed by value; nested by-value ABI objects must be FROZEN.
+Caller-owned APPENDABLE outputs use `struct_size` as entry capacity. The callee
+zeroes and initializes at most `min(capacity, sizeof(callee-known-type))` bytes
+and returns exactly that initialized-prefix size in `struct_size`. It never
+reports bytes it did not initialize.
+
+Output `flags` may contain documented bits only; V1 Storage capabilities has no
+defined capability flags and therefore returns zero. Output reserved fields are
+always zero. `rodaq_error`'s documented message-truncation flag remains a valid
+diagnostic flag.
+
+APPENDABLE structs are not embedded or passed by value; nested by-value ABI
+objects must be FROZEN.
 
 **Reference:** `docs/design/rodaq_plugin_system.md`.
 
