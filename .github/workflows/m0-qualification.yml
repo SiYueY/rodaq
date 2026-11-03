@@ -53,17 +53,18 @@ jobs:
             -DRODAQ_WARNINGS_AS_ERRORS=ON \
             -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -fno-pie" \
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -fno-pie" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -no-pie" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -rdynamic -no-pie" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
       - name: Build runtime tests
         run: |
           cmake --build build -j2 \
             --target rodaq_admission_test rodaq_payload_pool_test \
-              rodaq_observability_test rodaq_m1_integration_test
+              rodaq_observability_test rodaq_m1_integration_test \
+              rodaq_runtime_pipeline_test
       - name: Run TSan tests
         run: |
           setarch "$(uname -m)" -R ctest --test-dir build \
-            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration)' \
+            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration)|rodaq.integration.runtime_pipeline' \
             --output-on-failure
 
   ubuntu-22-arm64-native:

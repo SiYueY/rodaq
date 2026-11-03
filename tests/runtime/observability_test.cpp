@@ -90,6 +90,21 @@ TEST(RuntimeStatsTest, ConcurrentHighWaterIsContentionSafe) {
     EXPECT_GE(snapshot.high_water_bytes, kThreadCount * 10U);
 }
 
+TEST(RuntimeStatsTest, ReleasesPayloadBytesAndOperationRecordsIndependently) {
+    RuntimeStats stats;
+    stats.RecordInflightAcquired(1024);
+    EXPECT_EQ(stats.Snapshot().inflight_records, 1U);
+    EXPECT_EQ(stats.Snapshot().inflight_bytes, 1024U);
+
+    EXPECT_TRUE(stats.RecordPayloadReleased(1024));
+    EXPECT_EQ(stats.Snapshot().inflight_records, 1U);
+    EXPECT_EQ(stats.Snapshot().inflight_bytes, 0U);
+
+    EXPECT_TRUE(stats.RecordOperationCompleted());
+    EXPECT_EQ(stats.Snapshot().inflight_records, 0U);
+    EXPECT_FALSE(stats.RecordOperationCompleted());
+}
+
 TEST(LatencyHistogramTest, RecordsSamplesAndComputesPercentiles) {
     auto histogram = LatencyHistogram::Create(1, 10000, 3);
     ASSERT_TRUE(histogram.has_value());

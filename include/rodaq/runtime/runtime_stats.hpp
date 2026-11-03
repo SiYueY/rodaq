@@ -39,6 +39,8 @@ public:
 
     void RecordInflightAcquired(std::uint64_t bytes) noexcept;
     bool RecordInflightReleased(std::uint64_t bytes) noexcept;
+    bool RecordPayloadReleased(std::uint64_t bytes) noexcept;
+    bool RecordOperationCompleted() noexcept;
 
     RuntimeStatsSnapshot Snapshot() const noexcept;
 

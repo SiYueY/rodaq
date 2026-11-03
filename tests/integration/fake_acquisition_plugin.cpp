@@ -68,6 +68,7 @@ public:
         binding_scenario_ = config_string(config, "binding_scenario", "");
         lifecycle_scenario_ = config_string(config, "lifecycle_scenario", "");
         pause_before_switch_ = config_int(config, "pause_before_switch", 0) != 0;
+        stale_handle_file_ = config_string(config, "stale_handle_file", "");
         event_log_ = config_string(config, "event_log", "");
         LogControl(
             "configure streams=" + std::to_string(stream_count_) +
@@ -124,6 +125,7 @@ public:
 
         streams_.clear();
         descriptors_.clear();
+        switched_.assign(stream_count_, false);
         streams_.reserve(stream_count_);
         descriptors_.reserve(stream_count_);
         for (std::size_t index = 0; index < stream_count_; ++index) {
@@ -137,12 +139,22 @@ public:
             if (!stream.has_value()) {
                 return fail(stream.error());
             }
-            auto descriptor = PublishDescriptor(stream.value(), "fake/0");
+            std::string descriptor_name = "fake/0";
+            auto descriptor = PublishDescriptor(stream.value(), descriptor_name);
             if (!descriptor.has_value()) {
                 return fail(descriptor.error());
             }
+            descriptor_name.assign("mutated-after-publication");
+            auto views = ValidatePublishedViews(stream.value(), descriptor.value(), "fake/0");
+            if (!views.has_value()) {
+                return fail(views.error());
+            }
             streams_.push_back(stream.value());
             descriptors_.push_back(descriptor.value());
+        }
+        auto stale_handles = ValidateOrRecordStaleHandles();
+        if (!stale_handles.has_value()) {
+            return fail(stale_handles.error());
         }
 
         stopping_.store(false);
@@ -268,10 +280,13 @@ private:
     }
 
     void SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
-        if (descriptor_change_after_ >= 0 &&
-            record_index == static_cast<std::size_t>(descriptor_change_after_)) {
-            bool expected = false;
-            if (switched_.compare_exchange_strong(expected, true)) {
+        rodaq_stream_descriptor_handle descriptor{};
+        {
+            std::lock_guard<std::mutex> lock(switch_mutex_);
+            if (descriptor_change_after_ >= 0 &&
+                record_index == static_cast<std::size_t>(descriptor_change_after_) &&
+                !switched_[stream_index]) {
+                switched_[stream_index] = true;
                 if (pause_before_switch_) {
                     const auto paused = runtime_.acquisition.ReportStream(
                         streams_[stream_index], RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
@@ -279,12 +294,14 @@ private:
                         return;
                     }
                 }
-                auto descriptor = PublishDescriptor(streams_[stream_index], "fake/switched");
-                if (!descriptor.has_value()) {
+                auto switched_descriptor =
+                    PublishDescriptor(streams_[stream_index], "fake/switched");
+                if (!switched_descriptor.has_value()) {
                     return;
                 }
-                descriptors_[stream_index] = descriptor.value();
+                descriptors_[stream_index] = switched_descriptor.value();
             }
+            descriptor = descriptors_[stream_index];
         }
         std::vector<std::uint8_t> source(payload_size_);
         for (std::size_t index = 0; index < source.size(); ++index) {
@@ -310,7 +327,7 @@ private:
         rodaq_record_submission submission{};
         submission.struct_size = sizeof(submission);
         submission.stream = streams_[stream_index];
-        submission.descriptor = descriptors_[stream_index];
+        submission.descriptor = descriptor;
         submission.source_present = RODAQ_TRUE;
         submission.source.value = source_.value_or(rodaq_source_handle{}).value;
         submission.timestamp_values = &timestamp;
@@ -352,6 +369,68 @@ private:
         std::lock_guard<std::mutex> lock(log_mutex_);
         std::ofstream output(event_log_, std::ios::app);
         output << "control " << event << '\n';
+    }
+
+    rodaq::Result<void> ValidatePublishedViews(
+        rodaq_stream_handle stream, rodaq_stream_descriptor_handle descriptor,
+        std::string_view expected_name) {
+        auto stream_view = runtime_.canonical.get_stream(stream);
+        if (!stream_view.has_value() || stream_view.value().stream_id == 0) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "canonical Stream view is invalid"));
+        }
+        auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
+        if (!descriptor_view.has_value()) {
+            return fail(descriptor_view.error());
+        }
+        const rodaq_string_view name = descriptor_view.value().name;
+        const std::string_view published_name(name.data, name.size);
+        if (published_name != expected_name) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "published Descriptor view was mutated"));
+        }
+        return {};
+    }
+
+    rodaq::Result<void> ValidateOrRecordStaleHandles() {
+        if (stale_handle_file_.empty()) {
+            return {};
+        }
+        std::ifstream input(stale_handle_file_);
+        if (input) {
+            std::uint64_t old_stream = 0;
+            std::uint64_t old_descriptor = 0;
+            input >> old_stream >> old_descriptor;
+            if (!input) {
+                return fail(rodaq::Error(
+                    rodaq::ErrorCode::InvalidArgument, "fake_acquisition", 0,
+                    "stale handle fixture is invalid"));
+            }
+            auto stream = runtime_.canonical.get_stream(rodaq_stream_handle{old_stream});
+            auto descriptor = runtime_.canonical.get_stream_descriptor(
+                rodaq_stream_descriptor_handle{old_descriptor});
+            if (stream.has_value() || descriptor.has_value()) {
+                return fail(rodaq::Error(
+                    rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                    "stale activation handle resolved"));
+            }
+            LogControl("stale_handles_rejected");
+            return {};
+        }
+
+        std::ofstream output(stale_handle_file_);
+        if (!output || streams_.empty() || descriptors_.empty()) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "failed to record stale handle fixture"));
+        }
+        output << streams_.front().value << ' ' << descriptors_.front().value << '\n';
+        return output ? rodaq::Result<void>()
+                      : fail(rodaq::Error(
+                            rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                            "failed to record stale handle fixture"));
     }
 
     static rodaq_string_view fixture_string(std::string_view value) noexcept {
@@ -403,14 +482,16 @@ private:
     std::string binding_scenario_;
     std::string lifecycle_scenario_;
     bool pause_before_switch_ = false;
+    std::string stale_handle_file_;
     std::string event_log_;
     std::mutex log_mutex_;
+    std::mutex switch_mutex_;
     std::atomic<bool> stopping_{false};
-    std::atomic<bool> switched_{false};
     std::atomic<std::size_t> commit_count_{0};
     std::vector<std::thread> producers_;
     std::vector<rodaq_stream_handle> streams_;
     std::vector<rodaq_stream_descriptor_handle> descriptors_;
+    std::vector<bool> switched_;
     rodaq_clock_handle clock_{};
     rodaq_schema_handle schema_{};
     std::optional<rodaq_source_handle> source_;

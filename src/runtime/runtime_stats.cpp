@@ -52,6 +52,13 @@ void RuntimeStats::RecordInflightAcquired(std::uint64_t bytes) noexcept {
 }
 
 bool RuntimeStats::RecordInflightReleased(std::uint64_t bytes) noexcept {
+    if (!RecordPayloadReleased(bytes)) {
+        return false;
+    }
+    return RecordOperationCompleted();
+}
+
+bool RuntimeStats::RecordPayloadReleased(std::uint64_t bytes) noexcept {
     std::uint64_t current_bytes = inflight_bytes_.load();
     if (bytes > current_bytes) {
         return false;
@@ -61,14 +68,16 @@ bool RuntimeStats::RecordInflightReleased(std::uint64_t bytes) noexcept {
             return false;
         }
     }
+    return true;
+}
 
+bool RuntimeStats::RecordOperationCompleted() noexcept {
     std::uint64_t current_records = inflight_records_.load();
     while (current_records != 0) {
         if (inflight_records_.compare_exchange_weak(current_records, current_records - 1U)) {
             return true;
         }
     }
-    inflight_bytes_.fetch_add(bytes);
     return false;
 }
 

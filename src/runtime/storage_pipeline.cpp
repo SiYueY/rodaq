@@ -131,13 +131,15 @@ void PipelineReservation::Cancel() noexcept {
 StoragePipeline::StoragePipeline(
     std::size_t capacity, std::size_t maximum_payload_bytes, plugin::StoragePluginInstance* storage,
     std::chrono::nanoseconds progress_timeout, FailureSink failure_sink,
-    CompletionSink completion_sink, SubmissionBuilder submission_builder)
+    PayloadReleaseSink payload_release_sink, OperationCompleteSink operation_complete_sink,
+    SubmissionBuilder submission_builder)
 : capacity_(capacity),
   maximum_payload_bytes_(maximum_payload_bytes),
   progress_timeout_(progress_timeout),
   storage_(storage),
   failure_sink_(std::move(failure_sink)),
-  completion_sink_(std::move(completion_sink)),
+  payload_release_sink_(std::move(payload_release_sink)),
+  operation_complete_sink_(std::move(operation_complete_sink)),
   submission_builder_(std::move(submission_builder)),
   record_budget_(ResourceAmount{static_cast<std::uint64_t>(capacity), 0}),
   payload_budget_(ResourceAmount{
@@ -150,7 +152,7 @@ StoragePipeline::StoragePipeline(
   dispatch_ring_(capacity),
   completion_ring_(capacity) {
     if (capacity == 0 || maximum_payload_bytes == 0 || storage == nullptr || !failure_sink_ ||
-        !completion_sink_ || !submission_builder_) {
+        !payload_release_sink_ || !operation_complete_sink_ || !submission_builder_) {
         throw std::invalid_argument("StoragePipeline configuration is invalid");
     }
     if (capacity > kOperationIndexMask) {
@@ -410,6 +412,7 @@ void StoragePipeline::DispatchOne(std::size_t index) {
     rodaq_storage_operation operation{};
     Result<rodaq_storage_submission> submission = nonstd::make_unexpected(
         Error(ErrorCode::InvalidState, "storage", 0, "Storage dispatch slot is unavailable"));
+    const RuntimeRecord* record = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         Slot& slot = slots_[index];
@@ -417,7 +420,16 @@ void StoragePipeline::DispatchOne(std::size_t index) {
             return;
         }
         operation = slot.operation;
-        submission = submission_builder_(slot.record.value(), operation, timestamp_values);
+        record = &slot.record.value();
+    }
+    try {
+        submission = submission_builder_(*record, operation, timestamp_values);
+    } catch (const std::exception& error) {
+        submission =
+            nonstd::make_unexpected(Error(ErrorCode::InternalError, "storage", 0, error.what()));
+    } catch (...) {
+        submission = nonstd::make_unexpected(
+            Error(ErrorCode::InternalError, "storage", 0, "Storage submission construction threw"));
     }
     if (!submission.has_value()) {
         CompleteSubmit(index, nonstd::make_unexpected(submission.error()));
@@ -526,6 +538,7 @@ void StoragePipeline::CompleteSubmit(
         }
     }
 
+    NotifyPayloadReleased(effects);
     NotifyOperationCompleted(effects);
     if (effects.violation.has_value()) {
         Fail(std::move(effects.violation.value()));
@@ -566,7 +579,11 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
                     "Storage emitted duplicate PayloadConsumed");
             } else {
                 slot.payload_event_seen = true;
-                ScheduleCompletionLocked(index);
+                if (!ScheduleCompletionLocked(index)) {
+                    violation.emplace(
+                        ErrorCode::InternalError, "storage", 0,
+                        "Completion scheduling capacity was exceeded");
+                }
             }
         }
     } catch (...) {
@@ -627,7 +644,11 @@ void StoragePipeline::persistence_completed(
                 slot.persistence_event_seen = true;
                 slot.persistence_event_state = state;
                 CopyDiagnostic(error, slot);
-                ScheduleCompletionLocked(index);
+                if (!ScheduleCompletionLocked(index)) {
+                    violation.emplace(
+                        ErrorCode::InternalError, "storage", 0,
+                        "Completion scheduling capacity was exceeded");
+                }
             }
         }
     } catch (...) {
@@ -662,6 +683,7 @@ void StoragePipeline::CompletionLoop() {
             continue;
         }
         CompletionEffects effects = ProcessCompletion(index);
+        NotifyPayloadReleased(effects);
         NotifyOperationCompleted(effects);
         if (effects.violation.has_value()) {
             Fail(std::move(effects.violation.value()));
@@ -741,6 +763,8 @@ void StoragePipeline::ReleasePayloadLocked(Slot& slot, CompletionEffects& effect
     }
     effects.payload_to_release = slot.record->TakePayload();
     slot.payload_reservation.Release();
+    effects.payload_released = true;
+    effects.released_bytes = slot.payload_size;
     resource_condition_.notify_all();
 }
 
@@ -754,7 +778,6 @@ void StoragePipeline::TerminalizeOperationLocked(
         slot.record.reset();
     }
     effects.operation_completed = true;
-    effects.completed_bytes = slot.payload_size;
     slot.payload_size = 0;
     slot.operation_active = false;
     slot.dispatch_state = Slot::DispatchState::Free;
@@ -762,12 +785,25 @@ void StoragePipeline::TerminalizeOperationLocked(
     ReturnIndexLocked(index);
 }
 
+void StoragePipeline::NotifyPayloadReleased(const CompletionEffects& effects) noexcept {
+    if (!effects.payload_released) {
+        return;
+    }
+    try {
+        payload_release_sink_(effects.released_bytes);
+    } catch (...) {
+        Fail(Error(
+            ErrorCode::InternalError, "storage", 0,
+            "Payload-release observer raised an exception"));
+    }
+}
+
 void StoragePipeline::NotifyOperationCompleted(const CompletionEffects& effects) noexcept {
     if (!effects.operation_completed) {
         return;
     }
     try {
-        completion_sink_(effects.completed_bytes);
+        operation_complete_sink_();
     } catch (...) {
         Fail(Error(
             ErrorCode::InternalError, "storage", 0,
@@ -811,21 +847,20 @@ bool StoragePipeline::FindOperationLocked(
     return true;
 }
 
-void StoragePipeline::ScheduleCompletionLocked(std::size_t index) noexcept {
+bool StoragePipeline::ScheduleCompletionLocked(std::size_t index) noexcept {
     Slot& slot = slots_[index];
     if (slot.scheduled) {
-        return;
+        return true;
     }
     if (completion_count_ >= capacity_) {
-        Fail(Error(
-            ErrorCode::InternalError, "storage", 0, "Completion scheduling capacity was exceeded"));
-        return;
+        return false;
     }
     const std::size_t tail = (completion_head_ + completion_count_) % capacity_;
     completion_ring_[tail] = index;
     ++completion_count_;
     slot.scheduled = true;
     completion_condition_.notify_one();
+    return true;
 }
 
 void StoragePipeline::ApplyViolation(CompletionEffects& effects, const char* message) noexcept {

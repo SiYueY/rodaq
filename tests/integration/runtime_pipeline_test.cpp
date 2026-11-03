@@ -56,7 +56,8 @@ RuntimeOptions options(
     std::size_t block_bytes = 64U * 1024U, std::size_t capacity = 8,
     AdmissionMode admission_mode = AdmissionMode::Wait, int submit_delay_us = 0,
     std::string descriptor_scenario = "ready", std::string binding_scenario = "",
-    std::string lifecycle_scenario = "", bool pause_before_switch = false) {
+    std::string lifecycle_scenario = "", bool pause_before_switch = false,
+    std::string stale_handle_file = "", int callback_delay_us = 1000) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -73,7 +74,7 @@ RuntimeOptions options(
     value.storage.config = map_config({
         {"scenario", plugin::ConfigTree::String(std::move(storage_scenario))},
         {"event_log", plugin::ConfigTree::String(event_log)},
-        {"callback_delay_us", plugin::ConfigTree::Int64(1000)},
+        {"callback_delay_us", plugin::ConfigTree::Int64(callback_delay_us)},
         {"submit_delay_us", plugin::ConfigTree::Int64(submit_delay_us)},
         {"descriptor_scenario", plugin::ConfigTree::String(std::move(descriptor_scenario))},
     });
@@ -89,6 +90,7 @@ RuntimeOptions options(
         {"binding_scenario", plugin::ConfigTree::String(std::move(binding_scenario))},
         {"lifecycle_scenario", plugin::ConfigTree::String(std::move(lifecycle_scenario))},
         {"pause_before_switch", plugin::ConfigTree::Int64(pause_before_switch ? 1 : 0)},
+        {"stale_handle_file", plugin::ConfigTree::String(std::move(stale_handle_file))},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -271,6 +273,38 @@ TEST(RuntimePipelineTest, QualifiesIndependentCompletionAxes) {
     expect_clean_scenario("persistence_first", "persistence_first", "copy");
     expect_clean_scenario("persistence_failed", "persistence_failed", "retain");
     expect_clean_scenario("persistence_unknown", "persistence_unknown", "adopt");
+}
+
+TEST(RuntimePipelineTest, ReleasesInflightPayloadBytesWhilePersistenceIsPending) {
+    const std::string log = unique_log_path("payload_early_release");
+    std::error_code removed;
+    fs::remove(log, removed);
+    constexpr std::size_t kPayloadBytes = 1024U * 1024U;
+    Runtime runtime(options(
+        "payload_early_release", "sync_payload_async_persistence", "copy", 1, 1, 1, log,
+        std::chrono::seconds(1), -1, static_cast<std::int64_t>(kPayloadBytes), kPayloadBytes, 8,
+        AdmissionMode::Wait, 0, "ready", "", "", false, "", 300'000));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+
+    bool observed_early_release = false;
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    while (Clock::now() < deadline) {
+        const auto snapshot = runtime.Stats();
+        if (snapshot.has_value() && snapshot->accepted_records == 1U &&
+            snapshot->inflight_records == 1U && snapshot->inflight_bytes == 0U) {
+            observed_early_release = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(observed_early_release);
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto final_snapshot = runtime.Stats();
+    ASSERT_TRUE(final_snapshot.has_value());
+    EXPECT_EQ(final_snapshot->inflight_records, 0U);
+    EXPECT_EQ(final_snapshot->inflight_bytes, 0U);
 }
 
 TEST(RuntimePipelineTest, PreservesPerStreamSequenceOrderAcrossProducers) {
@@ -583,6 +617,41 @@ TEST(RuntimePipelineTest, PreservesAcceptedNoDropUnderDispatchSaturation) {
     EXPECT_TRUE(log_contains(reject_log, "reason=12"));
 }
 
+TEST(RuntimePipelineTest, ReportsPayloadDispositionIndependentlyFromRejection) {
+    const std::string log = unique_log_path("payload_disposition");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "payload_disposition", "sync", "adopt", 1, 4, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 1, AdmissionMode::Reject, 50'000));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 4));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "outcome=3 reason=0 disposition=2"));
+    EXPECT_TRUE(log_contains(log, "outcome=1 reason=12 disposition=1"));
+}
+
+TEST(RuntimePipelineTest, ReportsBlockedAdmissionWaitTimeout) {
+    const std::string log = unique_log_path("admission_wait_timeout");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto runtime_options = options(
+        "admission_wait_timeout", "sync", "copy", 1, 2, 1, log, std::chrono::seconds(3), -1, 16,
+        64U * 1024U, 1, AdmissionMode::Wait, 1'000'000);
+    runtime_options.submit_wait_timeout = std::chrono::milliseconds(100);
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 2));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 1U);
+    EXPECT_EQ(snapshot->timed_out_records, 1U);
+    EXPECT_EQ(record_count(log), 1U);
+}
+
 TEST(RuntimePipelineTest, BoundsStorageSubmitFlushAndCloseStalls) {
     struct Scenario {
         const char* name;
@@ -705,6 +774,114 @@ TEST(RuntimePipelineTest, FailsClosedOnStorageSubmitAndBackgroundFailures) {
     auto primary = background_runtime.PrimaryFailure();
     ASSERT_TRUE(primary.has_value());
     EXPECT_NE(primary->message().find("background failure"), std::string_view::npos);
+}
+
+TEST(RuntimePipelineTest, RejectsStaleHandlesAcrossActivations) {
+    const std::string log = unique_log_path("stale_handles");
+    const std::string handle_file = unique_log_path("stale_handles_fixture");
+    std::error_code removed;
+    fs::remove(log, removed);
+    fs::remove(handle_file, removed);
+    Runtime runtime(options(
+        "stale_handles", "sync", "copy", 1, 1, 1, log, std::chrono::seconds(1), -1, 16, 64U * 1024U,
+        8, AdmissionMode::Wait, 0, "ready", "", "", false, handle_file));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(fs::is_regular_file(handle_file));
+
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 2));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "stale_handles_rejected"));
+}
+
+TEST(RuntimePipelineTest, QualifiesMixedPayloadModesInOneActivation) {
+    const std::string log = unique_log_path("mixed_payload_modes");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto runtime_options = options("mixed_payload_modes", "sync", "copy", 1, 2, 1, log);
+    runtime_options.acquisitions.clear();
+    for (const std::string payload_mode : {"copy", "adopt", "retain"}) {
+        RuntimePluginOptions acquisition;
+        acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
+        acquisition.config = map_config({
+            {"streams", plugin::ConfigTree::Int64(1)},
+            {"records_per_stream", plugin::ConfigTree::Int64(2)},
+            {"producer_threads", plugin::ConfigTree::Int64(1)},
+            {"payload_size", plugin::ConfigTree::Int64(16)},
+            {"payload_mode", plugin::ConfigTree::String(payload_mode)},
+            {"descriptor_change_after", plugin::ConfigTree::Int64(-1)},
+            {"binding_scenario", plugin::ConfigTree::String("")},
+            {"lifecycle_scenario", plugin::ConfigTree::String("")},
+            {"pause_before_switch", plugin::ConfigTree::Int64(0)},
+            {"stale_handle_file", plugin::ConfigTree::String("")},
+            {"event_log", plugin::ConfigTree::String(log)},
+        });
+        runtime_options.acquisitions.push_back(std::move(acquisition));
+    }
+
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 6));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 6U);
+    EXPECT_EQ(snapshot->accepted_bytes, 96U);
+    EXPECT_EQ(snapshot->inflight_records, 0U);
+    EXPECT_EQ(record_count(log), 6U);
+}
+
+TEST(RuntimePipelineTest, StressConcurrentAdmissionAndDescriptorTransitions) {
+    constexpr int kStreams = 4;
+    constexpr int kRecordsPerStream = 100;
+    constexpr int kProducers = 4;
+    constexpr std::size_t kSubmissions =
+        static_cast<std::size_t>(kStreams * kRecordsPerStream * kProducers);
+    const std::string log = unique_log_path("concurrent_stress");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "concurrent_stress", "sync", "copy", kStreams, kRecordsPerStream, kProducers, log,
+        std::chrono::seconds(3), 50, 1024, 2U * 1024U * 1024U, 16));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", kSubmissions));
+    ASSERT_TRUE(runtime.Stop().has_value());
+
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_GT(snapshot->accepted_records, 0U);
+    EXPECT_EQ(snapshot->inflight_records, 0U);
+    EXPECT_EQ(snapshot->inflight_bytes, 0U);
+    EXPECT_EQ(record_count(log), snapshot->accepted_records);
+    EXPECT_EQ(snapshot->accepted_bytes, snapshot->accepted_records * 1024U);
+
+    std::unordered_map<std::uint64_t, std::uint64_t> last_sequence;
+    for (const std::string& line : read_lines(log)) {
+        if (line.rfind("record ", 0) != 0) {
+            continue;
+        }
+        std::istringstream input(line);
+        std::string token;
+        std::uint64_t stream = 0;
+        std::uint64_t sequence = 0;
+        while (input >> token) {
+            if (token.rfind("stream=", 0) == 0) {
+                stream = std::stoull(token.substr(7));
+            } else if (token.rfind("sequence=", 0) == 0) {
+                sequence = std::stoull(token.substr(9));
+            }
+        }
+        const auto inserted = last_sequence.emplace(stream, sequence);
+        if (!inserted.second) {
+            EXPECT_GT(sequence, inserted.first->second);
+            inserted.first->second = sequence;
+        }
+    }
 }
 
 TEST(RuntimePipelineTest, RestartCreatesFreshActivation) {

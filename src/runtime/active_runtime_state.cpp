@@ -779,14 +779,22 @@ Result<void> ActiveRuntimeState::InitializePipeline(
             options_.operation_capacity, effective_payload_limit, storage, progress_timeout,
             [this](Error error) { RequestFailure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
-                if (!stats_.RecordInflightReleased(bytes)) {
+                if (!stats_.RecordPayloadReleased(bytes)) {
                     RequestFailure(runtime_error(
                         ErrorCode::InternalError, "Runtime inflight byte accounting underflowed"));
+                }
+            },
+            [this]() noexcept {
+                if (!stats_.RecordOperationCompleted()) {
+                    RequestFailure(runtime_error(
+                        ErrorCode::InternalError,
+                        "Runtime inflight record accounting underflowed"));
                 }
             },
             [this](
                 const RuntimeRecord& record, rodaq_storage_operation operation,
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
+                std::lock_guard<std::mutex> lock(control_mutex_);
                 const BindingEntry* binding = bindings_.Find(record.Binding());
                 if (binding == nullptr) {
                     return Result<rodaq_storage_submission>(nonstd::make_unexpected(

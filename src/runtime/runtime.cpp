@@ -33,8 +33,28 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+#if defined(__SANITIZE_ADDRESS__)
+extern "C" void __lsan_ignore_object(const void*);
+#define RODAQ_HAS_LSAN_IGNORE 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+extern "C" void __lsan_ignore_object(const void*);
+#define RODAQ_HAS_LSAN_IGNORE 1
+#endif
+#endif
+
 Error runtime_error(ErrorCode code, std::string message) {
     return Error(code, "runtime", 0, std::move(message));
+}
+
+void ignore_intentional_quarantine_root(const void* object) noexcept {
+#if defined(RODAQ_HAS_LSAN_IGNORE)
+    if (object != nullptr) {
+        __lsan_ignore_object(object);
+    }
+#else
+    static_cast<void>(object);
+#endif
 }
 
 Result<void> validate_plugin_options(const RuntimePluginOptions& options) {
@@ -181,6 +201,7 @@ BoundedCallOutcome run_bounded_call(
              * Retain the joinable thread object and the activation captured by
              * its callable rather than detaching or destroying either object.
              */
+            ignore_intentional_quarantine_root(worker.get());
             static_cast<void>(worker.release());
             return BoundedCallOutcome{BoundedCallOutcome::Status::TimedOut, std::nullopt};
         }
@@ -535,6 +556,8 @@ public:
             if (storage == nullptr) {
                 std::abort();
             }
+            ignore_intentional_quarantine_root(quarantined_.get());
+            ignore_intentional_quarantine_root(storage);
             ::new (storage) std::shared_ptr<ActiveRuntimeState>(std::move(quarantined_));
         }
     }

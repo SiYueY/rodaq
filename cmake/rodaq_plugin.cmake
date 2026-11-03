@@ -171,10 +171,11 @@ function(rodaq_configure_plugin)
     set(version_script "${generated_dir}/${ARG_TARGET}.map")
     file(WRITE "${version_script}"
         "{\n  global:\n    rodaq_plugin_abi_version;\n    ${entrypoint};\n  local:\n    *;\n};\n")
-    target_link_options("${ARG_TARGET}" PRIVATE
-        "LINKER:--version-script=${version_script}"
-        "LINKER:--no-undefined"
-    )
+    set(plugin_link_options "LINKER:--version-script=${version_script}")
+    if(NOT CMAKE_CXX_FLAGS MATCHES "(^| )-fsanitize=thread")
+        list(APPEND plugin_link_options "LINKER:--no-undefined")
+    endif()
+    target_link_options("${ARG_TARGET}" PRIVATE ${plugin_link_options})
 
     add_custom_command(TARGET "${ARG_TARGET}" POST_BUILD
         COMMAND "${CMAKE_COMMAND}"
