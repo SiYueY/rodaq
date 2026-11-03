@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -12,7 +14,7 @@
 namespace rodaq {
 namespace {
 
-using IntRegistry = Registry<int>;
+using IntRegistry = Registry<int, StreamHandle>;
 
 TEST(HandleTest, DefaultHandleIsInvalid) {
     const StreamHandle handle;
@@ -72,7 +74,7 @@ TEST(RegistryTest, EraseRejectsInvalidAndMissingHandles) {
     ASSERT_TRUE(registry_result.has_value());
     auto registry = std::move(registry_result.value());
 
-    const auto invalid = registry.Erase(IntRegistry::HandleType{});
+    const auto invalid = registry.Erase(StreamHandle{});
     ASSERT_FALSE(invalid.has_value());
     EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
 
@@ -103,15 +105,14 @@ TEST(RegistryTest, StaleHandleCannotResolveReusedSlot) {
 }
 
 TEST(RegistryTest, InvalidAndForeignHandlesDoNotResolve) {
-    using StringRegistry = Registry<std::string>;
+    using StringRegistry = Registry<std::string, BindingHandle>;
     auto registry_result = StringRegistry::Create(1);
     ASSERT_TRUE(registry_result.has_value());
     auto registry = std::move(registry_result.value());
 
-    EXPECT_EQ(registry.Find(StringRegistry::HandleType{}), nullptr);
+    EXPECT_EQ(registry.Find(BindingHandle{}), nullptr);
     EXPECT_EQ(
-        registry.Find(
-            StringRegistry::HandleType::FromRaw(std::numeric_limits<std::uint64_t>::max())),
+        registry.Find(BindingHandle::FromRaw(std::numeric_limits<std::uint64_t>::max())),
         nullptr);
 }
 
@@ -120,7 +121,7 @@ TEST(RegistryTest, SupportsNonPowerOfTwoCapacity) {
     ASSERT_TRUE(registry_result.has_value());
     auto registry = std::move(registry_result.value());
 
-    std::vector<IntRegistry::HandleType> handles;
+    std::vector<StreamHandle> handles;
     for (int value = 0; value < 3; ++value) {
         auto handle = registry.Insert(value);
         ASSERT_TRUE(handle.has_value());
@@ -135,6 +136,91 @@ TEST(RegistryTest, SupportsNonPowerOfTwoCapacity) {
 
 static_assert(std::is_move_constructible<IntRegistry>::value);
 static_assert(!std::is_copy_constructible<IntRegistry>::value);
+
+TEST(RegistryTest, DirectlyUsesRealRuntimeHandleTypes) {
+    auto sources = Registry<int, SourceHandle>::Create(1);
+    auto streams = Registry<int, StreamHandle>::Create(1);
+    auto bindings = Registry<int, BindingHandle>::Create(1);
+    ASSERT_TRUE(sources.has_value());
+    ASSERT_TRUE(streams.has_value());
+    ASSERT_TRUE(bindings.has_value());
+
+    const auto source = sources.value().Insert(1);
+    const auto stream = streams.value().Insert(2);
+    const auto binding = bindings.value().Insert(3);
+    ASSERT_TRUE(source.has_value());
+    ASSERT_TRUE(stream.has_value());
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(*sources.value().Find(source.value()), 1);
+    EXPECT_EQ(*streams.value().Find(stream.value()), 2);
+    EXPECT_EQ(*bindings.value().Find(binding.value()), 3);
+}
+
+TEST(RegistryTest, GenerationExhaustionRetiresSlotWithoutWrapping) {
+    auto registry_result = IntRegistry::Create(1, std::numeric_limits<std::uint32_t>::max());
+    ASSERT_TRUE(registry_result.has_value());
+    auto registry = std::move(registry_result.value());
+
+    auto handle = registry.Insert(1);
+    ASSERT_TRUE(handle.has_value());
+    EXPECT_EQ(handle.value().Value() >> 32U, std::numeric_limits<std::uint32_t>::max());
+    ASSERT_TRUE(registry.Erase(handle.value()).has_value());
+    EXPECT_EQ(registry.Size(), 0U);
+
+    const auto retired = registry.Insert(2);
+    ASSERT_FALSE(retired.has_value());
+    EXPECT_EQ(retired.error().code(), ErrorCode::ResourceExhausted);
+}
+
+struct ThrowingValue {
+    enum class Failure {
+        None,
+        RuntimeError,
+        BadAlloc,
+    };
+
+    static Failure failure;
+
+    int value = 0;
+
+    explicit ThrowingValue(int input) : value(input) {}
+    ThrowingValue(ThrowingValue&& other) : value(other.value) {
+        if (failure == Failure::RuntimeError) {
+            throw std::runtime_error("stored value construction failed");
+        }
+        if (failure == Failure::BadAlloc) {
+            throw std::bad_alloc();
+        }
+    }
+    ThrowingValue& operator=(ThrowingValue&&) = default;
+};
+
+ThrowingValue::Failure ThrowingValue::failure = ThrowingValue::Failure::None;
+
+TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
+    using ThrowingRegistry = Registry<ThrowingValue, StreamHandle>;
+    auto registry_result = ThrowingRegistry::Create(1);
+    ASSERT_TRUE(registry_result.has_value());
+    auto registry = std::move(registry_result.value());
+
+    ThrowingValue::failure = ThrowingValue::Failure::RuntimeError;
+    const auto failed = registry.Insert(ThrowingValue(1));
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(failed.error().code(), ErrorCode::InternalError);
+    EXPECT_EQ(registry.Size(), 0U);
+
+    ThrowingValue::failure = ThrowingValue::Failure::BadAlloc;
+    const auto allocation_failed = registry.Insert(ThrowingValue(2));
+    ASSERT_FALSE(allocation_failed.has_value());
+    EXPECT_EQ(allocation_failed.error().code(), ErrorCode::ResourceExhausted);
+    EXPECT_EQ(registry.Size(), 0U);
+
+    ThrowingValue::failure = ThrowingValue::Failure::None;
+    const auto valid = registry.Insert(ThrowingValue(3));
+    ASSERT_TRUE(valid.has_value());
+    ASSERT_NE(registry.Find(valid.value()), nullptr);
+    EXPECT_EQ(registry.Find(valid.value())->value, 3);
+}
 
 }  // namespace
 }  // namespace rodaq

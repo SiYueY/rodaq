@@ -8,6 +8,7 @@
 #include <limits>
 #include <new>
 #include <optional>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -18,13 +19,14 @@ namespace rodaq {
 ///
 /// Mutation must be externally serialized. Concurrent lookups are safe only
 /// while no insertion, erasure, movement, or destruction is in progress.
-template <typename T>
+///
+/// Registry generation prevents stale handles from aliasing within this
+/// Registry's lifetime. Cross-activation validation remains the responsibility
+/// of the M2 ActiveRuntimeState that owns the Registry.
+template <typename T, typename HandleType>
 class Registry final {
 public:
-    struct Tag;
-    using HandleType = Handle<Tag>;
-
-    static Result<Registry> Create(std::size_t capacity) {
+    static Result<Registry> Create(std::size_t capacity, std::uint32_t initial_generation = 1) {
         constexpr std::size_t kMaxCapacity =
             static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max() - 1U);
         if (capacity > kMaxCapacity) {
@@ -32,7 +34,11 @@ public:
                 ErrorCode::InvalidArgument, "registry capacity exceeds the handle slot domain"));
         }
         try {
-            return Registry(capacity);
+            if (initial_generation == 0) {
+                return nonstd::make_unexpected(Error(
+                    ErrorCode::InvalidArgument, "registry initial generation must be non-zero"));
+            }
+            return Registry(capacity, initial_generation);
         } catch (const std::bad_alloc&) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::ResourceExhausted, "failed to allocate registry storage"));
@@ -54,9 +60,25 @@ public:
         }
 
         const std::size_t index = free_slots_.back();
-        free_slots_.pop_back();
         Slot& slot = slots_[index];
-        slot.value.emplace(std::move(value));
+        try {
+            slot.value.emplace(std::move(value));
+        } catch (const std::bad_alloc&) {
+            return nonstd::make_unexpected(Error(
+                ErrorCode::ResourceExhausted, "registry value construction exhausted memory"));
+        } catch (const std::length_error&) {
+            return nonstd::make_unexpected(Error(
+                ErrorCode::ResourceExhausted,
+                "registry value construction exceeded a length limit"));
+        } catch (const std::exception&) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InternalError, "registry value construction failed"));
+        } catch (...) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InternalError, "registry value construction failed"));
+        }
+
+        free_slots_.pop_back();
         ++size_;
         return HandleType::FromRaw(encode(index, slot.generation));
     }
@@ -126,7 +148,11 @@ private:
         std::uint32_t generation = 1;
     };
 
-    explicit Registry(std::size_t capacity) : slots_(capacity), free_slots_(), size_(0) {
+    explicit Registry(std::size_t capacity, std::uint32_t initial_generation)
+    : slots_(capacity), free_slots_(), size_(0) {
+        for (Slot& slot : slots_) {
+            slot.generation = initial_generation;
+        }
         free_slots_.reserve(capacity);
         for (std::size_t offset = 0; offset < capacity; ++offset) {
             free_slots_.push_back(capacity - offset - 1U);

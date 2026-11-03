@@ -37,7 +37,7 @@ void release_retain_probe(void* owner_context) noexcept {
 }
 
 TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
-    auto registry = Registry<std::string>::Create(2);
+    auto registry = Registry<std::string, StreamHandle>::Create(2);
     ASSERT_TRUE(registry.has_value());
     auto stream_metadata = registry.value().Insert("camera.front");
     ASSERT_TRUE(stream_metadata.has_value());
