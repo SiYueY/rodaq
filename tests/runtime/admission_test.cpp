@@ -257,6 +257,61 @@ TEST(AdmissionGateTest, ResourcesAndGateGenerationRemainConsistentUnderRaces) {
     }
 }
 
+TEST(AdmissionGateTest, ResourceReleaseAndDeadlineRaceFinishesExactlyOnce) {
+    for (int iteration = 0; iteration < 50; ++iteration) {
+        auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+        ResourceBudget& budget = *budget_owner;
+        AdmissionGate gate(budget);
+        gate.Open();
+        auto held = budget.TryReserve(ResourceAmount{1, 4});
+        ASSERT_TRUE(held.has_value());
+
+        std::optional<AdmissionGateDecision> result;
+        std::thread waiter([&]() {
+            result = gate.Admit(wait_request(ResourceAmount{1, 4}, std::chrono::milliseconds(100)))
+                         .value();
+        });
+        held.value().Release();
+        waiter.join();
+
+        ASSERT_TRUE(result.has_value());
+        EXPECT_TRUE(
+            result->outcome == AdmissionGateOutcome::Granted ||
+            result->outcome == AdmissionGateOutcome::Timeout);
+        result.reset();
+        EXPECT_EQ(budget.Used(), ResourceAmount{});
+        EXPECT_EQ(budget.ActiveReservations(), 0U);
+    }
+}
+
+TEST(AdmissionGateTest, ResourceReleaseAndCancellationRaceFinishesExactlyOnce) {
+    for (int iteration = 0; iteration < 50; ++iteration) {
+        auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+        ResourceBudget& budget = *budget_owner;
+        AdmissionGate gate(budget);
+        AdmissionCancellation cancellation(budget);
+        gate.Open();
+        auto held = budget.TryReserve(ResourceAmount{1, 4});
+        ASSERT_TRUE(held.has_value());
+
+        std::optional<AdmissionGateDecision> result;
+        std::thread waiter([&]() {
+            result = gate.Admit(wait_request(ResourceAmount{1, 4}), cancellation).value();
+        });
+        held.value().Release();
+        cancellation.Cancel();
+        waiter.join();
+
+        ASSERT_TRUE(result.has_value());
+        EXPECT_TRUE(
+            result->outcome == AdmissionGateOutcome::Granted ||
+            result->outcome == AdmissionGateOutcome::Cancelled);
+        result.reset();
+        EXPECT_EQ(budget.Used(), ResourceAmount{});
+        EXPECT_EQ(budget.ActiveReservations(), 0U);
+    }
+}
+
 TEST(AdmissionGateTest, RejectsInvalidWaitConfigurationAndForeignCancellation) {
     auto first_budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
     ResourceBudget& first_budget = *first_budget_owner;
