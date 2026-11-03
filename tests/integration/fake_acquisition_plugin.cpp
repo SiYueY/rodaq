@@ -65,7 +65,14 @@ public:
         payload_size_ = static_cast<std::size_t>(config_int(config, "payload_size", 16));
         payload_mode_ = config_string(config, "payload_mode", "copy");
         descriptor_change_after_ = config_int(config, "descriptor_change_after", -1);
+        binding_scenario_ = config_string(config, "binding_scenario", "");
+        lifecycle_scenario_ = config_string(config, "lifecycle_scenario", "");
+        pause_before_switch_ = config_int(config, "pause_before_switch", 0) != 0;
         event_log_ = config_string(config, "event_log", "");
+        LogControl(
+            "configure streams=" + std::to_string(stream_count_) +
+            " records=" + std::to_string(records_per_stream_) +
+            " producers=" + std::to_string(producer_threads_) + " payload_mode=" + payload_mode_);
         if (stream_count_ == 0 || records_per_stream_ == 0 || producer_threads_ == 0 ||
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
             return invalid_argument();
@@ -153,27 +160,68 @@ public:
         if (stage_ != Stage::Started) {
             return invalid_state();
         }
+        if (lifecycle_scenario_ == "stop_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         Quiesce();
         stage_ = Stage::Stopped;
+        if (lifecycle_scenario_ == "stop_failure") {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0, "configured stop failure"));
+        }
         return {};
     }
 
     rodaq::Result<void> PrepareBindingSwitch(
-        rodaq_binding_transition, rodaq_stream_handle, rodaq_stream_descriptor_handle,
-        rodaq_stream_descriptor_handle) override {
+        rodaq_binding_transition transition, rodaq_stream_handle stream,
+        rodaq_stream_descriptor_handle old_descriptor,
+        rodaq_stream_descriptor_handle new_descriptor) override {
+        static_cast<void>(stream);
+        LogControl(
+            "prepare transition=" + std::to_string(transition.value) + " old=" +
+            std::to_string(old_descriptor.value) + " new=" + std::to_string(new_descriptor.value));
+        if ((binding_scenario_ == "prepare_failure_initial" && old_descriptor.value == 0) ||
+            (binding_scenario_ == "prepare_failure_switch" && old_descriptor.value != 0)) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+                "configured binding prepare failure"));
+        }
         return {};
     }
 
-    rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition) override { return {}; }
+    rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition transition) override {
+        LogControl("commit transition=" + std::to_string(transition.value));
+        if (binding_scenario_ == "commit_failure_switch" && commit_count_.fetch_add(1) != 0) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+                "configured binding commit failure"));
+        }
+        if (binding_scenario_ != "commit_failure_switch") {
+            commit_count_.fetch_add(1);
+        }
+        return {};
+    }
 
     rodaq::Result<void> AbortBindingSwitch(
-        rodaq_binding_transition, rodaq_binding_abort_disposition) override {
+        rodaq_binding_transition transition, rodaq_binding_abort_disposition disposition) override {
+        LogControl(
+            "abort transition=" + std::to_string(transition.value) +
+            " disposition=" + std::to_string(disposition));
         return {};
     }
 
     rodaq::Result<void> QuiesceStream(rodaq_stream_handle) override { return {}; }
 
     rodaq::Result<void> QuiescePlugin() override {
+        LogControl("quiesce");
+        if (lifecycle_scenario_ == "quiesce_failure") {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+                "configured quiesce failure"));
+        }
+        if (lifecycle_scenario_ == "quiesce_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         Quiesce();
         return {};
     }
@@ -224,6 +272,13 @@ private:
             record_index == static_cast<std::size_t>(descriptor_change_after_)) {
             bool expected = false;
             if (switched_.compare_exchange_strong(expected, true)) {
+                if (pause_before_switch_) {
+                    const auto paused = runtime_.acquisition.ReportStream(
+                        streams_[stream_index], RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
+                    if (!paused.has_value()) {
+                        return;
+                    }
+                }
                 auto descriptor = PublishDescriptor(streams_[stream_index], "fake/switched");
                 if (!descriptor.has_value()) {
                     return;
@@ -286,8 +341,17 @@ private:
         }
         std::lock_guard<std::mutex> lock(log_mutex_);
         std::ofstream output(event_log_, std::ios::app);
-        output << "submit outcome=" << result.outcome
+        output << "submit outcome=" << result.outcome << " reason=" << result.rejection_reason
                << " disposition=" << result.payload_disposition << '\n';
+    }
+
+    void LogControl(const std::string& event) {
+        if (event_log_.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        std::ofstream output(event_log_, std::ios::app);
+        output << "control " << event << '\n';
     }
 
     static rodaq_string_view fixture_string(std::string_view value) noexcept {
@@ -336,10 +400,14 @@ private:
     std::size_t payload_size_ = 16;
     std::string payload_mode_ = "copy";
     std::int64_t descriptor_change_after_ = -1;
+    std::string binding_scenario_;
+    std::string lifecycle_scenario_;
+    bool pause_before_switch_ = false;
     std::string event_log_;
     std::mutex log_mutex_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> switched_{false};
+    std::atomic<std::size_t> commit_count_{0};
     std::vector<std::thread> producers_;
     std::vector<rodaq_stream_handle> streams_;
     std::vector<rodaq_stream_descriptor_handle> descriptors_;

@@ -148,6 +148,7 @@ private:
     struct CompletionEffects {
         Payload payload_to_release;
         std::optional<RuntimeRecord> record_to_destroy;
+        std::optional<Error> failure;
         std::optional<Error> violation;
         bool operation_completed = false;
         std::size_t completed_bytes = 0;
@@ -198,6 +199,7 @@ private:
     std::vector<std::size_t> completion_ring_;
     std::size_t dispatch_head_ = 0;
     std::size_t dispatch_count_ = 0;
+    bool dispatch_call_active_ = false;
     std::size_t completion_head_ = 0;
     std::size_t completion_count_ = 0;
 

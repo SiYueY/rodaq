@@ -346,7 +346,8 @@ void StoragePipeline::JoinCompletion() noexcept {
 
 bool StoragePipeline::WaitDispatchIdle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return dispatch_condition_.wait_until(lock, deadline, [this] { return dispatch_count_ == 0; });
+    return dispatch_condition_.wait_until(
+        lock, deadline, [this] { return dispatch_count_ == 0 && !dispatch_call_active_; });
 }
 
 bool StoragePipeline::WaitOperationsIdle(std::chrono::steady_clock::time_point deadline) {
@@ -392,9 +393,15 @@ void StoragePipeline::DispatchLoop() {
             dispatch_head_ = (dispatch_head_ + 1U) % capacity_;
             --dispatch_count_;
             slots_[index].dispatch_state = Slot::DispatchState::InFlight;
+            dispatch_call_active_ = true;
             dispatch_condition_.notify_all();
         }
         DispatchOne(index);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            dispatch_call_active_ = false;
+            dispatch_condition_.notify_all();
+        }
     }
 }
 
@@ -458,6 +465,7 @@ void StoragePipeline::CompleteSubmit(
                 ApplyViolation(
                     effects, "Storage emitted completion before returning a non-OK submit result");
             }
+            effects.failure.emplace(std::move(result.error()));
             slot.payload_axis = PayloadAxis::Consumed;
             slot.persistence_axis = PersistenceAxis::Failed;
             ReleasePayloadLocked(slot, effects);
@@ -521,6 +529,8 @@ void StoragePipeline::CompleteSubmit(
     NotifyOperationCompleted(effects);
     if (effects.violation.has_value()) {
         Fail(std::move(effects.violation.value()));
+    } else if (effects.failure.has_value()) {
+        Fail(std::move(effects.failure.value()));
     }
     effects.payload_to_release = Payload();
     effects.record_to_destroy.reset();

@@ -164,6 +164,7 @@ public:
 
     void RequestFailure(Error error) noexcept;
     Result<Error> PrimaryFailure() const;
+    Result<std::vector<Error>> SecondaryFailures() const;
     std::uint64_t SecondaryFailureOverflowCount() const noexcept;
     RuntimeStatsSnapshot Stats() const noexcept { return stats_.Snapshot(); }
     void RecordPreRejected(bool gate_closed, bool timeout) noexcept;

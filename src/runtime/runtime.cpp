@@ -12,14 +12,18 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -118,6 +122,84 @@ Error abi_error(rodaq_status status, const rodaq_error& error, std::string_view 
     return runtime_error(ErrorCode::InternalError, std::string(fallback));
 }
 
+struct BoundedCallCompletion {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool done = false;
+    bool threw = false;
+    std::optional<Error> error;
+};
+
+struct BoundedCallOutcome {
+    enum class Status {
+        Completed,
+        Failed,
+        TimedOut,
+    };
+
+    Status status = Status::Failed;
+    std::optional<Error> error;
+};
+
+template <typename Callable>
+BoundedCallOutcome run_bounded_call(
+    Callable callable, std::chrono::steady_clock::time_point deadline) noexcept {
+    std::shared_ptr<BoundedCallCompletion> completion;
+    std::unique_ptr<std::thread> worker;
+    try {
+        completion = std::make_shared<BoundedCallCompletion>();
+        worker =
+            std::make_unique<std::thread>([completion, callable = std::move(callable)]() mutable {
+                try {
+                    Result<void> result = callable();
+                    if (!result.has_value()) {
+                        std::lock_guard<std::mutex> lock(completion->mutex);
+                        completion->error.emplace(std::move(result.error()));
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(completion->mutex);
+                    completion->threw = true;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(completion->mutex);
+                    completion->done = true;
+                }
+                completion->condition.notify_all();
+            });
+    } catch (...) {
+        return BoundedCallOutcome{
+            BoundedCallOutcome::Status::Failed,
+            runtime_error(ErrorCode::Unavailable, "Failed to start bounded Plugin operation")};
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(completion->mutex);
+        if (!completion->condition.wait_until(
+                lock, deadline, [&completion] { return completion->done; })) {
+            /*
+             * A C++ thread executing Plugin code cannot be force-cancelled.
+             * Retain the joinable thread object and the activation captured by
+             * its callable rather than detaching or destroying either object.
+             */
+            static_cast<void>(worker.release());
+            return BoundedCallOutcome{BoundedCallOutcome::Status::TimedOut, std::nullopt};
+        }
+    }
+    worker->join();
+
+    std::lock_guard<std::mutex> lock(completion->mutex);
+    if (completion->threw) {
+        return BoundedCallOutcome{
+            BoundedCallOutcome::Status::Failed,
+            runtime_error(ErrorCode::InternalError, "Bounded Plugin operation threw")};
+    }
+    if (completion->error.has_value()) {
+        return BoundedCallOutcome{
+            BoundedCallOutcome::Status::Failed, std::move(completion->error.value())};
+    }
+    return BoundedCallOutcome{BoundedCallOutcome::Status::Completed, std::nullopt};
+}
+
 }  // namespace
 
 class Runtime::Impl final {
@@ -185,41 +267,116 @@ public:
                 runtime_error(ErrorCode::InvalidState, "Runtime cannot stop from its state"));
         }
         if (active_ == nullptr) {
+            if (quarantined_ != nullptr || state_ == RuntimeState::Failed) {
+                return nonstd::make_unexpected(
+                    runtime_error(ErrorCode::Unavailable, "Runtime stop requires quarantine"));
+            }
             state_ = RuntimeState::Stopped;
             return {};
         }
 
         state_ = RuntimeState::Stopping;
         active_->MarkStopping();
-        const auto deadline = Clock::now() + options_.stop_progress_timeout;
 
-        quiesce_acquisition_plugins();
-        if (!active_->WaitForSubmissions(deadline)) {
+        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
+            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
+                continue;
+            }
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto outcome = run_bounded_call(
+                [state, index]() -> Result<void> {
+                    auto control = state->acquisition_instance(index)->required_control_interface();
+                    if (!control.has_value()) {
+                        return nonstd::make_unexpected(std::move(control.error()));
+                    }
+                    const auto* table =
+                        static_cast<const rodaq_acquisition_control_v1*>(control->vtable);
+                    rodaq_error error{};
+                    const rodaq_status status = table->quiesce_plugin(control->context, &error);
+                    if (status != RODAQ_STATUS_OK) {
+                        return nonstd::make_unexpected(
+                            abi_error(status, error, "Acquisition quiescence failed"));
+                    }
+                    return {};
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Acquisition quiescence timed out"));
+                return quarantine_failure();
+            }
+            if (outcome.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(outcome.error.value()));
+                return quarantine_failure();
+            }
+        }
+
+        if (!active_->WaitForSubmissions(Clock::now() + options_.stop_progress_timeout)) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime submission barrier timed out"));
+            return quarantine_failure();
         }
-        if (!active_->WaitForAdmissionDrain(deadline)) {
+        if (!active_->WaitForAdmissionDrain(Clock::now() + options_.stop_progress_timeout)) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime admission barrier timed out"));
+            return quarantine_failure();
         }
 
         StoragePipeline* pipeline = active_->pipeline();
         if (pipeline != nullptr) {
             pipeline->CloseDispatch();
-            if (!pipeline->WaitDispatchIdle(deadline)) {
+            if (!pipeline->WaitDispatchIdle(Clock::now() + options_.stop_progress_timeout)) {
                 active_->RequestFailure(
                     runtime_error(ErrorCode::Timeout, "Runtime dispatch barrier timed out"));
+                return quarantine_failure();
             }
             pipeline->JoinDispatch();
         }
 
-        flush_storage();
-        if (pipeline != nullptr && !pipeline->WaitOperationsIdle(deadline)) {
+        if (storage_open_ && active_->storage_instance().has_value()) {
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto flush = run_bounded_call(
+                [state]() { return state->storage_instance()->flush(); },
+                Clock::now() + options_.stop_progress_timeout);
+            if (flush.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Storage flush timed out"));
+                return quarantine_failure();
+            }
+            if (flush.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(flush.error.value()));
+            }
+        }
+        if (pipeline != nullptr &&
+            !pipeline->WaitOperationsIdle(Clock::now() + options_.stop_progress_timeout)) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime Storage operation barrier timed out"));
         }
 
-        close_storage();
+        if (storage_open_ && active_->storage_instance().has_value()) {
+            const rodaq_storage_close_disposition disposition =
+                active_->state() == RuntimeState::Failed ? RODAQ_STORAGE_CLOSE_FAILURE
+                                                         : RODAQ_STORAGE_CLOSE_NORMAL;
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto close = run_bounded_call(
+                [state, disposition]() {
+                    rodaq_storage_close_request request{};
+                    request.struct_size = sizeof(request);
+                    request.disposition = disposition;
+                    return state->storage_instance()->close(request);
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            if (close.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Storage close timed out"));
+                return quarantine_failure();
+            }
+            storage_open_ = false;
+            if (close.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(close.error.value()));
+                return quarantine_failure();
+            }
+        }
         if (pipeline != nullptr) {
             pipeline->CloseCallbacks();
             pipeline->JoinCompletion();
@@ -229,29 +386,51 @@ public:
             }
         }
 
-        stop_acquisition_plugins();
         const bool unresolved = pipeline != nullptr && pipeline->HasUnresolvedOperations();
-        if (!unresolved) {
-            for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-                active_->acquisition_instance(index).reset();
-            }
-            active_->storage_instance().reset();
+        if (unresolved) {
+            return quarantine_failure();
         }
+
+        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
+            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
+                continue;
+            }
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto stopped = run_bounded_call(
+                [state, index]() { return state->acquisition_instance(index)->stop(); },
+                Clock::now() + options_.stop_progress_timeout);
+            if (stopped.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Acquisition stop timed out"));
+                return quarantine_failure();
+            }
+            if (stopped.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(stopped.error.value()));
+                return quarantine_failure();
+            }
+            acquisition_started_[index] = false;
+        }
+
         const bool failed =
             active_->state() == RuntimeState::Failed || active_->PrimaryFailure().has_value();
         last_stats_ = active_->Stats();
         auto primary_failure = active_->PrimaryFailure();
         if (primary_failure.has_value()) {
+            auto secondary_failures = active_->SecondaryFailures();
+            if (secondary_failures.has_value()) {
+                last_secondary_failures_ = std::move(secondary_failures.value());
+            }
+            last_secondary_failure_overflow_count_ = active_->SecondaryFailureOverflowCount();
             last_primary_failure_ = std::move(primary_failure.value());
         }
 
-        if (unresolved) {
-            quarantined_ = std::move(active_);
-            state_ = RuntimeState::Failed;
-        } else {
-            active_.reset();
-            state_ = failed ? RuntimeState::Failed : RuntimeState::Stopped;
+        for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+            active_->acquisition_instance(index).reset();
         }
+        active_->storage_instance().reset();
+        active_->MarkStopped();
+        active_.reset();
+        state_ = failed ? RuntimeState::Failed : RuntimeState::Stopped;
         if (failed) {
             state_ = RuntimeState::Failed;
         }
@@ -301,12 +480,30 @@ public:
         return active_->PrimaryFailure();
     }
 
+    Result<std::vector<Error>> SecondaryFailures() const {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        if (active_ != nullptr) {
+            return active_->SecondaryFailures();
+        }
+        if (quarantined_ != nullptr) {
+            return quarantined_->SecondaryFailures();
+        }
+        if (last_primary_failure_.has_value()) {
+            return last_secondary_failures_;
+        }
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Runtime has no failure history"));
+    }
+
     std::uint64_t SecondaryFailureOverflowCount() const noexcept {
         std::lock_guard<std::mutex> lock(lifecycle_mutex_);
         if (active_ != nullptr) {
             return active_->SecondaryFailureOverflowCount();
         }
-        return quarantined_ == nullptr ? 0 : quarantined_->SecondaryFailureOverflowCount();
+        if (quarantined_ != nullptr) {
+            return quarantined_->SecondaryFailureOverflowCount();
+        }
+        return last_secondary_failure_overflow_count_;
     }
 
     Result<RuntimeStatsSnapshot> Stats() const {
@@ -329,7 +526,16 @@ public:
             static_cast<void>(Stop());
         }
         if (quarantined_ != nullptr) {
-            static_cast<void>(quarantined_.release());
+            /*
+             * Quarantined activation state is process-lifetime state. The
+             * shared owner is intentionally retained because Plugin worker
+             * threads or callbacks may still reference it.
+             */
+            void* storage = std::malloc(sizeof(std::shared_ptr<ActiveRuntimeState>));
+            if (storage == nullptr) {
+                std::abort();
+            }
+            ::new (storage) std::shared_ptr<ActiveRuntimeState>(std::move(quarantined_));
         }
     }
 
@@ -482,73 +688,27 @@ private:
         state_ = RuntimeState::Failed;
     }
 
-    void quiesce_acquisition_plugins() noexcept {
-        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
-            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
-                continue;
-            }
-            auto control = active_->acquisition_instance(index)->required_control_interface();
-            if (!control.has_value()) {
-                active_->RequestFailure(std::move(control.error()));
-                continue;
-            }
-            const auto* table = static_cast<const rodaq_acquisition_control_v1*>(control->vtable);
-            rodaq_error error{};
-            const rodaq_status status = table->quiesce_plugin(control->context, &error);
-            if (status != RODAQ_STATUS_OK) {
-                active_->RequestFailure(abi_error(status, error, "Acquisition quiescence failed"));
-            }
+    Result<void> quarantine_failure() {
+        if (active_ != nullptr) {
+            quarantined_ = std::move(active_);
         }
-    }
-
-    void flush_storage() noexcept {
-        if (!storage_open_ || !active_->storage_instance().has_value()) {
-            return;
-        }
-        auto flushed = active_->storage_instance()->flush();
-        if (!flushed.has_value()) {
-            active_->RequestFailure(flushed.error());
-        }
-    }
-
-    void close_storage() noexcept {
-        if (!storage_open_ || !active_->storage_instance().has_value()) {
-            return;
-        }
-        rodaq_storage_close_request request{};
-        request.struct_size = sizeof(request);
-        request.disposition = active_->state() == RuntimeState::Failed ? RODAQ_STORAGE_CLOSE_FAILURE
-                                                                       : RODAQ_STORAGE_CLOSE_NORMAL;
-        auto closed = active_->storage_instance()->close(request);
-        storage_open_ = false;
-        if (!closed.has_value()) {
-            active_->RequestFailure(closed.error());
-        }
-    }
-
-    void stop_acquisition_plugins() noexcept {
-        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
-            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
-                continue;
-            }
-            auto stopped = active_->acquisition_instance(index)->stop();
-            if (!stopped.has_value()) {
-                active_->RequestFailure(stopped.error());
-            }
-            acquisition_started_[index] = false;
-        }
+        state_ = RuntimeState::Failed;
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::Unavailable, "Runtime stop requires quarantine"));
     }
 
     RuntimeOptions options_;
     mutable std::mutex lifecycle_mutex_;
     RuntimeState state_ = RuntimeState::Constructed;
     std::uint64_t activation_generation_ = 0;
-    std::unique_ptr<ActiveRuntimeState> active_;
-    std::unique_ptr<ActiveRuntimeState> quarantined_;
+    std::shared_ptr<ActiveRuntimeState> active_;
+    std::shared_ptr<ActiveRuntimeState> quarantined_;
     std::vector<bool> acquisition_started_;
     bool storage_open_ = false;
     std::optional<RuntimeStatsSnapshot> last_stats_;
     std::optional<Error> last_primary_failure_;
+    std::vector<Error> last_secondary_failures_;
+    std::uint64_t last_secondary_failure_overflow_count_ = 0;
 };
 
 Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::move(options))) {}
@@ -568,6 +728,8 @@ Result<rodaq_runtime_lifecycle_snapshot> Runtime::LifecycleSnapshot() const {
 }
 
 Result<Error> Runtime::PrimaryFailure() const { return impl_->PrimaryFailure(); }
+
+Result<std::vector<Error>> Runtime::SecondaryFailures() const { return impl_->SecondaryFailures(); }
 
 std::uint64_t Runtime::SecondaryFailureOverflowCount() const noexcept {
     return impl_->SecondaryFailureOverflowCount();

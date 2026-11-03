@@ -1012,6 +1012,15 @@ Result<Error> ActiveRuntimeState::PrimaryFailure() const {
     return primary_failure_.value();
 }
 
+Result<std::vector<Error>> ActiveRuntimeState::SecondaryFailures() const {
+    std::lock_guard<std::mutex> lock(failure_mutex_);
+    if (primary_failure_.has_value()) {
+        return secondary_failures_;
+    }
+    return nonstd::make_unexpected(
+        runtime_error(ErrorCode::InvalidState, "Runtime has no primary failure"));
+}
+
 std::uint64_t ActiveRuntimeState::SecondaryFailureOverflowCount() const noexcept {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     return secondary_overflow_count_;
@@ -1377,11 +1386,61 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
     const std::uint64_t old_binding_value =
         stream->current_binding->load(std::memory_order_acquire);
     if (old_binding_value == 0) {
-        auto binding = CreateBinding(plugin_index, stream_handle, handle, BindingLifecycle::Active);
+        auto binding =
+            CreateBinding(plugin_index, stream_handle, handle, BindingLifecycle::Prepared);
         if (!binding.has_value()) {
             return nonstd::make_unexpected(std::move(binding.error()));
         }
+        BindingEntry* prepared_entry = bindings_.Find(binding.value());
+        if (prepared_entry == nullptr) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InternalError, "Prepared Binding is unavailable"));
+        }
+        if (!acquisition_controls_[plugin_index].has_value()) {
+            prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+            return nonstd::make_unexpected(runtime_error(
+                ErrorCode::InvalidState, "Acquisition control interface is unavailable"));
+        }
+        const auto* control = static_cast<const rodaq_acquisition_control_v1*>(
+            acquisition_controls_[plugin_index]->vtable);
+        const rodaq_binding_transition transition{next_transition_id_++};
+        rodaq_error error{};
+        const rodaq_status prepare_status = control->prepare_binding_switch(
+            acquisition_controls_[plugin_index]->context, transition,
+            rodaq_stream_handle{stream_handle.Value()}, rodaq_stream_descriptor_handle{},
+            rodaq_stream_descriptor_handle{handle.Value()}, &error);
+        if (prepare_status != RODAQ_STATUS_OK) {
+            const rodaq_status abort_status = control->abort_binding_switch(
+                acquisition_controls_[plugin_index]->context, transition,
+                RODAQ_BINDING_ABORT_KEEP_PAUSED, nullptr);
+            prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+            if (abort_status != RODAQ_STATUS_OK) {
+                RequestFailure(runtime_error(
+                    ErrorCode::InternalError,
+                    "Initial Binding abort after prepare failure failed"));
+            }
+            auto converted = result_from_status(prepare_status, &error, "acquisition");
+            return converted.has_value()
+                       ? nonstd::make_unexpected(runtime_error(
+                             ErrorCode::Unavailable, "Initial Binding prepare failed"))
+                       : nonstd::make_unexpected(std::move(converted.error()));
+        }
+        prepared_entry->lifecycle->store(
+            static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
         stream->current_binding->store(binding.value().Value(), std::memory_order_release);
+        const rodaq_status commit_status = control->commit_binding_switch(
+            acquisition_controls_[plugin_index]->context, transition, &error);
+        if (commit_status != RODAQ_STATUS_OK) {
+            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+            RequestFailure(runtime_error(
+                ErrorCode::Unavailable, "Initial Binding commit failed after publication"));
+            auto converted = result_from_status(commit_status, &error, "acquisition");
+            return converted.has_value()
+                       ? nonstd::make_unexpected(
+                             runtime_error(ErrorCode::Unavailable, "Initial Binding commit failed"))
+                       : nonstd::make_unexpected(std::move(converted.error()));
+        }
         return {};
     }
 
@@ -1416,10 +1475,16 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         rodaq_stream_descriptor_handle{old_entry->descriptor.Value()},
         rodaq_stream_descriptor_handle{handle.Value()}, &error);
     if (prepare_status != RODAQ_STATUS_OK) {
+        const bool resume_old =
+            stream->availability->load(std::memory_order_acquire) == RODAQ_AVAILABILITY_AVAILABLE;
+        const rodaq_binding_abort_disposition abort_disposition =
+            resume_old ? RODAQ_BINDING_ABORT_RESUME_OLD : RODAQ_BINDING_ABORT_KEEP_PAUSED;
         const rodaq_status abort_status = control->abort_binding_switch(
-            acquisition_controls_[plugin_index]->context, transition,
-            RODAQ_BINDING_ABORT_RESUME_OLD, nullptr);
+            acquisition_controls_[plugin_index]->context, transition, abort_disposition, nullptr);
         prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+        if (!resume_old) {
+            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+        }
         if (abort_status != RODAQ_STATUS_OK) {
             RequestFailure(runtime_error(
                 ErrorCode::InternalError, "Binding abort after prepare failure also failed"));

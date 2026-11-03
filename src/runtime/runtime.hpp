@@ -77,6 +77,7 @@ public:
     RuntimeState State() const noexcept;
     Result<rodaq_runtime_lifecycle_snapshot> LifecycleSnapshot() const;
     Result<Error> PrimaryFailure() const;
+    Result<std::vector<Error>> SecondaryFailures() const;
     std::uint64_t SecondaryFailureOverflowCount() const noexcept;
     Result<RuntimeStatsSnapshot> Stats() const;
 

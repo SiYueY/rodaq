@@ -53,23 +53,29 @@ RuntimeOptions options(
     int records, int producers, std::string event_log,
     std::chrono::milliseconds stop_timeout = std::chrono::milliseconds(500),
     int descriptor_change_after = -1, std::int64_t payload_size = 16,
-    std::size_t block_bytes = 64U * 1024U) {
+    std::size_t block_bytes = 64U * 1024U, std::size_t capacity = 8,
+    AdmissionMode admission_mode = AdmissionMode::Wait, int submit_delay_us = 0,
+    std::string descriptor_scenario = "ready", std::string binding_scenario = "",
+    std::string lifecycle_scenario = "", bool pause_before_switch = false) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
     value.payload_block_bytes = block_bytes;
-    value.payload_block_count = 16;
+    value.payload_block_count = std::max<std::size_t>(16, capacity);
     value.max_single_payload_bytes = block_bytes;
-    value.dispatch_capacity = 8;
-    value.operation_capacity = 8;
-    value.completion_capacity = 8;
+    value.dispatch_capacity = capacity;
+    value.operation_capacity = capacity;
+    value.completion_capacity = capacity;
     value.submit_wait_timeout = std::chrono::milliseconds(500);
     value.stop_progress_timeout = stop_timeout;
+    value.admission_mode = admission_mode;
     value.storage.path = required_path("RODAQ_FAKE_STORAGE_PLUGIN");
     value.storage.config = map_config({
         {"scenario", plugin::ConfigTree::String(std::move(storage_scenario))},
         {"event_log", plugin::ConfigTree::String(event_log)},
         {"callback_delay_us", plugin::ConfigTree::Int64(1000)},
+        {"submit_delay_us", plugin::ConfigTree::Int64(submit_delay_us)},
+        {"descriptor_scenario", plugin::ConfigTree::String(std::move(descriptor_scenario))},
     });
     RuntimePluginOptions acquisition;
     acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
@@ -80,6 +86,9 @@ RuntimeOptions options(
         {"payload_size", plugin::ConfigTree::Int64(payload_size)},
         {"payload_mode", plugin::ConfigTree::String(std::move(payload_mode))},
         {"descriptor_change_after", plugin::ConfigTree::Int64(descriptor_change_after)},
+        {"binding_scenario", plugin::ConfigTree::String(std::move(binding_scenario))},
+        {"lifecycle_scenario", plugin::ConfigTree::String(std::move(lifecycle_scenario))},
+        {"pause_before_switch", plugin::ConfigTree::Int64(pause_before_switch ? 1 : 0)},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -118,11 +127,38 @@ bool wait_for_records(
     return false;
 }
 
+bool wait_for_log_prefix(
+    Runtime& runtime, const std::string& path, std::string_view prefix, std::size_t expected,
+    std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = Clock::now() + timeout;
+    while (Clock::now() < deadline) {
+        const auto lines = read_lines(path);
+        const auto count = std::count_if(lines.begin(), lines.end(), [prefix](const auto& line) {
+            return line.rfind(prefix, 0) == 0;
+        });
+        if (static_cast<std::size_t>(count) >= expected) {
+            return true;
+        }
+        if (runtime.State() == RuntimeState::Failed) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
 std::size_t record_count(const std::string& path) {
     const auto lines = read_lines(path);
     return static_cast<std::size_t>(std::count_if(
         lines.begin(), lines.end(),
         [](const std::string& line) { return line.rfind("record ", 0) == 0; }));
+}
+
+bool log_contains(const std::string& path, std::string_view expected) {
+    const auto lines = read_lines(path);
+    return std::any_of(lines.begin(), lines.end(), [expected](const auto& line) {
+        return line.find(expected) != std::string::npos;
+    });
 }
 
 void expect_clean_scenario(
@@ -153,6 +189,14 @@ void expect_failed_scenario(
     EXPECT_FALSE(runtime.Stop().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
     EXPECT_TRUE(runtime.PrimaryFailure().has_value());
+}
+
+bool wait_for_failure(Runtime& runtime) {
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    while (runtime.State() != RuntimeState::Failed && Clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return runtime.State() == RuntimeState::Failed;
 }
 
 TEST(RuntimePipelineTest, RejectsInvalidLifecycleTransitions) {
@@ -306,6 +350,87 @@ TEST(RuntimePipelineTest, SwitchesDescriptorWithoutBreakingStreamOrdering) {
     }
 }
 
+TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
+    for (const std::string descriptor_scenario : {"failed", "unsupported"}) {
+        const std::string name = "readiness_" + descriptor_scenario;
+        const std::string log = unique_log_path(name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            name, "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(100), -1, 16, 64U * 1024U,
+            8, AdmissionMode::Wait, 0, descriptor_scenario));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        EXPECT_FALSE(runtime.Start().has_value());
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    }
+
+    const std::string log = unique_log_path("initial_prepare_failure");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "initial_prepare_failure", "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(100), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "prepare_failure_initial"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    EXPECT_TRUE(log_contains(log, "control abort"));
+    EXPECT_TRUE(log_contains(log, "disposition=1"));
+}
+
+TEST(RuntimePipelineTest, AbortsBindingSwitchWithTheCorrectDisposition) {
+    struct Scenario {
+        const char* name;
+        bool pause_before_switch;
+        std::size_t expected_records;
+        const char* expected_abort;
+    };
+    const Scenario scenarios[] = {
+        {"resume_old", false, 5, "disposition=2"},
+        {"keep_paused", true, 2, "disposition=1"},
+    };
+    for (const Scenario& scenario : scenarios) {
+        const std::string log = unique_log_path(scenario.name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            scenario.name, "sync", "copy", 1, 6, 1, log, std::chrono::seconds(1), 2, 16,
+            64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "prepare_failure_switch", "",
+            scenario.pause_before_switch));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value());
+        ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 5));
+        ASSERT_TRUE(runtime.Stop().has_value());
+        EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
+        EXPECT_EQ(record_count(log), scenario.expected_records);
+        EXPECT_TRUE(log_contains(log, scenario.expected_abort));
+    }
+
+    const std::string log = unique_log_path("commit_failure");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "commit_failure", "sync", "copy", 1, 6, 1, log, std::chrono::milliseconds(100), 2, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "commit_failure_switch"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_failure(runtime));
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    EXPECT_TRUE(log_contains(log, "control commit"));
+}
+
+TEST(RuntimePipelineTest, RejectsCanonicalRegistrationCapacityExhaustion) {
+    const std::string log = unique_log_path("registration_capacity");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto runtime_options = options("registration_capacity", "sync", "copy", 2, 1, 1, log);
+    runtime_options.max_streams = 1;
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+}
+
 TEST(RuntimePipelineTest, ReconcilesEarlyCrossThreadPayloadCompletion) {
     const auto log = unique_log_path("early");
     std::error_code removed;
@@ -396,6 +521,17 @@ TEST(RuntimePipelineTest, DetectsDuplicatePersistenceCompletion) {
         "duplicate_persistence", "duplicate_persistence", std::chrono::milliseconds(100));
 }
 
+TEST(RuntimePipelineTest, DetectsAdditionalCompletionContractViolations) {
+    expect_failed_scenario(
+        "sync_persistence_callback", "sync_persistence_callback", std::chrono::milliseconds(100));
+    expect_failed_scenario(
+        "unknown_operation", "unknown_operation", std::chrono::milliseconds(100));
+    expect_failed_scenario(
+        "missing_diagnostic", "missing_diagnostic", std::chrono::milliseconds(100));
+    expect_failed_scenario(
+        "invalid_persistence_state", "invalid_persistence_state", std::chrono::milliseconds(100));
+}
+
 TEST(RuntimePipelineTest, MissingCallbacksDoNotHangStop) {
     expect_failed_scenario("missing_callback", "missing_callback", std::chrono::milliseconds(100));
 }
@@ -403,6 +539,172 @@ TEST(RuntimePipelineTest, MissingCallbacksDoNotHangStop) {
 TEST(RuntimePipelineTest, CallbackAfterCloseFailsClosed) {
     expect_failed_scenario(
         "callback_after_close", "callback_after_close", std::chrono::milliseconds(100));
+}
+
+TEST(RuntimePipelineTest, PreservesAcceptedNoDropUnderDispatchSaturation) {
+    const std::string wait_log = unique_log_path("saturated_wait");
+    std::error_code wait_removed;
+    fs::remove(wait_log, wait_removed);
+    Runtime wait_runtime(options(
+        "saturated_wait", "sync", "copy", 1, 8, 1, wait_log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 2, AdmissionMode::Wait, 10'000));
+    ASSERT_TRUE(wait_runtime.Configure().has_value());
+    ASSERT_TRUE(wait_runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(wait_runtime, wait_log, "submit ", 8));
+    ASSERT_TRUE(wait_runtime.Stop().has_value());
+    const auto wait_stats = wait_runtime.Stats();
+    ASSERT_TRUE(wait_stats.has_value());
+    EXPECT_EQ(wait_stats->accepted_records, 8U);
+    EXPECT_EQ(wait_stats->rejected_records, 0U);
+    EXPECT_EQ(wait_stats->inflight_records, 0U);
+    EXPECT_EQ(wait_stats->inflight_bytes, 0U);
+    EXPECT_EQ(record_count(wait_log), 8U);
+
+    const std::string reject_log = unique_log_path("saturated_reject");
+    std::error_code reject_removed;
+    fs::remove(reject_log, reject_removed);
+    Runtime reject_runtime(options(
+        "saturated_reject", "sync", "copy", 1, 8, 1, reject_log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 2, AdmissionMode::Reject, 50'000));
+    ASSERT_TRUE(reject_runtime.Configure().has_value());
+    ASSERT_TRUE(reject_runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(reject_runtime, reject_log, "submit ", 8));
+    ASSERT_TRUE(reject_runtime.Stop().has_value());
+    const auto reject_stats = reject_runtime.Stats();
+    ASSERT_TRUE(reject_stats.has_value());
+    EXPECT_EQ(reject_stats->accepted_records, 2U);
+    EXPECT_EQ(reject_stats->rejected_records, 6U);
+    EXPECT_EQ(reject_stats->timed_out_records, 0U);
+    EXPECT_EQ(reject_stats->gate_closed_records, 0U);
+    EXPECT_EQ(reject_stats->inflight_records, 0U);
+    EXPECT_EQ(reject_stats->inflight_bytes, 0U);
+    EXPECT_EQ(record_count(reject_log), 2U);
+    EXPECT_TRUE(log_contains(reject_log, "outcome=1"));
+    EXPECT_TRUE(log_contains(reject_log, "reason=12"));
+}
+
+TEST(RuntimePipelineTest, BoundsStorageSubmitFlushAndCloseStalls) {
+    struct Scenario {
+        const char* name;
+        const char* storage_scenario;
+    };
+    const Scenario scenarios[] = {
+        {"submit_stall", "storage_stall"},
+        {"flush_stall", "flush_stall"},
+        {"close_stall", "close_stall"},
+    };
+    for (const Scenario& scenario : scenarios) {
+        const std::string log = unique_log_path(scenario.name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            scenario.name, scenario.storage_scenario, "copy", 1, 1, 1, log,
+            std::chrono::milliseconds(50)));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        const auto start_result = runtime.Start();
+        ASSERT_TRUE(start_result.has_value())
+            << (start_result.has_value() ? std::string_view{} : start_result.error().message());
+        ASSERT_TRUE(wait_for_records(runtime, log, 1));
+
+        const auto started = Clock::now();
+        EXPECT_FALSE(runtime.Stop().has_value());
+        const auto elapsed = Clock::now() - started;
+        EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+        auto primary = runtime.PrimaryFailure();
+        ASSERT_TRUE(primary.has_value());
+        EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+        EXPECT_FALSE(runtime.Stop().has_value());
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    }
+}
+
+TEST(RuntimePipelineTest, BoundsAcquisitionQuiesceAndStopFailures) {
+    struct Scenario {
+        const char* name;
+        const char* lifecycle_scenario;
+    };
+    const Scenario scenarios[] = {
+        {"quiesce_failure", "quiesce_failure"},
+        {"quiesce_stall", "quiesce_stall"},
+        {"stop_failure", "stop_failure"},
+        {"stop_stall", "stop_stall"},
+    };
+    for (const Scenario& scenario : scenarios) {
+        const std::string log = unique_log_path(scenario.name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            scenario.name, "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(50), -1, 16,
+            64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", scenario.lifecycle_scenario));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value());
+        ASSERT_TRUE(wait_for_records(runtime, log, 1));
+
+        const auto started = Clock::now();
+        EXPECT_FALSE(runtime.Stop().has_value());
+        const auto elapsed = Clock::now() - started;
+        EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+        auto primary = runtime.PrimaryFailure();
+        ASSERT_TRUE(primary.has_value());
+        if (std::string_view(scenario.lifecycle_scenario).find("stall") != std::string_view::npos) {
+            EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+        } else {
+            EXPECT_EQ(primary->code(), ErrorCode::Unavailable);
+        }
+    }
+}
+
+TEST(RuntimePipelineTest, PreservesPrimaryAndSecondaryFailureDiagnostics) {
+    const std::string log = unique_log_path("combined_failure");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "combined_failure", "flush_and_close_failure", "copy", 1, 1, 1, log,
+        std::chrono::milliseconds(100)));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    const auto start_result = runtime.Start();
+    ASSERT_TRUE(start_result.has_value())
+        << (start_result.has_value() ? std::string_view{} : start_result.error().message());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::StorageError);
+    EXPECT_NE(primary->message().find("flush failure"), std::string_view::npos);
+    auto secondary = runtime.SecondaryFailures();
+    ASSERT_TRUE(secondary.has_value());
+    ASSERT_EQ(secondary->size(), 1U);
+    EXPECT_EQ(secondary->front().code(), ErrorCode::StorageError);
+    EXPECT_NE(secondary->front().message().find("close failure"), std::string_view::npos);
+}
+
+TEST(RuntimePipelineTest, FailsClosedOnStorageSubmitAndBackgroundFailures) {
+    const std::string submit_log = unique_log_path("submit_error");
+    std::error_code submit_removed;
+    fs::remove(submit_log, submit_removed);
+    Runtime submit_runtime(options("submit_error", "submit_error", "copy", 1, 1, 1, submit_log));
+    ASSERT_TRUE(submit_runtime.Configure().has_value());
+    ASSERT_TRUE(submit_runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_failure(submit_runtime));
+    EXPECT_FALSE(submit_runtime.Stop().has_value());
+    EXPECT_EQ(submit_runtime.State(), RuntimeState::Failed);
+
+    const std::string background_log = unique_log_path("background_fatal");
+    std::error_code background_removed;
+    fs::remove(background_log, background_removed);
+    Runtime background_runtime(
+        options("background_fatal", "background_fatal", "copy", 1, 1, 1, background_log));
+    ASSERT_TRUE(background_runtime.Configure().has_value());
+    ASSERT_TRUE(background_runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_failure(background_runtime));
+    EXPECT_FALSE(background_runtime.Stop().has_value());
+    auto primary = background_runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_NE(primary->message().find("background failure"), std::string_view::npos);
 }
 
 TEST(RuntimePipelineTest, RestartCreatesFreshActivation) {
