@@ -54,6 +54,12 @@ target_compile_definitions(rodaq_expected_lite
         nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD
 )
 
+set(HDR_HISTOGRAM_CORE_ONLY ON CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${RODAQ_THIRD_PARTY_ROOT}/hdr_histogram"
+    "${CMAKE_BINARY_DIR}/third_party/hdr_histogram"
+)
+
 if(BUILD_TESTING AND RODAQ_BUILD_TESTS)
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
