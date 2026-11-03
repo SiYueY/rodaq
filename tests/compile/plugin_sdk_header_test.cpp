@@ -51,7 +51,5 @@ public:
 int main() {
     rodaq::ConfigView config;
     rodaq::ServiceRegistryView registry;
-    static_cast<void>(config);
-    static_cast<void>(registry);
-    return 0;
+    return config.Find("key").has_value() || registry.Query("service").has_value() ? 1 : 0;
 }

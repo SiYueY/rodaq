@@ -21,6 +21,7 @@ inline Result<void> runtime_result(rodaq_status status, const rodaq_error& error
 class CommonRuntimeService final {
 public:
     CommonRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<CommonRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(Error(
@@ -44,6 +45,10 @@ public:
     }
     std::uint64_t MonotonicTimeNs() const { return table_->monotonic_time_ns(context_); }
     Result<rodaq_runtime_lifecycle_snapshot> LifecycleSnapshot() const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Common Runtime service is invalid"));
+        }
         rodaq_runtime_lifecycle_snapshot value{};
         rodaq_error error{};
         const rodaq_status status = table_->get_lifecycle_snapshot(context_, &value, &error);
@@ -69,6 +74,7 @@ private:
 class CanonicalRuntimeService final {
 public:
     CanonicalRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<CanonicalRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(Error(
@@ -88,6 +94,10 @@ public:
 
 #define RODAQ_SDK_CANONICAL_GETTER(method, handle_type, view_type)                             \
     Result<view_type> method(handle_type handle) const {                                       \
+        if (!Valid()) {                                                                        \
+            return nonstd::make_unexpected(                                                    \
+                Error(ErrorCode::InvalidState, "sdk", 0, "Canonical service is invalid"));     \
+        }                                                                                      \
         view_type value{};                                                                     \
         value.struct_size = sizeof(view_type);                                                 \
         rodaq_error error{};                                                                   \
@@ -107,6 +117,10 @@ public:
 #undef RODAQ_SDK_CANONICAL_GETTER
 
     Result<rodaq_timestamp_key_set_view> GetTimestampKeySet(std::uint64_t id) const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Canonical service is invalid"));
+        }
         rodaq_timestamp_key_set_view value{};
         value.struct_size = sizeof(value);
         rodaq_error error{};
@@ -127,6 +141,7 @@ private:
 class ProjectionRuntimeService final {
 public:
     ProjectionRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<ProjectionRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(
@@ -144,6 +159,10 @@ public:
     Result<void> Register(
         rodaq_stream_descriptor_handle descriptor, std::string_view id, const std::uint8_t* data,
         std::size_t size) const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Projection service is invalid"));
+        }
         rodaq_projection_registration request{};
         request.struct_size = sizeof(request);
         request.descriptor = descriptor;
@@ -154,6 +173,10 @@ public:
     }
     Result<rodaq_projection_view> Get(
         rodaq_stream_descriptor_handle descriptor, std::string_view id) const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Projection service is invalid"));
+        }
         rodaq_projection_view value{};
         value.struct_size = sizeof(value);
         rodaq_error error{};
@@ -175,6 +198,7 @@ private:
 class ClockCorrelationRuntimeService final {
 public:
     ClockCorrelationRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<ClockCorrelationRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(Error(
@@ -191,6 +215,10 @@ public:
         return ClockCorrelationRuntimeService(interface.Context(), table);
     }
     Result<rodaq_unix_epoch_clock_anchor> Anchor(rodaq_clock_handle clock) const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Clock service is invalid"));
+        }
         rodaq_unix_epoch_clock_anchor value{};
         value.struct_size = sizeof(value);
         rodaq_error error{};
@@ -212,6 +240,7 @@ private:
 class AcquisitionRuntimeService final {
 public:
     AcquisitionRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<AcquisitionRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(Error(
@@ -235,6 +264,10 @@ public:
 
 #define RODAQ_SDK_ACQ_REGISTER(method, abi_method, request_type, handle_type)                  \
     Result<handle_type> method(const request_type& request) const {                            \
+        if (!Valid()) {                                                                        \
+            return nonstd::make_unexpected(                                                    \
+                Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));   \
+        }                                                                                      \
         handle_type handle{};                                                                  \
         rodaq_error error{};                                                                   \
         const rodaq_status status = table_->abi_method(context_, &request, &handle, &error);   \
@@ -258,6 +291,10 @@ public:
 
     Result<rodaq_acquisition_submit_result> Submit(
         const rodaq_record_submission& submission) const {
+        if (!Valid()) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));
+        }
         rodaq_acquisition_submit_result result{};
         result.struct_size = sizeof(result);
         rodaq_error error{};
@@ -298,6 +335,7 @@ private:
 class StorageRuntimeService final {
 public:
     StorageRuntimeService() = default;
+    bool Valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
     static Result<StorageRuntimeService> From(InterfaceView interface) {
         if (!interface.Valid()) {
             return nonstd::make_unexpected(Error(

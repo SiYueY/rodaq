@@ -1,4 +1,5 @@
 #include <rodaq/plugin/plugin.hpp>
+#include <rodaq/plugin/runtime_services.hpp>
 
 #include <gtest/gtest.h>
 
@@ -56,4 +57,27 @@ TEST(PluginExceptionTest, InterfaceTrampolineNeverReturnsOkWithNullInterface) {
     EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, status);
     EXPECT_EQ(nullptr, interface.context);
     EXPECT_EQ(nullptr, interface.vtable);
+}
+
+TEST(PluginExceptionTest, DefaultRuntimeWrappersFailWithoutDereferencingNull) {
+    rodaq::CommonRuntimeService common;
+    rodaq::CanonicalRuntimeService canonical;
+    rodaq::ProjectionRuntimeService projection;
+    rodaq::ClockCorrelationRuntimeService clock;
+    rodaq::AcquisitionRuntimeService acquisition;
+    rodaq::StorageRuntimeService storage;
+
+    EXPECT_FALSE(common.Valid());
+    EXPECT_FALSE(canonical.Valid());
+    EXPECT_FALSE(projection.Valid());
+    EXPECT_FALSE(clock.Valid());
+    EXPECT_FALSE(acquisition.Valid());
+    EXPECT_FALSE(storage.Valid());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.LifecycleSnapshot().error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState, canonical.get_stream(rodaq_stream_handle{}).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState,
+        projection.Get(rodaq_stream_descriptor_handle{}, "id").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, clock.Anchor(rodaq_clock_handle{}).error().code());
 }
