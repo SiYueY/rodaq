@@ -3,21 +3,22 @@
 **Updated:** 2026-11-04
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
-**M1 implementation baseline:** `83c8458` — `feat: add external payload lifetime anchors`
+**M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
 ## Current milestone
 
-**M1 — Runtime Core Primitives**
+**M2 — Fake End-to-End Runtime**
 
-Status: **CLOSURE REVIEW**
+Status: **ACTIVE**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-M1 Runtime Core Primitives has been reopened for contract-alignment review.
-M2 Fake End-to-End Runtime is **NOT STARTED** until this closure passes.
+M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. M2 Fake
+End-to-End Runtime is now the only ACTIVE milestone. M2 implementation has not
+started.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -305,7 +306,7 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Close the reviewed M1 contract defects.
+1. Begin M2 — Fake End-to-End Runtime.
 2. Native arm64 closure evidence remains deferred until a runner is available.
 
 ## Validation state
@@ -383,13 +384,15 @@ M0 Final Contract Correction
     ARM64 DEFERRED BY D-034
     PASS
 
-M1 Runtime Core Primitives (pre-closure baseline)
+M1 Runtime Core Primitives
     IMPLEMENTED
     UNIT / CONCURRENCY / INTEGRATION TESTED
     NORMAL / ASAN / UBSAN TESTED
     CLANG TSAN CONCURRENCY TESTED
     REVIEWED
-    REOPENED
+    CONTRACT-ALIGNED
+    BENCHMARK BASELINE ESTABLISHED
+    PASS
 ```
 
 Validation performed on GCC 11.4.0, CMake 3.22.1, clang-format 14.0.0 and
@@ -548,7 +551,7 @@ M0 Final Contract Correction validation:
 - clang-format, `git diff --check`, whitespace and recursive submodule audits
   passed.
 
-M1 Runtime Core Primitives pre-closure baseline validation:
+M1 Runtime Core Primitives closure validation:
 
 - GCC 11.4.0 Debug with warnings-as-errors: 87/87 CTest entries passed.
 - ASan: 87/87 CTest entries passed.
@@ -563,14 +566,34 @@ M1 Runtime Core Primitives pre-closure baseline validation:
   state, exact byte equality, pool reuse, exhaustion and exactly-once release.
 - Admission tests cover Reject, deadline Wait, cancellation, Gate close,
   generation change, multiple waiters, Stop-style cutoff and repeated races.
-- M1 integration verifies rejection does not consume an AcceptanceSequence,
-  retained bytes stay budgeted, payload and reservation ownership compose, and
-  all capacity returns to baseline after destruction.
+- M1 integration verifies pre-gate resource unavailability does not consume an
+  AcceptanceSequence, retained bytes stay budgeted, payload and reservation
+  ownership compose, and all capacity returns to baseline after destruction.
 - ResourceBudget arithmetic was tested at `UINT64_MAX`; PayloadPool setup and
   Registry creation convert allocation and length failures to RoDAQ errors.
 - `clang-format`, `git diff --check`, source review and status/plan consistency
   checks passed.
 
-M1 closure review is open. The prior 87/87 result is retained only as a
-pre-closure baseline. Final qualification and the contract review answers will
-be replaced after the corrective work completes.
+M1 closure review answers:
+
+1. Yes. RuntimeRecord uses `BindingHandle` as its sole Binding/Descriptor anchor.
+2. No. Timestamp slots contain only presence and signed values.
+3. No. AdmissionGate reports pre-commit `Granted`, never final Accepted.
+4. No. UINT64_MAX is terminal; Gate reopening is refused after exhaustion.
+5. Yes. Typed Runtime handles are Registry template parameters.
+6. No. Failed stored-value construction preserves size and free capacity.
+7. No. Invalid non-empty PayloadView remains invalid.
+8. No. Adopt/Retain structural validation precedes responsibility acquisition.
+9. No. Payload responsibility is released before ResourceBudget capacity.
+10. No. Registry generation retirement prevents stale-handle alias.
+11. No. Pre-gate resource unavailability cannot consume AcceptanceSequence.
+12. No. AcceptanceSequence exhaustion is terminal and sequences never reuse.
+13. No. Waiters wake on close, cancel, generation change, release, and deadline.
+14. No. M1 Runtime primitives contain no backend dependency.
+15. Yes. Normal, ASan, UBSan and required Clang TSan checks pass.
+16. No. No known P0/P1 issue remains.
+
+Current qualification count: **87/87** on Ubuntu 22.04 amd64 for normal, ASan
+and UBSan builds. Clang TSan concurrency qualification passed 4/4 selected
+CTest entries. The fixed-block PayloadPool baseline is
+`benchmarks/payload_pool_benchmark.cpp`. M0 and M1 are PASS; M2 is ACTIVE.
