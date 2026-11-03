@@ -241,3 +241,19 @@ set_target_properties(rodaq_compat_v1_storage PROPERTIES
 )
 target_link_options(rodaq_compat_v1_storage PRIVATE
     "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/compat/v1/storage_fixture.map")
+
+add_executable(
+    rodaq_compat_v1_output_test
+    compat/v1/output_compat_test.cpp
+)
+target_link_libraries(rodaq_compat_v1_output_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_compat_v1_output_test)
+rodaq_enable_sanitizers(rodaq_compat_v1_output_test)
+add_test(
+    NAME rodaq.compat.v1.outputs
+    COMMAND rodaq_compat_v1_output_test
+)
