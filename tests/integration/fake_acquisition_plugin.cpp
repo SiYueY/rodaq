@@ -86,6 +86,9 @@ public:
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
+        if (lifecycle_scenario_ == "start_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         auto source = runtime_.acquisition.RegisterSource(rodaq_source_registration{
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE,
             0,

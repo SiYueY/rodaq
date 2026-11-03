@@ -415,6 +415,38 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     EXPECT_TRUE(log_contains(log, "disposition=1"));
 }
 
+TEST(RuntimePipelineTest, BoundsAndQuarantinesBlockedActivationCalls) {
+    struct Scenario {
+        const char* name;
+        const char* storage_scenario;
+        const char* descriptor_scenario;
+        const char* lifecycle_scenario;
+    };
+    const Scenario scenarios[] = {
+        {"storage_open_stall", "open_stall", "ready", ""},
+        {"storage_capabilities_stall", "capabilities_stall", "ready", ""},
+        {"descriptor_readiness_stall", "sync", "stall", ""},
+        {"acquisition_start_stall", "sync", "ready", "start_stall"},
+    };
+    for (const Scenario& scenario : scenarios) {
+        const std::string log = unique_log_path(scenario.name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            scenario.name, scenario.storage_scenario, "copy", 1, 1, 1, log,
+            std::chrono::milliseconds(50), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0,
+            scenario.descriptor_scenario, "", scenario.lifecycle_scenario));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        const auto started = Clock::now();
+        EXPECT_FALSE(runtime.Start().has_value());
+        EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(500));
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+        auto primary = runtime.PrimaryFailure();
+        ASSERT_TRUE(primary.has_value());
+        EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+    }
+}
+
 TEST(RuntimePipelineTest, AbortsBindingSwitchWithTheCorrectDisposition) {
     struct Scenario {
         const char* name;

@@ -68,11 +68,17 @@ public:
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
+        if (scenario_ == "open_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         stage_ = Stage::Opened;
         return {};
     }
 
     rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+        if (scenario_ == "capabilities_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         rodaq_storage_capabilities value{};
         value.struct_size = sizeof(value);
         value.full_fidelity = RODAQ_TRUE;
@@ -88,6 +94,9 @@ public:
 
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
         rodaq_stream_descriptor_handle) override {
+        if (descriptor_scenario_ == "stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         rodaq_descriptor_readiness_result value{};
         value.struct_size = sizeof(value);
         value.state = descriptor_scenario_ == "unsupported" ? RODAQ_DESCRIPTOR_UNSUPPORTED

@@ -114,26 +114,6 @@ Result<void> validate_options(const RuntimeOptions& options) {
     return {};
 }
 
-Result<void> query_storage_control(
-    plugin::StoragePluginInstance& instance, ActiveRuntimeState& state) {
-    auto control = instance.required_control_interface();
-    if (!control.has_value()) {
-        return nonstd::make_unexpected(std::move(control.error()));
-    }
-    state.SetStorageControl(control.value());
-    return {};
-}
-
-Result<void> query_acquisition_control(
-    std::size_t index, plugin::AcquisitionPluginInstance& instance, ActiveRuntimeState& state) {
-    auto control = instance.required_control_interface();
-    if (!control.has_value()) {
-        return nonstd::make_unexpected(std::move(control.error()));
-    }
-    state.SetAcquisitionControl(index, control.value());
-    return {};
-}
-
 Error abi_error(rodaq_status status, const rodaq_error& error, std::string_view fallback) {
     auto converted = result_from_status(status, &error, "runtime");
     if (!converted.has_value()) {
@@ -291,6 +271,7 @@ public:
 
         auto started = start_activation();
         if (!started.has_value()) {
+            active_->RequestFailure(started.error());
             abort_start();
             state_ = RuntimeState::Failed;
             return started;
@@ -586,42 +567,97 @@ public:
     }
 
 private:
-    Result<void> start_activation() {
-        plugin::PluginManager manager;
+    template <typename Callable>
+    Result<void> supervise_start_call(Callable callable) {
+        auto outcome =
+            run_bounded_call(std::move(callable), Clock::now() + options_.stop_progress_timeout);
+        if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
+            start_quarantine_required_ = true;
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::Timeout, "Plugin activation call timed out"));
+        }
+        if (outcome.status == BoundedCallOutcome::Status::Failed) {
+            return nonstd::make_unexpected(std::move(outcome.error.value()));
+        }
+        return {};
+    }
 
-        auto storage_library = manager.load_library(options_.storage.path);
+    template <typename T, typename Callable>
+    Result<T> supervise_start_value(Callable callable) {
+        auto value = std::make_shared<std::optional<T>>();
+        auto error = std::make_shared<std::optional<Error>>();
+        auto outcome = run_bounded_call(
+            [callable = std::move(callable), value, error]() mutable -> Result<void> {
+                auto result = callable();
+                if (result.has_value()) {
+                    value->emplace(std::move(result.value()));
+                } else {
+                    error->emplace(std::move(result.error()));
+                }
+                return {};
+            },
+            Clock::now() + options_.stop_progress_timeout);
+        if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
+            start_quarantine_required_ = true;
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::Timeout, "Plugin activation call timed out"));
+        }
+        if (outcome.status == BoundedCallOutcome::Status::Failed) {
+            return nonstd::make_unexpected(std::move(outcome.error.value()));
+        }
+        if (error->has_value()) {
+            return nonstd::make_unexpected(std::move(error->value()));
+        }
+        return std::move(value->value());
+    }
+
+    Result<void> start_activation() {
+        auto manager = std::make_shared<plugin::PluginManager>();
+
+        auto storage_library = manager->load_library(options_.storage.path);
         if (!storage_library.has_value()) {
             return nonstd::make_unexpected(std::move(storage_library.error()));
         }
-        auto storage = manager.create_storage_plugin_instance(std::move(storage_library.value()));
+        auto storage = supervise_start_value<plugin::StoragePluginInstance>(
+            [manager, library = std::move(storage_library.value())]() mutable {
+                return manager->create_storage_plugin_instance(std::move(library));
+            });
         if (!storage.has_value()) {
             return nonstd::make_unexpected(std::move(storage.error()));
         }
         active_->storage_instance().emplace(std::move(storage.value()));
 
-        plugin::ServiceRegistry storage_registry(6, 128);
-        auto registered = active_->RegisterStorageServices(storage_registry);
+        auto storage_registry = std::make_shared<plugin::ServiceRegistry>(6, 128);
+        auto registered = active_->RegisterStorageServices(*storage_registry);
         if (!registered.has_value()) {
             return registered;
         }
-        auto frozen = storage_registry.Freeze();
+        auto frozen = storage_registry->Freeze();
         if (!frozen.has_value()) {
             return frozen;
         }
-        auto bound = active_->storage_instance()->bind(storage_registry.AbiView());
+        std::shared_ptr<ActiveRuntimeState> state = active_;
+        auto bound = supervise_start_call([state, storage_registry]() {
+            return state->storage_instance()->bind(storage_registry->AbiView());
+        });
         if (!bound.has_value()) {
             return bound;
         }
-        auto control = query_storage_control(active_->storage_instance().value(), *active_);
+        auto control = supervise_start_value<rodaq_interface>(
+            [state]() { return state->storage_instance()->required_control_interface(); });
         if (!control.has_value()) {
-            return control;
+            return nonstd::make_unexpected(std::move(control.error()));
         }
-        auto configured =
-            active_->storage_instance()->configure(options_.storage.config.view().AbiView());
+        active_->SetStorageControl(control.value());
+        auto storage_config = options_.storage.config;
+        auto configured = supervise_start_call([state, storage_config]() mutable {
+            return state->storage_instance()->configure(storage_config.view().AbiView());
+        });
         if (!configured.has_value()) {
             return configured;
         }
-        auto capabilities = active_->StorageCapabilities();
+        auto capabilities = supervise_start_value<rodaq_storage_capabilities>(
+            [state]() { return state->StorageCapabilities(); });
         if (!capabilities.has_value()) {
             return nonstd::make_unexpected(std::move(capabilities.error()));
         }
@@ -670,13 +706,16 @@ private:
         active_->options().operation_capacity = effective_capacity;
         active_->options().completion_capacity = effective_completion_capacity;
 
-        rodaq_storage_open_request open_request{};
-        open_request.struct_size = sizeof(open_request);
-        open_request.session_id =
-            rodaq_string_view{options_.session_id.data(), options_.session_id.size()};
-        open_request.target_uri =
-            rodaq_string_view{options_.target_uri.data(), options_.target_uri.size()};
-        auto opened = active_->storage_instance()->open(open_request);
+        auto opened = supervise_start_call([state]() {
+            const RuntimeOptions& active_options = state->options();
+            rodaq_storage_open_request open_request{};
+            open_request.struct_size = sizeof(open_request);
+            open_request.session_id = rodaq_string_view{
+                active_options.session_id.data(), active_options.session_id.size()};
+            open_request.target_uri = rodaq_string_view{
+                active_options.target_uri.data(), active_options.target_uri.size()};
+            return state->storage_instance()->open(open_request);
+        });
         if (!opened.has_value()) {
             return opened;
         }
@@ -694,43 +733,55 @@ private:
                 ErrorCode::InternalError, "Acquisition count changed during activation"));
         }
         for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-            auto library = manager.load_library(options_.acquisitions[index].path);
+            auto library = manager->load_library(options_.acquisitions[index].path);
             if (!library.has_value()) {
                 return nonstd::make_unexpected(std::move(library.error()));
             }
-            auto instance = manager.create_acquisition_plugin_instance(std::move(library.value()));
+            auto instance = supervise_start_value<plugin::AcquisitionPluginInstance>(
+                [manager, library = std::move(library.value())]() mutable {
+                    return manager->create_acquisition_plugin_instance(std::move(library));
+                });
             if (!instance.has_value()) {
                 return nonstd::make_unexpected(std::move(instance.error()));
             }
             active_->acquisition_instance(index).emplace(std::move(instance.value()));
 
-            plugin::ServiceRegistry registry(4, 128);
-            auto acquisition_registered = active_->RegisterAcquisitionServices(registry, index);
+            auto registry = std::make_shared<plugin::ServiceRegistry>(4, 128);
+            auto acquisition_registered = active_->RegisterAcquisitionServices(*registry, index);
             if (!acquisition_registered.has_value()) {
                 return acquisition_registered;
             }
-            auto acquisition_frozen = registry.Freeze();
+            auto acquisition_frozen = registry->Freeze();
             if (!acquisition_frozen.has_value()) {
                 return acquisition_frozen;
             }
-            auto acquisition_bound = active_->acquisition_instance(index)->bind(registry.AbiView());
+            auto acquisition_bound = supervise_start_call([state, registry, index]() {
+                return state->acquisition_instance(index)->bind(registry->AbiView());
+            });
             if (!acquisition_bound.has_value()) {
                 return acquisition_bound;
             }
-            auto acquisition_control = query_acquisition_control(
-                index, active_->acquisition_instance(index).value(), *active_);
+            auto acquisition_control = supervise_start_value<rodaq_interface>([state, index]() {
+                return state->acquisition_instance(index)->required_control_interface();
+            });
             if (!acquisition_control.has_value()) {
-                return acquisition_control;
+                return nonstd::make_unexpected(std::move(acquisition_control.error()));
             }
-            auto acquisition_configured = active_->acquisition_instance(index)->configure(
-                options_.acquisitions[index].config.view().AbiView());
+            active_->SetAcquisitionControl(index, acquisition_control.value());
+            auto acquisition_config = options_.acquisitions[index].config;
+            auto acquisition_configured = supervise_start_call(
+                [state, acquisition_config = std::move(acquisition_config), index]() mutable {
+                    return state->acquisition_instance(index)->configure(
+                        acquisition_config.view().AbiView());
+                });
             if (!acquisition_configured.has_value()) {
                 return acquisition_configured;
             }
         }
 
         for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-            auto started = active_->acquisition_instance(index)->start();
+            auto started = supervise_start_call(
+                [state, index]() { return state->acquisition_instance(index)->start(); });
             if (!started.has_value()) {
                 return started;
             }
@@ -744,6 +795,14 @@ private:
             return;
         }
         active_->MarkStopping();
+        if (start_quarantine_required_) {
+            quarantined_ = std::move(active_);
+            acquisition_started_.assign(options_.acquisitions.size(), false);
+            storage_open_ = false;
+            start_quarantine_required_ = false;
+            state_ = RuntimeState::Failed;
+            return;
+        }
         if (active_->pipeline() != nullptr) {
             active_->pipeline()->CloseAdmission();
             active_->pipeline()->CloseDispatch();
@@ -751,20 +810,38 @@ private:
             active_->pipeline()->CloseCallbacks();
             active_->pipeline()->JoinCompletion();
         }
+        bool unsafe_to_release = false;
+        std::shared_ptr<ActiveRuntimeState> state = active_;
         for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
             if (acquisition_started_[index] && active_->acquisition_instance(index).has_value()) {
-                static_cast<void>(active_->acquisition_instance(index)->stop());
+                auto stopped = run_bounded_call(
+                    [state, index]() { return state->acquisition_instance(index)->stop(); },
+                    Clock::now() + options_.stop_progress_timeout);
+                if (stopped.status != BoundedCallOutcome::Status::Completed) {
+                    unsafe_to_release = true;
+                    break;
+                }
             }
         }
-        if (storage_open_ && active_->storage_instance().has_value()) {
+        if (!unsafe_to_release && storage_open_ && active_->storage_instance().has_value()) {
             rodaq_storage_close_request close_request{};
             close_request.struct_size = sizeof(close_request);
             close_request.disposition = RODAQ_STORAGE_CLOSE_ACTIVATION_ABORT;
-            static_cast<void>(active_->storage_instance()->close(close_request));
+            auto closed = run_bounded_call(
+                [state, close_request]() {
+                    return state->storage_instance()->close(close_request);
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            unsafe_to_release = closed.status != BoundedCallOutcome::Status::Completed;
         }
-        active_.reset();
+        if (unsafe_to_release) {
+            quarantined_ = std::move(active_);
+        } else {
+            active_.reset();
+        }
         acquisition_started_.assign(options_.acquisitions.size(), false);
         storage_open_ = false;
+        start_quarantine_required_ = false;
         state_ = RuntimeState::Failed;
     }
 
@@ -785,6 +862,7 @@ private:
     std::shared_ptr<ActiveRuntimeState> quarantined_;
     std::vector<bool> acquisition_started_;
     bool storage_open_ = false;
+    bool start_quarantine_required_ = false;
     std::optional<RuntimeStatsSnapshot> last_stats_;
     std::optional<Error> last_primary_failure_;
     std::vector<Error> last_secondary_failures_;
