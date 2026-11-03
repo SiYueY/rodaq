@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **M2 — ACTIVE**
+Current milestone: **M1 — CLOSURE REVIEW**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -314,7 +314,7 @@ Do not implement in M0:
 
 ## M1 — Runtime Core Primitives
 
-**Status:** PASS
+**Status:** CLOSURE REVIEW
 
 ### Goal
 
@@ -397,7 +397,7 @@ Do not implement in M1:
 
 ## M2 — Fake End-to-End Runtime
 
-**Status:** ACTIVE
+**Status:** NOT STARTED
 
 ### Goal
 
@@ -406,7 +406,7 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 ### Prerequisites
 
 - [x] M0 PASS.
-- [x] M1 PASS.
+- [ ] M1 PASS.
 
 ### Scope
 
@@ -529,7 +529,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 ### Prerequisites
 
 - [x] M0 PASS.
-- [x] M1 PASS.
+- [ ] M1 PASS.
 - [ ] M2 PASS.
 - [ ] ROS2 mapping reviewed against current ABI.
 - [ ] MCAP mapping reviewed against current ABI and a directly pinned RoDAQ mcap-cpp version/commit (no ROS2 mcap_vendor runtime dependency).

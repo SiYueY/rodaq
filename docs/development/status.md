@@ -9,15 +9,15 @@ This file records factual current repository state. Keep it concise and update i
 
 ## Current milestone
 
-**M2 — Fake End-to-End Runtime**
+**M1 — Runtime Core Primitives**
 
-Status: **ACTIVE**
+Status: **CLOSURE REVIEW**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-M1 Runtime Core Primitives is **PASS** and qualified. M2 Fake End-to-End Runtime
-is now the only ACTIVE milestone. M2 implementation has not started.
+M1 Runtime Core Primitives has been reopened for contract-alignment review.
+M2 Fake End-to-End Runtime is **NOT STARTED** until this closure passes.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -305,7 +305,7 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M2 — Fake End-to-End Runtime.
+1. Close the reviewed M1 contract defects.
 2. Native arm64 closure evidence remains deferred until a runner is available.
 
 ## Validation state
@@ -383,13 +383,13 @@ M0 Final Contract Correction
     ARM64 DEFERRED BY D-034
     PASS
 
-M1 Runtime Core Primitives
+M1 Runtime Core Primitives (pre-closure baseline)
     IMPLEMENTED
     UNIT / CONCURRENCY / INTEGRATION TESTED
     NORMAL / ASAN / UBSAN TESTED
     CLANG TSAN CONCURRENCY TESTED
     REVIEWED
-    PASS
+    REOPENED
 ```
 
 Validation performed on GCC 11.4.0, CMake 3.22.1, clang-format 14.0.0 and
@@ -548,7 +548,7 @@ M0 Final Contract Correction validation:
 - clang-format, `git diff --check`, whitespace and recursive submodule audits
   passed.
 
-M1 Runtime Core Primitives validation:
+M1 Runtime Core Primitives pre-closure baseline validation:
 
 - GCC 11.4.0 Debug with warnings-as-errors: 87/87 CTest entries passed.
 - ASan: 87/87 CTest entries passed.
@@ -571,20 +571,6 @@ M1 Runtime Core Primitives validation:
 - `clang-format`, `git diff --check`, source review and status/plan consistency
   checks passed.
 
-M1 final review:
-
-1. No M1 container can grow without a configured bound.
-2. No Payload allocation silently falls back to an unbounded heap.
-3. A stale Handle cannot resolve to a new Registry object.
-4. A Reservation cannot leak through ordinary destruction or double-release.
-5. Admission Wait cannot block forever after Gate close/Stop cutoff.
-6. Reject does not consume an AcceptanceSequence.
-7. An accepted sequence is never rolled back or reused.
-8. No callback executes while an Admission internal lock is held.
-9. RuntimeRecord destruction releases Payload and ResourceBudget ownership.
-10. No M1 Runtime type depends on ROS2, FastDDS, MCAP or SQLite3.
-11. Normal, ASan and UBSan pass; required concurrency tests pass under Clang TSan.
-12. No known P0/P1 issue is unresolved.
-
-Current qualification count: **87/87** on Ubuntu 22.04 amd64 for normal, ASan
-and UBSan builds. M0 and M1 are PASS; M2 Fake End-to-End Runtime is ACTIVE.
+M1 closure review is open. The prior 87/87 result is retained only as a
+pre-closure baseline. Final qualification and the contract review answers will
+be replaced after the corrective work completes.
