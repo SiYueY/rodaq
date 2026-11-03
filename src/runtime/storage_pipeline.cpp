@@ -129,11 +129,13 @@ void PipelineReservation::Cancel() noexcept {
 }
 
 StoragePipeline::StoragePipeline(
-    std::size_t capacity, std::size_t maximum_payload_bytes, plugin::StoragePluginInstance* storage,
+    std::size_t capacity, std::size_t completion_capacity, std::size_t maximum_payload_bytes,
+    std::size_t maximum_payload_inflight_bytes, plugin::StoragePluginInstance* storage,
     std::chrono::nanoseconds progress_timeout, FailureSink failure_sink,
     PayloadReleaseSink payload_release_sink, OperationCompleteSink operation_complete_sink,
     SubmissionBuilder submission_builder)
 : capacity_(capacity),
+  completion_capacity_(completion_capacity),
   maximum_payload_bytes_(maximum_payload_bytes),
   progress_timeout_(progress_timeout),
   storage_(storage),
@@ -142,17 +144,15 @@ StoragePipeline::StoragePipeline(
   operation_complete_sink_(std::move(operation_complete_sink)),
   submission_builder_(std::move(submission_builder)),
   record_budget_(ResourceAmount{static_cast<std::uint64_t>(capacity), 0}),
-  payload_budget_(ResourceAmount{
-      0, static_cast<std::uint64_t>(
-             capacity > std::numeric_limits<std::size_t>::max() / maximum_payload_bytes
-                 ? std::numeric_limits<std::size_t>::max()
-                 : capacity * maximum_payload_bytes)}),
+  payload_budget_(ResourceAmount{0, static_cast<std::uint64_t>(maximum_payload_inflight_bytes)}),
   slots_(capacity),
   free_indices_(),
   dispatch_ring_(capacity),
-  completion_ring_(capacity) {
-    if (capacity == 0 || maximum_payload_bytes == 0 || storage == nullptr || !failure_sink_ ||
-        !payload_release_sink_ || !operation_complete_sink_ || !submission_builder_) {
+  completion_ring_(completion_capacity) {
+    if (capacity == 0 || completion_capacity == 0 || completion_capacity > capacity ||
+        maximum_payload_bytes == 0 || maximum_payload_inflight_bytes == 0 || storage == nullptr ||
+        !failure_sink_ || !payload_release_sink_ || !operation_complete_sink_ ||
+        !submission_builder_) {
         throw std::invalid_argument("StoragePipeline configuration is invalid");
     }
     if (capacity > kOperationIndexMask) {
@@ -672,7 +672,7 @@ void StoragePipeline::CompletionLoop() {
                 return;
             }
             index = completion_ring_[completion_head_];
-            completion_head_ = (completion_head_ + 1U) % capacity_;
+            completion_head_ = (completion_head_ + 1U) % completion_capacity_;
             --completion_count_;
         }
 
@@ -852,10 +852,10 @@ bool StoragePipeline::ScheduleCompletionLocked(std::size_t index) noexcept {
     if (slot.scheduled) {
         return true;
     }
-    if (completion_count_ >= capacity_) {
+    if (completion_count_ >= completion_capacity_) {
         return false;
     }
-    const std::size_t tail = (completion_head_ + completion_count_) % capacity_;
+    const std::size_t tail = (completion_head_ + completion_count_) % completion_capacity_;
     completion_ring_[tail] = index;
     ++completion_count_;
     slot.scheduled = true;

@@ -135,8 +135,8 @@ public:
     Result<void> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
 
     Result<void> InitializePipeline(
-        std::size_t effective_payload_limit, plugin::StoragePluginInstance* storage,
-        std::chrono::nanoseconds progress_timeout);
+        std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
+        plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout);
     StoragePipeline* pipeline() noexcept { return pipeline_.get(); }
     std::optional<plugin::StoragePluginInstance>& storage_instance() noexcept {
         return storage_instance_;

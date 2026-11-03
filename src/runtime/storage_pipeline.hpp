@@ -82,10 +82,11 @@ public:
         std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>&)>;
 
     StoragePipeline(
-        std::size_t capacity, std::size_t maximum_payload_bytes,
-        plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout,
-        FailureSink failure_sink, PayloadReleaseSink payload_release_sink,
-        OperationCompleteSink operation_complete_sink, SubmissionBuilder submission_builder);
+        std::size_t capacity, std::size_t completion_capacity, std::size_t maximum_payload_bytes,
+        std::size_t maximum_payload_inflight_bytes, plugin::StoragePluginInstance* storage,
+        std::chrono::nanoseconds progress_timeout, FailureSink failure_sink,
+        PayloadReleaseSink payload_release_sink, OperationCompleteSink operation_complete_sink,
+        SubmissionBuilder submission_builder);
 
     StoragePipeline(const StoragePipeline&) = delete;
     StoragePipeline& operator=(const StoragePipeline&) = delete;
@@ -180,6 +181,7 @@ private:
     void CopyDiagnostic(const rodaq_error* error, Slot& slot) noexcept;
 
     const std::size_t capacity_;
+    const std::size_t completion_capacity_;
     const std::size_t maximum_payload_bytes_;
     const std::chrono::nanoseconds progress_timeout_;
     plugin::StoragePluginInstance* storage_;

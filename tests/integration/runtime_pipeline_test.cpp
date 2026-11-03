@@ -57,7 +57,9 @@ RuntimeOptions options(
     AdmissionMode admission_mode = AdmissionMode::Wait, int submit_delay_us = 0,
     std::string descriptor_scenario = "ready", std::string binding_scenario = "",
     std::string lifecycle_scenario = "", bool pause_before_switch = false,
-    std::string stale_handle_file = "", int callback_delay_us = 1000) {
+    std::string stale_handle_file = "", int callback_delay_us = 1000,
+    std::int64_t maximum_inflight_records = 128,
+    std::int64_t maximum_inflight_bytes = 128LL * 1024LL * 1024LL) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -77,6 +79,8 @@ RuntimeOptions options(
         {"callback_delay_us", plugin::ConfigTree::Int64(callback_delay_us)},
         {"submit_delay_us", plugin::ConfigTree::Int64(submit_delay_us)},
         {"descriptor_scenario", plugin::ConfigTree::String(std::move(descriptor_scenario))},
+        {"maximum_inflight_records", plugin::ConfigTree::Int64(maximum_inflight_records)},
+        {"maximum_inflight_bytes", plugin::ConfigTree::Int64(maximum_inflight_bytes)},
     });
     RuntimePluginOptions acquisition;
     acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
@@ -463,6 +467,35 @@ TEST(RuntimePipelineTest, RejectsCanonicalRegistrationCapacityExhaustion) {
     ASSERT_TRUE(runtime.Configure().has_value());
     EXPECT_FALSE(runtime.Start().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+}
+
+TEST(RuntimePipelineTest, EnforcesNegotiatedStorageInflightCapacity) {
+    const std::string log = unique_log_path("storage_capacity");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "storage_capacity", "sync", "copy", 1, 8, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 2, 32));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 8));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 8U);
+    EXPECT_EQ(snapshot->inflight_records, 0U);
+    EXPECT_EQ(record_count(log), 8U);
+
+    const std::string invalid_log = unique_log_path("invalid_storage_capacity");
+    std::error_code invalid_removed;
+    fs::remove(invalid_log, invalid_removed);
+    Runtime invalid(options(
+        "invalid_storage_capacity", "sync", "copy", 1, 1, 1, invalid_log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+        "", false, "", 1000, 0, 32));
+    ASSERT_TRUE(invalid.Configure().has_value());
+    EXPECT_FALSE(invalid.Start().has_value());
+    EXPECT_EQ(invalid.State(), RuntimeState::Failed);
 }
 
 TEST(RuntimePipelineTest, ReconcilesEarlyCrossThreadPayloadCompletion) {

@@ -759,8 +759,8 @@ Result<void> ActiveRuntimeState::EnsureDescriptorReady(StreamDescriptorHandle de
 }
 
 Result<void> ActiveRuntimeState::InitializePipeline(
-    std::size_t effective_payload_limit, plugin::StoragePluginInstance* storage,
-    std::chrono::nanoseconds progress_timeout) {
+    std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
+    plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout) {
     if (pipeline_ != nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Runtime pipeline is already initialized"));
@@ -776,7 +776,8 @@ Result<void> ActiveRuntimeState::InitializePipeline(
     }
     try {
         pipeline_ = std::make_unique<StoragePipeline>(
-            options_.operation_capacity, effective_payload_limit, storage, progress_timeout,
+            options_.operation_capacity, options_.completion_capacity, effective_payload_limit,
+            maximum_payload_inflight_bytes, storage, progress_timeout,
             [this](Error error) { RequestFailure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
                 if (!stats_.RecordPayloadReleased(bytes)) {

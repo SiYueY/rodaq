@@ -142,6 +142,29 @@ Error abi_error(rodaq_status status, const rodaq_error& error, std::string_view 
     return runtime_error(ErrorCode::InternalError, std::string(fallback));
 }
 
+std::size_t saturating_product(std::size_t lhs, std::size_t rhs) noexcept {
+    return lhs > std::numeric_limits<std::size_t>::max() / rhs
+               ? std::numeric_limits<std::size_t>::max()
+               : lhs * rhs;
+}
+
+std::size_t bounded_size(std::uint64_t value) noexcept {
+    return value > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())
+               ? std::numeric_limits<std::size_t>::max()
+               : static_cast<std::size_t>(value);
+}
+
+std::chrono::nanoseconds effective_control_timeout(
+    std::chrono::nanoseconds runtime_timeout, std::uint64_t backend_timeout_ns) noexcept {
+    if (backend_timeout_ns == 0) {
+        return runtime_timeout;
+    }
+    return std::min(
+        runtime_timeout, std::chrono::nanoseconds(static_cast<std::int64_t>(std::min<std::uint64_t>(
+                             backend_timeout_ns, static_cast<std::uint64_t>(
+                                                     std::numeric_limits<std::int64_t>::max())))));
+}
+
 struct BoundedCallCompletion {
     std::mutex mutex;
     std::condition_variable condition;
@@ -358,7 +381,7 @@ public:
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto flush = run_bounded_call(
                 [state]() { return state->storage_instance()->flush(); },
-                Clock::now() + options_.stop_progress_timeout);
+                Clock::now() + effective_storage_flush_timeout_);
             if (flush.status == BoundedCallOutcome::Status::TimedOut) {
                 active_->RequestFailure(
                     runtime_error(ErrorCode::Timeout, "Storage flush timed out"));
@@ -386,7 +409,7 @@ public:
                     request.disposition = disposition;
                     return state->storage_instance()->close(request);
                 },
-                Clock::now() + options_.stop_progress_timeout);
+                Clock::now() + effective_storage_close_timeout_);
             if (close.status == BoundedCallOutcome::Status::TimedOut) {
                 active_->RequestFailure(
                     runtime_error(ErrorCode::Timeout, "Storage close timed out"));
@@ -602,16 +625,50 @@ private:
         if (!capabilities.has_value()) {
             return nonstd::make_unexpected(std::move(capabilities.error()));
         }
-        if (capabilities->maximum_payload_bytes == 0) {
+        if (capabilities->flags != 0 || capabilities->reserved != 0 ||
+            !rodaq::is_valid_abi_bool(capabilities->full_fidelity) ||
+            capabilities->full_fidelity != RODAQ_TRUE ||
+            capabilities->maximum_inflight_records == 0 ||
+            capabilities->maximum_inflight_bytes == 0) {
             return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidArgument, "Storage payload limit is zero"));
+                runtime_error(ErrorCode::InvalidArgument, "Storage capabilities are invalid"));
         }
-        const std::size_t effective_payload_limit =
-            capabilities->maximum_payload_bytes < options_.max_single_payload_bytes
-                ? static_cast<std::size_t>(capabilities->maximum_payload_bytes)
-                : options_.max_single_payload_bytes;
-        options_.max_single_payload_bytes = effective_payload_limit;
+        std::size_t effective_payload_limit = options_.max_single_payload_bytes;
+        if (capabilities->maximum_payload_bytes != 0) {
+            effective_payload_limit = std::min(
+                effective_payload_limit, bounded_size(capabilities->maximum_payload_bytes));
+        }
+        effective_payload_limit =
+            std::min(effective_payload_limit, bounded_size(capabilities->maximum_inflight_bytes));
+        if (effective_payload_limit == 0) {
+            return nonstd::make_unexpected(runtime_error(
+                ErrorCode::InvalidArgument, "Effective Storage payload limit is zero"));
+        }
+
+        const std::size_t effective_capacity = std::min(
+            {options_.operation_capacity, bounded_size(capabilities->maximum_inflight_records),
+             options_.payload_block_count});
+        if (effective_capacity == 0) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidArgument, "Effective Storage capacity is zero"));
+        }
+        const std::size_t effective_completion_capacity =
+            std::min(options_.completion_capacity, effective_capacity);
+        const std::size_t effective_payload_inflight_bytes = std::min(
+            saturating_product(effective_capacity, effective_payload_limit),
+            bounded_size(capabilities->maximum_inflight_bytes));
+
+        effective_storage_handoff_timeout_ = effective_control_timeout(
+            options_.stop_progress_timeout, capabilities->handoff_progress_timeout_ns);
+        effective_storage_flush_timeout_ = effective_control_timeout(
+            options_.stop_progress_timeout, capabilities->flush_progress_timeout_ns);
+        effective_storage_close_timeout_ = effective_control_timeout(
+            options_.stop_progress_timeout, capabilities->close_progress_timeout_ns);
+
         active_->options().max_single_payload_bytes = effective_payload_limit;
+        active_->options().dispatch_capacity = effective_capacity;
+        active_->options().operation_capacity = effective_capacity;
+        active_->options().completion_capacity = effective_completion_capacity;
 
         rodaq_storage_open_request open_request{};
         open_request.struct_size = sizeof(open_request);
@@ -626,8 +683,8 @@ private:
         storage_open_ = true;
 
         auto pipeline = active_->InitializePipeline(
-            effective_payload_limit, &active_->storage_instance().value(),
-            options_.stop_progress_timeout);
+            effective_payload_limit, effective_payload_inflight_bytes,
+            &active_->storage_instance().value(), effective_storage_handoff_timeout_);
         if (!pipeline.has_value()) {
             return pipeline;
         }
@@ -732,6 +789,9 @@ private:
     std::optional<Error> last_primary_failure_;
     std::vector<Error> last_secondary_failures_;
     std::uint64_t last_secondary_failure_overflow_count_ = 0;
+    std::chrono::nanoseconds effective_storage_handoff_timeout_{};
+    std::chrono::nanoseconds effective_storage_flush_timeout_{};
+    std::chrono::nanoseconds effective_storage_close_timeout_{};
 };
 
 Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::move(options))) {}

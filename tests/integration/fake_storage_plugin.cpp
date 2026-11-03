@@ -57,6 +57,9 @@ public:
         callback_delay_us_ = config_int(config, "callback_delay_us", 1000);
         submit_delay_us_ = config_int(config, "submit_delay_us", 0);
         descriptor_scenario_ = config_string(config, "descriptor_scenario", "ready");
+        maximum_inflight_records_ = config_int(config, "maximum_inflight_records", 128);
+        maximum_inflight_bytes_ =
+            config_int(config, "maximum_inflight_bytes", 128LL * 1024LL * 1024LL);
         stage_ = Stage::Configured;
         return {};
     }
@@ -74,8 +77,8 @@ public:
         value.struct_size = sizeof(value);
         value.full_fidelity = RODAQ_TRUE;
         value.maximum_payload_bytes = 8U * 1024U * 1024U;
-        value.maximum_inflight_records = 128;
-        value.maximum_inflight_bytes = 128U * 1024U * 1024U;
+        value.maximum_inflight_records = static_cast<std::uint64_t>(maximum_inflight_records_);
+        value.maximum_inflight_bytes = static_cast<std::uint64_t>(maximum_inflight_bytes_);
         value.handoff_progress_timeout_ns = 2'000'000'000;
         value.descriptor_progress_timeout_ns = 2'000'000'000;
         value.flush_progress_timeout_ns = 2'000'000'000;
@@ -397,6 +400,8 @@ private:
     std::string event_log_;
     std::int64_t callback_delay_us_ = 1000;
     std::int64_t submit_delay_us_ = 0;
+    std::int64_t maximum_inflight_records_ = 128;
+    std::int64_t maximum_inflight_bytes_ = 128LL * 1024LL * 1024LL;
     std::mutex log_mutex_;
     std::vector<std::thread> workers_;
     std::optional<rodaq_storage_operation> last_operation_;
