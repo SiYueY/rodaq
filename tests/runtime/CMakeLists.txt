@@ -27,3 +27,13 @@ target_link_libraries(rodaq_handle_registry_test
 rodaq_enable_warnings(rodaq_handle_registry_test)
 rodaq_enable_sanitizers(rodaq_handle_registry_test)
 add_test(NAME rodaq.runtime.handle_registry COMMAND rodaq_handle_registry_test)
+
+add_executable(rodaq_structural_arena_test structural_arena_test.cpp)
+target_link_libraries(rodaq_structural_arena_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_structural_arena_test)
+rodaq_enable_sanitizers(rodaq_structural_arena_test)
+add_test(NAME rodaq.runtime.structural_arena COMMAND rodaq_structural_arena_test)
