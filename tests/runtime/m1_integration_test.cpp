@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <mutex>
 #include <thread>
@@ -35,7 +36,8 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
 
     auto payload_pool = PayloadPool::Create(32, 2);
     ASSERT_TRUE(payload_pool.has_value());
-    ResourceBudget budget(ResourceAmount{2, 64});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{2, 64});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::Create(1);
     ASSERT_TRUE(sequences_result.has_value());
@@ -93,7 +95,8 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
 }
 
 TEST(M1IntegrationTest, RejectionDoesNotConsumeAcceptanceSequence) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::Create(1);
     ASSERT_TRUE(sequences_result.has_value());
@@ -127,7 +130,8 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
 
     auto payload_pool = PayloadPool::Create(16, kThreadCount * 4);
     ASSERT_TRUE(payload_pool.has_value());
-    ResourceBudget budget(ResourceAmount{2, kPayloadSize * 2});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{2, kPayloadSize * 2});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::Create(1);
     ASSERT_TRUE(sequences_result.has_value());

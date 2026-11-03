@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -32,7 +33,8 @@ AdmissionRequest wait_request(
 }
 
 TEST(AdmissionGateTest, ClosedGateDoesNotReserveResources) {
-    ResourceBudget budget(ResourceAmount{1, 8});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 8});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
 
     auto result = gate.Admit(reject_request(ResourceAmount{1, 8}));
@@ -44,7 +46,8 @@ TEST(AdmissionGateTest, ClosedGateDoesNotReserveResources) {
 }
 
 TEST(AdmissionGateTest, AcceptAndRejectReportNormalDomainOutcomes) {
-    ResourceBudget budget(ResourceAmount{1, 8});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 8});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
 
@@ -62,7 +65,8 @@ TEST(AdmissionGateTest, AcceptAndRejectReportNormalDomainOutcomes) {
 }
 
 TEST(AdmissionGateTest, WaitIsWokenByResourceRelease) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     auto held = budget.TryReserve(ResourceAmount{1, 4});
@@ -79,7 +83,8 @@ TEST(AdmissionGateTest, WaitIsWokenByResourceRelease) {
 }
 
 TEST(AdmissionGateTest, WaitTimesOutWithoutAcquiringResources) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     auto held = budget.TryReserve(ResourceAmount{1, 4});
@@ -94,7 +99,8 @@ TEST(AdmissionGateTest, WaitTimesOutWithoutAcquiringResources) {
 }
 
 TEST(AdmissionGateTest, CancellationWakesWaiter) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     AdmissionCancellation cancellation(budget);
@@ -116,7 +122,8 @@ TEST(AdmissionGateTest, CancellationWakesWaiter) {
 }
 
 TEST(AdmissionGateTest, GateCloseWakesWaiter) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     auto held = budget.TryReserve(ResourceAmount{1, 4});
@@ -133,7 +140,8 @@ TEST(AdmissionGateTest, GateCloseWakesWaiter) {
 }
 
 TEST(AdmissionGateTest, GenerationChangeRejectsAnOldWaiterAfterReopen) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     const std::uint64_t initial_generation = gate.Generation();
@@ -157,7 +165,8 @@ TEST(AdmissionGateTest, GenerationChangeRejectsAnOldWaiterAfterReopen) {
 }
 
 TEST(AdmissionGateTest, MultipleWaitersEachFinishExactlyOnce) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     auto held = budget.TryReserve(ResourceAmount{1, 4});
@@ -207,7 +216,8 @@ TEST(AdmissionGateTest, MultipleWaitersEachFinishExactlyOnce) {
 }
 
 TEST(AdmissionGateTest, ShutdownWithWaitersDoesNotLeaveAReservation) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     gate.Open();
     auto held = budget.TryReserve(ResourceAmount{1, 4});
@@ -226,7 +236,8 @@ TEST(AdmissionGateTest, ShutdownWithWaitersDoesNotLeaveAReservation) {
 }
 
 TEST(AdmissionGateTest, ResourcesAndGateGenerationRemainConsistentUnderRaces) {
-    ResourceBudget budget(ResourceAmount{1, 4});
+    auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
 
     for (int iteration = 0; iteration < 100; ++iteration) {
@@ -250,8 +261,10 @@ TEST(AdmissionGateTest, ResourcesAndGateGenerationRemainConsistentUnderRaces) {
 }
 
 TEST(AdmissionGateTest, RejectsInvalidWaitConfigurationAndForeignCancellation) {
-    ResourceBudget first_budget(ResourceAmount{1, 4});
-    ResourceBudget second_budget(ResourceAmount{1, 4});
+    auto first_budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& first_budget = *first_budget_owner;
+    auto second_budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, 4});
+    ResourceBudget& second_budget = *second_budget_owner;
     AdmissionGate gate(first_budget);
     gate.Open();
 
