@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **M0 — ACTIVE**
+Current milestone: **M1 — ACTIVE**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -37,8 +37,8 @@ Only one milestone may be `ACTIVE` at a time.
 
 **Status:** PASS
 
-**Current sub-phase:** **M0-E + Closure Fix — PASS**. Stable ABI core prefix is
-frozen. Native arm64 qualification is deferred by D-034.
+**Current sub-phase:** **M0 Final Contract Correction — PASS**. Stable ABI core
+prefix is frozen. Native arm64 qualification is deferred by D-034.
 
 ### Goal
 
@@ -314,7 +314,7 @@ Do not implement in M0:
 
 ## M1 — Runtime Core Primitives
 
-**Status:** NOT STARTED
+**Status:** ACTIVE
 
 ### Goal
 
@@ -322,7 +322,7 @@ Implement bounded, independently testable Runtime correctness primitives.
 
 ### Prerequisites
 
-- [ ] M0 PASS.
+- [x] M0 PASS.
 
 ### Scope
 
@@ -401,7 +401,7 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 
 ### Prerequisites
 
-- [ ] M0 PASS.
+- [x] M0 PASS.
 - [ ] M1 PASS.
 
 ### Scope
@@ -524,7 +524,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 
 ### Prerequisites
 
-- [ ] M0 PASS.
+- [x] M0 PASS.
 - [ ] M1 PASS.
 - [ ] M2 PASS.
 - [ ] ROS2 mapping reviewed against current ABI.

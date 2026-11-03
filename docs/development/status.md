@@ -2,20 +2,21 @@
 
 **Updated:** 2026-11-03
 **Branch:** `develop`
-**M0 closure baseline:** `9bb1dbc` — `docs: accept deferred arm64 and close M0`
+**M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
 ## Current milestone
 
-**M0 — Foundation + Plugin ABI**
+**M1 — Runtime Core Primitives**
 
-Status: **PASS**
+Status: **ACTIVE**
 
-Current sub-phase: **M0-E + Closure Fix — PASS**. Stable ABI core prefix is
-frozen. Native arm64 qualification is explicitly deferred.
+M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
+is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
+M1 Runtime Core Primitives is now the only ACTIVE milestone. No M1 Runtime
+primitive implementation has started yet.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -23,7 +24,8 @@ The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition
 
 M0-A Review Closure, M0-B Stable C Plugin ABI, M0-C Plugin Loading + Lifetime,
 M0-D Runtime Services + ConfigView and M0-E SDK / Closure Repair are complete
-and validated. The repository now contains:
+and validated. M0 Final Contract Correction is also complete. The repository now
+contains:
 
 - a C++17 CMake project foundation,
 - warning, sanitizer, CTest, dependency and install support,
@@ -365,6 +367,16 @@ M0-E Plugin SDK + Closure Repair
     STORAGE EXCEPTION MATRIX TESTED
     NORMAL / ASAN / UBSAN TESTED
     PASS
+
+M0 Final Contract Correction
+    IMPLEMENTED
+    APPENDABLE OUTPUT TESTED
+    OUTPUT FLAGS / RESERVED TESTED
+    FROZEN PREFIX COMPATIBILITY TESTED
+    UBUNTU 22 NORMAL / ASAN / UBSAN TESTED
+    UBUNTU 24 TESTED
+    ARM64 DEFERRED BY D-034
+    PASS
 ```
 
 Validation performed on GCC 11.4.0, CMake 3.22.1, clang-format 14.0.0 and
@@ -504,6 +516,25 @@ M0-E / Closure Repair validation:
   build metadata `1.0.0+build-01`, and reject prerelease numeric leading zeros.
 - Installed SDK consumer smoke passed.
 
+M0 Final Contract Correction validation:
+
+- SDK and Runtime caller-owned APPENDABLE outputs return
+  `min(caller capacity, current type size)` and only zero the initialized prefix.
+- Storage capabilities no longer exposes undocumented output flags.
+- Frozen V1 compatibility fixtures validate append-only current layouts while
+  retaining independent V1 definitions and exact prefix field offsets/widths.
+- Clean Ubuntu 22.04 amd64 normal Debug: 79/79 CTest entries passed.
+- Clean Ubuntu 22.04 amd64 ASan: 79/79 passed with
+  `ASAN_OPTIONS=detect_leaks=0` and `setarch x86_64 -R`.
+- Clean Ubuntu 22.04 amd64 UBSan: 79/79 passed.
+- Clean Ubuntu 24.04 amd64 Docker container with GCC 13.3.0: 79/79 passed.
+- Native arm64 remains deferred by D-034 and is not reported as PASS.
+- Production writer audit found no remaining whole-current APPENDABLE output
+  write; remaining `struct_size = sizeof(...)` sites are caller-owned inputs.
+- Fresh configure/build network audit recorded no network syscalls.
+- clang-format, `git diff --check`, whitespace and recursive submodule audits
+  passed.
+
 Current qualification count: **79/79** on Ubuntu 22.04 amd64 for normal, ASan
-and UBSan builds, and **79/79** on Ubuntu 24.04 amd64 for normal Debug. Native
-arm64 remains deferred by D-034 and is not reported as PASS.
+and UBSan builds, and **79/79** on Ubuntu 24.04 amd64 for normal Debug. M0 is
+PASS; M1 Runtime Core Primitives is ACTIVE.
