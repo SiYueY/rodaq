@@ -103,6 +103,21 @@ Result<std::uint64_t> AcceptanceSequenceAllocator::Allocate(StreamHandle stream)
     return sequence;
 }
 
+bool AcceptanceSequenceAllocator::CanAllocate(StreamHandle stream) noexcept {
+    if (!stream.Valid()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (entries_.empty()) {
+        return false;
+    }
+    Entry* entry = FindLocked(stream);
+    if (entry == nullptr) {
+        return entry_count_ < entries_.size();
+    }
+    return !entry->exhausted;
+}
+
 std::size_t AcceptanceSequenceAllocator::RegisteredStreamCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return entry_count_;
@@ -193,5 +208,7 @@ RuntimeRecord::RuntimeRecord(RuntimeRecord&& other) noexcept
   timestamps_(other.timestamps_),
   reservation_(std::move(other.reservation_)),
   payload_(std::move(other.payload_)) {}
+
+Payload RuntimeRecord::TakePayload() noexcept { return std::move(payload_); }
 
 }  // namespace rodaq

@@ -50,6 +50,7 @@ public:
     AcceptanceSequenceAllocator(AcceptanceSequenceAllocator&& other) noexcept;
     AcceptanceSequenceAllocator& operator=(AcceptanceSequenceAllocator&&) = delete;
 
+    bool CanAllocate(StreamHandle stream) noexcept;
     Result<std::uint64_t> Allocate(StreamHandle stream);
 
     std::size_t Capacity() const noexcept { return entries_.size(); }
@@ -97,6 +98,7 @@ public:
     const TimestampState& Timestamps() const noexcept { return timestamps_; }
     const Payload& RecordPayload() const noexcept { return payload_; }
     const Reservation& ResourceReservation() const noexcept { return reservation_; }
+    Payload TakePayload() noexcept;
 
 private:
     RuntimeRecord(

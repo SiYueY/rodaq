@@ -33,6 +33,8 @@ public:
 
     std::size_t CapacityBytes() const noexcept { return capacity_bytes_; }
 
+    std::pmr::memory_resource* Resource() noexcept { return &resource_; }
+
 private:
     std::unique_ptr<std::byte[]> buffer_;
     std::pmr::monotonic_buffer_resource resource_;
@@ -58,5 +60,7 @@ Result<void*> StructuralArena::AllocateBytes(std::size_t size, std::size_t align
 }
 
 std::size_t StructuralArena::CapacityBytes() const noexcept { return impl_->CapacityBytes(); }
+
+std::pmr::memory_resource* StructuralArena::Resource() noexcept { return impl_->Resource(); }
 
 }  // namespace rodaq

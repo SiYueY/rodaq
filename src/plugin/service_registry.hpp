@@ -1,5 +1,5 @@
-#ifndef RODAQ_PLUGIN_SERVICE_REGISTRY_HPP_
-#define RODAQ_PLUGIN_SERVICE_REGISTRY_HPP_
+#ifndef RODAQ_PLUGIN_SERVICE_REGISTRY_IMPL_HPP_
+#define RODAQ_PLUGIN_SERVICE_REGISTRY_IMPL_HPP_
 
 #include <rodaq/plugin/abi/service.h>
 #include <rodaq/result.hpp>
@@ -49,4 +49,4 @@ private:
 
 }  // namespace rodaq::plugin
 
-#endif  // RODAQ_PLUGIN_SERVICE_REGISTRY_HPP_
+#endif  // RODAQ_PLUGIN_SERVICE_REGISTRY_IMPL_HPP_

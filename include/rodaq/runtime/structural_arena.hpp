@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <memory_resource>
 #include <new>
 
 namespace rodaq {
@@ -26,6 +27,7 @@ public:
 
     Result<void*> AllocateBytes(
         std::size_t size, std::size_t alignment = alignof(std::max_align_t));
+    std::pmr::memory_resource* Resource() noexcept;
 
     template <typename T>
     Result<T*> Allocate(std::size_t count = 1) {
