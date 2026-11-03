@@ -230,7 +230,7 @@ rodaq_status InteropProjectionRegistry::get_projection(
             "Projection output capacity is below the V1 minimum", out_error);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    *out_view = {};
+    std::memset(out_view, 0, std::min<std::size_t>(capacity, sizeof(*out_view)));
     if (context == nullptr) {
         assign_rodaq_error(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection query context is null",
@@ -256,10 +256,16 @@ rodaq_status InteropProjectionRegistry::get_projection(
         const ProjectionView& view = result.value();
         out_view->struct_size = sizeof(rodaq_projection_view);
         out_view->reserved = 0;
-        out_view->descriptor = descriptor;
-        out_view->projection_id =
-            rodaq_string_view{view.projection_id.data(), view.projection_id.size()};
-        out_view->payload = rodaq_bytes_view{view.payload, view.payload_size};
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, descriptor)) {
+            out_view->descriptor = descriptor;
+        }
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, projection_id)) {
+            out_view->projection_id =
+                rodaq_string_view{view.projection_id.data(), view.projection_id.size()};
+        }
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, payload)) {
+            out_view->payload = rodaq_bytes_view{view.payload, view.payload_size};
+        }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         assign_rodaq_error(RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, error.what(), out_error);

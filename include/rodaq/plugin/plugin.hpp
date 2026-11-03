@@ -5,10 +5,19 @@
 #include <rodaq/plugin/service_registry.hpp>
 
 #include <exception>
+#include <cstring>
 #include <new>
+#include <algorithm>
 #include <utility>
 
 namespace rodaq::plugin {
+
+template <typename Struct>
+void clear_output_prefix(Struct* output, std::uint32_t capacity) noexcept {
+    if (output != nullptr && capacity != 0) {
+        std::memset(output, 0, std::min<std::size_t>(capacity, sizeof(Struct)));
+    }
+}
 
 template <typename Function>
 rodaq_status invoke_void(Function&& function, rodaq_error* out_error) noexcept {

@@ -91,6 +91,9 @@ typedef struct rodaq_interface {
     ((ptr) != NULL &&                     \
      (ptr)->struct_size >= offsetof(type, field) + RODAQ_ABI_FIELD_SIZE(type, field))
 
+#define RODAQ_HAS_FIELD_CAPACITY(type, capacity, field) \
+    ((capacity) >= offsetof(type, field) + RODAQ_ABI_FIELD_SIZE(type, field))
+
 #ifdef __cplusplus
 }
 #endif

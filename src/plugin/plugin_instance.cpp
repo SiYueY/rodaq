@@ -191,6 +191,7 @@ public:
                 ErrorCode::InvalidState, "plugin", 0, "Storage submit requires Opened state"));
         }
         rodaq_storage_submit_result output{};
+        output.struct_size = sizeof(output);
         rodaq_error error{};
         const rodaq_status status = submit_(instance_, &submission, &output, &error);
         if (status != RODAQ_STATUS_OK) {

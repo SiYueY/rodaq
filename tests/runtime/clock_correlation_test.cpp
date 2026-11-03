@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -132,4 +133,17 @@ TEST(ClockCorrelationTest, AbiAdapterReturnsStableCallerOwnedAnchor) {
         RODAQ_STATUS_INVALID_ARGUMENT,
         vtable->get_unix_epoch_anchor(interface.context, clock(11), &output, &error));
     EXPECT_EQ(0U, output.struct_size);
+
+    struct GuardedOutput {
+        rodaq_unix_epoch_clock_anchor value;
+        std::uint8_t canary[32];
+    } guarded{};
+    std::memset(guarded.canary, 0xA5, sizeof(guarded.canary));
+    guarded.value.struct_size = RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE;
+    ASSERT_EQ(
+        RODAQ_STATUS_OK,
+        vtable->get_unix_epoch_anchor(interface.context, clock(11), &guarded.value, &error));
+    for (std::uint8_t byte : guarded.canary) {
+        EXPECT_EQ(0xA5, byte);
+    }
 }

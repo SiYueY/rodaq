@@ -5,6 +5,8 @@
 #include <rodaq/error.hpp>
 
 #include <exception>
+#include <algorithm>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <string>
@@ -152,7 +154,7 @@ rodaq_status ClockCorrelation::get_unix_epoch_anchor(
             "Clock anchor output capacity is below the V1 minimum", out_error);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    *out_anchor = {};
+    std::memset(out_anchor, 0, std::min<std::size_t>(capacity, sizeof(*out_anchor)));
     if (context == nullptr) {
         assign_rodaq_error(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
@@ -170,9 +172,15 @@ rodaq_status ClockCorrelation::get_unix_epoch_anchor(
         }
         out_anchor->struct_size = sizeof(rodaq_unix_epoch_clock_anchor);
         out_anchor->reserved = 0;
-        out_anchor->clock = state->anchor.clock;
-        out_anchor->clock_reading = state->anchor.clock_reading;
-        out_anchor->unix_anchor_ns = state->anchor.unix_anchor_ns;
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_unix_epoch_clock_anchor, capacity, clock)) {
+            out_anchor->clock = state->anchor.clock;
+        }
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_unix_epoch_clock_anchor, capacity, clock_reading)) {
+            out_anchor->clock_reading = state->anchor.clock_reading;
+        }
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_unix_epoch_clock_anchor, capacity, unix_anchor_ns)) {
+            out_anchor->unix_anchor_ns = state->anchor.unix_anchor_ns;
+        }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         assign_rodaq_error(

@@ -32,6 +32,67 @@ public:
 
 }  // namespace rodaq
 
+namespace rodaq::plugin {
+
+inline void write_storage_capabilities(
+    rodaq_storage_capabilities* output, std::uint32_t capacity,
+    const rodaq_storage_capabilities& value) noexcept {
+    clear_output_prefix(output, capacity);
+    output->struct_size = sizeof(rodaq_storage_capabilities);
+    output->flags = value.flags;
+    output->full_fidelity = value.full_fidelity;
+    output->reserved = 0;
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_payload_bytes)) {
+        output->maximum_payload_bytes = value.maximum_payload_bytes;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_inflight_records)) {
+        output->maximum_inflight_records = value.maximum_inflight_records;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_inflight_bytes)) {
+        output->maximum_inflight_bytes = value.maximum_inflight_bytes;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(
+            rodaq_storage_capabilities, capacity, handoff_progress_timeout_ns)) {
+        output->handoff_progress_timeout_ns = value.handoff_progress_timeout_ns;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(
+            rodaq_storage_capabilities, capacity, descriptor_progress_timeout_ns)) {
+        output->descriptor_progress_timeout_ns = value.descriptor_progress_timeout_ns;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, flush_progress_timeout_ns)) {
+        output->flush_progress_timeout_ns = value.flush_progress_timeout_ns;
+    }
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, close_progress_timeout_ns)) {
+        output->close_progress_timeout_ns = value.close_progress_timeout_ns;
+    }
+}
+
+inline void write_storage_submit_result(
+    rodaq_storage_submit_result* output, std::uint32_t capacity,
+    const rodaq_storage_submit_result& value) noexcept {
+    clear_output_prefix(output, capacity);
+    output->struct_size = sizeof(rodaq_storage_submit_result);
+    output->reserved = 0;
+    output->payload_state = value.payload_state;
+    output->persistence_state = value.persistence_state;
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_submit_result, capacity, persistence_error)) {
+        output->persistence_error = value.persistence_error;
+    }
+}
+
+inline void write_descriptor_readiness_result(
+    rodaq_descriptor_readiness_result* output, std::uint32_t capacity,
+    const rodaq_descriptor_readiness_result& value) noexcept {
+    clear_output_prefix(output, capacity);
+    output->struct_size = sizeof(rodaq_descriptor_readiness_result);
+    output->state = value.state;
+    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_descriptor_readiness_result, capacity, failure)) {
+        output->failure = value.failure;
+    }
+}
+
+}  // namespace rodaq::plugin
+
 #define RODAQ_EXPORT_STORAGE_PLUGIN(PluginType, Descriptor)                                        \
     namespace {                                                                                    \
     rodaq_status rodaq_sdk_storage_create(void** out_instance, rodaq_error* out_error) noexcept {  \
@@ -106,14 +167,20 @@ public:
                 RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "submit output is null", out_error);      \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
-        *out_result = {};                                                                          \
+        const std::uint32_t capacity = out_result->struct_size;                                    \
+        if (capacity < RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE) {                              \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0,                                           \
+                "submit output capacity is below the V1 minimum", out_error);                      \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         try {                                                                                      \
             auto result = static_cast<PluginType*>(instance)->Submit(*submission);                 \
             if (!result.has_value()) {                                                             \
                 rodaq::assign_rodaq_error(result.error(), out_error);                              \
                 return rodaq::status_from_error_code(result.error().code());                       \
             }                                                                                      \
-            *out_result = result.value();                                                          \
+            rodaq::plugin::write_storage_submit_result(out_result, capacity, result.value());      \
             return RODAQ_STATUS_OK;                                                                \
         } catch (const std::exception& error) {                                                    \
             rodaq::assign_rodaq_error(                                                             \
@@ -147,14 +214,20 @@ public:
                 out_error);                                                                        \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
-        *out_capabilities = {};                                                                    \
+        const std::uint32_t capacity = out_capabilities->struct_size;                              \
+        if (capacity < RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE) {                               \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0,                                           \
+                "capabilities output capacity is below the V1 minimum", out_error);                \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         try {                                                                                      \
             auto result = static_cast<PluginType*>(context)->GetCapabilities();                    \
             if (!result.has_value()) {                                                             \
                 rodaq::assign_rodaq_error(result.error(), out_error);                              \
                 return rodaq::status_from_error_code(result.error().code());                       \
             }                                                                                      \
-            *out_capabilities = result.value();                                                    \
+            rodaq::plugin::write_storage_capabilities(out_capabilities, capacity, result.value()); \
             return RODAQ_STATUS_OK;                                                                \
         } catch (const std::exception& error) {                                                    \
             rodaq::assign_rodaq_error(                                                             \
@@ -172,14 +245,21 @@ public:
                 RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "readiness output is null", out_error);   \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
-        *out_result = {};                                                                          \
+        const std::uint32_t capacity = out_result->struct_size;                                    \
+        if (capacity < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {                        \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0,                                           \
+                "readiness output capacity is below the V1 minimum", out_error);                   \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         try {                                                                                      \
             auto result = static_cast<PluginType*>(context)->EnsureDescriptorReady(descriptor);    \
             if (!result.has_value()) {                                                             \
                 rodaq::assign_rodaq_error(result.error(), out_error);                              \
                 return rodaq::status_from_error_code(result.error().code());                       \
             }                                                                                      \
-            *out_result = result.value();                                                          \
+            rodaq::plugin::write_descriptor_readiness_result(                                      \
+                out_result, capacity, result.value());                                             \
             return RODAQ_STATUS_OK;                                                                \
         } catch (const std::exception& error) {                                                    \
             rodaq::assign_rodaq_error(                                                             \

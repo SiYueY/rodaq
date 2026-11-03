@@ -10,9 +10,11 @@ This file records factual current repository state. Keep it concise and update i
 
 **M0 — Foundation + Plugin ABI**
 
-Status: **PASS**
+Status: **CLOSURE REVIEW**
 
-Current sub-phase: **M0-E — PASS**. M0 Final Qualification is complete.
+Current sub-phase: **M0 Closure Fix**. ABI freeze and M0 PASS are pending
+caller-owned APPENDABLE, SDK firewall, manifest parity, bidirectional
+compatibility and final platform qualification.
 
 The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
 

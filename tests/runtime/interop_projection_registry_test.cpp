@@ -191,6 +191,20 @@ TEST(InteropProjectionRegistryTest, AbiAdapterUsesCallerOwnedAppendableOutput) {
         RODAQ_STATUS_INVALID_ARGUMENT,
         vtable->register_projection(interface.context, &registration, &error));
     EXPECT_NE(0U, error.message_size);
+
+    struct GuardedOutput {
+        rodaq_projection_view value;
+        std::uint8_t canary[32];
+    } guarded{};
+    std::memset(guarded.canary, 0xA5, sizeof(guarded.canary));
+    guarded.value.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE;
+    ASSERT_EQ(
+        RODAQ_STATUS_OK,
+        vtable->get_projection(
+            interface.context, descriptor(9), registration.projection_id, &guarded.value, &error));
+    for (std::uint8_t byte : guarded.canary) {
+        EXPECT_EQ(0xA5, byte);
+    }
 }
 
 TEST(InteropProjectionRegistryTest, SupportsConcurrentReadersWithSerializedWriter) {

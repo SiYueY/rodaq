@@ -35,10 +35,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 ## M0 — Foundation + Plugin ABI
 
-**Status:** PASS
+**Status:** ACTIVE
 
-**Current sub-phase:** **M0-E — PASS**. M0-A through M0-E and M0 Final
-Qualification are complete. M1 is next.
+**Current sub-phase:** **M0 Closure Review**. Implementation is complete but
+ABI freeze and PASS are pending corrective qualification. M1 remains blocked.
 
 ### Goal
 
