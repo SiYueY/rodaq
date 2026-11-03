@@ -17,3 +17,13 @@ target_link_libraries(rodaq_clock_correlation_test
 rodaq_enable_warnings(rodaq_clock_correlation_test)
 rodaq_enable_sanitizers(rodaq_clock_correlation_test)
 add_test(NAME rodaq.runtime.clock_correlation COMMAND rodaq_clock_correlation_test)
+
+add_executable(rodaq_handle_registry_test handle_registry_test.cpp)
+target_link_libraries(rodaq_handle_registry_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_runtime
+)
+rodaq_enable_warnings(rodaq_handle_registry_test)
+rodaq_enable_sanitizers(rodaq_handle_registry_test)
+add_test(NAME rodaq.runtime.handle_registry COMMAND rodaq_handle_registry_test)
