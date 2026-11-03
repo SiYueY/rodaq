@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace rodaq {
 namespace {
@@ -112,6 +113,24 @@ TEST(RegistryTest, InvalidAndForeignHandlesDoNotResolve) {
         registry.Find(
             StringRegistry::HandleType::FromRaw(std::numeric_limits<std::uint64_t>::max())),
         nullptr);
+}
+
+TEST(RegistryTest, SupportsNonPowerOfTwoCapacity) {
+    auto registry_result = IntRegistry::Create(3);
+    ASSERT_TRUE(registry_result.has_value());
+    auto registry = std::move(registry_result.value());
+
+    std::vector<IntRegistry::HandleType> handles;
+    for (int value = 0; value < 3; ++value) {
+        auto handle = registry.Insert(value);
+        ASSERT_TRUE(handle.has_value());
+        handles.push_back(handle.value());
+    }
+    for (int value = 0; value < 3; ++value) {
+        const auto* found = registry.Find(handles[static_cast<std::size_t>(value)]);
+        ASSERT_NE(found, nullptr);
+        EXPECT_EQ(*found, value);
+    }
 }
 
 static_assert(std::is_move_constructible<IntRegistry>::value);

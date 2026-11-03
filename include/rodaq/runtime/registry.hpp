@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -29,7 +31,15 @@ public:
             return nonstd::make_unexpected(Error(
                 ErrorCode::InvalidArgument, "registry capacity exceeds the handle slot domain"));
         }
-        return Registry(capacity);
+        try {
+            return Registry(capacity);
+        } catch (const std::bad_alloc&) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::ResourceExhausted, "failed to allocate registry storage"));
+        } catch (const std::length_error&) {
+            return nonstd::make_unexpected(
+                Error(ErrorCode::ResourceExhausted, "registry capacity exceeds container limits"));
+        }
     }
 
     Registry(const Registry&) = delete;

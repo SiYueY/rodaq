@@ -5,6 +5,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace rodaq {
@@ -55,6 +56,10 @@ Result<AcceptanceSequenceAllocator> AcceptanceSequenceAllocator::Create(
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(
             Error(ErrorCode::ResourceExhausted, "failed to allocate acceptance sequence state"));
+    } catch (const std::length_error&) {
+        return nonstd::make_unexpected(Error(
+            ErrorCode::ResourceExhausted,
+            "acceptance sequence stream count exceeds container limits"));
     }
 }
 

@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace rodaq {
@@ -81,6 +82,9 @@ Result<PayloadPool> PayloadPool::Create(std::size_t block_size_bytes, std::size_
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(
             Error(ErrorCode::ResourceExhausted, "failed to allocate payload pool storage"));
+    } catch (const std::length_error&) {
+        return nonstd::make_unexpected(Error(
+            ErrorCode::ResourceExhausted, "payload pool block count exceeds container limits"));
     }
 }
 
