@@ -11,20 +11,6 @@
 
 namespace rodaq {
 
-template <typename Table>
-Result<Table> runtime_table(InterfaceView interface) {
-    if (!interface.Valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Runtime interface is incomplete"));
-    }
-    const auto* table = static_cast<const Table*>(interface.VTable());
-    if (table->protocol_version != Table{}.protocol_version) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Runtime protocol is incompatible"));
-    }
-    return table;
-}
-
 inline Result<void> runtime_result(rodaq_status status, const rodaq_error& error) {
     if (status == RODAQ_STATUS_OK) {
         return {};

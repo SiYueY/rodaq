@@ -67,6 +67,11 @@ public:
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_bind(                                                       \
         void* instance, const rodaq_service_registry* services, rodaq_error* out_error) noexcept { \
+        if (instance == nullptr || services == nullptr) {                                          \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "bind input is null", out_error);         \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services] {                                                                 \
                 auto registry = rodaq::ServiceRegistryView::FromAbi(*services);                    \
@@ -96,10 +101,20 @@ public:
             out_error);                                                                            \
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_start(void* instance, rodaq_error* out_error) noexcept {    \
+        if (instance == nullptr) {                                                                 \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_error);           \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance] { return static_cast<PluginType*>(instance)->Start(); }, out_error);        \
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_stop(void* instance, rodaq_error* out_error) noexcept {     \
+        if (instance == nullptr) {                                                                 \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_error);           \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance] { return static_cast<PluginType*>(instance)->Stop(); }, out_error);         \
     }                                                                                              \

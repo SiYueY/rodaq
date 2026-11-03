@@ -124,6 +124,11 @@ inline void write_descriptor_readiness_result(
     }                                                                                              \
     rodaq_status rodaq_sdk_storage_bind(                                                           \
         void* instance, const rodaq_service_registry* services, rodaq_error* out_error) noexcept { \
+        if (instance == nullptr || services == nullptr) {                                          \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "bind input is null", out_error);         \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services] {                                                                 \
                 auto registry = rodaq::ServiceRegistryView::FromAbi(*services);                    \
@@ -155,6 +160,12 @@ inline void write_descriptor_readiness_result(
     rodaq_status rodaq_sdk_storage_open(                                                           \
         void* instance, const rodaq_storage_open_request* request,                                 \
         rodaq_error* out_error) noexcept {                                                         \
+        if (instance == nullptr || request == nullptr ||                                           \
+            request->struct_size < RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE) {                   \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "open input is invalid", out_error);      \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, request] { return static_cast<PluginType*>(instance)->Open(*request); },    \
             out_error);                                                                            \
@@ -162,9 +173,10 @@ inline void write_descriptor_readiness_result(
     rodaq_status rodaq_sdk_storage_submit(                                                         \
         void* instance, const rodaq_storage_submission* submission,                                \
         rodaq_storage_submit_result* out_result, rodaq_error* out_error) noexcept {                \
-        if (out_result == nullptr) {                                                               \
+        if (instance == nullptr || submission == nullptr || out_result == nullptr ||               \
+            submission->struct_size < RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE) {                  \
             rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "submit output is null", out_error);      \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "submit input is invalid", out_error);    \
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
         const std::uint32_t capacity = out_result->struct_size;                                    \
@@ -199,6 +211,12 @@ inline void write_descriptor_readiness_result(
     rodaq_status rodaq_sdk_storage_close(                                                          \
         void* instance, const rodaq_storage_close_request* request,                                \
         rodaq_error* out_error) noexcept {                                                         \
+        if (instance == nullptr || request == nullptr ||                                           \
+            request->struct_size < RODAQ_STORAGE_CLOSE_REQUEST_MIN_STRUCT_SIZE) {                  \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "close input is invalid", out_error);     \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
+        }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, request] {                                                                  \
                 return static_cast<PluginType*>(instance)->Close(request->disposition);            \
@@ -234,6 +252,9 @@ inline void write_descriptor_readiness_result(
                 RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, error.what(), out_error);                   \
             return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
         } catch (...) {                                                                            \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, "Unknown capabilities exception",           \
+                out_error);                                                                        \
             return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
         }                                                                                          \
     }                                                                                              \
@@ -266,6 +287,8 @@ inline void write_descriptor_readiness_result(
                 RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, error.what(), out_error);                   \
             return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
         } catch (...) {                                                                            \
+            rodaq::assign_rodaq_error(                                                             \
+                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, "Unknown readiness exception", out_error);  \
             return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
         }                                                                                          \
     }                                                                                              \
