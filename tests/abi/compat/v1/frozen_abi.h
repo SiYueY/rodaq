@@ -17,6 +17,35 @@ typedef struct {
     uint64_t size;
 } rodaq_string_view;
 
+typedef struct {
+    const uint8_t* data;
+    uint64_t size;
+} rodaq_bytes_view;
+
+typedef struct {
+    uint64_t value;
+} rodaq_stream_descriptor_handle_frozen;
+
+typedef struct {
+    uint64_t value;
+} rodaq_clock_handle_frozen;
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t reserved;
+    rodaq_stream_descriptor_handle_frozen descriptor;
+    rodaq_string_view projection_id;
+    rodaq_bytes_view payload;
+} rodaq_projection_view_v1_frozen;
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t reserved;
+    rodaq_clock_handle_frozen clock;
+    int64_t clock_reading;
+    uint64_t unix_anchor_ns;
+} rodaq_unix_epoch_clock_anchor_v1_frozen;
+
 typedef struct rodaq_error rodaq_error;
 typedef struct rodaq_service_registry rodaq_service_registry;
 
