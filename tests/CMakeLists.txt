@@ -54,3 +54,12 @@ add_test(
 add_subdirectory(abi)
 add_subdirectory(plugin)
 add_subdirectory(runtime)
+
+add_test(
+    NAME rodaq.cmake.plugin_manifest_matrix
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DRODAQ_HELPER=${PROJECT_SOURCE_DIR}/cmake/rodaq_plugin.cmake"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/plugin_manifest/run_matrix.cmake"
+)
