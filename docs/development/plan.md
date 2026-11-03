@@ -35,10 +35,10 @@ Only one milestone may be `ACTIVE` at a time.
 
 ## M0 — Foundation + Plugin ABI
 
-**Status:** ACTIVE
+**Status:** PASS
 
-**Current sub-phase:** **M0 Closure Review**. Implementation is complete but
-ABI freeze and PASS are pending corrective qualification. M1 remains blocked.
+**Current sub-phase:** **M0-E + Closure Fix — PASS**. Stable ABI core prefix is
+frozen. Native arm64 qualification is deferred by D-034.
 
 ### Goal
 
@@ -236,12 +236,12 @@ Development:
 - [ ] M2: Binding abort KEEP_PAUSED / RESUME_OLD and terminal transition state.
 - [ ] M1/M2: Runtime lifecycle snapshot recovery gating and stale-state rejection.
 - [x] protocol/struct-size validation.
-- [ ] caller-owned APPENDABLE output: old/new caller/callee compatibility.
-- [ ] flags/reserved validation.
+- [x] caller-owned APPENDABLE output: old/new caller/callee compatibility.
+- [x] flags/reserved validation.
 - [x] ConfigView MAP/LIST/scalar tests.
 - [x] ConfigView exact-type conversion.
 - [x] ConfigView out-of-range index → NOT_FOUND.
-- [ ] caller-owned `rodaq_error` remains readable after ABI return.
+- [x] caller-owned `rodaq_error` remains readable after ABI return.
 - [x] Plugin descriptor / entrypoint object lifetime tied to PluginLibraryLease.
 - [x] Plugin exception firewall.
 - [x] raw noexcept violation subprocess death test.

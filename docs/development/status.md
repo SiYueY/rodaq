@@ -10,11 +10,10 @@ This file records factual current repository state. Keep it concise and update i
 
 **M0 — Foundation + Plugin ABI**
 
-Status: **CLOSURE REVIEW**
+Status: **PASS**
 
-Current sub-phase: **M0 Closure Fix**. ABI freeze and M0 PASS are pending
-caller-owned APPENDABLE, SDK firewall, manifest parity, bidirectional
-compatibility and final platform qualification.
+Current sub-phase: **M0-E + Closure Fix — PASS**. Stable ABI core prefix is
+frozen. Native arm64 qualification is explicitly deferred.
 
 The design phase is sufficiently mature to begin implementation. The first implementation target is the common foundation and Plugin ABI/infrastructure, not ROS 2 or MCAP integration directly.
 
@@ -216,8 +215,8 @@ Structural convergence validation:
 
 ## Not started
 
-- Minimal C++ Plugin SDK.
-- Plugin exception trampolines and complete Fake lifecycle qualification (M0-E).
+- M1 Runtime Core Primitives.
+- M2 Fake End-to-End Runtime.
 - Runtime ResourceBudget / Admission implementation.
 - Payload / PayloadPool implementation.
 - Dispatch / Completion implementation.
@@ -290,11 +289,8 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M0-E — C++ Plugin SDK + exception trampolines.
-2. Implement the C++17 Plugin SDK and complete exception firewall.
-3. Implement Plugin Interface Query plumbing.
-4. Add Plugin metadata generation and authoring CMake helpers.
-5. Build complete Fake Acquisition / Storage lifecycle tests for M0-E.
+1. Begin M1 — Runtime Core Primitives.
+2. Native arm64 closure evidence remains deferred until a runner is available.
 
 ## Validation state
 

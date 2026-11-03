@@ -662,3 +662,15 @@ M0 PASS freezes the Stable ABI core prefix, Service Registry, ConfigView,
 Plugin Interface Query, C++ SDK authoring surface, exception firewall,
 metadata/CMake authoring pipeline and initial V1 compatibility fixtures.
 M1/M2 own behavioral ownership, quiescence, timeout and completion proof.
+
+## D-034 — Native arm64 qualification is deferred for M0 closure
+
+**Status:** Accepted
+
+M0 Closure PASS may be granted after full Ubuntu 22.04 amd64 normal/ASan/UBSan
+and Ubuntu 24.04 qualification. Native arm64 remains an explicit deferred
+qualification and must not be recorded as PASS. A manual self-hosted arm64 CI
+job remains available for later evidence without reopening the frozen ABI.
+
+**Reference:** `.github/workflows/m0-qualification.yml`,
+`docs/design/rodaq_v1_system_design.md`.
