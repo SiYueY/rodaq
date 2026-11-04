@@ -674,6 +674,10 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
     }
     storage_context_ = std::make_unique<StorageServiceContext>();
     storage_context_->state = this;
+    projections_.SetRegistrationSink(
+        [this](rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) {
+            OnProjectionRegistered(descriptor, projection_id);
+        });
 }
 
 void ActiveRuntimeState::SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control) {
@@ -722,7 +726,8 @@ Result<rodaq_storage_capabilities> ActiveRuntimeState::StorageCapabilities() con
     return capabilities;
 }
 
-Result<void> ActiveRuntimeState::EnsureDescriptorReady(StreamDescriptorHandle descriptor) {
+Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescriptorReady(
+    StreamDescriptorHandle descriptor) {
     if (!storage_control_.has_value()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Storage control interface is unavailable"));
@@ -749,13 +754,14 @@ Result<void> ActiveRuntimeState::EnsureDescriptorReady(StreamDescriptorHandle de
         return nonstd::make_unexpected(runtime_error(
             ErrorCode::InvalidArgument, "Storage descriptor readiness output is incomplete"));
     }
+    if (readiness.state == RODAQ_DESCRIPTOR_UNSUPPORTED) {
+        return DescriptorReadiness::Unsupported;
+    }
     if (readiness.state != RODAQ_DESCRIPTOR_READY) {
         return nonstd::make_unexpected(
-            readiness.state == RODAQ_DESCRIPTOR_UNSUPPORTED
-                ? runtime_error(ErrorCode::Unavailable, "Storage does not support the descriptor")
-                : runtime_error(ErrorCode::StorageError, "Storage descriptor readiness failed"));
+            runtime_error(ErrorCode::StorageError, "Storage descriptor readiness failed"));
     }
-    return {};
+    return DescriptorReadiness::Ready;
 }
 
 Result<void> ActiveRuntimeState::InitializePipeline(
@@ -832,7 +838,7 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                 }
                 submission.timestamp_values = values.data();
                 submission.timestamp_value_count =
-                    static_cast<std::uint32_t>(descriptor->timestamp_keys.size());
+                    static_cast<std::uint32_t>(descriptor->transport_timestamp_keys.size());
                 const PayloadView payload = record.RecordPayload().View();
                 submission.payload = rodaq_bytes_view{payload.Data(), payload.Size()};
                 return Result<rodaq_storage_submission>(submission);
@@ -1235,6 +1241,8 @@ Result<void> ActiveRuntimeState::RegisterStream(
     auto availability = std::make_unique<std::atomic<std::uint32_t>>(RODAQ_AVAILABILITY_AVAILABLE);
     auto current_binding = std::make_unique<std::atomic<std::uint64_t>>(0);
     auto admission_mutex = std::make_unique<std::mutex>();
+    auto binding_transition_mutex = std::make_unique<std::mutex>();
+    auto binding_transition_condition = std::make_unique<std::condition_variable>();
     auto inserted = streams_.Insert(StreamEntry{
         next_stream_id_++,
         plugin_index,
@@ -1242,6 +1250,9 @@ Result<void> ActiveRuntimeState::RegisterStream(
         std::move(availability),
         std::move(current_binding),
         std::move(admission_mutex),
+        std::move(binding_transition_mutex),
+        std::move(binding_transition_condition),
+        false,
     });
     if (!inserted.has_value()) {
         return nonstd::make_unexpected(std::move(inserted.error()));
@@ -1265,234 +1276,345 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
     parse_abi_string(request.name, &name);
     parse_abi_string(request.payload_encoding, &payload_encoding);
 
-    std::lock_guard<std::mutex> lock(control_mutex_);
-    const RuntimeState current_state = state_.load();
-    if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Descriptor publication is not allowed"));
-    }
-    const StreamHandle stream_handle = StreamHandle::FromRaw(request.stream.value);
-    StreamEntry* stream = streams_.Find(stream_handle);
-    if (stream == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Descriptor Stream is unknown"));
-    }
-    if (stream->plugin_index != plugin_index) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Descriptor Stream belongs to another Plugin"));
-    }
-
-    std::pmr::vector<TimestampKeyRecord> keys(arena_->Resource());
-    std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->Resource());
-    keys.reserve(request.timestamp_key_count);
-    abi_keys.reserve(request.timestamp_key_count);
-    for (std::uint32_t index = 0; index < request.timestamp_key_count; ++index) {
-        const rodaq_timestamp_key& key = request.timestamp_keys[index];
-        std::string_view role;
-        if (!parse_abi_string(key.role, &role)) {
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        const RuntimeState current_state = state_.load();
+        if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
             return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidArgument, "Timestamp role is invalid"));
+                runtime_error(ErrorCode::InvalidState, "Descriptor publication is not allowed"));
         }
-        const ClockHandle clock = ClockHandle::FromRaw(key.clock.value);
-        if (clocks_.Find(clock) == nullptr) {
+        const StreamHandle stream_handle = StreamHandle::FromRaw(request.stream.value);
+        StreamEntry* stream = streams_.Find(stream_handle);
+        if (stream == nullptr) {
             return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
+                runtime_error(ErrorCode::NotFound, "Descriptor Stream is unknown"));
         }
-        keys.push_back(TimestampKeyRecord{copy_string(arena_->Resource(), role), clock});
-    }
+        if (stream->plugin_index != plugin_index) {
+            return nonstd::make_unexpected(runtime_error(
+                ErrorCode::InvalidState, "Descriptor Stream belongs to another Plugin"));
+        }
 
-    TimestampKeySetHandle key_set_handle;
-    bool found_key_set = false;
-    for (TimestampKeySetHandle existing : timestamp_key_set_handles_) {
-        const TimestampKeySetEntry* entry = timestamp_key_sets_.Find(existing);
-        if (entry == nullptr || entry->keys.size() != keys.size()) {
-            continue;
+        std::pmr::vector<TimestampKeyRecord> keys(arena_->Resource());
+        std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->Resource());
+        std::pmr::vector<rodaq_timestamp_key> transport_abi_keys(arena_->Resource());
+        keys.reserve(request.timestamp_key_count);
+        abi_keys.reserve(request.timestamp_key_count);
+        transport_abi_keys.reserve(request.timestamp_key_count);
+        for (std::uint32_t index = 0; index < request.timestamp_key_count; ++index) {
+            const rodaq_timestamp_key& key = request.timestamp_keys[index];
+            std::string_view role;
+            if (!parse_abi_string(key.role, &role)) {
+                return nonstd::make_unexpected(
+                    runtime_error(ErrorCode::InvalidArgument, "Timestamp role is invalid"));
+            }
+            const ClockHandle clock = ClockHandle::FromRaw(key.clock.value);
+            if (clocks_.Find(clock) == nullptr) {
+                return nonstd::make_unexpected(
+                    runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
+            }
+            keys.push_back(TimestampKeyRecord{copy_string(arena_->Resource(), role), clock});
+            transport_abi_keys.push_back(rodaq_timestamp_key{
+                rodaq_string_view{keys.back().role.data(), keys.back().role.size()},
+                rodaq_clock_handle{clock.Value()},
+            });
         }
-        bool equal = true;
-        for (std::size_t index = 0; index < keys.size(); ++index) {
-            if (!strings_equal(entry->keys[index].role, keys[index].role) ||
-                entry->keys[index].clock != keys[index].clock) {
-                equal = false;
+
+        TimestampKeySetHandle key_set_handle;
+        bool found_key_set = false;
+        for (TimestampKeySetHandle existing : timestamp_key_set_handles_) {
+            const TimestampKeySetEntry* entry = timestamp_key_sets_.Find(existing);
+            if (entry == nullptr || entry->keys.size() != keys.size()) {
+                continue;
+            }
+            bool equal = true;
+            for (std::size_t index = 0; index < keys.size(); ++index) {
+                if (!strings_equal(entry->keys[index].role, keys[index].role) ||
+                    entry->keys[index].clock != keys[index].clock) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) {
+                key_set_handle = existing;
+                found_key_set = true;
                 break;
             }
         }
-        if (equal) {
-            key_set_handle = existing;
-            found_key_set = true;
-            break;
-        }
-    }
 
-    std::uint64_t key_set_id = 0;
-    if (!found_key_set) {
-        key_set_id = next_timestamp_key_set_id_++;
-        TimestampKeySetEntry entry{
-            key_set_id,
-            std::move(keys),
-            std::move(abi_keys),
-        };
-        auto inserted = timestamp_key_sets_.Insert(std::move(entry));
-        if (!inserted.has_value()) {
-            return nonstd::make_unexpected(std::move(inserted.error()));
-        }
-        key_set_handle = inserted.value();
-        timestamp_key_set_handles_.push_back(key_set_handle);
-    }
-    TimestampKeySetEntry* key_set = timestamp_key_sets_.Find(key_set_handle);
-    if (key_set == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "TimestampKeySet publication failed"));
-    }
-    key_set_id = key_set->timestamp_key_set_id;
-    if (key_set->abi_keys.size() != key_set->keys.size()) {
-        key_set->abi_keys.clear();
-        for (const TimestampKeyRecord& key : key_set->keys) {
-            key_set->abi_keys.push_back(rodaq_timestamp_key{
-                rodaq_string_view{key.role.data(), key.role.size()},
-                rodaq_clock_handle{key.clock.Value()},
-            });
-        }
-    }
-
-    StreamDescriptorEntry descriptor_entry{
-        next_descriptor_id_++,
-        stream_handle,
-        request.schema_present == RODAQ_TRUE,
-        SchemaHandle::FromRaw(request.schema.value),
-        0,
-        copy_string(arena_->Resource(), name),
-        copy_string(arena_->Resource(), payload_encoding),
-        key_set_id,
-        std::pmr::vector<rodaq_timestamp_key>(arena_->Resource()),
-        plugin_index,
-    };
-    if (descriptor_entry.schema_present) {
-        const SchemaEntry* schema = schemas_.Find(descriptor_entry.schema);
-        if (schema == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Descriptor Schema is unknown"));
-        }
-        descriptor_entry.schema_id = schema->schema_id;
-    }
-    descriptor_entry.timestamp_keys.assign(key_set->abi_keys.begin(), key_set->abi_keys.end());
-
-    auto descriptor_inserted = descriptors_.Insert(std::move(descriptor_entry));
-    if (!descriptor_inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(descriptor_inserted.error()));
-    }
-    handle = descriptor_inserted.value();
-    descriptor_handles_.push_back(handle);
-
-    auto readiness = EnsureDescriptorReady(handle);
-    if (!readiness.has_value()) {
-        if (stream->current_binding->load() == 0) {
-            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
-        }
-        return readiness;
-    }
-
-    std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
-    const std::uint64_t old_binding_value =
-        stream->current_binding->load(std::memory_order_acquire);
-    if (old_binding_value == 0) {
-        auto binding =
-            CreateBinding(plugin_index, stream_handle, handle, BindingLifecycle::Prepared);
-        if (!binding.has_value()) {
-            return nonstd::make_unexpected(std::move(binding.error()));
-        }
-        BindingEntry* prepared_entry = bindings_.Find(binding.value());
-        if (prepared_entry == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InternalError, "Prepared Binding is unavailable"));
-        }
-        if (!acquisition_controls_[plugin_index].has_value()) {
-            prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
-            return nonstd::make_unexpected(runtime_error(
-                ErrorCode::InvalidState, "Acquisition control interface is unavailable"));
-        }
-        const auto* control = static_cast<const rodaq_acquisition_control_v1*>(
-            acquisition_controls_[plugin_index]->vtable);
-        const rodaq_binding_transition transition{next_transition_id_++};
-        rodaq_error error{};
-        const rodaq_status prepare_status = control->prepare_binding_switch(
-            acquisition_controls_[plugin_index]->context, transition,
-            rodaq_stream_handle{stream_handle.Value()}, rodaq_stream_descriptor_handle{},
-            rodaq_stream_descriptor_handle{handle.Value()}, &error);
-        if (prepare_status != RODAQ_STATUS_OK) {
-            const rodaq_status abort_status = control->abort_binding_switch(
-                acquisition_controls_[plugin_index]->context, transition,
-                RODAQ_BINDING_ABORT_KEEP_PAUSED, nullptr);
-            prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
-            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
-            if (abort_status != RODAQ_STATUS_OK) {
-                RequestFailure(runtime_error(
-                    ErrorCode::InternalError,
-                    "Initial Binding abort after prepare failure failed"));
+        std::uint64_t key_set_id = 0;
+        if (!found_key_set) {
+            key_set_id = next_timestamp_key_set_id_++;
+            TimestampKeySetEntry entry{
+                key_set_id,
+                std::move(keys),
+                std::move(abi_keys),
+            };
+            auto inserted = timestamp_key_sets_.Insert(std::move(entry));
+            if (!inserted.has_value()) {
+                return nonstd::make_unexpected(std::move(inserted.error()));
             }
-            auto converted = result_from_status(prepare_status, &error, "acquisition");
-            return converted.has_value()
-                       ? nonstd::make_unexpected(runtime_error(
-                             ErrorCode::Unavailable, "Initial Binding prepare failed"))
-                       : nonstd::make_unexpected(std::move(converted.error()));
+            key_set_handle = inserted.value();
+            timestamp_key_set_handles_.push_back(key_set_handle);
         }
-        prepared_entry->lifecycle->store(
-            static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
-        stream->current_binding->store(binding.value().Value(), std::memory_order_release);
-        const rodaq_status commit_status = control->commit_binding_switch(
-            acquisition_controls_[plugin_index]->context, transition, &error);
-        if (commit_status != RODAQ_STATUS_OK) {
-            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
-            RequestFailure(runtime_error(
-                ErrorCode::Unavailable, "Initial Binding commit failed after publication"));
-            auto converted = result_from_status(commit_status, &error, "acquisition");
-            return converted.has_value()
-                       ? nonstd::make_unexpected(
-                             runtime_error(ErrorCode::Unavailable, "Initial Binding commit failed"))
-                       : nonstd::make_unexpected(std::move(converted.error()));
+        TimestampKeySetEntry* key_set = timestamp_key_sets_.Find(key_set_handle);
+        if (key_set == nullptr) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InternalError, "TimestampKeySet publication failed"));
         }
-        return {};
+        key_set_id = key_set->timestamp_key_set_id;
+        if (key_set->abi_keys.size() != key_set->keys.size()) {
+            key_set->abi_keys.clear();
+            for (const TimestampKeyRecord& key : key_set->keys) {
+                key_set->abi_keys.push_back(rodaq_timestamp_key{
+                    rodaq_string_view{key.role.data(), key.role.size()},
+                    rodaq_clock_handle{key.clock.Value()},
+                });
+            }
+        }
+
+        StreamDescriptorEntry descriptor_entry{
+            next_descriptor_id_++,
+            stream_handle,
+            request.schema_present == RODAQ_TRUE,
+            SchemaHandle::FromRaw(request.schema.value),
+            0,
+            copy_string(arena_->Resource(), name),
+            copy_string(arena_->Resource(), payload_encoding),
+            key_set_id,
+            std::pmr::vector<rodaq_timestamp_key>(arena_->Resource()),
+            std::move(transport_abi_keys),
+            plugin_index,
+        };
+        if (descriptor_entry.schema_present) {
+            const SchemaEntry* schema = schemas_.Find(descriptor_entry.schema);
+            if (schema == nullptr) {
+                return nonstd::make_unexpected(
+                    runtime_error(ErrorCode::NotFound, "Descriptor Schema is unknown"));
+            }
+            descriptor_entry.schema_id = schema->schema_id;
+        }
+        descriptor_entry.canonical_timestamp_keys.assign(
+            key_set->abi_keys.begin(), key_set->abi_keys.end());
+
+        auto descriptor_inserted = descriptors_.Insert(std::move(descriptor_entry));
+        if (!descriptor_inserted.has_value()) {
+            return nonstd::make_unexpected(std::move(descriptor_inserted.error()));
+        }
+        handle = descriptor_inserted.value();
+        descriptor_handles_.push_back(handle);
     }
 
-    BindingHandle old_binding = BindingHandle::FromRaw(old_binding_value);
-    BindingEntry* old_entry = bindings_.Find(old_binding);
-    if (old_entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "Current Binding is unknown"));
+    auto reconciled = ReconcileDescriptor(handle);
+    if (!reconciled.has_value()) {
+        return nonstd::make_unexpected(std::move(reconciled.error()));
     }
-    auto prepared = CreateBinding(plugin_index, stream_handle, handle, BindingLifecycle::Prepared);
-    if (!prepared.has_value()) {
-        return nonstd::make_unexpected(std::move(prepared.error()));
+    return {};
+}
+
+Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle descriptor) {
+    while (true) {
+        StreamHandle stream;
+        std::size_t plugin_index = 0;
+        rodaq_interface control{};
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            if (entry == nullptr) {
+                return nonstd::make_unexpected(
+                    runtime_error(ErrorCode::NotFound, "Descriptor is not published"));
+            }
+            if (entry->lifecycle == DescriptorLifecycle::Active) {
+                return true;
+            }
+            if (entry->lifecycle == DescriptorLifecycle::Failed ||
+                entry->lifecycle == DescriptorLifecycle::Superseded) {
+                return false;
+            }
+            if (entry->reconciliation_running) {
+                entry->reconciliation_retry_requested = true;
+                return false;
+            }
+            entry->reconciliation_running = true;
+            entry->reconciliation_retry_requested = false;
+            entry->lifecycle = DescriptorLifecycle::ReadinessPending;
+            stream = entry->stream;
+            plugin_index = entry->plugin_index;
+            if (plugin_index >= acquisition_controls_.size() ||
+                !acquisition_controls_[plugin_index].has_value()) {
+                entry->reconciliation_running = false;
+                entry->lifecycle = DescriptorLifecycle::Failed;
+                return nonstd::make_unexpected(runtime_error(
+                    ErrorCode::InvalidState, "Acquisition control interface is unavailable"));
+            }
+            control = acquisition_controls_[plugin_index].value();
+        }
+
+        auto readiness = EnsureDescriptorReady(descriptor);
+        bool retry = false;
+        if (!readiness.has_value()) {
+            {
+                std::lock_guard<std::mutex> lock(control_mutex_);
+                StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+                if (entry != nullptr) {
+                    entry->reconciliation_running = false;
+                    entry->lifecycle = DescriptorLifecycle::Failed;
+                    retry = entry->reconciliation_retry_requested;
+                    entry->reconciliation_retry_requested = false;
+                }
+            }
+            RequestFailure(readiness.error());
+            return nonstd::make_unexpected(std::move(readiness.error()));
+        }
+        if (readiness.value() != DescriptorReadiness::Ready) {
+            {
+                std::lock_guard<std::mutex> lock(control_mutex_);
+                StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+                if (entry != nullptr) {
+                    entry->reconciliation_running = false;
+                    entry->lifecycle = DescriptorLifecycle::Unsupported;
+                    retry = entry->reconciliation_retry_requested;
+                    entry->reconciliation_retry_requested = false;
+                    StreamEntry* stream_entry = streams_.Find(entry->stream);
+                    if (stream_entry != nullptr && stream_entry->current_binding->load() == 0) {
+                        stream_entry->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+                    }
+                }
+            }
+            if (retry) {
+                continue;
+            }
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            if (entry != nullptr) {
+                entry->lifecycle = DescriptorLifecycle::Ready;
+            }
+        }
+        auto activated = ActivateDescriptorBinding(descriptor, stream, plugin_index, control);
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            if (entry != nullptr) {
+                entry->reconciliation_running = false;
+                entry->reconciliation_retry_requested = false;
+            }
+        }
+        if (!activated.has_value()) {
+            return nonstd::make_unexpected(std::move(activated.error()));
+        }
+        return true;
     }
-    BindingEntry* prepared_entry = bindings_.Find(prepared.value());
-    if (prepared_entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "Prepared Binding is unavailable"));
+}
+
+Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
+    StreamDescriptorHandle descriptor, StreamHandle stream_handle, std::size_t plugin_index,
+    rodaq_interface control) {
+    StreamEntry* stream = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        stream = streams_.Find(stream_handle);
+        if (stream == nullptr) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::NotFound, "Descriptor Stream is unavailable"));
+        }
     }
 
-    if (!acquisition_controls_[plugin_index].has_value()) {
-        prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Acquisition control interface is unavailable"));
+    std::unique_lock<std::mutex> transition_lock(*stream->binding_transition_mutex);
+    stream->binding_transition_condition->wait(
+        transition_lock, [stream] { return !stream->binding_transition_active; });
+    stream->binding_transition_active = true;
+    transition_lock.unlock();
+
+    struct TransitionReset {
+        StreamEntry* stream;
+        ~TransitionReset() {
+            {
+                std::lock_guard<std::mutex> lock(*stream->binding_transition_mutex);
+                stream->binding_transition_active = false;
+            }
+            stream->binding_transition_condition->notify_one();
+        }
+    } transition_reset{stream};
+
+    BindingHandle candidate;
+    BindingHandle old_binding;
+    std::uint64_t old_binding_value = 0;
+    rodaq_stream_descriptor_handle old_descriptor{};
+    rodaq_binding_transition transition{};
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+        StreamEntry* current_stream = streams_.Find(stream_handle);
+        if (descriptor_entry == nullptr || current_stream == nullptr ||
+            descriptor_entry->lifecycle != DescriptorLifecycle::Ready) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Descriptor is no longer ready"));
+        }
+        old_binding_value = current_stream->current_binding->load(std::memory_order_acquire);
+        if (old_binding_value != 0) {
+            BindingEntry* current_binding =
+                bindings_.Find(BindingHandle::FromRaw(old_binding_value));
+            StreamDescriptorEntry* current_descriptor =
+                current_binding == nullptr ? nullptr
+                                           : descriptors_.Find(current_binding->descriptor);
+            if (current_descriptor != nullptr &&
+                current_descriptor->stream_descriptor_id > descriptor_entry->stream_descriptor_id) {
+                descriptor_entry->lifecycle = DescriptorLifecycle::Superseded;
+                descriptor_entry->reconciliation_running = false;
+                return {};
+            }
+            old_binding = BindingHandle::FromRaw(old_binding_value);
+            if (current_binding != nullptr) {
+                old_descriptor =
+                    rodaq_stream_descriptor_handle{current_binding->descriptor.Value()};
+            }
+        }
+        auto created = CreateBindingLocked(
+            plugin_index, stream_handle, descriptor, BindingLifecycle::Prepared);
+        if (!created.has_value()) {
+            descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
+            return nonstd::make_unexpected(std::move(created.error()));
+        }
+        candidate = created.value();
+        descriptor_entry->lifecycle = DescriptorLifecycle::BindingPrepared;
+        transition = rodaq_binding_transition{next_transition_id_++};
     }
-    const auto* control = static_cast<const rodaq_acquisition_control_v1*>(
-        acquisition_controls_[plugin_index]->vtable);
-    const rodaq_binding_transition transition{next_transition_id_++};
+
+    const auto* table = static_cast<const rodaq_acquisition_control_v1*>(control.vtable);
     rodaq_error error{};
-    const rodaq_status prepare_status = control->prepare_binding_switch(
-        acquisition_controls_[plugin_index]->context, transition,
-        rodaq_stream_handle{stream_handle.Value()},
-        rodaq_stream_descriptor_handle{old_entry->descriptor.Value()},
-        rodaq_stream_descriptor_handle{handle.Value()}, &error);
+    const rodaq_status prepare_status = table->prepare_binding_switch(
+        control.context, transition, rodaq_stream_handle{stream_handle.Value()}, old_descriptor,
+        rodaq_stream_descriptor_handle{descriptor.Value()}, &error);
     if (prepare_status != RODAQ_STATUS_OK) {
-        const bool resume_old =
-            stream->availability->load(std::memory_order_acquire) == RODAQ_AVAILABILITY_AVAILABLE;
-        const rodaq_binding_abort_disposition abort_disposition =
-            resume_old ? RODAQ_BINDING_ABORT_RESUME_OLD : RODAQ_BINDING_ABORT_KEEP_PAUSED;
-        const rodaq_status abort_status = control->abort_binding_switch(
-            acquisition_controls_[plugin_index]->context, transition, abort_disposition, nullptr);
-        prepared_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
-        if (!resume_old) {
-            stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+        bool resume_old = false;
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamEntry* current_stream = streams_.Find(stream_handle);
+            resume_old = old_binding.Valid() && current_stream != nullptr &&
+                         current_stream->current_binding->load(std::memory_order_acquire) ==
+                             old_binding_value &&
+                         current_stream->availability->load() == RODAQ_AVAILABILITY_AVAILABLE;
+        }
+        const rodaq_status abort_status = table->abort_binding_switch(
+            control.context, transition,
+            resume_old ? RODAQ_BINDING_ABORT_RESUME_OLD : RODAQ_BINDING_ABORT_KEEP_PAUSED, nullptr);
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            BindingEntry* prepared = bindings_.Find(candidate);
+            if (prepared != nullptr) {
+                prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+            }
+            StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+            if (descriptor_entry != nullptr) {
+                descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
+            }
+            StreamEntry* current_stream = streams_.Find(stream_handle);
+            if (!resume_old && current_stream != nullptr) {
+                current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+            }
         }
         if (abort_status != RODAQ_STATUS_OK) {
             RequestFailure(runtime_error(
@@ -1504,31 +1626,95 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                                      : nonstd::make_unexpected(std::move(converted.error()));
     }
 
-    prepared_entry->lifecycle->store(
-        static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
-    old_entry->lifecycle->store(
-        static_cast<std::uint32_t>(BindingLifecycle::Draining), std::memory_order_release);
-    stream->current_binding->store(prepared.value().Value(), std::memory_order_release);
-    const rodaq_status commit_status = control->commit_binding_switch(
-        acquisition_controls_[plugin_index]->context, transition, &error);
+    {
+        std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
+        std::lock_guard<std::mutex> control_lock(control_mutex_);
+        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+        BindingEntry* prepared = bindings_.Find(candidate);
+        StreamEntry* current_stream = streams_.Find(stream_handle);
+        BindingEntry* old = old_binding.Valid() ? bindings_.Find(old_binding) : nullptr;
+        if (descriptor_entry == nullptr || prepared == nullptr || current_stream == nullptr ||
+            descriptor_entry->lifecycle != DescriptorLifecycle::BindingPrepared ||
+            current_stream->current_binding->load(std::memory_order_acquire) != old_binding_value ||
+            (old_binding.Valid() && old == nullptr)) {
+            if (prepared != nullptr) {
+                prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+            }
+            if (descriptor_entry != nullptr) {
+                descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
+            }
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Binding transition became stale"));
+        }
+        prepared->lifecycle->store(
+            static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
+        if (old != nullptr) {
+            old->lifecycle->store(
+                static_cast<std::uint32_t>(BindingLifecycle::Draining), std::memory_order_release);
+        }
+        current_stream->current_binding->store(candidate.Value(), std::memory_order_release);
+        current_stream->availability->store(RODAQ_AVAILABILITY_AVAILABLE);
+        descriptor_entry->lifecycle = DescriptorLifecycle::Active;
+    }
+
+    const rodaq_status commit_status =
+        table->commit_binding_switch(control.context, transition, &error);
     if (commit_status != RODAQ_STATUS_OK) {
-        stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamEntry* current_stream = streams_.Find(stream_handle);
+            if (current_stream != nullptr) {
+                current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+            }
+        }
         RequestFailure(runtime_error(
             ErrorCode::Unavailable, "Binding commit failed after Runtime publication"));
-    }
-    if (old_entry->admission_inflight->load() == 0) {
-        old_entry->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
-    }
-    if (commit_status != RODAQ_STATUS_OK) {
         auto converted = result_from_status(commit_status, &error, "acquisition");
         return converted.has_value() ? nonstd::make_unexpected(runtime_error(
                                            ErrorCode::Unavailable, "Binding commit failed"))
                                      : nonstd::make_unexpected(std::move(converted.error()));
     }
+    if (old_binding.Valid()) {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        BindingEntry* old = bindings_.Find(old_binding);
+        if (old != nullptr && old->admission_inflight->load() == 0) {
+            old->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+        }
+    }
     return {};
 }
 
-Result<BindingHandle> ActiveRuntimeState::CreateBinding(
+void ActiveRuntimeState::OnProjectionRegistered(
+    rodaq_stream_descriptor_handle descriptor_value, std::string_view) noexcept {
+    try {
+        const StreamDescriptorHandle descriptor =
+            StreamDescriptorHandle::FromRaw(descriptor_value.value);
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            if (entry == nullptr) {
+                return;
+            }
+            if (entry->reconciliation_running) {
+                entry->reconciliation_retry_requested = true;
+                return;
+            }
+            if (entry->lifecycle == DescriptorLifecycle::Active) {
+                return;
+            }
+        }
+        auto result = ReconcileDescriptor(descriptor);
+        if (!result.has_value()) {
+            RequestFailure(result.error());
+        }
+    } catch (const std::exception& error) {
+        RequestFailure(runtime_error(ErrorCode::InternalError, error.what()));
+    } catch (...) {
+        RequestFailure(runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
+    }
+}
+
+Result<BindingHandle> ActiveRuntimeState::CreateBindingLocked(
     std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
     BindingLifecycle lifecycle) {
     auto entry = BindingEntry{
@@ -1690,8 +1876,9 @@ Result<void> ActiveRuntimeState::GetStreamDescriptor(
     view.payload_encoding =
         rodaq_string_view{entry->payload_encoding.data(), entry->payload_encoding.size()};
     view.timestamp_key_set_id = entry->timestamp_key_set_id;
-    view.transport_timestamp_keys = entry->timestamp_keys.data();
-    view.transport_timestamp_key_count = static_cast<std::uint32_t>(entry->timestamp_keys.size());
+    view.transport_timestamp_keys = entry->transport_timestamp_keys.data();
+    view.transport_timestamp_key_count =
+        static_cast<std::uint32_t>(entry->transport_timestamp_keys.size());
     return {};
 }
 
@@ -1752,7 +1939,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     if (stream->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
         return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
     }
-    if (descriptor->timestamp_keys.size() != submission.timestamp_value_count) {
+    if (descriptor->transport_timestamp_keys.size() != submission.timestamp_value_count) {
         return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
     }
 
@@ -1854,12 +2041,12 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     TimestampState timestamps;
     const std::int64_t ingress_reading =
         static_cast<std::int64_t>(common_monotonic_time_ns(nullptr));
-    for (std::size_t slot = 0; slot < descriptor->timestamp_keys.size(); ++slot) {
+    for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
         const rodaq_timestamp_value& value = submission.timestamp_values[slot];
         if (value.present == RODAQ_TRUE) {
             const std::string_view role(
-                descriptor->timestamp_keys[slot].role.data,
-                descriptor->timestamp_keys[slot].role.size);
+                descriptor->transport_timestamp_keys[slot].role.data,
+                descriptor->transport_timestamp_keys[slot].role.size);
             const auto set = timestamps.Set(
                 slot, role == kIngressTimestampRole ? ingress_reading : value.reading);
             if (!set.has_value()) {

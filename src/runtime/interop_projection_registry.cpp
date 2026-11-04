@@ -43,6 +43,11 @@ const rodaq_runtime_projection_v1 InteropProjectionRegistry::kProjectionVtable =
 
 InteropProjectionRegistry::InteropProjectionRegistry(ProjectionLimits limits) : limits_(limits) {}
 
+void InteropProjectionRegistry::SetRegistrationSink(RegistrationSink sink) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    registration_sink_ = std::move(sink);
+}
+
 Result<void> InteropProjectionRegistry::Register(
     rodaq_stream_descriptor_handle descriptor, std::string_view projection_id,
     const std::uint8_t* payload, std::size_t payload_size) {
@@ -71,61 +76,73 @@ Result<void> InteropProjectionRegistry::Register(
             projection_error(ErrorCode::InvalidArgument, "Projection payload has null data"));
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto existing = std::find_if(
-        entries_.begin(), entries_.end(),
-        [descriptor, projection_id](const std::unique_ptr<Entry>& entry) {
-            return entry->descriptor.value == descriptor.value &&
-                   entry->projection_id == projection_id;
-        });
-    if (existing != entries_.end()) {
-        if (same_payload((*existing)->payload, payload, payload_size)) {
-            return {};
-        }
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::Conflict, "Projection already exists with different bytes"));
-    }
-
-    std::size_t descriptor_count = 0;
-    std::size_t descriptor_bytes = 0;
-    for (const std::unique_ptr<Entry>& entry : entries_) {
-        if (entry->descriptor.value != descriptor.value) {
-            continue;
-        }
-        ++descriptor_count;
-        if (entry->payload.size() > std::numeric_limits<std::size_t>::max() - descriptor_bytes) {
+    RegistrationSink sink;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto existing = std::find_if(
+            entries_.begin(), entries_.end(),
+            [descriptor, projection_id](const std::unique_ptr<Entry>& entry) {
+                return entry->descriptor.value == descriptor.value &&
+                       entry->projection_id == projection_id;
+            });
+        if (existing != entries_.end()) {
+            if (same_payload((*existing)->payload, payload, payload_size)) {
+                return {};
+            }
             return nonstd::make_unexpected(projection_error(
-                ErrorCode::InternalError, "Projection byte accounting overflowed"));
+                ErrorCode::Conflict, "Projection already exists with different bytes"));
         }
-        descriptor_bytes += entry->payload.size();
-    }
-    if (descriptor_count >= limits_.max_projection_count_per_descriptor) {
-        return nonstd::make_unexpected(
-            projection_error(ErrorCode::ResourceExhausted, "Projection count limit is exhausted"));
-    }
-    if (payload_size > std::numeric_limits<std::size_t>::max() - descriptor_bytes ||
-        descriptor_bytes + payload_size > limits_.max_projection_bytes_per_descriptor) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::ResourceExhausted, "Projection descriptor byte limit is exhausted"));
-    }
-    if (payload_size > std::numeric_limits<std::size_t>::max() - total_payload_bytes_ ||
-        total_payload_bytes_ + payload_size > limits_.max_projection_bytes_per_activation) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::ResourceExhausted, "Projection activation byte limit is exhausted"));
+
+        std::size_t descriptor_count = 0;
+        std::size_t descriptor_bytes = 0;
+        for (const std::unique_ptr<Entry>& entry : entries_) {
+            if (entry->descriptor.value != descriptor.value) {
+                continue;
+            }
+            ++descriptor_count;
+            if (entry->payload.size() >
+                std::numeric_limits<std::size_t>::max() - descriptor_bytes) {
+                return nonstd::make_unexpected(projection_error(
+                    ErrorCode::InternalError, "Projection byte accounting overflowed"));
+            }
+            descriptor_bytes += entry->payload.size();
+        }
+        if (descriptor_count >= limits_.max_projection_count_per_descriptor) {
+            return nonstd::make_unexpected(projection_error(
+                ErrorCode::ResourceExhausted, "Projection count limit is exhausted"));
+        }
+        if (payload_size > std::numeric_limits<std::size_t>::max() - descriptor_bytes ||
+            descriptor_bytes + payload_size > limits_.max_projection_bytes_per_descriptor) {
+            return nonstd::make_unexpected(projection_error(
+                ErrorCode::ResourceExhausted, "Projection descriptor byte limit is exhausted"));
+        }
+        if (payload_size > std::numeric_limits<std::size_t>::max() - total_payload_bytes_ ||
+            total_payload_bytes_ + payload_size > limits_.max_projection_bytes_per_activation) {
+            return nonstd::make_unexpected(projection_error(
+                ErrorCode::ResourceExhausted, "Projection activation byte limit is exhausted"));
+        }
+
+        try {
+            auto entry = std::make_unique<Entry>();
+            entry->descriptor = descriptor;
+            entry->projection_id = std::string(projection_id);
+            if (payload_size != 0) {
+                entry->payload.assign(payload, payload + payload_size);
+            }
+            entries_.push_back(std::move(entry));
+            total_payload_bytes_ += payload_size;
+        } catch (const std::bad_alloc&) {
+            return nonstd::make_unexpected(projection_error(
+                ErrorCode::ResourceExhausted, "Memory exhausted while storing a Projection"));
+        }
+        sink = registration_sink_;
     }
 
-    try {
-        auto entry = std::make_unique<Entry>();
-        entry->descriptor = descriptor;
-        entry->projection_id = std::string(projection_id);
-        if (payload_size != 0) {
-            entry->payload.assign(payload, payload + payload_size);
+    if (sink) {
+        try {
+            sink(descriptor, projection_id);
+        } catch (...) {
         }
-        entries_.push_back(std::move(entry));
-        total_payload_bytes_ += payload_size;
-    } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::ResourceExhausted, "Memory exhausted while storing a Projection"));
     }
     return {};
 }

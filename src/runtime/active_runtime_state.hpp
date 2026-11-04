@@ -73,6 +73,20 @@ struct StreamEntry {
     std::unique_ptr<std::atomic<std::uint32_t>> availability;
     std::unique_ptr<std::atomic<std::uint64_t>> current_binding;
     std::unique_ptr<std::mutex> admission_mutex;
+    std::unique_ptr<std::mutex> binding_transition_mutex;
+    std::unique_ptr<std::condition_variable> binding_transition_condition;
+    bool binding_transition_active = false;
+};
+
+enum class DescriptorLifecycle : std::uint32_t {
+    Published = 1,
+    ReadinessPending = 2,
+    Ready = 3,
+    BindingPrepared = 4,
+    Active = 5,
+    Unsupported = 6,
+    Failed = 7,
+    Superseded = 8,
 };
 
 struct StreamDescriptorEntry {
@@ -84,8 +98,12 @@ struct StreamDescriptorEntry {
     ArenaString name;
     ArenaString payload_encoding;
     std::uint64_t timestamp_key_set_id = 0;
-    std::pmr::vector<rodaq_timestamp_key> timestamp_keys;
+    std::pmr::vector<rodaq_timestamp_key> canonical_timestamp_keys;
+    std::pmr::vector<rodaq_timestamp_key> transport_timestamp_keys;
     std::size_t plugin_index = 0;
+    DescriptorLifecycle lifecycle = DescriptorLifecycle::Published;
+    bool reconciliation_running = false;
+    bool reconciliation_retry_requested = false;
 };
 
 enum class BindingLifecycle : std::uint32_t {
@@ -132,7 +150,6 @@ public:
     void SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control);
     void SetStorageControl(rodaq_interface control);
     Result<rodaq_storage_capabilities> StorageCapabilities() const;
-    Result<void> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
 
     Result<void> InitializePipeline(
         std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
@@ -202,19 +219,33 @@ public:
     Result<void> GetStreamDescriptor(
         StreamDescriptorHandle handle, rodaq_stream_descriptor_view& view) const;
 
-    Result<BindingHandle> CreateBinding(
-        std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
-        BindingLifecycle lifecycle);
     void RetireDrainingBinding(BindingHandle binding) noexcept;
     rodaq_interface AcquisitionServiceInterface(std::size_t plugin_index) noexcept;
     rodaq_interface StorageServiceInterface() noexcept;
 
 private:
+    enum class DescriptorReadiness {
+        Ready,
+        Unsupported,
+        Failed,
+    };
+
     static const rodaq_runtime_common_v1 kCommonVtable;
     static const rodaq_runtime_canonical_v1 kCanonicalVtable;
     static const rodaq_runtime_acquisition_v1 kAcquisitionVtable;
     static const rodaq_runtime_storage_v1 kStorageVtable;
     static const rodaq_runtime_clock_correlation_v1 kClockCorrelationVtable;
+
+    Result<DescriptorReadiness> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
+    Result<bool> ReconcileDescriptor(StreamDescriptorHandle descriptor);
+    Result<void> ActivateDescriptorBinding(
+        StreamDescriptorHandle descriptor, StreamHandle stream, std::size_t plugin_index,
+        rodaq_interface control);
+    void OnProjectionRegistered(
+        rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) noexcept;
+    Result<BindingHandle> CreateBindingLocked(
+        std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
+        BindingLifecycle lifecycle);
 
     RuntimeOptions options_;
     const std::uint64_t activation_generation_;

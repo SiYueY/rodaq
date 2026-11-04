@@ -69,6 +69,10 @@ public:
         lifecycle_scenario_ = config_string(config, "lifecycle_scenario", "");
         pause_before_switch_ = config_int(config, "pause_before_switch", 0) != 0;
         stale_handle_file_ = config_string(config, "stale_handle_file", "");
+        projection_id_ = config_string(config, "projection_id", "");
+        projection_before_start_ = config_int(config, "projection_before_start", 0) != 0;
+        projection_delay_after_ = config_int(config, "projection_delay_after", -1);
+        projection_registration_mode_ = config_string(config, "projection_registration_mode", "");
         event_log_ = config_string(config, "event_log", "");
         LogControl(
             "configure streams=" + std::to_string(stream_count_) +
@@ -146,6 +150,23 @@ public:
             auto descriptor = PublishDescriptor(stream.value(), descriptor_name);
             if (!descriptor.has_value()) {
                 return fail(descriptor.error());
+            }
+            if (projection_before_start_) {
+                auto projection = RegisterProjection(descriptor.value());
+                if (!projection.has_value()) {
+                    return fail(projection.error());
+                }
+                if (projection_registration_mode_ == "same") {
+                    auto duplicate = RegisterProjection(descriptor.value());
+                    if (!duplicate.has_value()) {
+                        return fail(duplicate.error());
+                    }
+                } else if (projection_registration_mode_ == "conflict") {
+                    auto conflicting = RegisterProjection(descriptor.value(), "-different");
+                    if (!conflicting.has_value()) {
+                        return fail(conflicting.error());
+                    }
+                }
             }
             descriptor_name.assign("mutated-after-publication");
             auto views = ValidatePublishedViews(stream.value(), descriptor.value(), "fake/0");
@@ -283,6 +304,13 @@ private:
     }
 
     void SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
+        if (projection_delay_after_ >= 0 &&
+            record_index == static_cast<std::size_t>(projection_delay_after_)) {
+            auto projection = RegisterProjection(descriptors_[stream_index]);
+            if (!projection.has_value()) {
+                return;
+            }
+        }
         rodaq_stream_descriptor_handle descriptor{};
         {
             std::lock_guard<std::mutex> lock(switch_mutex_);
@@ -303,6 +331,12 @@ private:
                     return;
                 }
                 descriptors_[stream_index] = switched_descriptor.value();
+                if (projection_before_start_) {
+                    auto projection = RegisterProjection(descriptors_[stream_index]);
+                    if (!projection.has_value()) {
+                        return;
+                    }
+                }
             }
             descriptor = descriptors_[stream_index];
         }
@@ -436,6 +470,23 @@ private:
                             "failed to record stale handle fixture"));
     }
 
+    rodaq::Result<void> RegisterProjection(
+        rodaq_stream_descriptor_handle descriptor, std::string_view suffix = {}) {
+        if (projection_id_.empty()) {
+            return {};
+        }
+        const std::string bytes =
+            "projection:" + std::to_string(descriptor.value) + std::string(suffix);
+        auto result = runtime_.projection.Register(
+            descriptor, projection_id_, reinterpret_cast<const std::uint8_t*>(bytes.data()),
+            bytes.size());
+        if (!result.has_value()) {
+            return result;
+        }
+        LogControl("projection descriptor=" + std::to_string(descriptor.value));
+        return {};
+    }
+
     static rodaq_string_view fixture_string(std::string_view value) noexcept {
         return rodaq_string_view{value.data(), value.size()};
     }
@@ -486,6 +537,10 @@ private:
     std::string lifecycle_scenario_;
     bool pause_before_switch_ = false;
     std::string stale_handle_file_;
+    std::string projection_id_;
+    bool projection_before_start_ = false;
+    std::int64_t projection_delay_after_ = -1;
+    std::string projection_registration_mode_;
     std::string event_log_;
     std::mutex log_mutex_;
     std::mutex switch_mutex_;

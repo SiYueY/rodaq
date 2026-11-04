@@ -5,6 +5,7 @@
 #include "plugin/service_registry.hpp"
 #include "plugin/storage_plugin_instance.hpp"
 #include "runtime/active_runtime_state.hpp"
+#include "runtime/quarantine.hpp"
 
 #include <rodaq/plugin/abi/acquisition.h>
 #include <rodaq/plugin/abi_support.hpp>
@@ -12,18 +13,15 @@
 
 #include <algorithm>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
-#include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -33,28 +31,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-#if defined(__SANITIZE_ADDRESS__)
-extern "C" void __lsan_ignore_object(const void*);
-#define RODAQ_HAS_LSAN_IGNORE 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-extern "C" void __lsan_ignore_object(const void*);
-#define RODAQ_HAS_LSAN_IGNORE 1
-#endif
-#endif
-
 Error runtime_error(ErrorCode code, std::string message) {
     return Error(code, "runtime", 0, std::move(message));
-}
-
-void ignore_intentional_quarantine_root(const void* object) noexcept {
-#if defined(RODAQ_HAS_LSAN_IGNORE)
-    if (object != nullptr) {
-        __lsan_ignore_object(object);
-    }
-#else
-    static_cast<void>(object);
-#endif
 }
 
 Result<void> validate_plugin_options(const RuntimePluginOptions& options) {
@@ -145,14 +123,6 @@ std::chrono::nanoseconds effective_control_timeout(
                                                      std::numeric_limits<std::int64_t>::max())))));
 }
 
-struct BoundedCallCompletion {
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool done = false;
-    bool threw = false;
-    std::optional<Error> error;
-};
-
 struct BoundedCallOutcome {
     enum class Status {
         Completed,
@@ -167,61 +137,24 @@ struct BoundedCallOutcome {
 template <typename Callable>
 BoundedCallOutcome run_bounded_call(
     Callable callable, std::chrono::steady_clock::time_point deadline) noexcept {
-    std::shared_ptr<BoundedCallCompletion> completion;
-    std::unique_ptr<std::thread> worker;
-    try {
-        completion = std::make_shared<BoundedCallCompletion>();
-        worker =
-            std::make_unique<std::thread>([completion, callable = std::move(callable)]() mutable {
-                try {
-                    Result<void> result = callable();
-                    if (!result.has_value()) {
-                        std::lock_guard<std::mutex> lock(completion->mutex);
-                        completion->error.emplace(std::move(result.error()));
-                    }
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(completion->mutex);
-                    completion->threw = true;
-                }
-                {
-                    std::lock_guard<std::mutex> lock(completion->mutex);
-                    completion->done = true;
-                }
-                completion->condition.notify_all();
-            });
-    } catch (...) {
-        return BoundedCallOutcome{
-            BoundedCallOutcome::Status::Failed,
-            runtime_error(ErrorCode::Unavailable, "Failed to start bounded Plugin operation")};
+    auto managed = QuarantineManager::Process().Run(
+        std::function<Result<void>()>(std::move(callable)), deadline,
+        "Runtime Plugin control call");
+    if (!managed.has_value()) {
+        return BoundedCallOutcome{BoundedCallOutcome::Status::Failed, managed.error()};
     }
-
-    {
-        std::unique_lock<std::mutex> lock(completion->mutex);
-        if (!completion->condition.wait_until(
-                lock, deadline, [&completion] { return completion->done; })) {
-            /*
-             * A C++ thread executing Plugin code cannot be force-cancelled.
-             * Retain the joinable thread object and the activation captured by
-             * its callable rather than detaching or destroying either object.
-             */
-            ignore_intentional_quarantine_root(worker.get());
-            static_cast<void>(worker.release());
+    switch (managed.value().status) {
+        case SupervisedCallStatus::Completed:
+            return BoundedCallOutcome{BoundedCallOutcome::Status::Completed, std::nullopt};
+        case SupervisedCallStatus::Failed:
+            return BoundedCallOutcome{
+                BoundedCallOutcome::Status::Failed, std::move(managed.value().error.value())};
+        case SupervisedCallStatus::TimedOut:
             return BoundedCallOutcome{BoundedCallOutcome::Status::TimedOut, std::nullopt};
-        }
     }
-    worker->join();
-
-    std::lock_guard<std::mutex> lock(completion->mutex);
-    if (completion->threw) {
-        return BoundedCallOutcome{
-            BoundedCallOutcome::Status::Failed,
-            runtime_error(ErrorCode::InternalError, "Bounded Plugin operation threw")};
-    }
-    if (completion->error.has_value()) {
-        return BoundedCallOutcome{
-            BoundedCallOutcome::Status::Failed, std::move(completion->error.value())};
-    }
-    return BoundedCallOutcome{BoundedCallOutcome::Status::Completed, std::nullopt};
+    return BoundedCallOutcome{
+        BoundedCallOutcome::Status::Failed,
+        runtime_error(ErrorCode::InternalError, "Unknown supervised call outcome")};
 }
 
 }  // namespace
@@ -260,10 +193,16 @@ public:
             return nonstd::make_unexpected(runtime_error(
                 ErrorCode::ResourceExhausted, "Runtime activation generation is exhausted"));
         }
+        auto activation_slot = QuarantineManager::Process().ReserveActivation("Runtime activation");
+        if (!activation_slot.has_value()) {
+            return nonstd::make_unexpected(std::move(activation_slot.error()));
+        }
+        activation_slot_ = activation_slot.value();
         ++activation_generation_;
         state_ = RuntimeState::Starting;
         auto created = ActiveRuntimeState::Create(options_, activation_generation_);
         if (!created.has_value()) {
+            release_activation_slot();
             state_ = RuntimeState::Failed;
             return nonstd::make_unexpected(std::move(created.error()));
         }
@@ -455,6 +394,7 @@ public:
         active_->storage_instance().reset();
         active_->MarkStopped();
         active_.reset();
+        release_activation_slot();
         state_ = failed ? RuntimeState::Failed : RuntimeState::Stopped;
         if (failed) {
             state_ = RuntimeState::Failed;
@@ -551,18 +491,21 @@ public:
             static_cast<void>(Stop());
         }
         if (quarantined_ != nullptr) {
-            /*
-             * Quarantined activation state is process-lifetime state. The
-             * shared owner is intentionally retained because Plugin worker
-             * threads or callbacks may still reference it.
-             */
-            void* storage = std::malloc(sizeof(std::shared_ptr<ActiveRuntimeState>));
-            if (storage == nullptr) {
+            if (!activation_slot_.has_value()) {
                 std::abort();
             }
-            ignore_intentional_quarantine_root(quarantined_.get());
-            ignore_intentional_quarantine_root(storage);
-            ::new (storage) std::shared_ptr<ActiveRuntimeState>(std::move(quarantined_));
+            try {
+                if (!QuarantineManager::Process().RetainActivation(
+                        *activation_slot_, quarantined_, "Runtime activation quarantine")) {
+                    std::abort();
+                }
+            } catch (...) {
+                std::abort();
+            }
+            quarantined_.reset();
+            activation_slot_.reset();
+        } else {
+            release_activation_slot();
         }
     }
 
@@ -796,6 +739,7 @@ private:
         }
         active_->MarkStopping();
         if (start_quarantine_required_) {
+            capture_activation_outcome();
             quarantined_ = std::move(active_);
             acquisition_started_.assign(options_.acquisitions.size(), false);
             storage_open_ = false;
@@ -835,9 +779,12 @@ private:
             unsafe_to_release = closed.status != BoundedCallOutcome::Status::Completed;
         }
         if (unsafe_to_release) {
+            capture_activation_outcome();
             quarantined_ = std::move(active_);
         } else {
+            capture_activation_outcome();
             active_.reset();
+            release_activation_slot();
         }
         acquisition_started_.assign(options_.acquisitions.size(), false);
         storage_open_ = false;
@@ -854,12 +801,39 @@ private:
             runtime_error(ErrorCode::Unavailable, "Runtime stop requires quarantine"));
     }
 
+    void capture_activation_outcome() noexcept {
+        if (active_ == nullptr) {
+            return;
+        }
+        try {
+            last_stats_ = active_->Stats();
+            auto primary = active_->PrimaryFailure();
+            if (primary.has_value()) {
+                auto secondary = active_->SecondaryFailures();
+                if (secondary.has_value()) {
+                    last_secondary_failures_ = std::move(secondary.value());
+                }
+                last_secondary_failure_overflow_count_ = active_->SecondaryFailureOverflowCount();
+                last_primary_failure_ = std::move(primary.value());
+            }
+        } catch (...) {
+        }
+    }
+
+    void release_activation_slot() noexcept {
+        if (activation_slot_.has_value()) {
+            QuarantineManager::Process().ReleaseActivation(*activation_slot_);
+            activation_slot_.reset();
+        }
+    }
+
     RuntimeOptions options_;
     mutable std::mutex lifecycle_mutex_;
     RuntimeState state_ = RuntimeState::Constructed;
     std::uint64_t activation_generation_ = 0;
     std::shared_ptr<ActiveRuntimeState> active_;
     std::shared_ptr<ActiveRuntimeState> quarantined_;
+    std::optional<std::uint64_t> activation_slot_;
     std::vector<bool> acquisition_started_;
     bool storage_open_ = false;
     bool start_quarantine_required_ = false;

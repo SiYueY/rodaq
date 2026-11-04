@@ -59,7 +59,10 @@ RuntimeOptions options(
     std::string lifecycle_scenario = "", bool pause_before_switch = false,
     std::string stale_handle_file = "", int callback_delay_us = 1000,
     std::int64_t maximum_inflight_records = 128,
-    std::int64_t maximum_inflight_bytes = 128LL * 1024LL * 1024LL) {
+    std::int64_t maximum_inflight_bytes = 128LL * 1024LL * 1024LL,
+    std::string required_projection_id = "", std::string projection_id = "",
+    bool projection_before_start = false, int64_t projection_delay_after = -1,
+    std::string projection_registration_mode = "") {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -81,6 +84,7 @@ RuntimeOptions options(
         {"descriptor_scenario", plugin::ConfigTree::String(std::move(descriptor_scenario))},
         {"maximum_inflight_records", plugin::ConfigTree::Int64(maximum_inflight_records)},
         {"maximum_inflight_bytes", plugin::ConfigTree::Int64(maximum_inflight_bytes)},
+        {"required_projection_id", plugin::ConfigTree::String(std::move(required_projection_id))},
     });
     RuntimePluginOptions acquisition;
     acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
@@ -95,6 +99,11 @@ RuntimeOptions options(
         {"lifecycle_scenario", plugin::ConfigTree::String(std::move(lifecycle_scenario))},
         {"pause_before_switch", plugin::ConfigTree::Int64(pause_before_switch ? 1 : 0)},
         {"stale_handle_file", plugin::ConfigTree::String(std::move(stale_handle_file))},
+        {"projection_id", plugin::ConfigTree::String(std::move(projection_id))},
+        {"projection_before_start", plugin::ConfigTree::Int64(projection_before_start ? 1 : 0)},
+        {"projection_delay_after", plugin::ConfigTree::Int64(projection_delay_after)},
+        {"projection_registration_mode",
+         plugin::ConfigTree::String(std::move(projection_registration_mode))},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -389,18 +398,28 @@ TEST(RuntimePipelineTest, SwitchesDescriptorWithoutBreakingStreamOrdering) {
 }
 
 TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
-    for (const std::string descriptor_scenario : {"failed", "unsupported"}) {
-        const std::string name = "readiness_" + descriptor_scenario;
-        const std::string log = unique_log_path(name);
-        std::error_code removed;
-        fs::remove(log, removed);
-        Runtime runtime(options(
-            name, "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(100), -1, 16, 64U * 1024U,
-            8, AdmissionMode::Wait, 0, descriptor_scenario));
-        ASSERT_TRUE(runtime.Configure().has_value());
-        EXPECT_FALSE(runtime.Start().has_value());
-        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
-    }
+    const std::string failed_log = unique_log_path("readiness_failed");
+    std::error_code failed_removed;
+    fs::remove(failed_log, failed_removed);
+    Runtime failed(options(
+        "readiness_failed", "sync", "copy", 1, 1, 1, failed_log, std::chrono::milliseconds(100), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "failed"));
+    ASSERT_TRUE(failed.Configure().has_value());
+    EXPECT_FALSE(failed.Start().has_value());
+    EXPECT_EQ(failed.State(), RuntimeState::Failed);
+
+    const std::string unsupported_log = unique_log_path("readiness_unsupported");
+    std::error_code unsupported_removed;
+    fs::remove(unsupported_log, unsupported_removed);
+    Runtime unsupported(options(
+        "readiness_unsupported", "sync", "copy", 1, 1, 1, unsupported_log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0,
+        "unsupported"));
+    ASSERT_TRUE(unsupported.Configure().has_value());
+    ASSERT_TRUE(unsupported.Start().has_value());
+    EXPECT_EQ(unsupported.State(), RuntimeState::Running);
+    ASSERT_TRUE(unsupported.Stop().has_value());
+    EXPECT_EQ(record_count(unsupported_log), 0U);
 
     const std::string log = unique_log_path("initial_prepare_failure");
     std::error_code removed;
@@ -413,6 +432,88 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
     EXPECT_TRUE(log_contains(log, "control abort"));
     EXPECT_TRUE(log_contains(log, "disposition=1"));
+}
+
+TEST(RuntimePipelineTest, ReconcilesProjectionDependentDescriptorReadiness) {
+    constexpr std::string_view kProjection = "rodaq.projection.test.v1";
+    const std::string log = unique_log_path("projection_readiness");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "projection_readiness", "sync", "copy", 1, 1, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), true));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "storage_readiness descriptor="));
+    EXPECT_TRUE(log_contains(log, "storage_readiness projection=rodaq.projection.test.v1"));
+    EXPECT_EQ(record_count(log), 1U);
+}
+
+TEST(RuntimePipelineTest, KeepsDescriptorPendingUntilProjectionRegistration) {
+    constexpr std::string_view kProjection = "rodaq.projection.test.v1";
+    const std::string log = unique_log_path("projection_pending");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "projection_pending", "sync", "copy", 1, 2, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), false, 1));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 2));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 1U);
+    EXPECT_EQ(snapshot->rejected_records, 1U);
+    EXPECT_EQ(record_count(log), 1U);
+    EXPECT_TRUE(log_contains(log, "storage_readiness projection=rodaq.projection.test.v1"));
+}
+
+TEST(RuntimePipelineTest, SwitchesProjectionDependentDescriptorAndRejectsConflict) {
+    constexpr std::string_view kProjection = "rodaq.projection.test.v1";
+    const std::string log = unique_log_path("projection_switch");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "projection_switch", "sync", "copy", 1, 6, 1, log, std::chrono::seconds(1), 2, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), true));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 6));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_EQ(record_count(log), 6U);
+
+    const std::string duplicate_log = unique_log_path("projection_duplicate");
+    std::error_code duplicate_removed;
+    fs::remove(duplicate_log, duplicate_removed);
+    Runtime duplicate(options(
+        "projection_duplicate", "sync", "copy", 1, 1, 1, duplicate_log, std::chrono::seconds(1), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000,
+        128, 128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), true, -1,
+        "same"));
+    ASSERT_TRUE(duplicate.Configure().has_value());
+    ASSERT_TRUE(duplicate.Start().has_value());
+    ASSERT_TRUE(wait_for_records(duplicate, duplicate_log, 1));
+    ASSERT_TRUE(duplicate.Stop().has_value());
+
+    const std::string conflict_log = unique_log_path("projection_conflict");
+    std::error_code conflict_removed;
+    fs::remove(conflict_log, conflict_removed);
+    Runtime conflict(options(
+        "projection_conflict", "sync", "copy", 1, 1, 1, conflict_log, std::chrono::seconds(1), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000,
+        128, 128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), true, -1,
+        "conflict"));
+    ASSERT_TRUE(conflict.Configure().has_value());
+    EXPECT_FALSE(conflict.Start().has_value());
+    auto primary = conflict.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::Conflict);
 }
 
 TEST(RuntimePipelineTest, BoundsAndQuarantinesBlockedActivationCalls) {

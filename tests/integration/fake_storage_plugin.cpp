@@ -57,6 +57,7 @@ public:
         callback_delay_us_ = config_int(config, "callback_delay_us", 1000);
         submit_delay_us_ = config_int(config, "submit_delay_us", 0);
         descriptor_scenario_ = config_string(config, "descriptor_scenario", "ready");
+        required_projection_id_ = config_string(config, "required_projection_id", "");
         maximum_inflight_records_ = config_int(config, "maximum_inflight_records", 128);
         maximum_inflight_bytes_ =
             config_int(config, "maximum_inflight_bytes", 128LL * 1024LL * 1024LL);
@@ -93,7 +94,7 @@ public:
     }
 
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
-        rodaq_stream_descriptor_handle) override {
+        rodaq_stream_descriptor_handle descriptor) override {
         if (descriptor_scenario_ == "stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
@@ -106,6 +107,34 @@ public:
             rodaq::assign_rodaq_error(
                 RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
                 "configured descriptor readiness failure", &value.failure);
+        }
+        if (descriptor_scenario_ == "require_projection" ||
+            descriptor_scenario_ == "canonical_probe") {
+            auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
+            if (!descriptor_view.has_value()) {
+                value.state = RODAQ_DESCRIPTOR_FAILED;
+                rodaq::assign_rodaq_error(
+                    RODAQ_STATUS_NOT_FOUND, "fake_storage", 0,
+                    "readiness could not resolve the Canonical Descriptor", &value.failure);
+                return value;
+            }
+            LogControl("readiness descriptor=" + std::to_string(descriptor.value));
+        }
+        if (descriptor_scenario_ == "require_projection") {
+            auto projection = runtime_.projection.Get(descriptor, required_projection_id_);
+            if (!projection.has_value() &&
+                projection.error().code() == rodaq::ErrorCode::NotFound) {
+                value.state = RODAQ_DESCRIPTOR_UNSUPPORTED;
+                return value;
+            }
+            if (!projection.has_value()) {
+                value.state = RODAQ_DESCRIPTOR_FAILED;
+                rodaq::assign_rodaq_error(
+                    RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
+                    "readiness could not resolve the required Projection", &value.failure);
+                return value;
+            }
+            LogControl("readiness projection=" + required_projection_id_);
         }
         return value;
     }
@@ -322,6 +351,15 @@ private:
                << " bytes=" << submission.payload.size << " checksum=" << checksum << '\n';
     }
 
+    void LogControl(const std::string& event) {
+        if (event_log_.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        std::ofstream output(event_log_, std::ios::app);
+        output << "control storage_" << event << '\n';
+    }
+
     void SchedulePayload(rodaq_storage_operation operation) {
         workers_.emplace_back([this, operation] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
@@ -406,6 +444,7 @@ private:
     Stage stage_ = Stage::Created;
     std::string scenario_ = "sync";
     std::string descriptor_scenario_ = "ready";
+    std::string required_projection_id_;
     std::string event_log_;
     std::int64_t callback_delay_us_ = 1000;
     std::int64_t submit_delay_us_ = 0;

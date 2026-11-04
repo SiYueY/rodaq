@@ -7,6 +7,7 @@ add_library(rodaq_runtime STATIC
     logger.cpp
     payload.cpp
     payload_pool.cpp
+    quarantine.cpp
     resource_budget.cpp
     runtime.cpp
     runtime_record.cpp

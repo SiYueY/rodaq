@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -29,6 +30,8 @@ struct ProjectionView {
 
 class InteropProjectionRegistry final {
 public:
+    using RegistrationSink = std::function<void(rodaq_stream_descriptor_handle, std::string_view)>;
+
     explicit InteropProjectionRegistry(ProjectionLimits limits);
 
     InteropProjectionRegistry(const InteropProjectionRegistry&) = delete;
@@ -36,6 +39,8 @@ public:
     InteropProjectionRegistry(InteropProjectionRegistry&&) = delete;
     InteropProjectionRegistry& operator=(InteropProjectionRegistry&&) = delete;
     ~InteropProjectionRegistry() = default;
+
+    void SetRegistrationSink(RegistrationSink sink);
 
     Result<void> Register(
         rodaq_stream_descriptor_handle descriptor, std::string_view projection_id,
@@ -66,6 +71,7 @@ private:
     const ProjectionLimits limits_;
     mutable std::mutex mutex_;
     std::vector<std::unique_ptr<Entry>> entries_;
+    RegistrationSink registration_sink_;
     std::size_t total_payload_bytes_ = 0;
 };
 
