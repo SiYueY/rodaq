@@ -216,7 +216,7 @@ private:
     bool admission_open_ = false;
     bool dispatch_closed_ = false;
     bool callbacks_closed_ = false;
-    bool stopping_ = false;
+    std::atomic<bool> stopping_{false};
     bool started_ = false;
     std::atomic<bool> failure_reported_{false};
     std::thread dispatch_thread_;
