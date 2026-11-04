@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdlib>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -14,7 +15,6 @@ namespace rodaq::runtime {
 namespace {
 
 constexpr std::size_t kMaxRetainedCalls = 64;
-constexpr std::size_t kMaxActivationRoots = 32;
 
 Error quarantine_error(ErrorCode code, std::string message) {
     return Error(code, "runtime_quarantine", 0, std::move(message));
@@ -46,13 +46,7 @@ struct QuarantineManager::CallEntry {
     std::string reason;
 };
 
-struct QuarantineManager::ActivationSlot {
-    bool reserved = false;
-    std::shared_ptr<void> root;
-    std::string reason;
-};
-
-QuarantineManager::QuarantineManager() noexcept : activations_(kMaxActivationRoots) {}
+QuarantineManager::QuarantineManager() noexcept = default;
 
 QuarantineManager& QuarantineManager::Process() noexcept {
     /*
@@ -60,7 +54,13 @@ QuarantineManager& QuarantineManager::Process() noexcept {
      * intentionally process-lifetime; its fixed capacities bound retained
      * workers and activation roots.
      */
-    static QuarantineManager* manager = new QuarantineManager();
+    static QuarantineManager* manager = [] {
+        auto* value = new (std::nothrow) QuarantineManager();
+        if (value == nullptr) {
+            std::abort();
+        }
+        return value;
+    }();
 #if defined(RODAQ_QUARANTINE_HAS_LSAN_IGNORE)
     __lsan_ignore_object(manager);
 #endif
@@ -88,9 +88,10 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
     }
 
     ReapCompleted();
-    auto completion = std::make_shared<Completion>();
+    std::shared_ptr<Completion> completion;
     std::unique_ptr<CallEntry> entry;
     try {
+        completion = std::make_shared<Completion>();
         entry = CreateCallEntry(completion, std::move(reason));
     } catch (const std::exception& error) {
         return nonstd::make_unexpected(
@@ -105,64 +106,43 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
                 "Supervised Plugin call quarantine capacity is exhausted"));
         }
         ++active_calls_;
-        calls_.push_back(std::move(entry));
     }
-    CallEntry* entry_pointer = calls_.back().get();
 
     try {
-        entry_pointer->worker =
-            std::thread([completion, operation = std::move(operation)]() mutable {
-                try {
-                    Result<void> result = operation();
-                    std::lock_guard<std::mutex> lock(completion->mutex);
-                    if (!result.has_value()) {
-                        completion->error.emplace(std::move(result.error()));
-                    }
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(completion->mutex);
-                    completion->threw = true;
+        entry->worker = std::thread([completion, operation = std::move(operation)]() mutable {
+            try {
+                Result<void> result = operation();
+                std::lock_guard<std::mutex> lock(completion->mutex);
+                if (!result.has_value()) {
+                    completion->error.emplace(std::move(result.error()));
                 }
-                {
-                    std::lock_guard<std::mutex> lock(completion->mutex);
-                    completion->done = true;
-                }
-                completion->condition.notify_all();
-            });
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(completion->mutex);
+                completion->threw = true;
+            }
+            {
+                std::lock_guard<std::mutex> lock(completion->mutex);
+                completion->done = true;
+            }
+            completion->condition.notify_all();
+        });
     } catch (const std::exception& error) {
         std::lock_guard<std::mutex> lock(mutex_);
-        calls_.erase(std::find_if(
-            calls_.begin(), calls_.end(),
-            [entry_pointer](const std::unique_ptr<CallEntry>& candidate) {
-                return candidate.get() == entry_pointer;
-            }));
         --active_calls_;
         return nonstd::make_unexpected(quarantine_error(
             ErrorCode::Unavailable,
             std::string("Failed to start supervised Plugin call: ") + error.what()));
     }
 
-    std::unique_ptr<CallEntry> local_entry;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = std::find_if(
-            calls_.begin(), calls_.end(),
-            [entry_pointer](const std::unique_ptr<CallEntry>& candidate) {
-                return candidate.get() == entry_pointer;
-            });
-        if (found != calls_.end()) {
-            local_entry = std::move(*found);
-            calls_.erase(found);
-        }
-    }
-    if (local_entry == nullptr) {
-        return nonstd::make_unexpected(quarantine_error(
-            ErrorCode::InternalError, "Supervised Plugin call ownership was lost"));
-    }
-
-    SupervisedCallOutcome outcome = WaitForCall(local_entry, deadline);
+    SupervisedCallOutcome outcome = WaitForCall(entry, deadline);
     if (outcome.status == SupervisedCallStatus::TimedOut) {
         std::lock_guard<std::mutex> lock(mutex_);
-        calls_.push_back(std::move(local_entry));
+        try {
+            calls_.push_back(std::move(entry));
+        } catch (const std::bad_alloc&) {
+            --active_calls_;
+            std::abort();
+        }
     } else {
         std::lock_guard<std::mutex> lock(mutex_);
         --active_calls_;

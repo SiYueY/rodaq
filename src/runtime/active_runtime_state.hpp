@@ -175,6 +175,9 @@ public:
     void MarkFailed() noexcept;
     RuntimeState state() const noexcept { return state_.load(); }
     bool GateOpen() const noexcept;
+    bool RequiresQuarantine() const noexcept {
+        return control_quarantine_required_.load(std::memory_order_acquire);
+    }
 
     bool BeginSubmission() noexcept;
     void EndSubmission() noexcept;
@@ -296,6 +299,7 @@ private:
     bool gate_open_ = false;
     std::uint64_t active_submission_calls_ = 0;
     std::uint64_t admission_inflight_ = 0;
+    std::atomic<bool> control_quarantine_required_{false};
 
     mutable std::mutex failure_mutex_;
     std::optional<Error> primary_failure_;

@@ -846,6 +846,7 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescri
     }
     switch (outcome.value().status) {
         case SupervisedCallStatus::TimedOut:
+            control_quarantine_required_.store(true, std::memory_order_release);
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::Timeout, "Storage descriptor readiness timed out"));
         case SupervisedCallStatus::Failed:
@@ -2037,8 +2038,18 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     const StreamHandle stream_handle = StreamHandle::FromRaw(submission.stream.value);
     const StreamDescriptorHandle descriptor_handle =
         StreamDescriptorHandle::FromRaw(submission.descriptor.value);
+    std::optional<SourceHandle> source;
+    std::optional<std::uint64_t> source_sequence;
+    if (submission.source_present == RODAQ_TRUE) {
+        source = SourceHandle::FromRaw(submission.source.value);
+    }
+    if (submission.source_sequence_present == RODAQ_TRUE) {
+        source_sequence = submission.source_sequence;
+    }
     StreamEntry* stream = nullptr;
     const StreamDescriptorEntry* descriptor = nullptr;
+    const SourceEntry* source_entry = nullptr;
+    BindingHandle current_binding;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         stream = streams_.Find(stream_handle);
@@ -2052,39 +2063,12 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         if (descriptor->transport_timestamp_keys.size() != submission.timestamp_value_count) {
             return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
         }
-    }
-    if (stream->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
-        return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
-    }
-
-    std::optional<SourceHandle> source;
-    std::optional<std::uint64_t> source_sequence;
-    if (submission.source_present == RODAQ_TRUE) {
-        source = SourceHandle::FromRaw(submission.source.value);
-        std::lock_guard<std::mutex> lock(control_mutex_);
-        const SourceEntry* source_entry = sources_.Find(*source);
-        if (source_entry == nullptr) {
-            return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
+        if (source.has_value()) {
+            source_entry = sources_.Find(*source);
+            if (source_entry == nullptr) {
+                return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
+            }
         }
-        if (source_entry->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
-            return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);
-        }
-    }
-    if (submission.source_sequence_present == RODAQ_TRUE) {
-        source_sequence = submission.source_sequence;
-    }
-
-    const std::size_t payload_size = static_cast<std::size_t>(submission.payload.size);
-    if (payload_size > options_.max_single_payload_bytes) {
-        return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_TOO_LARGE, disposition);
-    }
-    if (submission.payload.data == nullptr && payload_size != 0) {
-        return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
-    }
-
-    BindingHandle current_binding;
-    {
-        std::lock_guard<std::mutex> lock(control_mutex_);
         current_binding =
             BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
         BindingEntry* binding = current_binding.Valid() ? bindings_.Find(current_binding) : nullptr;
@@ -2104,6 +2088,23 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
             return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
         }
     }
+    if (stream->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
+        return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
+    }
+    if (source_entry != nullptr) {
+        if (source_entry->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
+            return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);
+        }
+    }
+
+    const std::size_t payload_size = static_cast<std::size_t>(submission.payload.size);
+    if (payload_size > options_.max_single_payload_bytes) {
+        return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_TOO_LARGE, disposition);
+    }
+    if (submission.payload.data == nullptr && payload_size != 0) {
+        return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
+    }
+
     if (!sequences_.CanAllocate(stream_handle)) {
         stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
         return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
@@ -2208,7 +2209,6 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
             return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
         }
         if (source.has_value()) {
-            const SourceEntry* source_entry = sources_.Find(*source);
             if (source_entry == nullptr ||
                 source_entry->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
                 return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);

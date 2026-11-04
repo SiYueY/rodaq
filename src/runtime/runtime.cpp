@@ -268,6 +268,9 @@ public:
 
         state_ = RuntimeState::Stopping;
         active_->MarkStopping();
+        if (active_->RequiresQuarantine()) {
+            return quarantine_failure();
+        }
 
         for (std::size_t index = 0; index < acquisition_states_.size(); ++index) {
             if (acquisition_states_[index] != AcquisitionActivationState::Started ||
@@ -780,7 +783,7 @@ private:
             return;
         }
         active_->MarkStopping();
-        if (start_quarantine_required_) {
+        if (start_quarantine_required_ || active_->RequiresQuarantine()) {
             capture_activation_outcome();
             quarantined_ = std::move(active_);
             std::fill(

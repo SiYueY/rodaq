@@ -4,6 +4,7 @@
 #include <rodaq/result.hpp>
 
 #include <chrono>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -51,7 +52,11 @@ public:
 private:
     struct Completion;
     struct CallEntry;
-    struct ActivationSlot;
+    struct ActivationSlot {
+        bool reserved = false;
+        std::shared_ptr<void> root;
+        std::string reason;
+    };
 
     QuarantineManager() noexcept;
     ~QuarantineManager() = delete;
@@ -64,7 +69,7 @@ private:
     mutable std::mutex mutex_;
     std::size_t active_calls_ = 0;
     std::vector<std::unique_ptr<CallEntry>> calls_;
-    std::vector<ActivationSlot> activations_;
+    std::array<ActivationSlot, 32> activations_{};
 };
 
 }  // namespace rodaq::runtime
