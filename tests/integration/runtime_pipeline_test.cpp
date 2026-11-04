@@ -1,4 +1,5 @@
 #include "plugin/config_view.hpp"
+#include "runtime/quarantine.hpp"
 #include "runtime/runtime.hpp"
 
 #include <gtest/gtest.h>
@@ -64,7 +65,7 @@ RuntimeOptions options(
     bool projection_before_start = false, int64_t projection_delay_after = -1,
     std::string projection_registration_mode = "", std::string timestamp_scenario = "",
     int timestamp_key_count = 1, std::size_t completion_capacity = 0,
-    int64_t descriptor_stall_after = -1) {
+    int64_t descriptor_stall_after = -1, bool plugin_local_lock = false) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -107,6 +108,7 @@ RuntimeOptions options(
         {"projection_delay_after", plugin::ConfigTree::Int64(projection_delay_after)},
         {"projection_registration_mode",
          plugin::ConfigTree::String(std::move(projection_registration_mode))},
+        {"plugin_local_lock", plugin::ConfigTree::Int64(plugin_local_lock ? 1 : 0)},
         {"timestamp_scenario", plugin::ConfigTree::String(std::move(timestamp_scenario))},
         {"timestamp_key_count", plugin::ConfigTree::Int64(timestamp_key_count)},
         {"event_log", plugin::ConfigTree::String(event_log)},
@@ -422,6 +424,10 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     auto failed_primary = failed.PrimaryFailure();
     ASSERT_TRUE(failed_primary.has_value());
     EXPECT_EQ(failed_primary->code(), ErrorCode::StorageError);
+    auto failed_secondary = failed.SecondaryFailures();
+    ASSERT_TRUE(failed_secondary.has_value());
+    EXPECT_TRUE(failed_secondary->empty());
+    EXPECT_EQ(failed.SecondaryFailureOverflowCount(), 0U);
 
     const std::string unsupported_log = unique_log_path("readiness_unsupported");
     std::error_code unsupported_removed;
@@ -448,8 +454,59 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     auto primary = runtime.PrimaryFailure();
     ASSERT_TRUE(primary.has_value());
     EXPECT_EQ(primary->code(), ErrorCode::Unavailable);
+    auto secondary = runtime.SecondaryFailures();
+    ASSERT_TRUE(secondary.has_value());
+    EXPECT_TRUE(secondary->empty());
+    EXPECT_EQ(runtime.SecondaryFailureOverflowCount(), 0U);
     EXPECT_TRUE(log_contains(log, "control abort"));
     EXPECT_TRUE(log_contains(log, "disposition=1"));
+}
+
+TEST(RuntimePipelineTest, ReturnsDescriptorHandleBeforeInitialReadinessCompletes) {
+    const std::string log = unique_log_path("descriptor_publish_order");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "descriptor_publish_order", "sync", "copy", 1, 1, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "publish_order"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    const auto started = Clock::now();
+    ASSERT_TRUE(runtime.Start().has_value());
+    const auto elapsed = Clock::now() - started;
+    EXPECT_GE(elapsed, std::chrono::milliseconds(50));
+    EXPECT_EQ(runtime.State(), RuntimeState::Running);
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+
+    const auto lines = read_lines(log);
+    const auto published = std::find_if(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("control descriptor_published descriptor=", 0) == 0;
+    });
+    const auto ready = std::find_if(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("control storage_readiness descriptor=", 0) == 0;
+    });
+    ASSERT_NE(published, lines.end());
+    ASSERT_NE(ready, lines.end());
+    EXPECT_LT(published, ready);
+}
+
+TEST(RuntimePipelineTest, BoundsDescriptorReconciliationRequestQueue) {
+    const std::string log = unique_log_path("descriptor_worker_capacity");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto runtime_options = options(
+        "descriptor_worker_capacity", "sync", "copy", 3, 1, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "publish_order");
+    runtime_options.max_stream_descriptors = 1;
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    const auto started = runtime.Start();
+    ASSERT_FALSE(started.has_value());
+    EXPECT_EQ(started.error().code(), ErrorCode::ResourceExhausted);
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::ResourceExhausted);
 }
 
 TEST(RuntimePipelineTest, PreservesStorageOpenAndAcquisitionStartFailures) {
@@ -524,6 +581,29 @@ TEST(RuntimePipelineTest, KeepsDescriptorPendingUntilProjectionRegistration) {
     EXPECT_TRUE(log_contains(log, "storage_readiness projection=rodaq.projection.test.v1"));
 }
 
+TEST(RuntimePipelineTest, DefersProjectionReconciliationOutsidePluginLocalLock) {
+    constexpr std::string_view kProjection = "rodaq.projection.test.v1";
+    const std::string log = unique_log_path("projection_plugin_lock");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "projection_plugin_lock", "sync", "copy", 1, 3, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "require_projection", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, std::string(kProjection), std::string(kProjection), false, 1, "",
+        "", 1, 0, -1, true));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 3));
+    EXPECT_EQ(runtime.State(), RuntimeState::Running);
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, 2U);
+    EXPECT_EQ(snapshot->rejected_records, 1U);
+    EXPECT_EQ(record_count(log), 2U);
+    EXPECT_TRUE(log_contains(log, "storage_readiness projection=rodaq.projection.test.v1"));
+}
+
 TEST(RuntimePipelineTest, SwitchesProjectionDependentDescriptorAndRejectsConflict) {
     constexpr std::string_view kProjection = "rodaq.projection.test.v1";
     const std::string log = unique_log_path("projection_switch");
@@ -579,6 +659,46 @@ TEST(RuntimePipelineTest, InjectsMandatoryRuntimeIngressTimestamp) {
     EXPECT_TRUE(log_contains(log, "timestamp_count=2 ingress_present=1 sample_present=1"));
 }
 
+TEST(RuntimePipelineTest, CapturesIngressBeforeAdmissionWaitAndPayloadCopy) {
+    constexpr std::size_t kLargePayloadBytes = 2U * 1024U * 1024U;
+    const std::string log = unique_log_path("ingress_before_wait");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "ingress_before_wait", "sync", "copy", 1, 2, 1, log, std::chrono::seconds(2), -1,
+        static_cast<std::int64_t>(kLargePayloadBytes), kLargePayloadBytes, 1, AdmissionMode::Wait,
+        300'000, "ready", "", "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1,
+        "", "monotonic", 1));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 2));
+    ASSERT_TRUE(runtime.Stop().has_value());
+
+    std::size_t parsed = 0;
+    for (const std::string& line : read_lines(log)) {
+        if (line.rfind("record ", 0) != 0) {
+            continue;
+        }
+        std::istringstream input(line);
+        std::string token;
+        std::int64_t sample_reading = 0;
+        std::int64_t ingress_reading = 0;
+        while (input >> token) {
+            if (token.rfind("sample_reading=", 0) == 0) {
+                sample_reading = std::stoll(token.substr(15));
+            } else if (token.rfind("ingress_reading=", 0) == 0) {
+                ingress_reading = std::stoll(token.substr(16));
+            }
+        }
+        ASSERT_GT(sample_reading, 0);
+        ASSERT_GT(ingress_reading, 0);
+        EXPECT_GE(ingress_reading, sample_reading);
+        EXPECT_LT(ingress_reading - sample_reading, 100'000'000);
+        ++parsed;
+    }
+    EXPECT_EQ(parsed, 2U);
+}
+
 TEST(RuntimePipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRole) {
     const std::string three_log = unique_log_path("three_transport_timestamps");
     std::error_code three_removed;
@@ -618,6 +738,20 @@ TEST(RuntimePipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRol
     auto ingress_failure = ingress.PrimaryFailure();
     ASSERT_TRUE(ingress_failure.has_value());
     EXPECT_EQ(ingress_failure->code(), ErrorCode::InvalidArgument);
+
+    const std::string duplicate_log = unique_log_path("duplicate_timestamp_key");
+    std::error_code duplicate_removed;
+    fs::remove(duplicate_log, duplicate_removed);
+    Runtime duplicate(options(
+        "duplicate_timestamp_key", "sync", "copy", 1, 1, 1, duplicate_log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+        "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "duplicate", 2));
+    ASSERT_TRUE(duplicate.Configure().has_value());
+    EXPECT_FALSE(duplicate.Start().has_value());
+    auto duplicate_failure = duplicate.PrimaryFailure();
+    ASSERT_TRUE(duplicate_failure.has_value());
+    EXPECT_EQ(duplicate_failure->code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(duplicate_failure->message().find("duplicate key"), std::string_view::npos);
 }
 
 TEST(RuntimePipelineTest, ExposesStableActivationClockCorrelation) {
@@ -703,7 +837,7 @@ TEST(RuntimePipelineTest, AbortsBindingSwitchWithTheCorrectDisposition) {
         const char* expected_abort;
     };
     const Scenario scenarios[] = {
-        {"resume_old", false, 5, "disposition=2"},
+        {"resume_old", false, 6, "disposition=2"},
         {"keep_paused", true, 2, "disposition=1"},
     };
     for (const Scenario& scenario : scenarios) {
@@ -753,6 +887,34 @@ TEST(RuntimePipelineTest, BoundsDescriptorReadinessDuringRunningSwitch) {
     EXPECT_EQ(primary->code(), ErrorCode::Timeout);
     EXPECT_FALSE(runtime.Stop().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+}
+
+TEST(RuntimePipelineTest, StopsDuringDescriptorReadinessWithoutPublishingSwitch) {
+    const std::string log = unique_log_path("descriptor_stop_during_readiness");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "descriptor_stop_during_readiness", "sync", "copy", 1, 6, 1, log,
+        std::chrono::milliseconds(100), 0, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "stall", "",
+        "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 1, 0, 1));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(
+        wait_for_log_prefix(runtime, log, "control storage_readiness_started descriptor=", 1));
+
+    const auto stopped_at = Clock::now();
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_LT(Clock::now() - stopped_at, std::chrono::milliseconds(500));
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+    auto secondary = runtime.SecondaryFailures();
+    ASSERT_TRUE(secondary.has_value());
+    EXPECT_TRUE(secondary->empty());
+    EXPECT_EQ(runtime.SecondaryFailureOverflowCount(), 0U);
+    EXPECT_EQ(log_count(log, "control prepare transition="), 1U);
+    EXPECT_TRUE(log_contains(log, "old=0"));
 }
 
 TEST(RuntimePipelineTest, BoundsAcquisitionBindingControlDuringSwitch) {
@@ -1090,6 +1252,24 @@ TEST(RuntimePipelineTest, DetectsStorageHandoffStallWithoutCallingStop) {
     EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(500));
 }
 
+TEST(RuntimePipelineTest, KeepsRunningAcrossMultipleHandoffTimeoutPeriods) {
+    constexpr int kRecords = 80;
+    const std::string log = unique_log_path("continuous_handoff");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "continuous_handoff", "sync", "copy", 1, kRecords, 1, log, std::chrono::milliseconds(100),
+        -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 5'000));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, static_cast<std::size_t>(kRecords)));
+    EXPECT_EQ(runtime.State(), RuntimeState::Running);
+    EXPECT_FALSE(runtime.PrimaryFailure().has_value());
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
+    EXPECT_EQ(record_count(log), static_cast<std::size_t>(kRecords));
+}
+
 TEST(RuntimePipelineTest, BoundsAcquisitionQuiesceAndStopFailures) {
     struct Scenario {
         const char* name;
@@ -1217,6 +1397,7 @@ TEST(RuntimePipelineTest, PreservesPrimaryAndSecondaryFailureDiagnostics) {
     ASSERT_EQ(secondary->size(), 1U);
     EXPECT_EQ(secondary->front().code(), ErrorCode::StorageError);
     EXPECT_NE(secondary->front().message().find("close failure"), std::string_view::npos);
+    EXPECT_EQ(runtime.SecondaryFailureOverflowCount(), 0U);
 }
 
 TEST(RuntimePipelineTest, FailsClosedOnStorageSubmitAndBackgroundFailures) {
@@ -1371,6 +1552,32 @@ TEST(RuntimePipelineTest, RestartCreatesFreshActivation) {
             lines.begin(), lines.end(),
             [](const std::string& line) { return line.rfind("record ", 0) == 0; }),
         2);
+}
+
+TEST(RuntimePipelineTest, RejectsStartWhenActivationRootBudgetIsExhausted) {
+    auto& quarantine = QuarantineManager::Process();
+    std::vector<std::uint64_t> reserved;
+    while (true) {
+        auto slot = quarantine.ReserveActivation("Runtime activation budget test");
+        if (!slot.has_value()) {
+            ASSERT_EQ(slot.error().code(), ErrorCode::ResourceExhausted);
+            break;
+        }
+        reserved.push_back(slot.value());
+        ASSERT_LE(reserved.size(), 32U);
+    }
+
+    const std::string log = unique_log_path("activation_budget");
+    Runtime runtime(options("activation_budget", "sync", "copy", 1, 1, 1, log));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    const auto started = runtime.Start();
+    ASSERT_FALSE(started.has_value());
+    EXPECT_EQ(started.error().code(), ErrorCode::ResourceExhausted);
+    EXPECT_EQ(runtime.State(), RuntimeState::Configured);
+
+    for (const std::uint64_t slot : reserved) {
+        quarantine.ReleaseActivation(slot);
+    }
 }
 
 }  // namespace

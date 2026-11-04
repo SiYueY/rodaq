@@ -101,9 +101,16 @@ public:
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
         rodaq_stream_descriptor_handle descriptor) override {
         const std::size_t readiness_call = ++readiness_calls_;
-        if (descriptor_scenario_ == "stall" &&
-            (descriptor_stall_after_ < 0 ||
-             readiness_call > static_cast<std::size_t>(descriptor_stall_after_))) {
+        const bool stalls = descriptor_scenario_ == "stall" &&
+                            (descriptor_stall_after_ < 0 ||
+                             readiness_call > static_cast<std::size_t>(descriptor_stall_after_));
+        if (stalls || descriptor_scenario_ == "publish_order") {
+            LogControl("readiness_started descriptor=" + std::to_string(descriptor.value));
+        }
+        if (descriptor_scenario_ == "publish_order") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (stalls) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         rodaq_descriptor_readiness_result value{};
@@ -117,7 +124,8 @@ public:
                 "configured descriptor readiness failure", &value.failure);
         }
         if (descriptor_scenario_ == "require_projection" ||
-            descriptor_scenario_ == "canonical_probe" || descriptor_scenario_ == "clock_probe") {
+            descriptor_scenario_ == "canonical_probe" || descriptor_scenario_ == "clock_probe" ||
+            descriptor_scenario_ == "publish_order") {
             auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
             if (!descriptor_view.has_value()) {
                 value.state = RODAQ_DESCRIPTOR_FAILED;
@@ -396,7 +404,8 @@ private:
         if (submission.timestamp_value_count > 1) {
             output << " sample_present="
                    << (submission.timestamp_values[1].present == RODAQ_TRUE ? 1 : 0)
-                   << " sample_reading=" << submission.timestamp_values[1].reading;
+                   << " sample_reading=" << submission.timestamp_values[1].reading
+                   << " ingress_reading=" << submission.timestamp_values[0].reading;
         }
         output << '\n';
     }

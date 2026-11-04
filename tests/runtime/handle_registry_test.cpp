@@ -3,11 +3,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -196,6 +202,32 @@ struct ThrowingValue {
 
 ThrowingValue::Failure ThrowingValue::failure = ThrowingValue::Failure::None;
 
+struct BlockingValue {
+    static std::atomic<bool> armed;
+    static std::atomic<bool> entered;
+    static std::atomic<bool> released;
+
+    explicit BlockingValue(int input) : value(input) {}
+
+    BlockingValue(const BlockingValue&) = delete;
+    BlockingValue& operator=(const BlockingValue&) = delete;
+    BlockingValue(BlockingValue&& other) : value(other.value) {
+        if (armed.exchange(false, std::memory_order_acq_rel)) {
+            entered.store(true, std::memory_order_release);
+            while (!released.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        }
+    }
+    BlockingValue& operator=(BlockingValue&&) = delete;
+
+    int value = 0;
+};
+
+std::atomic<bool> BlockingValue::armed{false};
+std::atomic<bool> BlockingValue::entered{false};
+std::atomic<bool> BlockingValue::released{false};
+
 TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
     using ThrowingRegistry = Registry<ThrowingValue, StreamHandle>;
     auto registry_result = ThrowingRegistry::Create(1);
@@ -219,6 +251,78 @@ TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
     ASSERT_TRUE(valid.has_value());
     ASSERT_NE(registry.Find(valid.value()), nullptr);
     EXPECT_EQ(registry.Find(valid.value())->value, 3);
+}
+
+TEST(RegistryTest, UnpublishedSlotCannotBeObservedDuringConcurrentInsert) {
+    using BlockingRegistry = Registry<BlockingValue, StreamHandle>;
+    auto registry_result = BlockingRegistry::Create(1);
+    ASSERT_TRUE(registry_result.has_value());
+    auto registry = std::move(registry_result.value());
+
+    BlockingValue::armed.store(true, std::memory_order_release);
+    BlockingValue::entered.store(false, std::memory_order_release);
+    BlockingValue::released.store(false, std::memory_order_release);
+    std::optional<Result<StreamHandle>> inserted;
+    std::thread writer(
+        [&registry, &inserted] { inserted.emplace(registry.Insert(BlockingValue{7})); });
+    const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!BlockingValue::entered.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < entered_deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(BlockingValue::entered.load(std::memory_order_acquire));
+
+    const StreamHandle unpublished = StreamHandle::FromRaw((std::uint64_t{1} << 32U) | 1U);
+    for (std::size_t attempt = 0; attempt < 1'000; ++attempt) {
+        ASSERT_EQ(registry.FindStable(unpublished), nullptr);
+    }
+
+    BlockingValue::released.store(true, std::memory_order_release);
+    writer.join();
+    ASSERT_TRUE(inserted.has_value());
+    ASSERT_TRUE(inserted->has_value());
+    EXPECT_EQ(inserted->value(), unpublished);
+    const auto* published = registry.FindStable(unpublished);
+    ASSERT_NE(published, nullptr);
+    EXPECT_EQ(published->value, 7);
+}
+
+TEST(RegistryTest, PublishedSlotsRemainVisibleDuringLaterConcurrentInsert) {
+    constexpr std::size_t kCount = 64;
+    auto registry_result = IntRegistry::Create(kCount);
+    ASSERT_TRUE(registry_result.has_value());
+    auto registry = std::move(registry_result.value());
+
+    std::array<StreamHandle, kCount> handles{};
+    std::atomic<std::size_t> published{0};
+    std::thread writer([&registry, &handles, &published] {
+        for (std::size_t index = 0; index < kCount; ++index) {
+            auto handle = registry.Insert(static_cast<int>(index));
+            if (!handle.has_value()) {
+                published.store(kCount + 1U, std::memory_order_release);
+                return;
+            }
+            handles[index] = handle.value();
+            published.store(index + 1U, std::memory_order_release);
+        }
+    });
+
+    std::size_t observed = 0;
+    while (true) {
+        observed = published.load(std::memory_order_acquire);
+        const std::size_t visible = std::min(observed, kCount);
+        for (std::size_t index = 0; index < visible; ++index) {
+            const auto* value = registry.FindStable(handles[index]);
+            ASSERT_NE(value, nullptr);
+            EXPECT_EQ(*value, static_cast<int>(index));
+        }
+        if (observed >= kCount) {
+            break;
+        }
+        std::this_thread::yield();
+    }
+    writer.join();
+    ASSERT_EQ(observed, kCount);
 }
 
 }  // namespace

@@ -660,6 +660,7 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
     descriptor_handles_.reserve(options_.max_stream_descriptors);
     binding_handles_.reserve(options_.max_bindings);
     secondary_failures_.reserve(kMaxSecondaryFailures);
+    descriptor_worker_requests_.resize(options_.max_stream_descriptors);
     acquisition_controls_.resize(options_.acquisitions.size());
     acquisition_instances_.resize(options_.acquisitions.size());
     acquisition_contexts_.reserve(options_.acquisitions.size());
@@ -679,6 +680,19 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
         [this](rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) {
             OnProjectionRegistered(descriptor, projection_id);
         });
+}
+
+ActiveRuntimeState::~ActiveRuntimeState() noexcept {
+    if (!descriptor_worker_.joinable()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+        descriptor_worker_closing_ = true;
+        descriptor_worker_count_ = 0;
+        descriptor_worker_condition_.notify_all();
+    }
+    descriptor_worker_.join();
 }
 
 void ActiveRuntimeState::SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control) {
@@ -1061,6 +1075,12 @@ void ActiveRuntimeState::MarkRunning() noexcept {
 
 void ActiveRuntimeState::MarkStopping() noexcept {
     {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        if (state_.load() != RuntimeState::Failed) {
+            state_.store(RuntimeState::Stopping);
+        }
+    }
+    {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         if (state_.load() != RuntimeState::Failed) {
             state_.store(RuntimeState::Stopping);
@@ -1085,6 +1105,10 @@ void ActiveRuntimeState::MarkStopped() noexcept {
 }
 
 void ActiveRuntimeState::MarkFailed() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        state_.store(RuntimeState::Failed);
+    }
     {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         state_.store(RuntimeState::Failed);
@@ -1144,6 +1168,174 @@ void ActiveRuntimeState::RequestFailure(Error error) noexcept {
         }
         MarkFailed();
     } catch (...) {
+    }
+}
+
+bool ActiveRuntimeState::HasPrimaryFailure() const noexcept {
+    std::lock_guard<std::mutex> lock(failure_mutex_);
+    return primary_failure_.has_value();
+}
+
+Result<void> ActiveRuntimeState::StartDescriptorReconciliation() {
+    std::shared_ptr<ActiveRuntimeState> state;
+    try {
+        state = shared_from_this();
+    } catch (const std::bad_weak_ptr&) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Runtime activation has no shared owner"));
+    }
+
+    std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+    if (descriptor_worker_started_ || descriptor_worker_.joinable()) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Descriptor reconciliation is already started"));
+    }
+    descriptor_worker_head_ = 0;
+    descriptor_worker_count_ = 0;
+    descriptor_worker_busy_ = false;
+    descriptor_worker_closing_ = false;
+    descriptor_worker_failure_.reset();
+    descriptor_worker_started_ = true;
+    try {
+        descriptor_worker_ = std::thread([state]() { state->RunDescriptorReconciliation(); });
+    } catch (const std::exception& error) {
+        descriptor_worker_started_ = false;
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::ResourceExhausted,
+            std::string("Failed to start Descriptor reconciliation worker: ") + error.what()));
+    }
+    return {};
+}
+
+Result<void> ActiveRuntimeState::RequestDescriptorReconciliation(
+    StreamDescriptorHandle descriptor, bool critical_for_start) {
+    std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+    if (!descriptor_worker_started_ || descriptor_worker_closing_) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidState, "Descriptor reconciliation is not accepting work"));
+    }
+    for (std::size_t offset = 0; offset < descriptor_worker_count_; ++offset) {
+        DescriptorWorkerRequest& request = descriptor_worker_requests_
+            [(descriptor_worker_head_ + offset) % descriptor_worker_requests_.size()];
+        if (request.descriptor == descriptor) {
+            request.critical_for_start = request.critical_for_start || critical_for_start;
+            return {};
+        }
+    }
+    if (descriptor_worker_count_ == descriptor_worker_requests_.size()) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::ResourceExhausted,
+            "Descriptor reconciliation request capacity is exhausted"));
+    }
+    const std::size_t tail =
+        (descriptor_worker_head_ + descriptor_worker_count_) % descriptor_worker_requests_.size();
+    descriptor_worker_requests_[tail] = DescriptorWorkerRequest{descriptor, critical_for_start};
+    ++descriptor_worker_count_;
+    descriptor_worker_condition_.notify_one();
+    return {};
+}
+
+Result<void> ActiveRuntimeState::WaitForDescriptorReconciliation(
+    std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
+    if (!descriptor_worker_started_ && !descriptor_worker_.joinable()) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Descriptor reconciliation is not running"));
+    }
+    if (!descriptor_worker_condition_.wait_until(lock, deadline, [this] {
+            return descriptor_worker_count_ == 0 && !descriptor_worker_busy_;
+        })) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::Timeout, "Descriptor reconciliation did not become idle"));
+    }
+    if (descriptor_worker_failure_.has_value()) {
+        return nonstd::make_unexpected(descriptor_worker_failure_.value());
+    }
+    return {};
+}
+
+bool ActiveRuntimeState::CloseAndJoinDescriptorReconciliation(
+    std::chrono::steady_clock::time_point deadline) {
+    {
+        std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+        descriptor_worker_closing_ = true;
+        descriptor_worker_count_ = 0;
+        descriptor_worker_condition_.notify_all();
+    }
+    {
+        std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
+        if (!descriptor_worker_condition_.wait_until(
+                lock, deadline, [this] { return !descriptor_worker_started_; })) {
+            RequestFailure(
+                runtime_error(ErrorCode::Timeout, "Descriptor reconciliation shutdown timed out"));
+            return false;
+        }
+    }
+    if (descriptor_worker_.joinable()) {
+        descriptor_worker_.join();
+    }
+    return true;
+}
+
+void ActiveRuntimeState::RunDescriptorReconciliation() noexcept {
+    for (;;) {
+        DescriptorWorkerRequest request;
+        {
+            std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
+            descriptor_worker_condition_.wait(lock, [this] {
+                return descriptor_worker_closing_ || descriptor_worker_count_ != 0;
+            });
+            if (descriptor_worker_closing_) {
+                break;
+            }
+            request = descriptor_worker_requests_[descriptor_worker_head_];
+            descriptor_worker_head_ =
+                (descriptor_worker_head_ + 1U) % descriptor_worker_requests_.size();
+            --descriptor_worker_count_;
+            descriptor_worker_busy_ = true;
+        }
+
+        std::optional<Error> failure;
+        try {
+            auto reconciled = ReconcileDescriptor(request.descriptor);
+            if (!reconciled.has_value()) {
+                failure.emplace(reconciled.error());
+            }
+        } catch (const std::exception& error) {
+            failure.emplace(runtime_error(ErrorCode::InternalError, error.what()));
+        } catch (...) {
+            failure.emplace(
+                runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
+        }
+
+        bool fatal_failure = false;
+        {
+            std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+            if (failure.has_value() && (request.critical_for_start || RequiresQuarantine() ||
+                                        state_.load() == RuntimeState::Failed)) {
+                descriptor_worker_failure_ = failure;
+                descriptor_worker_closing_ = true;
+                descriptor_worker_count_ = 0;
+                fatal_failure = true;
+                if (!HasPrimaryFailure()) {
+                    RequestFailure(failure.value());
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+            descriptor_worker_busy_ = false;
+            descriptor_worker_condition_.notify_all();
+        }
+        if (fatal_failure) {
+            break;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+        descriptor_worker_started_ = false;
+        descriptor_worker_condition_.notify_all();
     }
 }
 
@@ -1405,6 +1597,7 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
     parse_abi_string(request.name, &name);
     parse_abi_string(request.payload_encoding, &payload_encoding);
 
+    bool critical_for_start = false;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         const RuntimeState current_state = state_.load();
@@ -1412,6 +1605,7 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidState, "Descriptor publication is not allowed"));
         }
+        critical_for_start = current_state == RuntimeState::Starting;
         const StreamHandle stream_handle = StreamHandle::FromRaw(request.stream.value);
         StreamEntry* stream = streams_.Find(stream_handle);
         if (stream == nullptr) {
@@ -1447,6 +1641,12 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
             if (clocks_.Find(clock) == nullptr) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
+            }
+            for (std::size_t existing = 1; existing < keys.size(); ++existing) {
+                if (keys[existing].clock == clock && strings_equal(keys[existing].role, role)) {
+                    return nonstd::make_unexpected(runtime_error(
+                        ErrorCode::InvalidArgument, "TimestampKeySet contains a duplicate key"));
+                }
             }
             keys.push_back(TimestampKeyRecord{copy_string(arena_->Resource(), role), clock});
             transport_abi_keys.push_back(rodaq_timestamp_key{
@@ -1540,9 +1740,12 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         descriptor_handles_.push_back(handle);
     }
 
-    auto reconciled = ReconcileDescriptor(handle);
-    if (!reconciled.has_value()) {
-        return nonstd::make_unexpected(std::move(reconciled.error()));
+    auto requested = RequestDescriptorReconciliation(handle, critical_for_start);
+    if (!requested.has_value()) {
+        if (requested.error().code() == ErrorCode::ResourceExhausted) {
+            RequestFailure(requested.error());
+        }
+        return nonstd::make_unexpected(std::move(requested.error()));
     }
     return {};
 }
@@ -1564,6 +1767,11 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
             }
             if (entry->lifecycle == DescriptorLifecycle::Failed ||
                 entry->lifecycle == DescriptorLifecycle::Superseded) {
+                return false;
+            }
+            const RuntimeState current_state = state_.load();
+            if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
+                entry->reconciliation_running = false;
                 return false;
             }
             if (entry->reconciliation_running) {
@@ -1598,7 +1806,6 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
                     entry->reconciliation_retry_requested = false;
                 }
             }
-            RequestFailure(readiness.error());
             return nonstd::make_unexpected(std::move(readiness.error()));
         }
         if (readiness.value() != DescriptorReadiness::Ready) {
@@ -1625,9 +1832,15 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
-            if (entry != nullptr) {
-                entry->lifecycle = DescriptorLifecycle::Ready;
+            const RuntimeState current_state = state_.load();
+            if (entry == nullptr || (current_state != RuntimeState::Starting &&
+                                     current_state != RuntimeState::Running)) {
+                if (entry != nullptr) {
+                    entry->reconciliation_running = false;
+                }
+                return false;
             }
+            entry->lifecycle = DescriptorLifecycle::Ready;
         }
         auto activated = ActivateDescriptorBinding(descriptor, stream, plugin_index, control);
         {
@@ -1639,9 +1852,6 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
             }
         }
         if (!activated.has_value()) {
-            if (RequiresQuarantine()) {
-                RequestFailure(activated.error());
-            }
             return nonstd::make_unexpected(std::move(activated.error()));
         }
         return true;
@@ -1673,6 +1883,7 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
             {
                 std::lock_guard<std::mutex> lock(*stream->binding_transition_mutex);
                 stream->binding_transition_active = false;
+                stream->binding_transition_token = 0;
             }
             stream->binding_transition_condition->notify_one();
         }
@@ -1681,17 +1892,21 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     BindingHandle candidate;
     BindingHandle old_binding;
     std::uint64_t old_binding_value = 0;
+    std::uint64_t descriptor_generation = 0;
     rodaq_stream_descriptor_handle old_descriptor{};
     rodaq_binding_transition transition{};
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
         StreamEntry* current_stream = streams_.Find(stream_handle);
+        const RuntimeState current_state = state_.load();
         if (descriptor_entry == nullptr || current_stream == nullptr ||
-            descriptor_entry->lifecycle != DescriptorLifecycle::Ready) {
+            descriptor_entry->lifecycle != DescriptorLifecycle::Ready ||
+            (current_state != RuntimeState::Starting && current_state != RuntimeState::Running)) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidState, "Descriptor is no longer ready"));
         }
+        descriptor_generation = descriptor_entry->stream_descriptor_id;
         old_binding_value = current_stream->current_binding->load(std::memory_order_acquire);
         if (old_binding_value != 0) {
             BindingEntry* current_binding =
@@ -1720,6 +1935,10 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         candidate = created.value();
         descriptor_entry->lifecycle = DescriptorLifecycle::BindingPrepared;
         transition = rodaq_binding_transition{next_transition_id_++};
+    }
+    {
+        std::lock_guard<std::mutex> lock(*stream->binding_transition_mutex);
+        stream->binding_transition_token = transition.value;
     }
 
     const auto* table = static_cast<const rodaq_acquisition_control_v1*>(control.vtable);
@@ -1754,7 +1973,9 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamEntry* current_stream = streams_.Find(stream_handle);
+            const RuntimeState current_state = state_.load();
             resume_old = old_binding.Valid() && current_stream != nullptr &&
+                         current_state == RuntimeState::Running &&
                          current_stream->current_binding->load(std::memory_order_acquire) ==
                              old_binding_value &&
                          current_stream->availability->load() == RODAQ_AVAILABILITY_AVAILABLE;
@@ -1798,35 +2019,74 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                                      : nonstd::make_unexpected(std::move(converted.error()));
     }
 
+    bool transition_stale = false;
     {
         std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
         std::lock_guard<std::mutex> control_lock(control_mutex_);
+        bool transition_token_current = false;
+        {
+            std::lock_guard<std::mutex> transition_guard(*stream->binding_transition_mutex);
+            transition_token_current = stream->binding_transition_active &&
+                                       stream->binding_transition_token == transition.value;
+        }
         StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
         BindingEntry* prepared = bindings_.Find(candidate);
         StreamEntry* current_stream = streams_.Find(stream_handle);
         BindingEntry* old = old_binding.Valid() ? bindings_.Find(old_binding) : nullptr;
-        if (descriptor_entry == nullptr || prepared == nullptr || current_stream == nullptr ||
+        const RuntimeState current_state = state_.load();
+        transition_stale =
+            descriptor_entry == nullptr || prepared == nullptr || current_stream == nullptr ||
+            descriptor_entry->stream_descriptor_id != descriptor_generation ||
             descriptor_entry->lifecycle != DescriptorLifecycle::BindingPrepared ||
             current_stream->current_binding->load(std::memory_order_acquire) != old_binding_value ||
-            (old_binding.Valid() && old == nullptr)) {
+            (old_binding.Valid() && old == nullptr) || !transition_token_current ||
+            (current_state != RuntimeState::Starting && current_state != RuntimeState::Running);
+        if (transition_stale) {
             if (prepared != nullptr) {
                 prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
             }
             if (descriptor_entry != nullptr) {
-                descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
+                descriptor_entry->lifecycle =
+                    current_state == RuntimeState::Stopping || current_state == RuntimeState::Failed
+                        ? DescriptorLifecycle::Superseded
+                        : DescriptorLifecycle::Failed;
             }
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Binding transition became stale"));
+        } else {
+            prepared->lifecycle->store(
+                static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
+            if (old != nullptr) {
+                old->lifecycle->store(
+                    static_cast<std::uint32_t>(BindingLifecycle::Draining),
+                    std::memory_order_release);
+            }
+            current_stream->current_binding->store(candidate.Value(), std::memory_order_release);
+            current_stream->availability->store(RODAQ_AVAILABILITY_AVAILABLE);
+            descriptor_entry->lifecycle = DescriptorLifecycle::Active;
         }
-        prepared->lifecycle->store(
-            static_cast<std::uint32_t>(BindingLifecycle::Active), std::memory_order_release);
-        if (old != nullptr) {
-            old->lifecycle->store(
-                static_cast<std::uint32_t>(BindingLifecycle::Draining), std::memory_order_release);
+    }
+    if (transition_stale) {
+        const rodaq_binding_abort_disposition disposition =
+            old_binding.Valid() && state_.load() == RuntimeState::Running
+                ? RODAQ_BINDING_ABORT_RESUME_OLD
+                : RODAQ_BINDING_ABORT_KEEP_PAUSED;
+        auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
+        auto abort_error = std::make_shared<rodaq_error>();
+        auto aborted = SuperviseBindingControl(
+            [control_state, table, control, transition, disposition, abort_status, abort_error]() {
+                static_cast<void>(control_state);
+                *abort_status = table->abort_binding_switch(
+                    control.context, transition, disposition, abort_error.get());
+                return Result<void>();
+            },
+            "Acquisition Binding stale-transition abort");
+        if (!aborted.has_value() || *abort_status != RODAQ_STATUS_OK) {
+            RequestFailure(
+                aborted.has_value()
+                    ? runtime_error(ErrorCode::Unavailable, "Binding stale-transition abort failed")
+                    : aborted.error());
         }
-        current_stream->current_binding->store(candidate.Value(), std::memory_order_release);
-        current_stream->availability->store(RODAQ_AVAILABILITY_AVAILABLE);
-        descriptor_entry->lifecycle = DescriptorLifecycle::Active;
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Binding transition became stale"));
     }
 
     auto commit_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
@@ -1874,6 +2134,7 @@ void ActiveRuntimeState::OnProjectionRegistered(
     try {
         const StreamDescriptorHandle descriptor =
             StreamDescriptorHandle::FromRaw(descriptor_value.value);
+        bool critical_for_start = false;
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
@@ -1887,10 +2148,17 @@ void ActiveRuntimeState::OnProjectionRegistered(
             if (entry->lifecycle == DescriptorLifecycle::Active) {
                 return;
             }
+            const RuntimeState current_state = state_.load();
+            if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
+                return;
+            }
+            critical_for_start = current_state == RuntimeState::Starting;
         }
-        auto result = ReconcileDescriptor(descriptor);
+        auto result = RequestDescriptorReconciliation(descriptor, critical_for_start);
         if (!result.has_value()) {
-            RequestFailure(result.error());
+            if (result.error().code() == ErrorCode::ResourceExhausted) {
+                RequestFailure(result.error());
+            }
         }
     } catch (const std::exception& error) {
         RequestFailure(runtime_error(ErrorCode::InternalError, error.what()));
@@ -2178,6 +2446,27 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
     }
 
+    TimestampState timestamps;
+    auto ingress_reading = capture_ingress_reading();
+    if (!ingress_reading.has_value()) {
+        RequestFailure(ingress_reading.error());
+        return nonstd::make_unexpected(std::move(ingress_reading.error()));
+    }
+    auto ingress_set = timestamps.Set(0, ingress_reading.value());
+    if (!ingress_set.has_value()) {
+        RequestFailure(ingress_set.error());
+        return nonstd::make_unexpected(std::move(ingress_set.error()));
+    }
+    for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
+        const rodaq_timestamp_value& value = submission.timestamp_values[slot];
+        if (value.present == RODAQ_TRUE) {
+            const auto set = timestamps.Set(slot + 1U, value.reading);
+            if (!set.has_value()) {
+                return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
+            }
+        }
+    }
+
     if (!sequences_.CanAllocate(stream_handle)) {
         stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
         return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
@@ -2229,27 +2518,6 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         }
         payload = std::move(retained.value());
         disposition = RODAQ_PAYLOAD_DISPOSITION_RUNTIME_RESPONSIBLE;
-    }
-
-    TimestampState timestamps;
-    auto ingress_reading = capture_ingress_reading();
-    if (!ingress_reading.has_value()) {
-        RequestFailure(ingress_reading.error());
-        return nonstd::make_unexpected(std::move(ingress_reading.error()));
-    }
-    auto ingress_set = timestamps.Set(0, ingress_reading.value());
-    if (!ingress_set.has_value()) {
-        RequestFailure(ingress_set.error());
-        return nonstd::make_unexpected(std::move(ingress_set.error()));
-    }
-    for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
-        const rodaq_timestamp_value& value = submission.timestamp_values[slot];
-        if (value.present == RODAQ_TRUE) {
-            const auto set = timestamps.Set(slot + 1U, value.reading);
-            if (!set.has_value()) {
-                return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
-            }
-        }
     }
 
     bool admission_failure = false;

@@ -358,8 +358,9 @@ void StoragePipeline::JoinCompletion() noexcept {
 
 bool StoragePipeline::WaitDispatchIdle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return dispatch_condition_.wait_until(
-        lock, deadline, [this] { return dispatch_count_ == 0 && !dispatch_call_active_; });
+    return dispatch_condition_.wait_until(lock, deadline, [this] {
+        return dispatch_count_ == 0 && dispatch_active_generation_ == 0;
+    });
 }
 
 bool StoragePipeline::WaitOperationsIdle(std::chrono::steady_clock::time_point deadline) {
@@ -394,6 +395,7 @@ std::size_t StoragePipeline::ReadyDispatchCount() const noexcept {
 void StoragePipeline::DispatchLoop() {
     while (true) {
         std::size_t index = kInvalidIndex;
+        std::uint64_t call_generation = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             dispatch_condition_.wait(
@@ -405,8 +407,12 @@ void StoragePipeline::DispatchLoop() {
             dispatch_head_ = (dispatch_head_ + 1U) % capacity_;
             --dispatch_count_;
             slots_[index].dispatch_state = Slot::DispatchState::InFlight;
-            dispatch_call_active_ = true;
-            dispatch_overdue_reported_ = false;
+            ++dispatch_call_generation_;
+            if (dispatch_call_generation_ == 0) {
+                ++dispatch_call_generation_;
+            }
+            call_generation = dispatch_call_generation_;
+            dispatch_active_generation_ = call_generation;
             dispatch_deadline_ = Clock::now() + progress_timeout_;
             dispatch_condition_.notify_all();
             watchdog_condition_.notify_one();
@@ -414,7 +420,9 @@ void StoragePipeline::DispatchLoop() {
         DispatchOne(index);
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            dispatch_call_active_ = false;
+            if (dispatch_active_generation_ == call_generation) {
+                dispatch_active_generation_ = 0;
+            }
             dispatch_condition_.notify_all();
             watchdog_condition_.notify_all();
         }
@@ -425,24 +433,32 @@ void StoragePipeline::WatchdogLoop() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (true) {
         watchdog_condition_.wait(lock, [this] {
-            return dispatch_call_active_ || (stopping_ && !dispatch_call_active_);
+            return dispatch_active_generation_ != 0 ||
+                   (stopping_ && dispatch_active_generation_ == 0);
         });
-        if (!dispatch_call_active_) {
+        if (dispatch_active_generation_ == 0) {
             return;
         }
 
+        const std::uint64_t generation = dispatch_active_generation_;
         const auto deadline = dispatch_deadline_;
-        if (!watchdog_condition_.wait_until(
-                lock, deadline, [this] { return !dispatch_call_active_; })) {
-            if (!dispatch_overdue_reported_) {
-                dispatch_overdue_reported_ = true;
+        if (!watchdog_condition_.wait_until(lock, deadline, [this, generation] {
+                return dispatch_active_generation_ != generation ||
+                       (stopping_ && dispatch_active_generation_ == 0);
+            })) {
+            if (dispatch_active_generation_ == generation &&
+                dispatch_overdue_generation_ != generation) {
+                dispatch_overdue_generation_ = generation;
                 lock.unlock();
                 Fail(Error(
                     ErrorCode::Timeout, "storage", 0,
                     "Storage submit exceeded its progress deadline"));
                 lock.lock();
-                watchdog_condition_.wait(lock, [this] { return !dispatch_call_active_; });
             }
+            watchdog_condition_.wait(lock, [this, generation] {
+                return dispatch_active_generation_ != generation ||
+                       (stopping_ && dispatch_active_generation_ == 0);
+            });
         }
     }
 }

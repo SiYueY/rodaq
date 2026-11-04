@@ -235,9 +235,18 @@ public:
         }
         active_ = std::move(created.value());
 
+        auto descriptor_worker = active_->StartDescriptorReconciliation();
+        if (!descriptor_worker.has_value()) {
+            active_->RequestFailure(descriptor_worker.error());
+            abort_start();
+            state_ = RuntimeState::Failed;
+            return descriptor_worker;
+        }
         auto started = start_activation();
         if (!started.has_value()) {
-            active_->RequestFailure(started.error());
+            if (!active_->HasPrimaryFailure()) {
+                active_->RequestFailure(started.error());
+            }
             abort_start();
             state_ = RuntimeState::Failed;
             return started;
@@ -268,6 +277,10 @@ public:
 
         state_ = RuntimeState::Stopping;
         active_->MarkStopping();
+        if (!active_->CloseAndJoinDescriptorReconciliation(
+                Clock::now() + options_.stop_progress_timeout)) {
+            return quarantine_failure();
+        }
         if (active_->RequiresQuarantine()) {
             return quarantine_failure();
         }
@@ -778,6 +791,11 @@ private:
             }
             acquisition_states_[index] = AcquisitionActivationState::Started;
         }
+        auto descriptor_wait = active_->WaitForDescriptorReconciliation(
+            Clock::now() + options_.stop_progress_timeout + options_.stop_progress_timeout);
+        if (!descriptor_wait.has_value()) {
+            return descriptor_wait;
+        }
         return {};
     }
 
@@ -786,7 +804,10 @@ private:
             return;
         }
         active_->MarkStopping();
-        if (start_quarantine_required_ || active_->RequiresQuarantine()) {
+        const bool descriptor_worker_closed = active_->CloseAndJoinDescriptorReconciliation(
+            Clock::now() + options_.stop_progress_timeout);
+        if (start_quarantine_required_ || active_->RequiresQuarantine() ||
+            !descriptor_worker_closed) {
             capture_activation_outcome();
             quarantined_ = std::move(active_);
             std::fill(

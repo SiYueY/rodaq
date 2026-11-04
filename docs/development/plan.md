@@ -399,6 +399,8 @@ Do not implement in M1:
 
 **Status:** PASS
 
+**Current sub-phase:** **M2 Audit Repair — PASS**.
+
 ### Goal
 
 Prove Runtime correctness end to end with Fake Plugins before introducing real middleware/storage complexity.
@@ -432,13 +434,24 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 
 - [x] Descriptor publication returns before Projection-dependent readiness.
 - [x] Projection registration retries Descriptor readiness without Plugin-under-lock.
+- [x] Activation-local bounded and deduplicated Descriptor reconciliation worker.
+- [x] Initial Descriptor reconciliation completes before the Admission Gate opens.
+- [x] Dynamic Descriptor Binding publication revalidates Runtime state and
+  transition identity.
+- [x] Ingress timestamp capture precedes Admission Wait and Payload materialization.
+- [x] Nested readiness/Binding/commit failures are not duplicated into secondary history.
+- [x] Storage handoff Watchdog identifies each Submit by a monotonic call generation.
+- [x] Registry insert release-publishes a constructed slot and stable readers acquire-observe it.
+- [x] TimestampKeySet publication rejects duplicate `(RoleIdentifier, ClockId)` keys.
+- [x] Projection registration defers reconciliation outside the Acquisition Plugin-local lock.
 - [x] Acquisition Binding prepare/commit/abort callbacks are deadline-supervised.
 - [x] Runtime-owned activation ingress Clock and ClockCorrelation service.
 - [x] Mandatory ingress timestamp separated from transport timestamps.
 - [x] Completion bookkeeping capacity included in admitted-work capacity.
 - [x] Descriptor readiness and Storage handoff progress deadlines.
 - [x] Multi-Acquisition startup rollback and partial-start cleanup.
-- [x] Bounded, owned and reaped quarantine workers and activation roots.
+- [x] Bounded, owned and reaped quarantine workers and activation roots, with a
+  documented 32-root process-wide cap covering healthy and quarantined activations.
 - [x] Start failure primary/secondary history preservation.
 
 #### Fake Acquisition
@@ -505,7 +518,22 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] Stop with PersistencePending converges.
 - [x] primary failure preserved.
 - [x] secondary cleanup errors separately reported.
+- [x] nested readiness/Binding/commit failure is not duplicated in secondary history.
 - [x] Plugin-origin lifetime prevents premature destroy/unload.
+- [x] ingress timestamp is captured before Admission Wait and large-payload Copy.
+- [x] Descriptor handle returns before delayed initial readiness completes; Start
+  still waits for initial reconciliation before opening Gate.
+- [x] dynamic Descriptor publication waits for the Binding transition before the
+  Fake Acquisition resumes that Stream.
+- [x] Stop during Descriptor readiness does not publish a switch Binding.
+- [x] Descriptor reconciliation request queue is bounded to `max_stream_descriptors`.
+- [x] process-wide activation-root exhaustion is reported as `ResourceExhausted`.
+- [x] continuous handoff remains Running beyond multiple timeout periods when every
+  individual Submit meets its own deadline.
+- [x] unpublished/fabricated Registry handles cannot observe partially constructed slots.
+- [x] duplicate TimestampKey registration fails with `InvalidArgument`.
+- [x] Projection-dependent recovery succeeds when the Acquisition Plugin holds a
+  local mutex during registration.
 
 ### Exit Gate
 
@@ -516,6 +544,7 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] Payload early-release case proven.
 - [x] all completion contract violations detected.
 - [x] Stop/failure reaches quiescence.
+- [x] 32 activation roots bound all healthy and quarantined activations.
 - [x] required ASan/UBSan/TSan stress suite clean.
 
 ### Out of Scope

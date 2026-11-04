@@ -17,9 +17,13 @@ Status: **ACTIVE**
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. M2 Fake
-End-to-End Runtime, including the final Closure Fix, is **PASS** and requalified.
-M3 ROS2 Acquisition + MCAP Storage is now the only ACTIVE milestone.
+M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. The
+final M2 audit repaired ingress capture ordering, asynchronous Descriptor
+reconciliation, nested failure-history duplication and the activation-root
+budget. The follow-up concurrency review also generation-scoped Storage handoff
+timeouts, established Registry acquire/release publication, and rejected
+duplicate TimestampKeys. M2 is **PASS** and requalified. M3 is now the only
+ACTIVE milestone.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -262,21 +266,36 @@ Structural convergence validation:
   Acquisition start calls are deadline-supervised; stalled Starting cleanup is
   quarantined rather than destructively released.
 - Descriptor publication now returns before Projection-dependent Storage
-  readiness; Projection registration retries readiness and Binding activation
-  without any Plugin call under a Runtime structural lock.
+  readiness through one activation-local, fixed-capacity Descriptor
+  reconciliation worker; Projection registration retries readiness and Binding
+  activation without any Plugin call under a Runtime structural lock. Runtime
+  Start waits for the initial reconciliation pass before opening the Admission
+  Gate.
+- Runtime Submit captures the monotonic ingress timestamp after structural,
+  handle, Binding and Payload-limit validation but before Admission wait and
+  Copy/Adopt/Retain materialization.
 - Every activation owns one Canonical monotonic ingress Clock and a stable
   ClockCorrelation anchor. Descriptors contain the mandatory
   `rodaq/acquisition_ingress`; Submit transport timestamps are kept distinct and
   Storage receives the complete canonical timestamp set.
 - Completion capacity participates in effective admitted-work capacity, and the
   Storage Dispatch Lane has a single bounded watchdog for handoff progress.
+- The Storage handoff Watchdog tracks a monotonic Submit generation, so one
+  completed call cannot leave a stale deadline on the next call.
+- Registry insertion release-publishes fully constructed slots; stable readers
+  acquire-observe publication before accessing immutable Registry values.
+- TimestampKeySet publication rejects duplicate `(RoleIdentifier, ClockId)` pairs.
+- Projection registration only enqueues Descriptor reconciliation; a fake
+  Plugin-local lock scenario verifies no synchronous Binding callback reentry.
 - Descriptor readiness and Acquisition prepare/commit/abort control callbacks
   are deadline-supervised through the bounded quarantine owner.
 - Multi-Acquisition startup rollback uses explicit lifecycle states, partial
   Start failures are quiesced then stopped in reverse order, and timed-out Start
   calls are quarantined.
 - Quarantine now has a bounded process-lifetime owner with joinable worker
-  reaping and fixed call/activation capacities; no `detach()` or lost
+  reaping and fixed call/activation capacities. The 32 process-wide activation
+  roots include healthy and quarantined activations; exhaustion makes
+  `Runtime::Start()` return `ResourceExhausted`. No `detach()` or lost
   `std::thread::release()` path remains.
 
 ## Not started
@@ -638,39 +657,56 @@ M1 closure review answers:
 15. Yes. Normal, ASan, UBSan and required Clang TSan checks pass.
 16. No. No known P0/P1 issue remains.
 
-M2 Production Core Runtime Closure Fix validation:
+M2 audit-repair qualification:
 
 - GCC 11.4.0 normal, ASan with LeakSanitizer and UBSan each passed 89/89 CTest
   entries with warnings-as-errors.
-- Ubuntu 24.04 with its default GCC toolchain passed 89/89 CTest entries.
+- Ubuntu 24.04 with GCC 13.3.0 and warnings-as-errors passed 89/89 CTest
+  entries, including benchmark target builds.
 - Clang 14 TSan passed the admission, PayloadPool, observability, M1 integration,
-  quarantine and complete M2 runtime pipeline subset: 6/6 CTest entries.
-- The M2 E2E executable now contains 47 Stable-ABI-backed tests covering
+  quarantine, Registry publication and complete M2 runtime pipeline subset:
+  7/7 CTest entries.
+- The M2 E2E executable now contains 54 Stable-ABI-backed tests covering
   lifecycle, Copy/Adopt/Retain, mixed payload modes, immutable canonical views,
   stale handles, multi-producer ordering, Binding switch and abort, saturation,
   blocked Wait timeout, every Payload/Persistence completion ordering,
   early-completion reconciliation, contract violations, bounded stalls,
   primary/secondary failure preservation, Projection-dependent readiness,
-  mandatory ingress timestamps, ClockCorrelation, Binding control stalls,
-  multi-Acquisition rollback, Stop under load and restart.
+  ingress-before-Wait capture, Descriptor publication return ordering,
+  reconciliation queue bounds, Stop during readiness, the activation-root
+  budget, ClockCorrelation, Binding control stalls, multi-Acquisition rollback,
+  Stop under load, duplicate TimestampKey rejection, Plugin-local lock isolation,
+  continuous handoff across multiple timeout periods and restart.
+- The runtime pipeline stress test passed 20 consecutive repetitions; the
+  targeted handoff/Projection/Timestamp tests also passed 20 repetitions.
+- Registry tests cover unpublished/fabricated handles during blocked insertion,
+  concurrent publication, and stable lookup while later slots are inserted;
+  the suite passed 20 repetitions and Clang TSan.
 - Descriptor readiness, initial prepare/commit, switch prepare/commit failure,
   `KEEP_PAUSED`, `RESUME_OLD`, registration capacity and quarantine paths are
   covered.
-- Storage readiness performs actual Canonical Descriptor and Projection queries;
-  this regression test proves Runtime structural locks are not held during
-  Plugin callbacks.
+- Storage readiness performs actual Canonical Descriptor and Projection queries.
+  Initial readiness is reconciled by the bounded activation-local worker before
+  the Admission Gate opens; dynamic publication returns before that work while
+  fake producers wait for the terminal Binding transition.
+- Duplicate-start tests assert that nested readiness and initial Binding
+  failures produce one primary error, no duplicate secondary history and zero
+  overflow, while genuine cleanup failures remain secondary errors.
 - ASan ignores only the bounded process-lifetime quarantine owner and reachable
   roots. TSan thread-leak
   reporting is disabled only for the E2E executable because fault scenarios
   intentionally retain joinable Plugin workers and activation state for process
   lifetime; data-race reporting remains enabled.
-- M2 short-run benchmarks were approximately 39.5k records/s for one producer
-  and 83.0k records/s for four producers x four streams. Steady-state 4096-record
-  runs reached approximately 77.9k records/s and 98.3k records/s respectively.
+- M2 short-run three-repetition medians were approximately 43.1k records/s for
+  one producer and 81.7k records/s for four producers x four streams.
+  Steady-state 4096-record medians reached approximately 77.6k records/s and
+  95.7k records/s respectively in the final DEBUG run.
   The short-run difference is activation/watchdog startup, not a per-record
-  structural regression. These are engineering baselines, not M5 SLOs.
-- `clang-format`, `git diff --check`, source review and status/plan consistency
-  checks passed.
+  structural regression; CPU scaling and DEBUG build warnings limit timing
+  precision. These are engineering baselines, not M5 SLOs.
+- `clang-format`, `git diff --check`, source review, Stable ABI diff review and
+  searches for `detach()`, `recursive_mutex` and Runtime thread `.release()`
+  passed.
 
 M2 final review answers:
 
@@ -714,11 +750,31 @@ M2 final review answers:
 22. No. M2 Runtime Core has no ROS2, FastDDS, MCAP or SQLite3 dependency.
 23. Yes. Every production E2E record enters and completes through Stable ABI
     Plugin boundaries.
-24. Yes. Normal, ASan, UBSan and Clang TSan qualification is clean.
-25. No. No known P0/P1 issue remains.
+24. No. Ingress is captured after validation and before Admission wait or
+    Payload materialization.
+25. No. Descriptor publication returns the immutable handle before initial
+    readiness work completes; Runtime Start still waits before opening Gate.
+26. No. Readiness and Binding publication revalidate Runtime state, Descriptor
+    generation, current Binding and transition token.
+27. No. Nested readiness/Binding/commit failure is not duplicated into secondary
+    failure history.
+28. Yes. The 32 process-wide activation roots cover healthy and quarantined
+    activations; exhaustion makes Start return `ResourceExhausted`.
+29. Yes. Normal, ASan+LSan, UBSan and Clang TSan qualification is clean.
+30. No. Each Storage handoff deadline is scoped to a unique Submit generation.
+31. No. Registry readers acquire-observation of release-published slots before
+    accessing immutable Registry values.
+32. No. Duplicate `(RoleIdentifier, ClockId)` TimestampKeys are rejected during
+    Descriptor publication.
+33. No. Projection registration only enqueues reconciliation; the Plugin-local
+    lock probe completes without synchronous Binding callback reentry.
+34. No. The continuous handoff regression stayed Running for a total duration
+    exceeding multiple per-Submit timeout periods.
+35. No. No known P0/P1 issue remains.
 
 Current qualification count: **89/89** on Ubuntu 22.04 amd64 for normal, ASan
 and UBSan builds, plus 89/89 on Ubuntu 24.04. Clang TSan concurrency
-qualification passed 6/6 selected CTest entries. M2 baselines are
+qualification passed 7/7 selected CTest entries. M2 baselines are
 `benchmarks/runtime_pipeline_benchmark.cpp` and
-`benchmarks/payload_pool_benchmark.cpp`. M0, M1 and M2 are PASS; M3 is ACTIVE.
+`benchmarks/payload_pool_benchmark.cpp`. Native arm64 remains deferred by
+D-034. M0, M1 and M2 are PASS; M3 is ACTIVE.

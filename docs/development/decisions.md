@@ -779,5 +779,59 @@ Runtime structural locks. Runtime snapshots under lock, performs Plugin I/O
 without the lock, then reacquires the lock to validate Descriptor/Binding
 generation before publication.
 
+Each activation owns one Descriptor reconciliation worker with a fixed request
+capacity equal to `max_stream_descriptors` and per-handle deduplication.
+`PublishStreamDescriptor` only validates, publishes immutable state, enqueues
+reconciliation and returns the handle. Initial requests are critical to
+Activation Commit; a running activation may return from dynamic publication
+before reconciliation completes. Stop closes the request entry and waits for
+the current bounded Plugin calls to converge, or quarantines the activation.
+
 **Reference:** `docs/design/runtime.md`,
 `docs/design/acquisition_plugin.md`, `docs/design/storage_plugin.md`.
+
+## D-039 — Activation roots have one fixed process-wide budget
+
+**Status:** Accepted
+
+A process may retain at most 32 activation roots at once. The count includes
+healthy activation slots as well as roots retained for uncertain Plugin
+progress. Every `Runtime::Start()` reserves one root slot before activation;
+exhaustion returns `ResourceExhausted` without entering `Running`.
+
+This capacity is reserved in full at Start so every running activation has a
+safe quarantine destination if one of its Plugin calls later fails to make
+progress. It is a safety budget, not a performance target, and does not add a
+Public ABI field or configurable property.
+
+**Reference:** `docs/design/runtime.md`, `src/runtime/quarantine.hpp`,
+`docs/development/status.md`.
+
+## D-040 — Storage handoff timeouts are scoped to one Submit generation
+
+**Status:** Accepted
+
+The Storage dispatch lane assigns a monotonically increasing generation to every
+`Storage::submit()` call. The Watchdog captures the active generation and its
+deadline, and may report Timeout only if that same generation is still active
+at the deadline. A completed Submit followed immediately by another Submit
+therefore cannot inherit the previous call's timeout.
+
+**Reference:** `src/runtime/storage_pipeline.cpp`,
+`docs/design/storage_plugin.md`, `docs/development/status.md`.
+
+## D-041 — Insert-only Registry slots use acquire/release publication
+
+**Status:** Accepted
+
+Registry insertion fully constructs a value before release-publishing an atomic
+slot flag. `Find()` and `FindStable()` acquire-observation of that flag before
+accessing the immutable value or generation. This makes concurrent lookup of a
+published slot safe while another preallocated slot is being inserted and makes
+an unpublished or fabricated handle resolve to null.
+
+This does not authorize concurrent `Erase()`; erasure and slot reuse retain the
+existing external-serialization and reader-lifetime requirements.
+
+**Reference:** `include/rodaq/runtime/registry.hpp`,
+`docs/design/runtime.md`, `docs/development/status.md`.

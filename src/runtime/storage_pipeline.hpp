@@ -207,8 +207,9 @@ private:
     std::vector<std::size_t> completion_ring_;
     std::size_t dispatch_head_ = 0;
     std::size_t dispatch_count_ = 0;
-    bool dispatch_call_active_ = false;
-    bool dispatch_overdue_reported_ = false;
+    std::uint64_t dispatch_call_generation_ = 0;
+    std::uint64_t dispatch_active_generation_ = 0;
+    std::uint64_t dispatch_overdue_generation_ = 0;
     std::chrono::steady_clock::time_point dispatch_deadline_{};
     std::size_t completion_head_ = 0;
     std::size_t completion_count_ = 0;

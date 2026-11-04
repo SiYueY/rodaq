@@ -3,6 +3,7 @@
 
 #include <rodaq/runtime/handle.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -78,6 +79,7 @@ public:
                 Error(ErrorCode::InternalError, "registry value construction failed"));
         }
 
+        slot.published.store(true, std::memory_order_release);
         free_slots_.pop_back();
         ++size_;
         return HandleType::FromRaw(encode(index, slot.generation));
@@ -99,7 +101,7 @@ public:
 
         const std::size_t index = static_cast<std::size_t>(raw_index);
         const Slot& slot = slots_[index];
-        if (!slot.value.has_value() ||
+        if (!slot.published.load(std::memory_order_acquire) ||
             slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
             return nullptr;
         }
@@ -109,10 +111,11 @@ public:
     /// Looks up a handle in an insert-only Registry whose slots are never erased
     /// or reused during the caller's lifetime.
     ///
-    /// Callers must not invoke this concurrently with Erase. Insertion into a
-    /// different preallocated slot is safe. Values referenced through this
-    /// lookup must be immutable or use their own synchronization for mutable
-    /// fields.
+    /// Insert release-publishes a fully constructed slot and this lookup
+    /// acquire-observes that publication. Callers must not invoke this
+    /// concurrently with Erase. Insertion into a different preallocated slot is
+    /// safe. Values referenced through this lookup must be immutable or use
+    /// their own synchronization for mutable fields.
     const T* FindStable(HandleType handle) const noexcept {
         if (!handle.Valid()) {
             return nullptr;
@@ -123,7 +126,7 @@ public:
         }
         const std::size_t index = static_cast<std::size_t>(raw_index);
         const Slot& slot = slots_[index];
-        if (!slot.value.has_value() ||
+        if (!slot.published.load(std::memory_order_acquire) ||
             slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
             return nullptr;
         }
@@ -148,12 +151,13 @@ public:
 
         const std::size_t index = static_cast<std::size_t>(raw_index);
         Slot& slot = slots_[index];
-        if (!slot.value.has_value() ||
+        if (!slot.published.load(std::memory_order_acquire) ||
             slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::NotFound, "registry handle was not found"));
         }
 
+        slot.published.store(false, std::memory_order_release);
         slot.value.reset();
         --size_;
         if (slot.generation != std::numeric_limits<std::uint32_t>::max()) {
@@ -173,6 +177,7 @@ private:
 
     struct Slot {
         std::optional<T> value;
+        std::atomic<bool> published{false};
         std::uint32_t generation = 1;
     };
 

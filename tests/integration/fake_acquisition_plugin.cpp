@@ -2,8 +2,10 @@
 
 #include "rodaq_fake_acquisition_plugin_metadata.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -20,6 +22,16 @@ namespace {
 
 struct Anchor {
     std::vector<std::uint8_t> bytes;
+};
+
+struct TransitionState {
+    rodaq_stream_handle stream{};
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::uint64_t transition = 0;
+    bool terminal = false;
+    bool committed = false;
+    rodaq_binding_abort_disposition disposition = RODAQ_BINDING_ABORT_KEEP_PAUSED;
 };
 
 void release_anchor(void* context) noexcept { delete static_cast<Anchor*>(context); }
@@ -73,6 +85,7 @@ public:
         projection_before_start_ = config_int(config, "projection_before_start", 0) != 0;
         projection_delay_after_ = config_int(config, "projection_delay_after", -1);
         projection_registration_mode_ = config_string(config, "projection_registration_mode", "");
+        plugin_local_lock_ = config_int(config, "plugin_local_lock", 0) != 0;
         timestamp_scenario_ = config_string(config, "timestamp_scenario", "");
         timestamp_key_count_ =
             static_cast<std::size_t>(config_int(config, "timestamp_key_count", 1));
@@ -145,6 +158,8 @@ public:
         switched_.assign(stream_count_, false);
         streams_.reserve(stream_count_);
         descriptors_.reserve(stream_count_);
+        transitions_.clear();
+        transitions_.reserve(stream_count_);
         for (std::size_t index = 0; index < stream_count_; ++index) {
             const std::string native = "stream-" + std::to_string(index);
             auto stream = runtime_.acquisition.RegisterStream(rodaq_stream_registration{
@@ -156,8 +171,14 @@ public:
             if (!stream.has_value()) {
                 return fail(stream.error());
             }
+            auto transition = std::make_unique<TransitionState>();
+            transition->stream = stream.value();
+            transitions_.push_back(std::move(transition));
+            streams_.push_back(stream.value());
+        }
+        for (std::size_t index = 0; index < stream_count_; ++index) {
             std::string descriptor_name = "fake/0";
-            auto descriptor = PublishDescriptor(stream.value(), descriptor_name);
+            auto descriptor = PublishDescriptor(streams_[index], descriptor_name);
             if (!descriptor.has_value()) {
                 return fail(descriptor.error());
             }
@@ -179,11 +200,10 @@ public:
                 }
             }
             descriptor_name.assign("mutated-after-publication");
-            auto views = ValidatePublishedViews(stream.value(), descriptor.value(), "fake/0");
+            auto views = ValidatePublishedViews(streams_[index], descriptor.value(), "fake/0");
             if (!views.has_value()) {
                 return fail(views.error());
             }
-            streams_.push_back(stream.value());
             descriptors_.push_back(descriptor.value());
         }
         auto stale_handles = ValidateOrRecordStaleHandles();
@@ -232,10 +252,24 @@ public:
         rodaq_binding_transition transition, rodaq_stream_handle stream,
         rodaq_stream_descriptor_handle old_descriptor,
         rodaq_stream_descriptor_handle new_descriptor) override {
-        static_cast<void>(stream);
+        std::unique_lock<std::mutex> plugin_lock(plugin_local_mutex_, std::defer_lock);
+        if (plugin_local_lock_) {
+            plugin_lock.lock();
+        }
         LogControl(
             "prepare transition=" + std::to_string(transition.value) + " old=" +
             std::to_string(old_descriptor.value) + " new=" + std::to_string(new_descriptor.value));
+        TransitionState* state = FindTransitionByStream(stream);
+        if (state == nullptr) {
+            return invalid_state();
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->transition = transition.value;
+            state->terminal = false;
+            state->committed = false;
+            state->disposition = RODAQ_BINDING_ABORT_KEEP_PAUSED;
+        }
         if ((binding_scenario_ == "prepare_failure_initial" && old_descriptor.value == 0) ||
             ((binding_scenario_ == "prepare_failure_switch" ||
               binding_scenario_ == "prepare_failure_abort_stall") &&
@@ -252,8 +286,10 @@ public:
 
     rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition transition) override {
         LogControl("commit transition=" + std::to_string(transition.value));
+        TransitionState* state = FindTransition(transition.value);
         const std::size_t commit_index = commit_count_.fetch_add(1);
         if (binding_scenario_ == "commit_failure_switch" && commit_index != 0) {
+            CompleteTransition(state, transition.value, false, RODAQ_BINDING_ABORT_KEEP_PAUSED);
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured binding commit failure"));
@@ -261,6 +297,7 @@ public:
         if (binding_scenario_ == "commit_stall_switch" && commit_index != 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
+        CompleteTransition(state, transition.value, true, RODAQ_BINDING_ABORT_KEEP_PAUSED);
         return {};
     }
 
@@ -272,6 +309,7 @@ public:
         if (binding_scenario_ == "prepare_failure_abort_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
+        CompleteTransition(FindTransition(transition.value), transition.value, false, disposition);
         return {};
     }
 
@@ -304,12 +342,52 @@ private:
 
     void Quiesce() {
         stopping_.store(true);
+        for (const auto& transition : transitions_) {
+            transition->condition.notify_all();
+        }
         for (std::thread& producer : producers_) {
             if (producer.joinable()) {
                 producer.join();
             }
         }
         producers_.clear();
+    }
+
+    TransitionState* FindTransitionByStream(rodaq_stream_handle stream) {
+        const auto found = std::find_if(
+            transitions_.begin(), transitions_.end(),
+            [stream](const std::unique_ptr<TransitionState>& state) {
+                return state->stream.value == stream.value;
+            });
+        return found == transitions_.end() ? nullptr : found->get();
+    }
+
+    TransitionState* FindTransition(std::uint64_t transition) {
+        const auto found = std::find_if(
+            transitions_.begin(), transitions_.end(),
+            [transition](const std::unique_ptr<TransitionState>& state) {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                return state->transition == transition;
+            });
+        return found == transitions_.end() ? nullptr : found->get();
+    }
+
+    void CompleteTransition(
+        TransitionState* state, std::uint64_t transition, bool committed,
+        rodaq_binding_abort_disposition disposition) {
+        if (state == nullptr) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->transition != transition) {
+                return;
+            }
+            state->terminal = true;
+            state->committed = committed;
+            state->disposition = disposition;
+        }
+        state->condition.notify_all();
     }
 
     void Produce(std::size_t producer_index) {
@@ -329,17 +407,44 @@ private:
              ++stream_index) {
             for (std::size_t record_index = 0;
                  record_index < records_per_stream_ && !stopping_.load(); ++record_index) {
-                SubmitOne(producer_index, stream_index, record_index);
+                if (!SubmitOne(producer_index, stream_index, record_index)) {
+                    break;
+                }
             }
         }
     }
 
-    void SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
+    bool SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
         if (projection_delay_after_ >= 0 &&
             record_index == static_cast<std::size_t>(projection_delay_after_)) {
-            auto projection = RegisterProjection(descriptors_[stream_index]);
+            rodaq_stream_descriptor_handle current{};
+            {
+                std::lock_guard<std::mutex> lock(switch_mutex_);
+                current = descriptors_[stream_index];
+            }
+            auto& transition = *transitions_[stream_index];
+            {
+                std::lock_guard<std::mutex> transition_lock(transition.mutex);
+                transition.terminal = false;
+                transition.committed = false;
+            }
+            rodaq::Result<void> projection;
+            {
+                std::unique_lock<std::mutex> plugin_lock(plugin_local_mutex_, std::defer_lock);
+                if (plugin_local_lock_) {
+                    plugin_lock.lock();
+                }
+                projection = RegisterProjection(current);
+            }
             if (!projection.has_value()) {
-                return;
+                return false;
+            }
+            std::unique_lock<std::mutex> transition_lock(transition.mutex);
+            transition.condition.wait(transition_lock, [this, &transition] {
+                return transition.terminal || stopping_.load();
+            });
+            if (!transition.terminal || !transition.committed) {
+                return false;
             }
         }
         rodaq_stream_descriptor_handle descriptor{};
@@ -353,20 +458,37 @@ private:
                     const auto paused = runtime_.acquisition.ReportStream(
                         streams_[stream_index], RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
                     if (!paused.has_value()) {
-                        return;
+                        return false;
                     }
+                }
+                {
+                    std::lock_guard<std::mutex> transition_lock(transitions_[stream_index]->mutex);
+                    transitions_[stream_index]->terminal = false;
+                    transitions_[stream_index]->committed = false;
                 }
                 auto switched_descriptor =
                     PublishDescriptor(streams_[stream_index], "fake/switched");
                 if (!switched_descriptor.has_value()) {
-                    return;
+                    return false;
                 }
-                descriptors_[stream_index] = switched_descriptor.value();
+                TransitionState& transition = *transitions_[stream_index];
                 if (projection_before_start_) {
-                    auto projection = RegisterProjection(descriptors_[stream_index]);
+                    auto projection = RegisterProjection(switched_descriptor.value());
                     if (!projection.has_value()) {
-                        return;
+                        return false;
                     }
+                }
+                std::unique_lock<std::mutex> transition_lock(transition.mutex);
+                transition.condition.wait(transition_lock, [this, &transition] {
+                    return transition.terminal || stopping_.load();
+                });
+                if (!transition.terminal) {
+                    return false;
+                }
+                if (transition.committed) {
+                    descriptors_[stream_index] = switched_descriptor.value();
+                } else if (transition.disposition != RODAQ_BINDING_ABORT_RESUME_OLD) {
+                    descriptors_[stream_index] = switched_descriptor.value();
                 }
             }
             descriptor = descriptors_[stream_index];
@@ -392,8 +514,14 @@ private:
 
         std::vector<rodaq_timestamp_value> timestamps(timestamp_key_count_);
         for (std::size_t slot = 0; slot < timestamps.size(); ++slot) {
-            timestamps[slot] = rodaq_timestamp_value{
-                RODAQ_TRUE, 0, static_cast<std::int64_t>(record_index + slot + 1U)};
+            std::int64_t reading = static_cast<std::int64_t>(record_index + slot + 1U);
+            if (timestamp_scenario_ == "monotonic") {
+                const auto monotonic = runtime_.common.MonotonicTimeNs();
+                if (monotonic.has_value()) {
+                    reading = static_cast<std::int64_t>(monotonic.value());
+                }
+            }
+            timestamps[slot] = rodaq_timestamp_value{RODAQ_TRUE, 0, reading};
         }
         rodaq_record_submission submission{};
         submission.struct_size = sizeof(submission);
@@ -414,13 +542,15 @@ private:
             if (anchor != nullptr) {
                 delete anchor;
             }
-            return;
+            LogSubmitError(result.error());
+            return !stopping_.load();
         }
         if (anchor != nullptr &&
             result.value().payload_disposition == RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE) {
             delete anchor;
         }
         LogResult(submission, result.value());
+        return !stopping_.load();
     }
 
     void LogResult(const rodaq_record_submission&, const rodaq_acquisition_submit_result& result) {
@@ -431,6 +561,16 @@ private:
         std::ofstream output(event_log_, std::ios::app);
         output << "submit outcome=" << result.outcome << " reason=" << result.rejection_reason
                << " disposition=" << result.payload_disposition << '\n';
+    }
+
+    void LogSubmitError(const rodaq::Error& error) {
+        if (event_log_.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        std::ofstream output(event_log_, std::ios::app);
+        output << "submit error=" << static_cast<std::uint32_t>(error.code())
+               << " message=" << error.message() << '\n';
     }
 
     void LogControl(const std::string& event) {
@@ -561,6 +701,8 @@ private:
         for (std::size_t index = 0; index < timestamp_key_count_; ++index) {
             if (timestamp_scenario_ == "ingress_role" && index == 0) {
                 roles.emplace_back("rodaq/acquisition_ingress");
+            } else if (timestamp_scenario_ == "duplicate" && index == 1) {
+                roles.emplace_back("sample_time");
             } else if (index == 0) {
                 roles.emplace_back("sample_time");
             } else {
@@ -572,7 +714,7 @@ private:
         for (const std::string& role : roles) {
             timestamp_keys.push_back(rodaq_timestamp_key{fixture_string(role), clock_});
         }
-        return runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
+        auto result = runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
             RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE,
             RODAQ_TRUE,
             0,
@@ -584,6 +726,10 @@ private:
             static_cast<std::uint32_t>(timestamp_keys.size()),
             0,
         });
+        if (result.has_value()) {
+            LogControl("descriptor_published descriptor=" + std::to_string(result.value().value));
+        }
+        return result;
     }
 
     static rodaq::Result<void> invalid_state() {
@@ -616,16 +762,19 @@ private:
     bool projection_before_start_ = false;
     std::int64_t projection_delay_after_ = -1;
     std::string projection_registration_mode_;
+    bool plugin_local_lock_ = false;
     std::string timestamp_scenario_;
     std::size_t timestamp_key_count_ = 1;
     std::string event_log_;
     std::mutex log_mutex_;
     std::mutex switch_mutex_;
+    std::mutex plugin_local_mutex_;
     std::atomic<bool> stopping_{false};
     std::atomic<std::size_t> commit_count_{0};
     std::vector<std::thread> producers_;
     std::vector<rodaq_stream_handle> streams_;
     std::vector<rodaq_stream_descriptor_handle> descriptors_;
+    std::vector<std::unique_ptr<TransitionState>> transitions_;
     std::vector<bool> switched_;
     rodaq_clock_handle clock_{};
     rodaq_schema_handle schema_{};

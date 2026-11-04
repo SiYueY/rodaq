@@ -50,6 +50,7 @@ TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
 
 TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
     auto& manager = QuarantineManager::Process();
+    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
     std::vector<std::uint64_t> slots;
     while (true) {
         auto slot = manager.ReserveActivation("activation slot test");
@@ -60,14 +61,26 @@ TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
         slots.push_back(slot.value());
         ASSERT_LE(slots.size(), 64U);
     }
-    EXPECT_FALSE(slots.empty());
+    ASSERT_EQ(slots.size(), 32U);
+    EXPECT_EQ(manager.RetainedActivationCount(), 32U);
 
-    auto root = std::make_shared<int>(42);
-    ASSERT_TRUE(manager.RetainActivation(slots.front(), root, "retained root test"));
-    for (std::size_t index = 1; index < slots.size(); ++index) {
-        manager.ReleaseActivation(slots[index]);
+    for (const std::uint64_t slot : slots) {
+        manager.ReleaseActivation(slot);
     }
-    EXPECT_GE(manager.RetainedActivationCount(), 1U);
+    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
+
+    for (std::uint64_t& slot : slots) {
+        auto reserved = manager.ReserveActivation("activation slot reuse test");
+        ASSERT_TRUE(reserved.has_value());
+        slot = reserved.value();
+    }
+    auto exhausted = manager.ReserveActivation("activation slot exhaustion test");
+    ASSERT_FALSE(exhausted.has_value());
+    EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
+    for (const std::uint64_t slot : slots) {
+        manager.ReleaseActivation(slot);
+    }
+    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
 }
 
 }  // namespace

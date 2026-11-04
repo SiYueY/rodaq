@@ -28,6 +28,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace rodaq::runtime {
@@ -78,6 +79,7 @@ struct StreamEntry {
     std::unique_ptr<std::mutex> binding_transition_mutex;
     std::unique_ptr<std::condition_variable> binding_transition_condition;
     bool binding_transition_active = false;
+    std::uint64_t binding_transition_token = 0;
 };
 
 enum class DescriptorLifecycle : std::uint32_t {
@@ -143,7 +145,7 @@ public:
     ActiveRuntimeState& operator=(const ActiveRuntimeState&) = delete;
     ActiveRuntimeState(ActiveRuntimeState&&) = delete;
     ActiveRuntimeState& operator=(ActiveRuntimeState&&) = delete;
-    ~ActiveRuntimeState() = default;
+    ~ActiveRuntimeState() noexcept;
 
     RuntimeOptions& options() noexcept { return options_; }
     const RuntimeOptions& options() const noexcept { return options_; }
@@ -187,6 +189,7 @@ public:
     bool WaitForSubmissions(std::chrono::steady_clock::time_point deadline);
 
     void RequestFailure(Error error) noexcept;
+    bool HasPrimaryFailure() const noexcept;
     Result<Error> PrimaryFailure() const;
     Result<std::vector<Error>> SecondaryFailures() const;
     std::uint64_t SecondaryFailureOverflowCount() const noexcept;
@@ -230,6 +233,10 @@ public:
     rodaq_interface AcquisitionServiceInterface(std::size_t plugin_index) noexcept;
     rodaq_interface StorageServiceInterface() noexcept;
 
+    Result<void> StartDescriptorReconciliation();
+    Result<void> WaitForDescriptorReconciliation(std::chrono::steady_clock::time_point deadline);
+    bool CloseAndJoinDescriptorReconciliation(std::chrono::steady_clock::time_point deadline);
+
 private:
     enum class DescriptorReadiness {
         Ready,
@@ -244,6 +251,9 @@ private:
 
     Result<DescriptorReadiness> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
     Result<bool> ReconcileDescriptor(StreamDescriptorHandle descriptor);
+    Result<void> RequestDescriptorReconciliation(
+        StreamDescriptorHandle descriptor, bool critical_for_start);
+    void RunDescriptorReconciliation() noexcept;
     Result<void> ActivateDescriptorBinding(
         StreamDescriptorHandle descriptor, StreamHandle stream, std::size_t plugin_index,
         rodaq_interface control);
@@ -297,6 +307,22 @@ private:
     InteropProjectionRegistry projections_;
     ClockHandle ingress_clock_;
     std::optional<ClockCorrelation> ingress_clock_correlation_;
+
+    struct DescriptorWorkerRequest {
+        StreamDescriptorHandle descriptor;
+        bool critical_for_start = false;
+    };
+
+    std::mutex descriptor_worker_mutex_;
+    std::condition_variable descriptor_worker_condition_;
+    std::vector<DescriptorWorkerRequest> descriptor_worker_requests_;
+    std::size_t descriptor_worker_head_ = 0;
+    std::size_t descriptor_worker_count_ = 0;
+    bool descriptor_worker_started_ = false;
+    bool descriptor_worker_busy_ = false;
+    bool descriptor_worker_closing_ = false;
+    std::optional<Error> descriptor_worker_failure_;
+    std::thread descriptor_worker_;
 
     std::atomic<RuntimeState> state_{RuntimeState::Constructed};
     mutable std::mutex admission_mutex_;
