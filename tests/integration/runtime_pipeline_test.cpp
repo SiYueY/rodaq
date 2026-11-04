@@ -755,6 +755,25 @@ TEST(RuntimePipelineTest, BoundsDescriptorReadinessDuringRunningSwitch) {
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
 }
 
+TEST(RuntimePipelineTest, BoundsAcquisitionBindingControlDuringSwitch) {
+    for (const std::string binding_scenario :
+         {"prepare_stall_switch", "commit_stall_switch", "prepare_failure_abort_stall"}) {
+        const std::string log = unique_log_path("binding_control_stall");
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            binding_scenario, "sync", "copy", 1, 6, 1, log, std::chrono::milliseconds(50), 2, 16,
+            64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", binding_scenario));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value());
+        ASSERT_TRUE(wait_for_failure(runtime));
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+        const auto started = Clock::now();
+        EXPECT_FALSE(runtime.Stop().has_value());
+        EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(500));
+    }
+}
+
 TEST(RuntimePipelineTest, RejectsCanonicalRegistrationCapacityExhaustion) {
     const std::string log = unique_log_path("registration_capacity");
     std::error_code removed;

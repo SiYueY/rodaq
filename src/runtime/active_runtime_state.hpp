@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -151,6 +152,7 @@ public:
     void SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control);
     void SetStorageControl(rodaq_interface control);
     void SetDescriptorProgressTimeout(std::chrono::nanoseconds timeout);
+    void SetBindingProgressTimeout(std::chrono::nanoseconds timeout);
     Result<rodaq_storage_capabilities> StorageCapabilities() const;
 
     Result<void> InitializePipeline(
@@ -251,6 +253,8 @@ private:
         std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
         BindingLifecycle lifecycle);
     Result<void> InitializeIngressClock();
+    Result<void> SuperviseBindingControl(
+        std::function<Result<void>()> operation, const char* reason);
 
     RuntimeOptions options_;
     const std::uint64_t activation_generation_;
@@ -287,6 +291,7 @@ private:
     std::vector<std::optional<rodaq_interface>> acquisition_controls_;
     std::optional<rodaq_interface> storage_control_;
     std::chrono::nanoseconds descriptor_progress_timeout_{};
+    std::chrono::nanoseconds binding_progress_timeout_{};
     std::vector<std::unique_ptr<AcquisitionServiceContext>> acquisition_contexts_;
     std::unique_ptr<StorageServiceContext> storage_context_;
     InteropProjectionRegistry projections_;

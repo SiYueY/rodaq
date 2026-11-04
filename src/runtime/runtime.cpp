@@ -688,6 +688,7 @@ private:
         active_->options().operation_capacity = effective_capacity;
         active_->options().completion_capacity = effective_completion_capacity;
         active_->SetDescriptorProgressTimeout(effective_descriptor_timeout);
+        active_->SetBindingProgressTimeout(options_.stop_progress_timeout);
 
         auto opened = supervise_start_call([state]() {
             const RuntimeOptions& active_options = state->options();

@@ -784,6 +784,32 @@ void ActiveRuntimeState::SetDescriptorProgressTimeout(std::chrono::nanoseconds t
     descriptor_progress_timeout_ = timeout;
 }
 
+void ActiveRuntimeState::SetBindingProgressTimeout(std::chrono::nanoseconds timeout) {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    binding_progress_timeout_ = timeout;
+}
+
+Result<void> ActiveRuntimeState::SuperviseBindingControl(
+    std::function<Result<void>()> operation, const char* reason) {
+    auto outcome = QuarantineManager::Process().Run(
+        std::move(operation), Clock::now() + binding_progress_timeout_, reason);
+    if (!outcome.has_value()) {
+        return nonstd::make_unexpected(std::move(outcome.error()));
+    }
+    switch (outcome.value().status) {
+        case SupervisedCallStatus::Completed:
+            return {};
+        case SupervisedCallStatus::Failed:
+            return nonstd::make_unexpected(std::move(outcome.value().error.value()));
+        case SupervisedCallStatus::TimedOut:
+            control_quarantine_required_.store(true, std::memory_order_release);
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::Timeout, "Acquisition Binding control timed out"));
+    }
+    return nonstd::make_unexpected(
+        runtime_error(ErrorCode::InternalError, "Unknown Binding control outcome"));
+}
+
 Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescriptorReady(
     StreamDescriptorHandle descriptor) {
     if (!storage_control_.has_value()) {
@@ -1613,6 +1639,9 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
             }
         }
         if (!activated.has_value()) {
+            if (RequiresQuarantine()) {
+                RequestFailure(activated.error());
+            }
             return nonstd::make_unexpected(std::move(activated.error()));
         }
         return true;
@@ -1694,11 +1723,33 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     }
 
     const auto* table = static_cast<const rodaq_acquisition_control_v1*>(control.vtable);
-    rodaq_error error{};
-    const rodaq_status prepare_status = table->prepare_binding_switch(
-        control.context, transition, rodaq_stream_handle{stream_handle.Value()}, old_descriptor,
-        rodaq_stream_descriptor_handle{descriptor.Value()}, &error);
-    if (prepare_status != RODAQ_STATUS_OK) {
+    auto control_state = shared_from_this();
+    auto prepare_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
+    auto prepare_error = std::make_shared<rodaq_error>();
+    auto prepared_control = SuperviseBindingControl(
+        [control_state, table, control, transition, stream_handle, old_descriptor, descriptor,
+         prepare_status, prepare_error]() -> Result<void> {
+            static_cast<void>(control_state);
+            *prepare_status = table->prepare_binding_switch(
+                control.context, transition, rodaq_stream_handle{stream_handle.Value()},
+                old_descriptor, rodaq_stream_descriptor_handle{descriptor.Value()},
+                prepare_error.get());
+            return {};
+        },
+        "Acquisition Binding prepare");
+    if (!prepared_control.has_value()) {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        BindingEntry* prepared = bindings_.Find(candidate);
+        if (prepared != nullptr) {
+            prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
+        }
+        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+        if (descriptor_entry != nullptr) {
+            descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
+        }
+        return nonstd::make_unexpected(std::move(prepared_control.error()));
+    }
+    if (*prepare_status != RODAQ_STATUS_OK) {
         bool resume_old = false;
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
@@ -1708,9 +1759,18 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                              old_binding_value &&
                          current_stream->availability->load() == RODAQ_AVAILABILITY_AVAILABLE;
         }
-        const rodaq_status abort_status = table->abort_binding_switch(
-            control.context, transition,
-            resume_old ? RODAQ_BINDING_ABORT_RESUME_OLD : RODAQ_BINDING_ABORT_KEEP_PAUSED, nullptr);
+        auto abort_error = std::make_shared<rodaq_error>();
+        auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
+        auto aborted = SuperviseBindingControl(
+            [control_state, table, control, transition, resume_old, abort_status, abort_error]() {
+                static_cast<void>(control_state);
+                *abort_status = table->abort_binding_switch(
+                    control.context, transition,
+                    resume_old ? RODAQ_BINDING_ABORT_RESUME_OLD : RODAQ_BINDING_ABORT_KEEP_PAUSED,
+                    abort_error.get());
+                return Result<void>();
+            },
+            "Acquisition Binding abort");
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             BindingEntry* prepared = bindings_.Find(candidate);
@@ -1726,11 +1786,13 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                 current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             }
         }
-        if (abort_status != RODAQ_STATUS_OK) {
+        if (!aborted.has_value()) {
+            RequestFailure(std::move(aborted.error()));
+        } else if (*abort_status != RODAQ_STATUS_OK) {
             RequestFailure(runtime_error(
                 ErrorCode::InternalError, "Binding abort after prepare failure also failed"));
         }
-        auto converted = result_from_status(prepare_status, &error, "acquisition");
+        auto converted = result_from_status(*prepare_status, prepare_error.get(), "acquisition");
         return converted.has_value() ? nonstd::make_unexpected(runtime_error(
                                            ErrorCode::Unavailable, "Binding prepare failed"))
                                      : nonstd::make_unexpected(std::move(converted.error()));
@@ -1767,9 +1829,17 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         descriptor_entry->lifecycle = DescriptorLifecycle::Active;
     }
 
-    const rodaq_status commit_status =
-        table->commit_binding_switch(control.context, transition, &error);
-    if (commit_status != RODAQ_STATUS_OK) {
+    auto commit_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
+    auto commit_error = std::make_shared<rodaq_error>();
+    auto committed = SuperviseBindingControl(
+        [control_state, table, control, transition, commit_status, commit_error]() {
+            static_cast<void>(control_state);
+            *commit_status =
+                table->commit_binding_switch(control.context, transition, commit_error.get());
+            return Result<void>();
+        },
+        "Acquisition Binding commit");
+    if (!committed.has_value() || *commit_status != RODAQ_STATUS_OK) {
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamEntry* current_stream = streams_.Find(stream_handle);
@@ -1777,9 +1847,14 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                 current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             }
         }
-        RequestFailure(runtime_error(
-            ErrorCode::Unavailable, "Binding commit failed after Runtime publication"));
-        auto converted = result_from_status(commit_status, &error, "acquisition");
+        RequestFailure(
+            committed.has_value()
+                ? runtime_error(
+                      ErrorCode::Unavailable, "Binding commit failed after Runtime publication")
+                : committed.error());
+        auto converted = committed.has_value()
+                             ? result_from_status(*commit_status, commit_error.get(), "acquisition")
+                             : Result<void>(nonstd::make_unexpected(committed.error()));
         return converted.has_value() ? nonstd::make_unexpected(runtime_error(
                                            ErrorCode::Unavailable, "Binding commit failed"))
                                      : nonstd::make_unexpected(std::move(converted.error()));

@@ -237,23 +237,29 @@ public:
             "prepare transition=" + std::to_string(transition.value) + " old=" +
             std::to_string(old_descriptor.value) + " new=" + std::to_string(new_descriptor.value));
         if ((binding_scenario_ == "prepare_failure_initial" && old_descriptor.value == 0) ||
-            (binding_scenario_ == "prepare_failure_switch" && old_descriptor.value != 0)) {
+            ((binding_scenario_ == "prepare_failure_switch" ||
+              binding_scenario_ == "prepare_failure_abort_stall") &&
+             old_descriptor.value != 0)) {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured binding prepare failure"));
+        }
+        if (binding_scenario_ == "prepare_stall_switch" && old_descriptor.value != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         return {};
     }
 
     rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition transition) override {
         LogControl("commit transition=" + std::to_string(transition.value));
-        if (binding_scenario_ == "commit_failure_switch" && commit_count_.fetch_add(1) != 0) {
+        const std::size_t commit_index = commit_count_.fetch_add(1);
+        if (binding_scenario_ == "commit_failure_switch" && commit_index != 0) {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured binding commit failure"));
         }
-        if (binding_scenario_ != "commit_failure_switch") {
-            commit_count_.fetch_add(1);
+        if (binding_scenario_ == "commit_stall_switch" && commit_index != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         return {};
     }
@@ -263,6 +269,9 @@ public:
         LogControl(
             "abort transition=" + std::to_string(transition.value) +
             " disposition=" + std::to_string(disposition));
+        if (binding_scenario_ == "prepare_failure_abort_stall") {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
         return {};
     }
 
