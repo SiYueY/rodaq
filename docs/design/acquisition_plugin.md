@@ -193,6 +193,13 @@ bounds
 
 V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2.v1`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
 
+Descriptor publication returns the immutable `DescriptorHandle` before Storage readiness can
+complete. Acquisition may then register its typed InteropProjection through
+`rodaq.runtime.projection.v1`. Projection registration notifications are delivered after the
+Projection Registry lock is released and may trigger another readiness evaluation for the same
+Descriptor. Missing projection is a pending readiness condition, not permission to mutate the
+already published Descriptor.
+
 未来其它生态可以增加新的 typed projection，例如 CAN/MDF mapping；这不等于引入 Generic PropertyBag。
 
 ---

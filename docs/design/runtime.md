@@ -1216,6 +1216,26 @@ no hot-path string lookup
 
 Projection registration failure does not mutate Canonical State already published. The corresponding Binding simply cannot become Active if required Storage readiness depends on the missing/invalid projection.
 
+Descriptor publication and readiness are distinct lifecycle steps:
+
+```text
+PublishDescriptor
+    → immutable Descriptor exists and handle is returned
+    → Storage readiness evaluation
+    → Binding transaction when READY
+```
+
+Storage may evaluate the immutable Descriptor together with its current immutable projection set.
+`UNSUPPORTED` leaves the Descriptor published but non-routable; a later Projection registration
+triggers a new readiness evaluation. The first missing-projection result is therefore retryable,
+not permanent Descriptor failure.
+
+All readiness and Binding transition callbacks execute outside `control_mutex_`, per-Stream
+Admission serialization, Dispatch/Completion locks and Registry structural locks. Runtime takes a
+snapshot under its structural lock, calls Plugin code without that lock, then re-enters the Runtime
+lock to validate the Descriptor generation, Binding transition token and current routing state
+before publication.
+
 The Runtime treats projection payload bytes as opaque. Meaning, deterministic encoding and validation rules belong to the versioned mapping specification for that projection identifier.
 
 ---

@@ -733,7 +733,8 @@ workers. C++ cannot cancel a thread executing Plugin code, so a timed-out call:
 
 ```text
 returns Runtime Failed within the configured bound
-retains the joinable worker object and captured activation
+transfers the joinable worker to a bounded process-lifetime quarantine owner
+retains the captured activation
 retains Plugin instances and DSO leases
 retains all unsafe-to-release Payload and operation state
 blocks Runtime restart
@@ -741,15 +742,42 @@ blocks Runtime restart
 
 Retained calls own or hold shared ownership of every input view and activation
 object they can still access after the supervising Runtime call returns.
+Completed retained workers are joined and removed at later safe lifecycle
+points. The owner has fixed internal call and activation-root capacities;
+exhaustion rejects a new unsafe activation.
 
 This is intentional process-lifetime quarantine, not ordinary shutdown.
 Destroying an activation while Plugin code may still access it is never an
 acceptable timeout response.
 
-ASan/LSan ignores only the explicit quarantine roots. The M2 E2E CTest entry
+ASan/LSan ignores only the process-lifetime quarantine owner and reachable
+roots. The M2 E2E CTest entry
 disables TSan thread-leak reporting because fault tests intentionally retain
 quarantined joinable threads; TSan data-race reporting remains enabled. Normal
 leak detection and normal plugin symbol validation remain active.
 
 **Reference:** `docs/design/runtime.md`, `docs/design/rodaq_plugin_system.md`,
 `docs/design/acquisition_plugin.md`, `docs/development/status.md`.
+
+## D-038 — Descriptor publication precedes retryable Storage readiness
+
+**Status:** Accepted
+
+Canonical Descriptor publication and Storage readiness are separate lifecycle
+steps. `PublishStreamDescriptor` commits and returns the immutable
+`DescriptorHandle` first. Acquisition may then register a typed
+InteropProjection through the existing Runtime projection service.
+
+Storage readiness evaluates the immutable Descriptor plus its current immutable
+projection set. `UNSUPPORTED` caused by missing projection leaves the Descriptor
+published but non-routable and is retryable; successful projection registration
+notifies Runtime after the Projection Registry lock is released and triggers
+reconciliation again.
+
+Descriptor readiness and Acquisition prepare/commit/abort execute outside
+Runtime structural locks. Runtime snapshots under lock, performs Plugin I/O
+without the lock, then reacquires the lock to validate Descriptor/Binding
+generation before publication.
+
+**Reference:** `docs/design/runtime.md`,
+`docs/design/acquisition_plugin.md`, `docs/design/storage_plugin.md`.

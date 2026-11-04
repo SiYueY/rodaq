@@ -428,6 +428,18 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] Failure cutoff.
 - [x] Quiescence.
 
+#### M2 Closure Fix
+
+- [x] Descriptor publication returns before Projection-dependent readiness.
+- [x] Projection registration retries Descriptor readiness without Plugin-under-lock.
+- [x] Runtime-owned activation ingress Clock and ClockCorrelation service.
+- [x] Mandatory ingress timestamp separated from transport timestamps.
+- [x] Completion bookkeeping capacity included in admitted-work capacity.
+- [x] Descriptor readiness and Storage handoff progress deadlines.
+- [x] Multi-Acquisition startup rollback and partial-start cleanup.
+- [x] Bounded, owned and reaped quarantine workers and activation roots.
+- [x] Start failure primary/secondary history preservation.
+
 #### Fake Acquisition
 
 - [x] single producer.

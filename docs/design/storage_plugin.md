@@ -1208,6 +1208,11 @@ Failed
 `rodaq_error` value with the backend domain, native code and message. The
 function-level `out_error` remains reserved for ABI/control-call failure.
 
+Readiness is evaluated against the current immutable Descriptor and immutable
+projection set. `Unsupported` caused by a missing projection leaves the
+Descriptor published but non-routable; Runtime retries after a new projection
+registration. A missing projection is not permanent Descriptor failure.
+
 ---
 
 ### 3.3.1 Ready
