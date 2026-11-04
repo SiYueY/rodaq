@@ -4,7 +4,7 @@
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
-**Convergence implementation baseline:** `3f0f139` plus the reviewed working-tree changes recorded below
+**Convergence implementation commit:** `dda407e` — `feat(runtime): converge V1 runtime foundation`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
