@@ -106,6 +106,34 @@ public:
         return &slot.value.value();
     }
 
+    /// Looks up a handle in an insert-only Registry whose slots are never erased
+    /// or reused during the caller's lifetime.
+    ///
+    /// Callers must not invoke this concurrently with Erase. Insertion into a
+    /// different preallocated slot is safe. Values referenced through this
+    /// lookup must be immutable or use their own synchronization for mutable
+    /// fields.
+    const T* FindStable(HandleType handle) const noexcept {
+        if (!handle.Valid()) {
+            return nullptr;
+        }
+        const std::uint64_t raw_index = (handle.Value() & kIndexMask) - 1U;
+        if (raw_index >= slots_.size()) {
+            return nullptr;
+        }
+        const std::size_t index = static_cast<std::size_t>(raw_index);
+        const Slot& slot = slots_[index];
+        if (!slot.value.has_value() ||
+            slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
+            return nullptr;
+        }
+        return &slot.value.value();
+    }
+
+    T* FindStable(HandleType handle) noexcept {
+        return const_cast<T*>(static_cast<const Registry&>(*this).FindStable(handle));
+    }
+
     Result<void> Erase(HandleType handle) {
         if (!handle.Valid()) {
             return nonstd::make_unexpected(

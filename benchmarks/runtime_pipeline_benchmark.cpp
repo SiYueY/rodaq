@@ -127,6 +127,14 @@ void BM_RuntimePipelineSingleProducer(benchmark::State& state) {
 
 void BM_RuntimePipelineConcurrent(benchmark::State& state) { run_pipeline(state, 4, 64, 4, 1024); }
 
+void BM_RuntimePipelineSteadyState(benchmark::State& state) {
+    run_pipeline(state, 1, 4096, 1, 1024);
+}
+
+void BM_RuntimePipelineSteadyStateConcurrent(benchmark::State& state) {
+    run_pipeline(state, 4, 256, 4, 1024);
+}
+
 }  // namespace
 }  // namespace rodaq::runtime
 
@@ -135,6 +143,12 @@ BENCHMARK(rodaq::runtime::BM_RuntimePipelineSingleProducer)
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK(rodaq::runtime::BM_RuntimePipelineConcurrent)
     ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK(rodaq::runtime::BM_RuntimePipelineSteadyState)
+    ->Iterations(3)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK(rodaq::runtime::BM_RuntimePipelineSteadyStateConcurrent)
+    ->Iterations(3)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();

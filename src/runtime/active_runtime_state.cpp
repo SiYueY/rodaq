@@ -901,13 +901,13 @@ Result<void> ActiveRuntimeState::InitializePipeline(
             [this](
                 const RuntimeRecord& record, rodaq_storage_operation operation,
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
-                std::lock_guard<std::mutex> lock(control_mutex_);
-                const BindingEntry* binding = bindings_.Find(record.Binding());
+                const BindingEntry* binding = bindings_.FindStable(record.Binding());
                 if (binding == nullptr) {
                     return Result<rodaq_storage_submission>(nonstd::make_unexpected(
                         runtime_error(ErrorCode::InvalidState, "Record Binding is unavailable")));
                 }
-                const StreamDescriptorEntry* descriptor = descriptors_.Find(binding->descriptor);
+                const StreamDescriptorEntry* descriptor =
+                    descriptors_.FindStable(binding->descriptor);
                 if (descriptor == nullptr) {
                     return Result<rodaq_storage_submission>(nonstd::make_unexpected(runtime_error(
                         ErrorCode::InvalidState, "Record Descriptor is unavailable")));
@@ -2050,43 +2050,41 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     const StreamDescriptorEntry* descriptor = nullptr;
     const SourceEntry* source_entry = nullptr;
     BindingHandle current_binding;
-    {
-        std::lock_guard<std::mutex> lock(control_mutex_);
-        stream = streams_.Find(stream_handle);
-        descriptor = descriptors_.Find(descriptor_handle);
-        if (stream == nullptr || descriptor == nullptr) {
+    stream = streams_.FindStable(stream_handle);
+    descriptor = descriptors_.FindStable(descriptor_handle);
+    if (stream == nullptr || descriptor == nullptr) {
+        return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
+    }
+    if (stream->plugin_index != plugin_index || descriptor->plugin_index != plugin_index) {
+        return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
+    }
+    if (descriptor->transport_timestamp_keys.size() != submission.timestamp_value_count) {
+        return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
+    }
+    if (source.has_value()) {
+        source_entry = sources_.FindStable(*source);
+        if (source_entry == nullptr) {
             return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
         }
-        if (stream->plugin_index != plugin_index || descriptor->plugin_index != plugin_index) {
-            return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
-        }
-        if (descriptor->transport_timestamp_keys.size() != submission.timestamp_value_count) {
-            return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
-        }
-        if (source.has_value()) {
-            source_entry = sources_.Find(*source);
-            if (source_entry == nullptr) {
-                return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
-            }
-        }
-        current_binding =
-            BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
-        BindingEntry* binding = current_binding.Valid() ? bindings_.Find(current_binding) : nullptr;
-        if (binding == nullptr) {
-            return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
-        }
-        if (binding->descriptor != descriptor_handle) {
-            return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
-        }
-        const auto binding_lifecycle =
-            static_cast<BindingLifecycle>(binding->lifecycle->load(std::memory_order_acquire));
-        if (binding_lifecycle == BindingLifecycle::Draining ||
-            binding_lifecycle == BindingLifecycle::Retired) {
-            return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
-        }
-        if (binding_lifecycle != BindingLifecycle::Active) {
-            return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
-        }
+    }
+    current_binding =
+        BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
+    BindingEntry* binding =
+        current_binding.Valid() ? bindings_.FindStable(current_binding) : nullptr;
+    if (binding == nullptr) {
+        return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
+    }
+    if (binding->descriptor != descriptor_handle) {
+        return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
+    }
+    const auto binding_lifecycle =
+        static_cast<BindingLifecycle>(binding->lifecycle->load(std::memory_order_acquire));
+    if (binding_lifecycle == BindingLifecycle::Draining ||
+        binding_lifecycle == BindingLifecycle::Retired) {
+        return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
+    }
+    if (binding_lifecycle != BindingLifecycle::Active) {
+        return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
     }
     if (stream->availability->load() != RODAQ_AVAILABILITY_AVAILABLE) {
         return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
@@ -2186,7 +2184,6 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     {
         std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
         std::lock_guard<std::mutex> gate_lock(admission_mutex_);
-        std::lock_guard<std::mutex> control_lock(control_mutex_);
         if (state_.load() != RuntimeState::Running || !gate_open_) {
             return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
         }
@@ -2196,7 +2193,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         const BindingHandle final_binding =
             BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
         BindingEntry* final_binding_entry =
-            final_binding.Valid() ? bindings_.Find(final_binding) : nullptr;
+            final_binding.Valid() ? bindings_.FindStable(final_binding) : nullptr;
         if (final_binding_entry == nullptr ||
             final_binding_entry->descriptor != descriptor_handle) {
             return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
