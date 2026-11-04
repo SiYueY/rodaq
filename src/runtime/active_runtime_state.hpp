@@ -4,6 +4,7 @@
 #include "plugin/service_registry.hpp"
 #include "plugin/acquisition_plugin_instance.hpp"
 #include "plugin/storage_plugin_instance.hpp"
+#include "runtime/clock_correlation.hpp"
 #include "runtime/interop_projection_registry.hpp"
 #include "runtime/runtime.hpp"
 #include "runtime/storage_pipeline.hpp"
@@ -234,7 +235,6 @@ private:
     static const rodaq_runtime_canonical_v1 kCanonicalVtable;
     static const rodaq_runtime_acquisition_v1 kAcquisitionVtable;
     static const rodaq_runtime_storage_v1 kStorageVtable;
-    static const rodaq_runtime_clock_correlation_v1 kClockCorrelationVtable;
 
     Result<DescriptorReadiness> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
     Result<bool> ReconcileDescriptor(StreamDescriptorHandle descriptor);
@@ -246,6 +246,7 @@ private:
     Result<BindingHandle> CreateBindingLocked(
         std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
         BindingLifecycle lifecycle);
+    Result<void> InitializeIngressClock();
 
     RuntimeOptions options_;
     const std::uint64_t activation_generation_;
@@ -284,6 +285,8 @@ private:
     std::vector<std::unique_ptr<AcquisitionServiceContext>> acquisition_contexts_;
     std::unique_ptr<StorageServiceContext> storage_context_;
     InteropProjectionRegistry projections_;
+    ClockHandle ingress_clock_;
+    std::optional<ClockCorrelation> ingress_clock_correlation_;
 
     std::atomic<RuntimeState> state_{RuntimeState::Constructed};
     mutable std::mutex admission_mutex_;

@@ -62,7 +62,8 @@ RuntimeOptions options(
     std::int64_t maximum_inflight_bytes = 128LL * 1024LL * 1024LL,
     std::string required_projection_id = "", std::string projection_id = "",
     bool projection_before_start = false, int64_t projection_delay_after = -1,
-    std::string projection_registration_mode = "") {
+    std::string projection_registration_mode = "", std::string timestamp_scenario = "",
+    int timestamp_key_count = 1) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -104,6 +105,8 @@ RuntimeOptions options(
         {"projection_delay_after", plugin::ConfigTree::Int64(projection_delay_after)},
         {"projection_registration_mode",
          plugin::ConfigTree::String(std::move(projection_registration_mode))},
+        {"timestamp_scenario", plugin::ConfigTree::String(std::move(timestamp_scenario))},
+        {"timestamp_key_count", plugin::ConfigTree::Int64(timestamp_key_count)},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -514,6 +517,102 @@ TEST(RuntimePipelineTest, SwitchesProjectionDependentDescriptorAndRejectsConflic
     auto primary = conflict.PrimaryFailure();
     ASSERT_TRUE(primary.has_value());
     EXPECT_EQ(primary->code(), ErrorCode::Conflict);
+}
+
+TEST(RuntimePipelineTest, InjectsMandatoryRuntimeIngressTimestamp) {
+    const std::string log = unique_log_path("ingress_timestamp");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options("ingress_timestamp", "sync", "copy", 1, 1, 1, log));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "timestamp_count=2 ingress_present=1 sample_present=1"));
+}
+
+TEST(RuntimePipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRole) {
+    const std::string three_log = unique_log_path("three_transport_timestamps");
+    std::error_code three_removed;
+    fs::remove(three_log, three_removed);
+    Runtime three(options(
+        "three_transport_timestamps", "sync", "copy", 1, 1, 1, three_log, std::chrono::seconds(1),
+        -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 3));
+    ASSERT_TRUE(three.Configure().has_value());
+    ASSERT_TRUE(three.Start().has_value());
+    ASSERT_TRUE(wait_for_records(three, three_log, 1));
+    ASSERT_TRUE(three.Stop().has_value());
+    EXPECT_TRUE(log_contains(three_log, "timestamp_count=4 ingress_present=1 sample_present=1"));
+
+    const std::string four_log = unique_log_path("four_transport_timestamps");
+    std::error_code four_removed;
+    fs::remove(four_log, four_removed);
+    Runtime four(options(
+        "four_transport_timestamps", "sync", "copy", 1, 1, 1, four_log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+        "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 4));
+    ASSERT_TRUE(four.Configure().has_value());
+    EXPECT_FALSE(four.Start().has_value());
+    auto four_failure = four.PrimaryFailure();
+    ASSERT_TRUE(four_failure.has_value());
+    EXPECT_EQ(four_failure->code(), ErrorCode::InvalidArgument);
+
+    const std::string ingress_log = unique_log_path("plugin_ingress_role");
+    std::error_code ingress_removed;
+    fs::remove(ingress_log, ingress_removed);
+    Runtime ingress(options(
+        "plugin_ingress_role", "sync", "copy", 1, 1, 1, ingress_log, std::chrono::milliseconds(100),
+        -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 128,
+        128LL * 1024LL * 1024LL, "", "", false, -1, "", "ingress_role", 1));
+    ASSERT_TRUE(ingress.Configure().has_value());
+    EXPECT_FALSE(ingress.Start().has_value());
+    auto ingress_failure = ingress.PrimaryFailure();
+    ASSERT_TRUE(ingress_failure.has_value());
+    EXPECT_EQ(ingress_failure->code(), ErrorCode::InvalidArgument);
+}
+
+TEST(RuntimePipelineTest, ExposesStableActivationClockCorrelation) {
+    const std::string log = unique_log_path("clock_correlation_probe");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "clock_correlation_probe", "sync", "copy", 1, 1, 1, log, std::chrono::seconds(1), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "clock_probe"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "storage_clock_probe ingress="));
+}
+
+TEST(RuntimePipelineTest, RefreshesIngressClockAcrossRestart) {
+    const std::string log = unique_log_path("clock_restart");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "clock_restart", "sync", "copy", 1, 1, 1, log, std::chrono::seconds(1), -1, 16, 64U * 1024U,
+        8, AdmissionMode::Wait, 0, "clock_probe"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 2));
+    ASSERT_TRUE(runtime.Stop().has_value());
+
+    std::vector<std::uint64_t> ingress_clocks;
+    for (const std::string& line : read_lines(log)) {
+        const std::size_t marker = line.find("storage_clock_probe ingress=");
+        if (marker == std::string::npos) {
+            continue;
+        }
+        const std::size_t begin = marker + std::string("storage_clock_probe ingress=").size();
+        const std::size_t end = line.find(' ', begin);
+        ingress_clocks.push_back(std::stoull(line.substr(begin, end - begin)));
+    }
+    ASSERT_EQ(ingress_clocks.size(), 2U);
+    EXPECT_NE(ingress_clocks[0], ingress_clocks[1]);
 }
 
 TEST(RuntimePipelineTest, BoundsAndQuarantinesBlockedActivationCalls) {

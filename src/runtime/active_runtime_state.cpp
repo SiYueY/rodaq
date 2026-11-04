@@ -26,6 +26,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::string_view kIngressTimestampRole = "rodaq/acquisition_ingress";
 constexpr std::size_t kMaxSecondaryFailures = 8;
+constexpr std::size_t kRuntimeClockPluginIndex = std::numeric_limits<std::size_t>::max();
 
 Error runtime_error(ErrorCode code, std::string message) {
     return Error(code, "runtime", 0, std::move(message));
@@ -58,6 +59,17 @@ ArenaString copy_string(std::pmr::memory_resource* resource, std::string_view va
     ArenaString result(resource);
     result.assign(value.data(), value.size());
     return result;
+}
+
+Result<std::int64_t> capture_ingress_reading() {
+    const auto count =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+            .count();
+    if (count > std::numeric_limits<std::int64_t>::max()) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InternalError, "Runtime ingress clock reading overflowed"));
+    }
+    return static_cast<std::int64_t>(count);
 }
 
 bool bytes_equal(const ArenaBytes& stored, const std::uint8_t* data, std::size_t size) noexcept {
@@ -539,16 +551,6 @@ void storage_report_failure(void* context, const rodaq_error* error) noexcept {
     }
 }
 
-rodaq_status clock_correlation_anchor(
-    void*, rodaq_clock_handle, rodaq_unix_epoch_clock_anchor* out_anchor,
-    rodaq_error* out_error) noexcept {
-    if (out_anchor != nullptr) {
-        *out_anchor = {};
-    }
-    return assign_message(
-        ErrorCode::NotFound, "clock correlation anchor is unavailable", out_error);
-}
-
 }  // namespace
 
 const rodaq_runtime_common_v1 ActiveRuntimeState::kCommonVtable = {
@@ -591,12 +593,6 @@ const rodaq_runtime_storage_v1 ActiveRuntimeState::kStorageVtable = {
     &storage_payload_consumed,
     &storage_persistence_completed,
     &storage_report_failure,
-};
-
-const rodaq_runtime_clock_correlation_v1 ActiveRuntimeState::kClockCorrelationVtable = {
-    RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION,
-    RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE,
-    &clock_correlation_anchor,
 };
 
 Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::Create(
@@ -674,6 +670,10 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
     }
     storage_context_ = std::make_unique<StorageServiceContext>();
     storage_context_->state = this;
+    auto ingress = InitializeIngressClock();
+    if (!ingress.has_value()) {
+        throw std::runtime_error(std::string(ingress.error().message()));
+    }
     projections_.SetRegistrationSink(
         [this](rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) {
             OnProjectionRegistered(descriptor, projection_id);
@@ -695,6 +695,58 @@ void ActiveRuntimeState::SetStorageControl(rodaq_interface control) {
         throw std::invalid_argument("Storage control interface is invalid");
     }
     storage_control_ = control;
+}
+
+Result<void> ActiveRuntimeState::InitializeIngressClock() {
+    static constexpr std::string_view kNativeId = "rodaq/runtime/ingress";
+    static constexpr std::string_view kOrigin = "monotonic_since_boot";
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        if (ingress_clock_.Valid()) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is already created"));
+        }
+        auto inserted = clocks_.Insert(ClockEntry{
+            copy_bytes(
+                arena_->Resource(), reinterpret_cast<const std::uint8_t*>(kNativeId.data()),
+                kNativeId.size()),
+            next_clock_id_++,
+            1,
+            1'000'000'000,
+            copy_string(arena_->Resource(), kOrigin),
+            kRuntimeClockPluginIndex,
+        });
+        if (!inserted.has_value()) {
+            return nonstd::make_unexpected(std::move(inserted.error()));
+        }
+        ingress_clock_ = inserted.value();
+        clock_handles_.push_back(ingress_clock_);
+    }
+
+    auto correlation = ClockCorrelation::Establish(
+        rodaq_clock_handle{ingress_clock_.Value()},
+        []() -> std::int64_t {
+            auto reading = capture_ingress_reading();
+            if (!reading.has_value()) {
+                throw std::runtime_error(std::string(reading.error().message()));
+            }
+            return reading.value();
+        },
+        []() -> std::uint64_t {
+            const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+            if (count < 0) {
+                throw std::runtime_error("System clock is before Unix epoch");
+            }
+            return static_cast<std::uint64_t>(count);
+        });
+    if (!correlation.has_value()) {
+        return nonstd::make_unexpected(std::move(correlation.error()));
+    }
+    ingress_clock_correlation_.emplace(std::move(correlation.value()));
+    return {};
 }
 
 Result<rodaq_storage_capabilities> ActiveRuntimeState::StorageCapabilities() const {
@@ -838,7 +890,7 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                 }
                 submission.timestamp_values = values.data();
                 submission.timestamp_value_count =
-                    static_cast<std::uint32_t>(descriptor->transport_timestamp_keys.size());
+                    static_cast<std::uint32_t>(descriptor->canonical_timestamp_keys.size());
                 const PayloadView payload = record.RecordPayload().View();
                 submission.payload = rodaq_bytes_view{payload.Data(), payload.Size()};
                 return Result<rodaq_storage_submission>(submission);
@@ -894,9 +946,12 @@ Result<void> ActiveRuntimeState::RegisterStorageServices(plugin::ServiceRegistry
     if (!result.has_value()) {
         return result;
     }
+    if (!ingress_clock_correlation_.has_value()) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is unavailable"));
+    }
     result = registry.Register(
-        RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID,
-        rodaq_interface{this, &kClockCorrelationVtable});
+        RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, ingress_clock_correlation_->AbiInterface());
     if (!result.has_value()) {
         return result;
     }
@@ -1266,7 +1321,7 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
     std::size_t plugin_index, const rodaq_stream_descriptor_registration& request,
     StreamDescriptorHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_descriptor_registration(request) ||
-        request.timestamp_key_count > TimestampState::kMaxSlots ||
+        request.timestamp_key_count + 1U > TimestampState::kMaxSlots ||
         plugin_index >= options_.acquisitions.size()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "StreamDescriptor publication is invalid"));
@@ -1297,15 +1352,22 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         std::pmr::vector<TimestampKeyRecord> keys(arena_->Resource());
         std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->Resource());
         std::pmr::vector<rodaq_timestamp_key> transport_abi_keys(arena_->Resource());
-        keys.reserve(request.timestamp_key_count);
-        abi_keys.reserve(request.timestamp_key_count);
+        keys.reserve(request.timestamp_key_count + 1U);
+        abi_keys.reserve(request.timestamp_key_count + 1U);
         transport_abi_keys.reserve(request.timestamp_key_count);
+        keys.push_back(TimestampKeyRecord{
+            copy_string(arena_->Resource(), kIngressTimestampRole), ingress_clock_});
         for (std::uint32_t index = 0; index < request.timestamp_key_count; ++index) {
             const rodaq_timestamp_key& key = request.timestamp_keys[index];
             std::string_view role;
             if (!parse_abi_string(key.role, &role)) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::InvalidArgument, "Timestamp role is invalid"));
+            }
+            if (role == kIngressTimestampRole) {
+                return nonstd::make_unexpected(runtime_error(
+                    ErrorCode::InvalidArgument,
+                    "Acquisition Plugins must not publish the Runtime ingress timestamp role"));
             }
             const ClockHandle clock = ClockHandle::FromRaw(key.clock.value);
             if (clocks_.Find(clock) == nullptr) {
@@ -2039,16 +2101,20 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     }
 
     TimestampState timestamps;
-    const std::int64_t ingress_reading =
-        static_cast<std::int64_t>(common_monotonic_time_ns(nullptr));
+    auto ingress_reading = capture_ingress_reading();
+    if (!ingress_reading.has_value()) {
+        RequestFailure(ingress_reading.error());
+        return nonstd::make_unexpected(std::move(ingress_reading.error()));
+    }
+    auto ingress_set = timestamps.Set(0, ingress_reading.value());
+    if (!ingress_set.has_value()) {
+        RequestFailure(ingress_set.error());
+        return nonstd::make_unexpected(std::move(ingress_set.error()));
+    }
     for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
         const rodaq_timestamp_value& value = submission.timestamp_values[slot];
         if (value.present == RODAQ_TRUE) {
-            const std::string_view role(
-                descriptor->transport_timestamp_keys[slot].role.data,
-                descriptor->transport_timestamp_keys[slot].role.size);
-            const auto set = timestamps.Set(
-                slot, role == kIngressTimestampRole ? ingress_reading : value.reading);
+            const auto set = timestamps.Set(slot + 1U, value.reading);
             if (!set.has_value()) {
                 return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
             }

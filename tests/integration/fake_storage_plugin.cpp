@@ -109,7 +109,7 @@ public:
                 "configured descriptor readiness failure", &value.failure);
         }
         if (descriptor_scenario_ == "require_projection" ||
-            descriptor_scenario_ == "canonical_probe") {
+            descriptor_scenario_ == "canonical_probe" || descriptor_scenario_ == "clock_probe") {
             auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
             if (!descriptor_view.has_value()) {
                 value.state = RODAQ_DESCRIPTOR_FAILED;
@@ -135,6 +135,37 @@ public:
                 return value;
             }
             LogControl("readiness projection=" + required_projection_id_);
+        }
+        if (descriptor_scenario_ == "clock_probe") {
+            auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
+            if (!descriptor_view.has_value()) {
+                value.state = RODAQ_DESCRIPTOR_FAILED;
+                return value;
+            }
+            auto keys =
+                runtime_.canonical.GetTimestampKeySet(descriptor_view.value().timestamp_key_set_id);
+            if (!keys.has_value() || keys.value().key_count == 0) {
+                value.state = RODAQ_DESCRIPTOR_FAILED;
+                return value;
+            }
+            const rodaq_clock_handle ingress_clock = keys.value().keys[0].clock;
+            auto first = runtime_.clock_correlation.Anchor(ingress_clock);
+            auto second = runtime_.clock_correlation.Anchor(ingress_clock);
+            auto unknown = runtime_.clock_correlation.Anchor(
+                rodaq_clock_handle{ingress_clock.value + 1'000'000U});
+            if (!first.has_value() || !second.has_value() ||
+                first.value().clock_reading != second.value().clock_reading ||
+                first.value().unix_anchor_ns != second.value().unix_anchor_ns ||
+                unknown.has_value() || unknown.error().code() != rodaq::ErrorCode::NotFound) {
+                value.state = RODAQ_DESCRIPTOR_FAILED;
+                rodaq::assign_rodaq_error(
+                    RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0, "clock correlation probe failed",
+                    &value.failure);
+                return value;
+            }
+            LogControl(
+                "clock_probe ingress=" + std::to_string(ingress_clock.value) +
+                " reading=" + std::to_string(first.value().clock_reading));
         }
         return value;
     }
@@ -348,7 +379,18 @@ private:
         output << "record stream=" << submission.stream.value
                << " descriptor=" << submission.descriptor.value
                << " sequence=" << submission.acceptance_sequence
-               << " bytes=" << submission.payload.size << " checksum=" << checksum << '\n';
+               << " bytes=" << submission.payload.size << " checksum=" << checksum
+               << " timestamp_count=" << submission.timestamp_value_count << " ingress_present="
+               << (submission.timestamp_value_count > 0 &&
+                           submission.timestamp_values[0].present == RODAQ_TRUE
+                       ? 1
+                       : 0);
+        if (submission.timestamp_value_count > 1) {
+            output << " sample_present="
+                   << (submission.timestamp_values[1].present == RODAQ_TRUE ? 1 : 0)
+                   << " sample_reading=" << submission.timestamp_values[1].reading;
+        }
+        output << '\n';
     }
 
     void LogControl(const std::string& event) {

@@ -73,12 +73,16 @@ public:
         projection_before_start_ = config_int(config, "projection_before_start", 0) != 0;
         projection_delay_after_ = config_int(config, "projection_delay_after", -1);
         projection_registration_mode_ = config_string(config, "projection_registration_mode", "");
+        timestamp_scenario_ = config_string(config, "timestamp_scenario", "");
+        timestamp_key_count_ =
+            static_cast<std::size_t>(config_int(config, "timestamp_key_count", 1));
         event_log_ = config_string(config, "event_log", "");
         LogControl(
             "configure streams=" + std::to_string(stream_count_) +
             " records=" + std::to_string(records_per_stream_) +
             " producers=" + std::to_string(producer_threads_) + " payload_mode=" + payload_mode_);
         if (stream_count_ == 0 || records_per_stream_ == 0 || producer_threads_ == 0 ||
+            timestamp_key_count_ == 0 ||
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
             return invalid_argument();
         }
@@ -359,16 +363,19 @@ private:
             mode = payload_mode_ == "adopt" ? RODAQ_PAYLOAD_ADOPT : RODAQ_PAYLOAD_RETAIN;
         }
 
-        const std::int64_t reading = static_cast<std::int64_t>(record_index + 1U);
-        const rodaq_timestamp_value timestamp{RODAQ_TRUE, 0, reading};
+        std::vector<rodaq_timestamp_value> timestamps(timestamp_key_count_);
+        for (std::size_t slot = 0; slot < timestamps.size(); ++slot) {
+            timestamps[slot] = rodaq_timestamp_value{
+                RODAQ_TRUE, 0, static_cast<std::int64_t>(record_index + slot + 1U)};
+        }
         rodaq_record_submission submission{};
         submission.struct_size = sizeof(submission);
         submission.stream = streams_[stream_index];
         submission.descriptor = descriptor;
         submission.source_present = RODAQ_TRUE;
         submission.source.value = source_.value_or(rodaq_source_handle{}).value;
-        submission.timestamp_values = &timestamp;
-        submission.timestamp_value_count = 1;
+        submission.timestamp_values = timestamps.data();
+        submission.timestamp_value_count = static_cast<std::uint32_t>(timestamps.size());
         submission.payload.mode = mode;
         submission.payload.data = data;
         submission.payload.size = source.size();
@@ -428,6 +435,21 @@ private:
                 rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
                 "published Descriptor view was mutated"));
         }
+        auto key_set =
+            runtime_.canonical.GetTimestampKeySet(descriptor_view.value().timestamp_key_set_id);
+        if (!key_set.has_value() || key_set.value().key_count != timestamp_key_count_ + 1U) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "canonical TimestampKeySet has the wrong size"));
+        }
+        const rodaq_timestamp_key& ingress_key = key_set.value().keys[0];
+        const std::string_view ingress_role(ingress_key.role.data, ingress_key.role.size);
+        if (ingress_role != "rodaq/acquisition_ingress" ||
+            descriptor_view.value().transport_timestamp_key_count != timestamp_key_count_) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "canonical/transport timestamp separation is invalid"));
+        }
         return {};
     }
 
@@ -439,7 +461,8 @@ private:
         if (input) {
             std::uint64_t old_stream = 0;
             std::uint64_t old_descriptor = 0;
-            input >> old_stream >> old_descriptor;
+            std::uint64_t old_ingress_clock = 0;
+            input >> old_stream >> old_descriptor >> old_ingress_clock;
             if (!input) {
                 return fail(rodaq::Error(
                     rodaq::ErrorCode::InvalidArgument, "fake_acquisition", 0,
@@ -448,7 +471,8 @@ private:
             auto stream = runtime_.canonical.get_stream(rodaq_stream_handle{old_stream});
             auto descriptor = runtime_.canonical.get_stream_descriptor(
                 rodaq_stream_descriptor_handle{old_descriptor});
-            if (stream.has_value() || descriptor.has_value()) {
+            auto ingress = runtime_.canonical.get_clock(rodaq_clock_handle{old_ingress_clock});
+            if (stream.has_value() || descriptor.has_value() || ingress.has_value()) {
                 return fail(rodaq::Error(
                     rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
                     "stale activation handle resolved"));
@@ -463,7 +487,19 @@ private:
                 rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
                 "failed to record stale handle fixture"));
         }
-        output << streams_.front().value << ' ' << descriptors_.front().value << '\n';
+        auto descriptor = runtime_.canonical.get_stream_descriptor(descriptors_.front());
+        if (!descriptor.has_value()) {
+            return fail(descriptor.error());
+        }
+        auto key_set =
+            runtime_.canonical.GetTimestampKeySet(descriptor.value().timestamp_key_set_id);
+        if (!key_set.has_value() || key_set.value().key_count == 0) {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+                "failed to inspect ingress Clock fixture"));
+        }
+        output << streams_.front().value << ' ' << descriptors_.front().value << ' '
+               << key_set.value().keys[0].clock.value << '\n';
         return output ? rodaq::Result<void>()
                       : fail(rodaq::Error(
                             rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
@@ -493,10 +529,22 @@ private:
 
     rodaq::Result<rodaq_stream_descriptor_handle> PublishDescriptor(
         rodaq_stream_handle stream, std::string_view name) {
-        const rodaq_timestamp_key timestamp_key{
-            fixture_string("sample_time"),
-            clock_,
-        };
+        std::vector<std::string> roles;
+        roles.reserve(timestamp_key_count_);
+        for (std::size_t index = 0; index < timestamp_key_count_; ++index) {
+            if (timestamp_scenario_ == "ingress_role" && index == 0) {
+                roles.emplace_back("rodaq/acquisition_ingress");
+            } else if (index == 0) {
+                roles.emplace_back("sample_time");
+            } else {
+                roles.emplace_back("sample_time_" + std::to_string(index));
+            }
+        }
+        std::vector<rodaq_timestamp_key> timestamp_keys;
+        timestamp_keys.reserve(roles.size());
+        for (const std::string& role : roles) {
+            timestamp_keys.push_back(rodaq_timestamp_key{fixture_string(role), clock_});
+        }
         return runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
             RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE,
             RODAQ_TRUE,
@@ -505,8 +553,8 @@ private:
             rodaq_string_view{name.data(), name.size()},
             schema_,
             fixture_string("raw"),
-            &timestamp_key,
-            1,
+            timestamp_keys.data(),
+            static_cast<std::uint32_t>(timestamp_keys.size()),
             0,
         });
     }
@@ -541,6 +589,8 @@ private:
     bool projection_before_start_ = false;
     std::int64_t projection_delay_after_ = -1;
     std::string projection_registration_mode_;
+    std::string timestamp_scenario_;
+    std::size_t timestamp_key_count_ = 1;
     std::string event_log_;
     std::mutex log_mutex_;
     std::mutex switch_mutex_;
