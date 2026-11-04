@@ -419,6 +419,9 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     ASSERT_TRUE(failed.Configure().has_value());
     EXPECT_FALSE(failed.Start().has_value());
     EXPECT_EQ(failed.State(), RuntimeState::Failed);
+    auto failed_primary = failed.PrimaryFailure();
+    ASSERT_TRUE(failed_primary.has_value());
+    EXPECT_EQ(failed_primary->code(), ErrorCode::StorageError);
 
     const std::string unsupported_log = unique_log_path("readiness_unsupported");
     std::error_code unsupported_removed;
@@ -442,8 +445,44 @@ TEST(RuntimePipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     ASSERT_TRUE(runtime.Configure().has_value());
     EXPECT_FALSE(runtime.Start().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::Unavailable);
     EXPECT_TRUE(log_contains(log, "control abort"));
     EXPECT_TRUE(log_contains(log, "disposition=1"));
+}
+
+TEST(RuntimePipelineTest, PreservesStorageOpenAndAcquisitionStartFailures) {
+    const std::string storage_log = unique_log_path("storage_open_failure");
+    std::error_code storage_removed;
+    fs::remove(storage_log, storage_removed);
+    Runtime storage(options(
+        "storage_open_failure", "open_failure", "copy", 1, 1, 1, storage_log,
+        std::chrono::milliseconds(100)));
+    ASSERT_TRUE(storage.Configure().has_value());
+    EXPECT_FALSE(storage.Start().has_value());
+    EXPECT_EQ(storage.State(), RuntimeState::Failed);
+    auto storage_primary = storage.PrimaryFailure();
+    ASSERT_TRUE(storage_primary.has_value());
+    EXPECT_EQ(storage_primary->code(), ErrorCode::StorageError);
+    EXPECT_NE(storage_primary->message().find("open failure"), std::string_view::npos);
+
+    const std::string acquisition_log = unique_log_path("acquisition_start_failure");
+    std::error_code acquisition_removed;
+    fs::remove(acquisition_log, acquisition_removed);
+    Runtime acquisition(options(
+        "acquisition_start_failure", "sync", "copy", 1, 1, 1, acquisition_log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+        "start_failure"));
+    ASSERT_TRUE(acquisition.Configure().has_value());
+    EXPECT_FALSE(acquisition.Start().has_value());
+    EXPECT_EQ(acquisition.State(), RuntimeState::Failed);
+    auto acquisition_primary = acquisition.PrimaryFailure();
+    ASSERT_TRUE(acquisition_primary.has_value());
+    EXPECT_EQ(acquisition_primary->code(), ErrorCode::Unavailable);
+    EXPECT_NE(
+        acquisition_primary->message().find("configured acquisition start failure"),
+        std::string_view::npos);
 }
 
 TEST(RuntimePipelineTest, ReconcilesProjectionDependentDescriptorReadiness) {

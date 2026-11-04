@@ -73,6 +73,10 @@ public:
         if (scenario_ == "open_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
+        if (scenario_ == "open_failure") {
+            return nonstd::make_unexpected(rodaq::Error(
+                rodaq::ErrorCode::StorageError, "fake_storage", 0, "configured open failure"));
+        }
         stage_ = Stage::Opened;
         return {};
     }
