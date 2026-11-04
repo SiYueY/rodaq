@@ -125,6 +125,30 @@ TEST(PayloadTest, RetainKeepsExternalAnchorExactlyOnce) {
     EXPECT_EQ(probe.calls, 1);
 }
 
+TEST(PayloadTest, MoveRetainsPluginLifetimeGuardWithExternalAnchor) {
+    const std::array<std::uint8_t, 2> source{7, 8};
+    ReleaseProbe release;
+    int guard_destroys = 0;
+    {
+        auto guard = std::shared_ptr<void>(new int(1), [&guard_destroys](void* value) {
+            delete static_cast<int*>(value);
+            ++guard_destroys;
+        });
+        auto retained =
+            Payload::Retain(PayloadView(source.data(), source.size()), &release, &release_probe);
+        ASSERT_TRUE(retained.has_value());
+        retained.value().AttachLifetimeGuard(guard);
+
+        Payload moved(std::move(retained.value()));
+        EXPECT_TRUE(retained.value().Empty());
+        EXPECT_EQ(0, guard_destroys);
+        EXPECT_EQ(0, release.calls);
+        EXPECT_EQ(moved.Size(), source.size());
+    }
+    EXPECT_EQ(1, release.calls);
+    EXPECT_EQ(1, guard_destroys);
+}
+
 TEST(PayloadTest, ExternalModesRejectMissingReleaseCapability) {
     const std::array<std::uint8_t, 1> source{1};
     const auto adopted =
@@ -190,9 +214,9 @@ TEST(PayloadPoolTest, ZeroLengthPayloadDoesNotConsumePoolStorage) {
     auto pool = PayloadPool::Create(8, 1);
     ASSERT_TRUE(pool.has_value());
 
-    const auto empty = pool.value().Acquire(0);
+    const auto empty = pool.value().TryReserve(0);
     ASSERT_TRUE(empty.has_value());
-    EXPECT_TRUE(empty.value().Empty());
+    EXPECT_FALSE(empty.value().Active());
     EXPECT_EQ(pool.value().UsedBytes(), 0U);
     EXPECT_EQ(pool.value().AvailableBytes(), 8U);
 }
@@ -206,7 +230,7 @@ TEST(PayloadPoolTest, ReusesReleasedStorage) {
     ASSERT_TRUE(first.has_value());
     const std::uint8_t* first_data = first.value().View().Data();
 
-    const auto exhausted = pool.value().Acquire(1);
+    const auto exhausted = pool.value().TryReserve(1);
     ASSERT_FALSE(exhausted.has_value());
     EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
 
@@ -220,8 +244,8 @@ TEST(PayloadPoolTest, TracksUsedAvailableAndHighWaterBytes) {
     auto pool = PayloadPool::Create(16, 3);
     ASSERT_TRUE(pool.has_value());
 
-    auto first = pool.value().Acquire(3);
-    auto second = pool.value().Acquire(5);
+    auto first = pool.value().TryReserve(3);
+    auto second = pool.value().TryReserve(5);
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
     EXPECT_EQ(pool.value().CapacityBytes(), 48U);
@@ -229,7 +253,7 @@ TEST(PayloadPoolTest, TracksUsedAvailableAndHighWaterBytes) {
     EXPECT_EQ(pool.value().AvailableBytes(), 16U);
     EXPECT_EQ(pool.value().HighWaterBytes(), 32U);
 
-    first.value() = Payload();
+    first.value() = PayloadPoolReservation();
     EXPECT_EQ(pool.value().UsedBytes(), 16U);
     EXPECT_EQ(pool.value().AvailableBytes(), 32U);
     EXPECT_EQ(pool.value().HighWaterBytes(), 32U);
@@ -250,7 +274,7 @@ TEST(PayloadPoolTest, RejectsInvalidConfigurationAndOversizedRequests) {
 
     auto pool = PayloadPool::Create(4, 1);
     ASSERT_TRUE(pool.has_value());
-    const auto oversized = pool.value().Acquire(5);
+    const auto oversized = pool.value().TryReserve(5);
     ASSERT_FALSE(oversized.has_value());
     EXPECT_EQ(oversized.error().code(), ErrorCode::ResourceExhausted);
 }
@@ -274,6 +298,44 @@ TEST(PayloadPoolTest, CopyRejectsInvalidSourceWithoutConsumingStorage) {
     ASSERT_FALSE(invalid.has_value());
     EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
     EXPECT_EQ(pool.value().UsedBytes(), 0U);
+}
+
+TEST(PayloadPoolTest, SelectsSmallestClassAndKeepsClassBudgetsIsolated) {
+    PayloadPoolConfig config;
+    config.classes = {
+        PayloadClassConfig{8, 1},
+        PayloadClassConfig{64, 1},
+    };
+    auto pool = PayloadPool::Create(config);
+    ASSERT_TRUE(pool.has_value());
+
+    auto small = pool.value().TryReserve(4);
+    ASSERT_TRUE(small.has_value());
+    const auto small_stats = pool.value().Stats();
+    ASSERT_EQ(2U, small_stats.classes.size());
+    EXPECT_EQ(1U, small_stats.classes[0].used_blocks);
+    EXPECT_EQ(0U, small_stats.classes[0].available_blocks);
+    EXPECT_EQ(0U, small_stats.classes[1].used_blocks);
+
+    const auto small_exhausted = pool.value().TryReserve(4);
+    ASSERT_FALSE(small_exhausted.has_value());
+    EXPECT_EQ(ErrorCode::ResourceExhausted, small_exhausted.error().code());
+    EXPECT_EQ(1U, pool.value().Stats().classes[0].exhaustion_count);
+
+    auto large = pool.value().TryReserve(9);
+    ASSERT_TRUE(large.has_value());
+    const auto large_stats = pool.value().Stats();
+    EXPECT_EQ(1U, large_stats.classes[0].used_blocks);
+    EXPECT_EQ(1U, large_stats.classes[1].used_blocks);
+    EXPECT_EQ(8U, large_stats.classes[0].current_physical_bytes);
+    EXPECT_EQ(64U, large_stats.classes[1].current_physical_bytes);
+    EXPECT_EQ(8U, large_stats.classes[0].high_water_physical_bytes);
+    EXPECT_EQ(64U, large_stats.classes[1].high_water_physical_bytes);
+
+    small.value() = PayloadPoolReservation();
+    large.value() = PayloadPoolReservation();
+    EXPECT_EQ(0U, pool.value().Stats().classes[0].used_blocks);
+    EXPECT_EQ(0U, pool.value().Stats().classes[1].used_blocks);
 }
 
 static_assert(std::is_move_constructible<Payload>::value);

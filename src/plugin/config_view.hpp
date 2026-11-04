@@ -1,72 +1,12 @@
-#ifndef RODAQ_PLUGIN_CONFIG_VIEW_HPP_
-#define RODAQ_PLUGIN_CONFIG_VIEW_HPP_
+#ifndef RODAQ_PLUGIN_CONFIG_TREE_FORWARD_HPP_
+#define RODAQ_PLUGIN_CONFIG_TREE_FORWARD_HPP_
 
-#include <rodaq/plugin/abi/config.h>
-#include <rodaq/result.hpp>
-
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <string>
-#include <string_view>
-#include <utility>
-#include <vector>
+#include <rodaq/config/config.hpp>
 
 namespace rodaq::plugin {
 
-class ConfigNode;
-class ConfigTree;
-
-class ConfigView final {
-public:
-    ConfigView() = default;
-
-    rodaq_config_kind kind() const noexcept;
-    std::size_t size() const noexcept;
-
-    Result<ConfigView> find(std::string_view key) const;
-    Result<ConfigView> at(std::uint64_t index) const;
-    Result<std::string_view> key_at(std::uint64_t index) const;
-
-    Result<bool> as_bool() const;
-    Result<std::int64_t> as_int64() const;
-    Result<double> as_double() const;
-    Result<std::string_view> as_string() const;
-
-    rodaq_config_view AbiView() const noexcept;
-
-private:
-    explicit ConfigView(std::shared_ptr<const ConfigNode> node);
-
-    std::shared_ptr<const ConfigNode> node_;
-
-    friend class ConfigTree;
-};
-
-class ConfigTree final {
-public:
-    using MapEntry = std::pair<std::string, ConfigTree>;
-
-    ConfigTree() = default;
-
-    static ConfigTree Null();
-    static ConfigTree Boolean(bool value);
-    static ConfigTree Int64(std::int64_t value);
-    static ConfigTree Double(double value);
-    static ConfigTree String(std::string value);
-    static Result<ConfigTree> Map(std::vector<MapEntry> entries);
-    static Result<ConfigTree> List(std::vector<ConfigTree> items);
-
-    ConfigView view() const noexcept;
-
-private:
-    explicit ConfigTree(std::shared_ptr<const ConfigNode> root);
-
-    std::shared_ptr<const ConfigNode> root_;
-
-    friend class ConfigView;
-};
+using ConfigTree = rodaq::ConfigTree;
 
 }  // namespace rodaq::plugin
 
-#endif  // RODAQ_PLUGIN_CONFIG_VIEW_HPP_
+#endif  // RODAQ_PLUGIN_CONFIG_TREE_FORWARD_HPP_

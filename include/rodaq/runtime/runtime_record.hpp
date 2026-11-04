@@ -83,7 +83,8 @@ public:
     static Result<RuntimeRecord> Create(
         BindingHandle binding, std::uint64_t acceptance_sequence,
         std::optional<SourceHandle> source, std::optional<std::uint64_t> source_sequence,
-        TimestampState timestamps, Payload payload, Reservation reservation);
+        TimestampState timestamps, Payload payload, Reservation reservation,
+        std::int64_t accepted_steady_time_ns = 0);
 
     RuntimeRecord(const RuntimeRecord&) = delete;
     RuntimeRecord& operator=(const RuntimeRecord&) = delete;
@@ -93,6 +94,7 @@ public:
 
     BindingHandle Binding() const noexcept { return binding_; }
     std::uint64_t AcceptanceSequence() const noexcept { return acceptance_sequence_; }
+    std::int64_t AcceptedSteadyTimeNs() const noexcept { return accepted_steady_time_ns_; }
     std::optional<SourceHandle> Source() const noexcept { return source_; }
     std::optional<std::uint64_t> SourceSequence() const noexcept { return source_sequence_; }
     const TimestampState& Timestamps() const noexcept { return timestamps_; }
@@ -104,10 +106,12 @@ private:
     RuntimeRecord(
         BindingHandle binding, std::uint64_t acceptance_sequence,
         std::optional<SourceHandle> source, std::optional<std::uint64_t> source_sequence,
-        TimestampState timestamps, Payload payload, Reservation reservation) noexcept;
+        TimestampState timestamps, Payload payload, Reservation reservation,
+        std::int64_t accepted_steady_time_ns) noexcept;
 
     BindingHandle binding_;
     std::uint64_t acceptance_sequence_ = 0;
+    std::int64_t accepted_steady_time_ns_ = 0;
     std::optional<SourceHandle> source_;
     std::optional<std::uint64_t> source_sequence_;
     TimestampState timestamps_;

@@ -100,6 +100,8 @@ Result<void> StoragePluginInstance::close(const rodaq_storage_close_request& req
     return PluginInstanceStateAccess::close(state_, request);
 }
 
+void StoragePluginInstance::destroy() noexcept { PluginInstanceStateAccess::destroy(state_); }
+
 Result<rodaq_interface> StoragePluginInstance::query_interface(std::string_view interface_id) {
     return PluginInstanceStateAccess::query_interface(state_, interface_id);
 }

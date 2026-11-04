@@ -5291,3 +5291,30 @@ bounded dispatch queue
 这形成一个：
 
 > **具备主流 Acquisition / Storage Plugin 所需完整并发、backpressure、ordering、bounded-resource、cutoff 和 failure 能力，同时以明确的 pre-gate rollback、严格的 Gate-passed outcome 规则和最小实现抽象直接落地为 C++17 的 RoDAQ V1 Admission 模型。**
+
+---
+
+## M2 Convergence Admission Amendment
+
+Ingress timestamp capture occurs after structural, handle, Binding, availability
+and payload-limit validation but before any pre-Gate resource wait. A
+PreAdmission rejection discards the captured timestamp state.
+
+For Copy, the Pre-Gate resource set is:
+
+```text
+dispatch capacity
+operation slot
+completion bookkeeping capacity
+logical Payload bytes
+selected Payload size-class block
+Payload release work
+```
+
+The copy is completed into the reserved block before final eligibility
+revalidation and Gate Pass. For Adopt/Retain, ownership transfer occurs only
+after the same non-Payload-block resources and release work are reserved.
+Rollback is complete and non-failing before Gate Pass.
+
+Eligibility generation changes from Source, Stream or Binding invalidation
+wake resource waiters; final eligibility revalidation remains authoritative.

@@ -1,5 +1,8 @@
 #include "plugin/plugin_manager.hpp"
 
+#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/storage_plugin.hpp>
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -256,6 +259,11 @@ TEST(StorageInputValidationTest, SubmitRejectsMalformedViewsBeforePluginEntry) {
         value.payload.data = nullptr;
         value.payload.size = 1;
     });
+    expect_rejected([](auto& value) {
+        static const rodaq_timestamp_value timestamp[] = {{RODAQ_FALSE, 0, 0}};
+        value.timestamp_values = timestamp;
+        value.timestamp_value_count = UINT32_MAX;
+    });
 }
 
 TEST(StorageInputValidationTest, SubmitAcceptsExplicitEmptyViews) {
@@ -320,4 +328,50 @@ TEST(StorageInputValidationTest, QueryAndReadinessValidateInputs) {
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,
         control->ensure_descriptor_ready(interface.context, {}, &result, &error));
+}
+
+TEST(StorageInputValidationTest, RejectsMalformedSynchronousSubmitResults) {
+    auto valid = [](rodaq_storage_submit_result* result) {
+        *result = {};
+        result->struct_size = sizeof(*result);
+        result->payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
+        result->persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
+    };
+
+    rodaq_storage_submit_result result{};
+    valid(&result);
+    EXPECT_TRUE(rodaq::plugin::is_valid_storage_submit_result(result));
+    result.struct_size = RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE - 1;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    valid(&result);
+    result.reserved = 1;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    valid(&result);
+    result.persistence_error.code = RODAQ_STATUS_OK;
+    result.persistence_error.native_code = 1;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    valid(&result);
+    result.persistence_error.flags = 2;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    valid(&result);
+    result.persistence_state = RODAQ_STORAGE_PERSISTENCE_FAILED;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    valid(&result);
+    result.persistence_state = RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
+    result.persistence_error.code = RODAQ_STATUS_STORAGE_ERROR;
+    result.persistence_error.message_size = 1;
+    result.persistence_error.message[0] = 'x';
+    EXPECT_TRUE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    result.persistence_error.message[0] = static_cast<char>(0xff);
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
+
+    result.persistence_error.message[0] = 'x';
+    result.persistence_error.reserved[0] = 1;
+    EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
 }

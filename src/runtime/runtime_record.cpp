@@ -165,7 +165,7 @@ AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindLocked(
 Result<RuntimeRecord> RuntimeRecord::Create(
     BindingHandle binding, std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
-    Reservation reservation) {
+    Reservation reservation, std::int64_t accepted_steady_time_ns) {
     if (!binding.Valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "runtime record binding handle is invalid"));
@@ -185,15 +185,16 @@ Result<RuntimeRecord> RuntimeRecord::Create(
 
     return RuntimeRecord(
         binding, acceptance_sequence, source, source_sequence, timestamps, std::move(payload),
-        std::move(reservation));
+        std::move(reservation), accepted_steady_time_ns);
 }
 
 RuntimeRecord::RuntimeRecord(
     BindingHandle binding, std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
-    Reservation reservation) noexcept
+    Reservation reservation, std::int64_t accepted_steady_time_ns) noexcept
 : binding_(binding),
   acceptance_sequence_(acceptance_sequence),
+  accepted_steady_time_ns_(accepted_steady_time_ns),
   source_(source),
   source_sequence_(source_sequence),
   timestamps_(timestamps),
@@ -203,6 +204,7 @@ RuntimeRecord::RuntimeRecord(
 RuntimeRecord::RuntimeRecord(RuntimeRecord&& other) noexcept
 : binding_(other.binding_),
   acceptance_sequence_(other.acceptance_sequence_),
+  accepted_steady_time_ns_(other.accepted_steady_time_ns_),
   source_(other.source_),
   source_sequence_(other.source_sequence_),
   timestamps_(other.timestamps_),

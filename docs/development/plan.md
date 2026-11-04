@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **M3 — ACTIVE**
+Current milestone: **None — M2 PASS, M3 NOT STARTED**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -89,20 +89,47 @@ Create the buildable project foundation and implement the Stable Plugin boundary
 - [x] Verify the Public C++ API exposes no third-party types except the
   D-025-frozen `rodaq::Result<T>` alias.
 
-Production baseline:
+Required production dependency pins:
 
-- [x] oneTBB 2022.3.0.
 - [x] spdlog 1.17.0.
 - [x] fmt 12.1.0.
 - [x] HdrHistogram_c 0.12.1.
 - [x] yaml-cpp 0.9.0.
 - [x] expected-lite 0.10.0 as the pinned Public C++ header dependency.
-- [x] mimalloc 3.6.1 optional.
+
+Evaluated but not selected for V1:
+
+- [x] oneTBB 2022.3.0 evaluated; removed from the V1 baseline.
+- [x] mimalloc 3.6.1 evaluated; removed from the V1 baseline.
 
 Development:
 
 - [x] GoogleTest 1.18.0.
 - [x] Google Benchmark 1.10.0.
+
+Dependency lifecycle is tracked separately:
+
+```text
+PINNED
+BUILT
+LINKED
+USED
+QUALIFIED
+```
+
+Current required-dependency states:
+
+```text
+expected-lite    PINNED + BUILT + LINKED + USED + QUALIFIED
+HdrHistogram_c   PINNED + BUILT + LINKED + USED + QUALIFIED
+spdlog           PINNED + BUILT + LINKED + USED + QUALIFIED (private logging)
+fmt              PINNED + BUILT + LINKED + USED + QUALIFIED (private logging)
+yaml-cpp         PINNED + BUILT + LINKED + USED + QUALIFIED (ConfigLoader)
+oneTBB           EVALUATED + NOT-SELECTED; removed from V1 baseline
+mimalloc         EVALUATED + NOT-SELECTED; removed from V1 baseline
+GoogleTest       BUILT + LINKED + USED + QUALIFIED (test only)
+Google Benchmark BUILT + LINKED + USED + QUALIFIED (benchmark only)
+```
 
 #### Result / Error
 
@@ -399,11 +426,16 @@ Do not implement in M1:
 
 **Status:** PASS
 
-**Current sub-phase:** **M2 Audit Repair — PASS**.
+**Current sub-phase:** **M2 V1 Runtime Foundation Closure — PASS**.
 
 ### Goal
 
 Prove Runtime correctness end to end with Fake Plugins before introducing real middleware/storage complexity.
+
+The completed V1 Runtime Foundation Closure extends that goal with the standard
+camera/joint capacity profiles, dependency lifecycle evidence, bounded logging,
+configuration frontend and reference-driven implementation audits required
+before M3.
 
 ### Prerequisites
 
@@ -453,6 +485,33 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] Bounded, owned and reaped quarantine workers and activation roots, with a
   documented 32-root process-wide cap covering healthy and quarantined activations.
 - [x] Start failure primary/secondary history preservation.
+
+#### Standard Workload Closure
+
+- [x] Multi-size, independently budgeted PayloadPool classes.
+- [x] Per-class Payload object/byte high-water metrics.
+- [x] Dispatch/operation/completion/class capacities derived from peak rate,
+  tolerated stall and recorded safety factor.
+- [x] Production encoded-camera payload profile and stream scheduling benchmark.
+- [x] Production aggregated and stress per-joint telemetry benchmark definitions.
+- [x] Rate-controlled exclusive joint producer mode.
+- [x] 10-camera × 30 FPS × 720P encoded generated-capacity benchmark.
+- [x] Raw RGB8 camera stress benchmark.
+- [x] Production encoded-camera + aggregated joint mixed benchmark.
+- [x] Stress raw-camera + per-joint mixed benchmark.
+- [x] Production aggregated joint 1k records/s Fake capacity PASS.
+- [x] Stress per-joint 100k records/s Fake capacity PASS.
+- [x] Production/stress mixed profiles bounded high-water PASS.
+- [x] Reference-driven implementation audit records for ResourceBudget, Arena,
+  PayloadPool, Registry, Lifecycle and Plugin loading.
+
+#### Shared Runtime Foundation Closure
+
+- [x] Runtime-owned bounded LoggingContext with async queue, drop policy,
+  metrics, flush/shutdown and spdlog/fmt backend.
+- [x] Route Plugin common log and diagnostic calls through LoggingContext.
+- [x] YAML ConfigLoader built on yaml-cpp, producing RoDAQ-owned ConfigTree.
+- [x] Remove unselected mimalloc build/use options from the V1 baseline.
 
 #### Fake Acquisition
 
@@ -534,6 +593,12 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] duplicate TimestampKey registration fails with `InvalidArgument`.
 - [x] Projection-dependent recovery succeeds when the Acquisition Plugin holds a
   local mutex during registration.
+- [x] Payload size classes select the smallest accommodating block without
+  crossing capacity domains.
+- [x] Production aggregated joint profile sustains >= 1,000 accepted records/s.
+- [x] Stress per-joint profile sustains >= 100,000 accepted records/s.
+- [x] Camera and mixed profiles sustain offered schedules without steady-state
+  Admission WaitTimeout or unbounded high-water growth.
 
 ### Exit Gate
 
@@ -545,6 +610,12 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 - [x] all completion contract violations detected.
 - [x] Stop/failure reaches quiescence.
 - [x] 32 activation roots bound all healthy and quarantined activations.
+- [x] Standard camera + joint generated workload passes its declared
+  throughput, completion, Stop and bounded-resource gates.
+- [x] LoggingContext bounded queue/flush/shutdown and Plugin logging service
+  integration pass ASan/UBSan/TSan and lifecycle tests.
+- [x] YAML ConfigLoader produces ConfigTree/ConfigView without exposing
+  YAML::Node across Runtime or Plugin boundaries.
 - [x] required ASan/UBSan/TSan stress suite clean.
 
 ### Out of Scope
@@ -556,13 +627,13 @@ Do not implement in M2:
 - MCAP.
 - SQLite3 (future).
 - final AppImage release qualification.
-- final performance tuning.
+- final real-backend and filesystem performance tuning.
 
 ---
 
 ## M3 — ROS2 Acquisition + MCAP Storage Vertical Slice
 
-**Status:** ACTIVE
+**Status:** NOT STARTED
 
 ### Goal
 
@@ -799,7 +870,11 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - [ ] long soak and MCAP failure injection.
 - [ ] 10-camera × 30 FPS × 1280×720 encoded workload.
 - [ ] raw-image stress workload.
-- [ ] mixed small/large-message workload.
+- [ ] joint telemetry workload:
+  - [ ] production: 100 joints × 100 parameters per joint × 1 kHz aggregated
+    RobotState Record.
+  - [ ] stress: 100 joints × 100 parameters per joint × 1 kHz per-joint Records.
+- [ ] mixed 10-camera + joint-telemetry workload.
 - [ ] PayloadPool / queue / batching benchmark-driven tuning.
 - [ ] CPU / RSS / allocation / copy-count / tail-latency baselines.
 - [ ] ros2 bag play / PlotJuggler / Foxglove interoperability regression.

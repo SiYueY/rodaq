@@ -579,3 +579,21 @@ RoDAQ Logging V1 采用：
 > **RoDAQ-owned Logger facade + Runtime-owned bounded LoggingContext + private spdlog/fmt backend + Plugin Runtime-service logging + explicit bounded Flush/Shutdown semantics。**
 
 Logging 必须服务于 RoDAQ 的可诊断性，而不能反过来成为 Data Plane correctness、resource boundedness 或 shutdown safety 的破坏源。
+
+---
+
+## M2 Convergence Logging Contract
+
+The production path is a Runtime-owned async bounded queue with fixed record
+and byte limits. The default overflow policy is drop-new; every drop and byte
+drop is observable. Queue record/byte current and high-water values, backend
+failures, direct reentrant drops, flush timeouts and shutdown timeouts are
+part of Runtime logging statistics.
+
+Plugin common log and diagnostic calls route through the Runtime
+LoggingContext. spdlog/fmt remain private and never appear in the Stable C ABI
+or Runtime public headers.
+
+Backend exceptions are contained. Flush and shutdown use explicit deadlines.
+A worker that cannot stop by the deadline is transferred with its state to
+the process-wide worker quarantine; it is never detached.

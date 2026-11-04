@@ -22,6 +22,7 @@ namespace {
 
 struct Anchor {
     std::vector<std::uint8_t> bytes;
+    std::string release_block_file;
 };
 
 struct TransitionState {
@@ -34,7 +35,35 @@ struct TransitionState {
     rodaq_binding_abort_disposition disposition = RODAQ_BINDING_ABORT_KEEP_PAUSED;
 };
 
-void release_anchor(void* context) noexcept { delete static_cast<Anchor*>(context); }
+bool file_exists(const std::string& path) noexcept {
+    try {
+        std::ifstream input(path);
+        return input.good();
+    } catch (...) {
+        return false;
+    }
+}
+
+void create_marker(const std::string& path) noexcept {
+    try {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.put('\0');
+    } catch (...) {
+    }
+}
+
+void release_anchor(void* context) noexcept {
+    auto* anchor = static_cast<Anchor*>(context);
+    if (!anchor->release_block_file.empty()) {
+        const std::string blocked_file = anchor->release_block_file + ".blocked";
+        const std::string continue_file = anchor->release_block_file + ".continue";
+        create_marker(blocked_file);
+        while (!file_exists(continue_file)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    delete anchor;
+}
 
 std::string config_string(
     const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
@@ -58,6 +87,17 @@ std::int64_t config_int(
 
 class FakeAcquisitionPlugin final : public rodaq::AcquisitionPlugin {
 public:
+    ~FakeAcquisitionPlugin() override {
+        if (!destroy_block_file_.empty()) {
+            const std::string blocked_file = destroy_block_file_ + ".blocked";
+            const std::string continue_file = destroy_block_file_ + ".continue";
+            create_marker(blocked_file);
+            while (!file_exists(continue_file)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    }
+
     rodaq::Result<void> Bind(rodaq::AcquisitionRuntime runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
@@ -76,6 +116,8 @@ public:
         producer_threads_ = static_cast<std::size_t>(config_int(config, "producer_threads", 1));
         payload_size_ = static_cast<std::size_t>(config_int(config, "payload_size", 16));
         payload_mode_ = config_string(config, "payload_mode", "copy");
+        producer_stream_mode_ = config_string(config, "producer_stream_mode", "all");
+        record_interval_us_ = config_int(config, "record_interval_us", 0);
         descriptor_change_after_ = config_int(config, "descriptor_change_after", -1);
         binding_scenario_ = config_string(config, "binding_scenario", "");
         lifecycle_scenario_ = config_string(config, "lifecycle_scenario", "");
@@ -89,6 +131,10 @@ public:
         timestamp_scenario_ = config_string(config, "timestamp_scenario", "");
         timestamp_key_count_ =
             static_cast<std::size_t>(config_int(config, "timestamp_key_count", 1));
+        plugin_health_after_ = config_int(config, "plugin_health_after", -1);
+        plugin_health_scenario_ = config_string(config, "plugin_health_scenario", "");
+        payload_release_block_file_ = config_string(config, "payload_release_block_file", "");
+        destroy_block_file_ = config_string(config, "destroy_block_file", "");
         event_log_ = config_string(config, "event_log", "");
         LogControl(
             "configure streams=" + std::to_string(stream_count_) +
@@ -96,9 +142,13 @@ public:
             " producers=" + std::to_string(producer_threads_) + " payload_mode=" + payload_mode_);
         if (stream_count_ == 0 || records_per_stream_ == 0 || producer_threads_ == 0 ||
             timestamp_key_count_ == 0 ||
+            (producer_stream_mode_ != "all" && producer_stream_mode_ != "exclusive") ||
+            (producer_stream_mode_ == "exclusive" && producer_threads_ != stream_count_) ||
+            record_interval_us_ < 0 ||
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
             return invalid_argument();
         }
+        runtime_.common.Log(RODAQ_LOG_INFO, "plugin.fake", "Acquisition configured");
         stage_ = Stage::Configured;
         return {};
     }
@@ -403,18 +453,31 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
-        for (std::size_t stream_index = 0; stream_index < streams_.size() && !stopping_.load();
-             ++stream_index) {
+        const std::size_t first_stream = producer_stream_mode_ == "exclusive" ? producer_index : 0;
+        const std::size_t stream_limit = producer_stream_mode_ == "exclusive"
+                                             ? std::min(first_stream + 1U, streams_.size())
+                                             : streams_.size();
+        std::vector<std::uint8_t> source(payload_size_);
+        std::vector<rodaq_timestamp_value> timestamps(timestamp_key_count_);
+        for (std::size_t stream_index = first_stream;
+             stream_index < stream_limit && !stopping_.load(); ++stream_index) {
+            auto next_record_at = std::chrono::steady_clock::now();
             for (std::size_t record_index = 0;
                  record_index < records_per_stream_ && !stopping_.load(); ++record_index) {
-                if (!SubmitOne(producer_index, stream_index, record_index)) {
+                if (record_interval_us_ > 0 && record_index != 0) {
+                    next_record_at += std::chrono::microseconds(record_interval_us_);
+                    std::this_thread::sleep_until(next_record_at);
+                }
+                if (!SubmitOne(producer_index, stream_index, record_index, source, timestamps)) {
                     break;
                 }
             }
         }
     }
 
-    bool SubmitOne(std::size_t producer_index, std::size_t stream_index, std::size_t record_index) {
+    bool SubmitOne(
+        std::size_t producer_index, std::size_t stream_index, std::size_t record_index,
+        std::vector<std::uint8_t>& source, std::vector<rodaq_timestamp_value>& timestamps) {
         if (projection_delay_after_ >= 0 &&
             record_index == static_cast<std::size_t>(projection_delay_after_)) {
             rodaq_stream_descriptor_handle current{};
@@ -493,7 +556,6 @@ private:
             }
             descriptor = descriptors_[stream_index];
         }
-        std::vector<std::uint8_t> source(payload_size_);
         for (std::size_t index = 0; index < source.size(); ++index) {
             source[index] =
                 static_cast<std::uint8_t>(producer_index + stream_index + record_index + index);
@@ -505,14 +567,13 @@ private:
         void (*release)(void*) noexcept = nullptr;
         rodaq_payload_mode mode = RODAQ_PAYLOAD_COPY;
         if (payload_mode_ == "adopt" || payload_mode_ == "retain") {
-            anchor = new Anchor{source};
+            anchor = new Anchor{source, payload_release_block_file_};
             data = anchor->bytes.data();
             owner_context = anchor;
             release = &release_anchor;
             mode = payload_mode_ == "adopt" ? RODAQ_PAYLOAD_ADOPT : RODAQ_PAYLOAD_RETAIN;
         }
 
-        std::vector<rodaq_timestamp_value> timestamps(timestamp_key_count_);
         for (std::size_t slot = 0; slot < timestamps.size(); ++slot) {
             std::int64_t reading = static_cast<std::int64_t>(record_index + slot + 1U);
             if (timestamp_scenario_ == "monotonic") {
@@ -550,7 +611,60 @@ private:
             delete anchor;
         }
         LogResult(submission, result.value());
+        if (plugin_health_after_ >= 0 &&
+            record_index == static_cast<std::size_t>(plugin_health_after_)) {
+            if (!TriggerPluginHealth(stream_index)) {
+                return false;
+            }
+        }
         return !stopping_.load();
+    }
+
+    bool TriggerPluginHealth(std::size_t stream_index) {
+        rodaq_error diagnostic{};
+        rodaq::assign_rodaq_error(
+            RODAQ_STATUS_UNAVAILABLE, "fake_acquisition", 0, "configured Plugin health failure",
+            &diagnostic);
+        const rodaq_acquisition_plugin_state state =
+            plugin_health_scenario_ == "terminal" ? RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE
+                                                  : RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE;
+        if (!runtime_.acquisition.ReportPluginState(state, &diagnostic).has_value()) {
+            return false;
+        }
+        LogControl("plugin_health state=" + plugin_health_scenario_);
+        if (plugin_health_scenario_ != "recovered") {
+            return true;
+        }
+        if (!runtime_.acquisition.ReportPluginState(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
+                 .has_value()) {
+            return false;
+        }
+        TransitionState& transition = *transitions_[stream_index];
+        {
+            std::lock_guard<std::mutex> transition_lock(transition.mutex);
+            transition.terminal = false;
+            transition.committed = false;
+        }
+        auto descriptor = PublishDescriptor(streams_[stream_index], "fake/recovered");
+        if (!descriptor.has_value()) {
+            return false;
+        }
+        if (projection_before_start_ || !projection_id_.empty()) {
+            auto projection = RegisterProjection(descriptor.value());
+            if (!projection.has_value()) {
+                return false;
+            }
+        }
+        std::unique_lock<std::mutex> transition_lock(transition.mutex);
+        transition.condition.wait(transition_lock, [this, &transition] {
+            return transition.terminal || stopping_.load();
+        });
+        if (!transition.terminal || !transition.committed) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(switch_mutex_);
+        descriptors_[stream_index] = descriptor.value();
+        return true;
     }
 
     void LogResult(const rodaq_record_submission&, const rodaq_acquisition_submit_result& result) {
@@ -753,6 +867,8 @@ private:
     std::size_t producer_threads_ = 1;
     std::size_t payload_size_ = 16;
     std::string payload_mode_ = "copy";
+    std::string producer_stream_mode_ = "all";
+    std::int64_t record_interval_us_ = 0;
     std::int64_t descriptor_change_after_ = -1;
     std::string binding_scenario_;
     std::string lifecycle_scenario_;
@@ -765,6 +881,10 @@ private:
     bool plugin_local_lock_ = false;
     std::string timestamp_scenario_;
     std::size_t timestamp_key_count_ = 1;
+    std::int64_t plugin_health_after_ = -1;
+    std::string plugin_health_scenario_;
+    std::string payload_release_block_file_;
+    std::string destroy_block_file_;
     std::string event_log_;
     std::mutex log_mutex_;
     std::mutex switch_mutex_;

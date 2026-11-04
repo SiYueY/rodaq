@@ -21,6 +21,7 @@ public:
 
     bool valid() const noexcept;
     void quarantine() noexcept;
+    std::shared_ptr<void> lifetime_owner() const noexcept;
 
 private:
     explicit PluginInstanceLease(std::shared_ptr<PluginInstanceState> state) noexcept;
@@ -40,12 +41,12 @@ public:
         rodaq_status (*)(void*, rodaq_string_view, rodaq_interface*, rodaq_error*) noexcept;
     using StartFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
     using StopFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+    using DestroyFunction = void (*)(void*) noexcept;
     using OpenFunction =
         rodaq_status (*)(void*, const rodaq_storage_open_request*, rodaq_error*) noexcept;
-    using SubmitFunction =
-        rodaq_status (*)(
-            void*, const rodaq_storage_submission*, rodaq_storage_submit_result*,
-            rodaq_error*) noexcept;
+    using SubmitFunction = rodaq_status (*)(
+        void*, const rodaq_storage_submission*, rodaq_storage_submit_result*,
+        rodaq_error*) noexcept;
     using FlushFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
     using CloseFunction =
         rodaq_status (*)(void*, const rodaq_storage_close_request*, rodaq_error*) noexcept;
@@ -68,6 +69,7 @@ public:
 
     static Result<void> start(const std::shared_ptr<PluginInstanceState>& state);
     static Result<void> stop(const std::shared_ptr<PluginInstanceState>& state);
+    static void destroy(const std::shared_ptr<PluginInstanceState>& state) noexcept;
     static Result<void> open(
         const std::shared_ptr<PluginInstanceState>& state,
         const rodaq_storage_open_request& request);

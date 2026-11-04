@@ -60,6 +60,10 @@ compile_commands.json
 # vcpkg
 vcpkg_installed/
 
+# Evaluated but not selected V1 dependencies; local checkouts may remain.
+/third_party/mimalloc/
+/third_party/onetbb/
+
 # debug information files
 *.dwo
 

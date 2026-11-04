@@ -49,7 +49,7 @@ plugin::ConfigTree map_config(std::vector<plugin::ConfigTree::MapEntry> entries)
     return std::move(result.value());
 }
 
-RuntimeOptions options(
+RuntimeConfig options(
     std::string_view name, std::string storage_scenario, std::string payload_mode, int streams,
     int records, int producers, std::string event_log,
     std::chrono::milliseconds stop_timeout = std::chrono::milliseconds(500),
@@ -65,16 +65,19 @@ RuntimeOptions options(
     bool projection_before_start = false, int64_t projection_delay_after = -1,
     std::string projection_registration_mode = "", std::string timestamp_scenario = "",
     int timestamp_key_count = 1, std::size_t completion_capacity = 0,
-    int64_t descriptor_stall_after = -1, bool plugin_local_lock = false) {
-    RuntimeOptions value;
+    int64_t descriptor_stall_after = -1, bool plugin_local_lock = false,
+    std::string producer_stream_mode = "all", int64_t record_interval_us = 0,
+    int64_t plugin_health_after = -1, std::string plugin_health_scenario = "",
+    std::string payload_release_block_file = "") {
+    RuntimeConfig value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
-    value.payload_block_bytes = block_bytes;
-    value.payload_block_count = std::max<std::size_t>(16, capacity);
-    value.max_single_payload_bytes = block_bytes;
-    value.dispatch_capacity = capacity;
-    value.operation_capacity = capacity;
-    value.completion_capacity = completion_capacity == 0 ? capacity : completion_capacity;
+    value.resources.payload_pool.classes = {
+        PayloadClassConfig{block_bytes, std::max<std::size_t>(16, capacity)}};
+    value.resources.max_single_payload_bytes = block_bytes;
+    value.resources.dispatch_capacity = capacity;
+    value.resources.operation_capacity = capacity;
+    value.resources.completion_capacity = completion_capacity == 0 ? capacity : completion_capacity;
     value.submit_wait_timeout = std::chrono::milliseconds(500);
     value.stop_progress_timeout = stop_timeout;
     value.admission_mode = admission_mode;
@@ -90,7 +93,7 @@ RuntimeOptions options(
         {"maximum_inflight_bytes", plugin::ConfigTree::Int64(maximum_inflight_bytes)},
         {"required_projection_id", plugin::ConfigTree::String(std::move(required_projection_id))},
     });
-    RuntimePluginOptions acquisition;
+    PluginConfig acquisition;
     acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
     acquisition.config = map_config({
         {"streams", plugin::ConfigTree::Int64(streams)},
@@ -98,6 +101,8 @@ RuntimeOptions options(
         {"producer_threads", plugin::ConfigTree::Int64(producers)},
         {"payload_size", plugin::ConfigTree::Int64(payload_size)},
         {"payload_mode", plugin::ConfigTree::String(std::move(payload_mode))},
+        {"producer_stream_mode", plugin::ConfigTree::String(std::move(producer_stream_mode))},
+        {"record_interval_us", plugin::ConfigTree::Int64(record_interval_us)},
         {"descriptor_change_after", plugin::ConfigTree::Int64(descriptor_change_after)},
         {"binding_scenario", plugin::ConfigTree::String(std::move(binding_scenario))},
         {"lifecycle_scenario", plugin::ConfigTree::String(std::move(lifecycle_scenario))},
@@ -111,6 +116,10 @@ RuntimeOptions options(
         {"plugin_local_lock", plugin::ConfigTree::Int64(plugin_local_lock ? 1 : 0)},
         {"timestamp_scenario", plugin::ConfigTree::String(std::move(timestamp_scenario))},
         {"timestamp_key_count", plugin::ConfigTree::Int64(timestamp_key_count)},
+        {"plugin_health_after", plugin::ConfigTree::Int64(plugin_health_after)},
+        {"plugin_health_scenario", plugin::ConfigTree::String(std::move(plugin_health_scenario))},
+        {"payload_release_block_file",
+         plugin::ConfigTree::String(std::move(payload_release_block_file))},
         {"event_log", plugin::ConfigTree::String(event_log)},
     });
     value.acquisitions.push_back(std::move(acquisition));
@@ -163,6 +172,18 @@ bool wait_for_log_prefix(
         }
         if (runtime.State() == RuntimeState::Failed) {
             return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+bool wait_for_file(
+    const std::string& path, std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = Clock::now() + timeout;
+    while (Clock::now() < deadline) {
+        if (fs::is_regular_file(path)) {
+            return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -245,6 +266,9 @@ TEST(RuntimePipelineTest, CopiesRecordsThroughStableAbiAndStopsCleanly) {
     ASSERT_TRUE(runtime.Configure().has_value());
     ASSERT_TRUE(runtime.Start().has_value());
     ASSERT_EQ(runtime.State(), RuntimeState::Running);
+    const auto running_snapshot = runtime.Stats();
+    ASSERT_TRUE(running_snapshot.has_value());
+    EXPECT_GE(running_snapshot->logging.records_submitted, 1U);
     ASSERT_TRUE(wait_for_records(runtime, log, 3));
     ASSERT_TRUE(runtime.Stop().has_value());
     EXPECT_EQ(runtime.State(), RuntimeState::Stopped);
@@ -259,6 +283,18 @@ TEST(RuntimePipelineTest, CopiesRecordsThroughStableAbiAndStopsCleanly) {
     EXPECT_LE(snapshot->high_water_records, 3U);
     EXPECT_GE(snapshot->high_water_bytes, 16U);
     EXPECT_LE(snapshot->high_water_bytes, 48U);
+    EXPECT_EQ(snapshot->latencies.admission_wait.count, 3U);
+    EXPECT_EQ(snapshot->latencies.storage_handoff.count, 3U);
+    EXPECT_EQ(snapshot->latencies.payload_consumed.count, 3U);
+    EXPECT_EQ(snapshot->latencies.persistence.count, 3U);
+    EXPECT_EQ(snapshot->latencies.stop.count, 1U);
+    EXPECT_GE(snapshot->latencies.persistence.p99_ns, snapshot->latencies.persistence.p50_ns);
+    const auto payload_stats = runtime.PayloadStats();
+    ASSERT_TRUE(payload_stats.has_value());
+    for (const auto& payload_class : payload_stats->classes) {
+        EXPECT_EQ(payload_class.used_blocks, 0U);
+        EXPECT_EQ(payload_class.current_physical_bytes, 0U);
+    }
     std::vector<std::string> records;
     for (const std::string& line : read_lines(log)) {
         if (line.rfind("record ", 0) == 0) {
@@ -269,6 +305,60 @@ TEST(RuntimePipelineTest, CopiesRecordsThroughStableAbiAndStopsCleanly) {
     EXPECT_NE(records[0].find("sequence=0"), std::string::npos);
     EXPECT_NE(records[1].find("sequence=1"), std::string::npos);
     EXPECT_NE(records[2].find("sequence=2"), std::string::npos);
+}
+
+TEST(RuntimePipelineTest, RecoverablePluginFailureBlocksNewSubmissionsUntilRebinding) {
+    const std::string log = unique_log_path("plugin_health_recoverable");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "plugin_health_recoverable", "sync", "copy", 1, 4, 1, log, std::chrono::milliseconds(500),
+        -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 128,
+        128LL * 1024 * 1024, "", "", false, -1, "", "", 1, 0, -1, false, "all", 0, 0,
+        "recoverable"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "control plugin_health", 1));
+    ASSERT_TRUE(wait_for_log_prefix(runtime, log, "submit ", 4));
+    EXPECT_EQ(RuntimeState::Running, runtime.State());
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto stats = runtime.Stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(1U, stats->accepted_records);
+    EXPECT_GE(stats->rejected_records, 1U);
+}
+
+TEST(RuntimePipelineTest, AvailablePluginHealthRequiresNewDescriptorAndBinding) {
+    const std::string log = unique_log_path("plugin_health_recovered");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "plugin_health_recovered", "sync", "copy", 1, 4, 1, log, std::chrono::milliseconds(500), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 128,
+        128LL * 1024 * 1024, "", "", false, -1, "", "", 1, 0, -1, false, "all", 0, 0, "recovered"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 4));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "control plugin_health state=recovered"));
+    const auto stats = runtime.Stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(4U, stats->accepted_records);
+}
+
+TEST(RuntimePipelineTest, TerminalPluginFailureStopsTheActivation) {
+    const std::string log = unique_log_path("plugin_health_terminal");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "plugin_health_terminal", "sync", "copy", 1, 2, 1, log, std::chrono::milliseconds(500), -1,
+        16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "", false, "", 1000, 128,
+        128LL * 1024 * 1024, "", "", false, -1, "", "", 1, 0, -1, false, "all", 0, 0, "terminal"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_failure(runtime));
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_TRUE(runtime.PrimaryFailure().has_value());
 }
 
 TEST(RuntimePipelineTest, RetainsPayloadThroughAsynchronousDualCompletion) {
@@ -370,6 +460,31 @@ TEST(RuntimePipelineTest, PreservesPerStreamSequenceOrderAcrossProducers) {
     for (const auto& entry : sequences) {
         EXPECT_EQ(entry.second.size(), 10U);
     }
+}
+
+TEST(RuntimePipelineTest, ProducesJointRateControlledExclusiveStreams) {
+    constexpr int kStreams = 2;
+    constexpr int kRecordsPerStream = 5;
+    constexpr int kIntervalUs = 2'000;
+    const std::string log = unique_log_path("rate_controlled_joint_streams");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "rate_controlled_joint_streams", "sync", "copy", kStreams, kRecordsPerStream, kStreams, log,
+        std::chrono::seconds(1), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "", "",
+        false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 1, 0, -1, false,
+        "exclusive", kIntervalUs));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    const auto started = Clock::now();
+    ASSERT_TRUE(wait_for_records(runtime, log, kStreams * kRecordsPerStream));
+    EXPECT_GE(Clock::now() - started, std::chrono::milliseconds(5));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    const auto snapshot = runtime.Stats();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->accepted_records, kStreams * kRecordsPerStream);
+    EXPECT_EQ(snapshot->rejected_records, 0U);
+    EXPECT_EQ(record_count(log), static_cast<std::size_t>(kStreams * kRecordsPerStream));
 }
 
 TEST(RuntimePipelineTest, SwitchesDescriptorWithoutBreakingStreamOrdering) {
@@ -497,7 +612,7 @@ TEST(RuntimePipelineTest, BoundsDescriptorReconciliationRequestQueue) {
     auto runtime_options = options(
         "descriptor_worker_capacity", "sync", "copy", 3, 1, 1, log, std::chrono::seconds(1), -1, 16,
         64U * 1024U, 8, AdmissionMode::Wait, 0, "publish_order");
-    runtime_options.max_stream_descriptors = 1;
+    runtime_options.resources.max_stream_descriptors = 1;
     Runtime runtime(std::move(runtime_options));
     ASSERT_TRUE(runtime.Configure().has_value());
     const auto started = runtime.Start();
@@ -941,7 +1056,7 @@ TEST(RuntimePipelineTest, RejectsCanonicalRegistrationCapacityExhaustion) {
     std::error_code removed;
     fs::remove(log, removed);
     auto runtime_options = options("registration_capacity", "sync", "copy", 2, 1, 1, log);
-    runtime_options.max_streams = 1;
+    runtime_options.resources.max_streams = 1;
     Runtime runtime(std::move(runtime_options));
     ASSERT_TRUE(runtime.Configure().has_value());
     EXPECT_FALSE(runtime.Start().has_value());
@@ -1109,6 +1224,9 @@ TEST(RuntimePipelineTest, DetectsAdditionalCompletionContractViolations) {
         "missing_diagnostic", "missing_diagnostic", std::chrono::milliseconds(100));
     expect_failed_scenario(
         "invalid_persistence_state", "invalid_persistence_state", std::chrono::milliseconds(100));
+    expect_failed_scenario(
+        "malformed_callback_diagnostic", "malformed_callback_diagnostic",
+        std::chrono::milliseconds(100));
 }
 
 TEST(RuntimePipelineTest, MissingCallbacksDoNotHangStop) {
@@ -1314,7 +1432,7 @@ TEST(RuntimePipelineTest, RollsBackPreviouslyStartedAcquisitionsInReverseOrder) 
     auto runtime_options = options("multi_acquisition_rollback", "sync", "copy", 1, 1, 1, log);
     runtime_options.acquisitions.clear();
     for (const std::string lifecycle_scenario : {"", "start_partial_failure"}) {
-        RuntimePluginOptions acquisition;
+        PluginConfig acquisition;
         acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
         acquisition.config = map_config({
             {"streams", plugin::ConfigTree::Int64(1)},
@@ -1453,7 +1571,7 @@ TEST(RuntimePipelineTest, QualifiesMixedPayloadModesInOneActivation) {
     auto runtime_options = options("mixed_payload_modes", "sync", "copy", 1, 2, 1, log);
     runtime_options.acquisitions.clear();
     for (const std::string payload_mode : {"copy", "adopt", "retain"}) {
-        RuntimePluginOptions acquisition;
+        PluginConfig acquisition;
         acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
         acquisition.config = map_config({
             {"streams", plugin::ConfigTree::Int64(1)},
@@ -1578,6 +1696,105 @@ TEST(RuntimePipelineTest, RejectsStartWhenActivationRootBudgetIsExhausted) {
     for (const std::uint64_t slot : reserved) {
         quarantine.ReleaseActivation(slot);
     }
+}
+
+TEST(RuntimePipelineTest, RetainsBlockedPayloadReleaseWorkerDuringStop) {
+    const std::string log = unique_log_path("blocked_release");
+    const std::string release_file = unique_log_path("blocked_release_fixture");
+    std::error_code removed;
+    fs::remove(log, removed);
+    fs::remove(release_file + ".blocked", removed);
+    fs::remove(release_file + ".continue", removed);
+
+    auto runtime_options = options(
+        "blocked_release", "sync_payload_async_persistence", "adopt", 1, 1, 1, log,
+        std::chrono::milliseconds(80));
+    runtime_options.acquisitions[0].config = map_config({
+        {"streams", plugin::ConfigTree::Int64(1)},
+        {"records_per_stream", plugin::ConfigTree::Int64(1)},
+        {"producer_threads", plugin::ConfigTree::Int64(1)},
+        {"payload_size", plugin::ConfigTree::Int64(16)},
+        {"payload_mode", plugin::ConfigTree::String("adopt")},
+        {"payload_release_block_file", plugin::ConfigTree::String(release_file)},
+        {"event_log", plugin::ConfigTree::String(log)},
+    });
+
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_file(release_file + ".blocked"));
+
+    const std::size_t retained_before = QuarantineManager::Process().RetainedWorkerCount();
+    const auto stop_started = Clock::now();
+    const auto stopped = runtime.Stop();
+    const auto stop_elapsed = Clock::now() - stop_started;
+    const std::size_t retained_after = QuarantineManager::Process().RetainedWorkerCount();
+
+    std::ofstream continue_file(release_file + ".continue", std::ios::binary | std::ios::trunc);
+    continue_file.put('\0');
+    continue_file.close();
+
+    EXPECT_FALSE(stopped.has_value());
+    EXPECT_LT(stop_elapsed, std::chrono::milliseconds(500));
+    EXPECT_GT(retained_after, retained_before);
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+
+    const auto reap_deadline = Clock::now() + std::chrono::seconds(2);
+    while (QuarantineManager::Process().RetainedWorkerCount() != retained_before &&
+           Clock::now() < reap_deadline) {
+        QuarantineManager::Process().ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(QuarantineManager::Process().RetainedWorkerCount(), retained_before);
+}
+
+TEST(RuntimePipelineTest, QuarantinesBlockedPluginDestroyDuringStop) {
+    const std::string log = unique_log_path("blocked_destroy");
+    const std::string destroy_file = unique_log_path("blocked_destroy_fixture");
+    std::error_code removed;
+    fs::remove(log, removed);
+    fs::remove(destroy_file + ".blocked", removed);
+    fs::remove(destroy_file + ".continue", removed);
+
+    auto runtime_options =
+        options("blocked_destroy", "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(80));
+    runtime_options.acquisitions[0].config = map_config({
+        {"streams", plugin::ConfigTree::Int64(1)},
+        {"records_per_stream", plugin::ConfigTree::Int64(1)},
+        {"producer_threads", plugin::ConfigTree::Int64(1)},
+        {"payload_size", plugin::ConfigTree::Int64(16)},
+        {"payload_mode", plugin::ConfigTree::String("copy")},
+        {"destroy_block_file", plugin::ConfigTree::String(destroy_file)},
+        {"event_log", plugin::ConfigTree::String(log)},
+    });
+
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+
+    const std::size_t retained_before = QuarantineManager::Process().RetainedCallCount();
+    const auto stop_started = Clock::now();
+    const auto stopped = runtime.Stop();
+    const auto stop_elapsed = Clock::now() - stop_started;
+    const std::size_t retained_after = QuarantineManager::Process().RetainedCallCount();
+
+    std::ofstream continue_file(destroy_file + ".continue", std::ios::binary | std::ios::trunc);
+    continue_file.put('\0');
+    continue_file.close();
+
+    EXPECT_FALSE(stopped.has_value());
+    EXPECT_LT(stop_elapsed, std::chrono::milliseconds(500));
+    EXPECT_GT(retained_after, retained_before);
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+
+    const auto reap_deadline = Clock::now() + std::chrono::seconds(2);
+    while (QuarantineManager::Process().RetainedCallCount() != retained_before &&
+           Clock::now() < reap_deadline) {
+        QuarantineManager::Process().ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(QuarantineManager::Process().RetainedCallCount(), retained_before);
 }
 
 }  // namespace

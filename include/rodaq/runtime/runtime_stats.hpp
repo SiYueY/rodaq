@@ -1,10 +1,30 @@
 #ifndef RODAQ_RUNTIME_RUNTIME_STATS_HPP_
 #define RODAQ_RUNTIME_RUNTIME_STATS_HPP_
 
+#include <rodaq/runtime/logging.hpp>
+
 #include <atomic>
 #include <cstdint>
 
 namespace rodaq {
+
+struct LatencySnapshot {
+    std::uint64_t count = 0;
+    std::int64_t minimum_ns = 0;
+    std::int64_t maximum_ns = 0;
+    std::int64_t p50_ns = 0;
+    std::int64_t p95_ns = 0;
+    std::int64_t p99_ns = 0;
+    std::int64_t p999_ns = 0;
+};
+
+struct RuntimeLatencySnapshot {
+    LatencySnapshot admission_wait;
+    LatencySnapshot storage_handoff;
+    LatencySnapshot payload_consumed;
+    LatencySnapshot persistence;
+    LatencySnapshot stop;
+};
 
 struct RuntimeStatsSnapshot {
     std::uint64_t accepted_records = 0;
@@ -17,6 +37,8 @@ struct RuntimeStatsSnapshot {
     std::uint64_t inflight_bytes = 0;
     std::uint64_t high_water_records = 0;
     std::uint64_t high_water_bytes = 0;
+    RuntimeLatencySnapshot latencies;
+    LoggingStats logging;
 };
 
 /// Low-cost Eventually-consistent Runtime counters.

@@ -6871,3 +6871,24 @@ completion state
 最终形成：
 
 > **支持 MCAP、SQLite3 等主流 Storage backend，具备 Descriptor-before-Record、effective capability enforcement、bounded backpressure、异步 Payload lifetime、batching、per-Record persistence completion、full-fidelity projection、显式 Artifact completion state、bounded Flush/Close、failure uncertainty 和 safe quiescence，同时保持 Runtime/Core plugin-independent 与 C++17 实现克制的 RoDAQ V1 Storage Plugin 模型。**
+
+---
+
+## M2 Convergence Storage Submit Matrix
+
+Storage submit output is validated as one semantic tuple:
+
+```text
+struct_size and initialized prefix
+reserved fields
+Payload state = Pending | Consumed
+Persistence state = Pending | Succeeded | Failed | Unknown
+diagnostic status/flags/sizes/UTF-8/reserved fields
+success/failure consistency
+synchronous-terminal plus callback duplication
+```
+
+Malformed output fails closed and is never converted into an Accepted no-drop
+success. Payload consumption, Release and Persistence remain independent.
+Storage completion callbacks only stage events; they do not execute
+Plugin-origin Payload release inline.

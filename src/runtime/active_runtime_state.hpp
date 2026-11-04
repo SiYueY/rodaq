@@ -6,10 +6,12 @@
 #include "plugin/storage_plugin_instance.hpp"
 #include "runtime/clock_correlation.hpp"
 #include "runtime/interop_projection_registry.hpp"
+#include "runtime/logging_context.hpp"
 #include "runtime/runtime.hpp"
 #include "runtime/storage_pipeline.hpp"
 
 #include <rodaq/plugin/abi/runtime.h>
+#include <rodaq/runtime/latency_histogram.hpp>
 #include <rodaq/runtime/payload_pool.hpp>
 #include <rodaq/runtime/registry.hpp>
 #include <rodaq/runtime/runtime_record.hpp>
@@ -139,7 +141,7 @@ struct StorageServiceContext {
 class ActiveRuntimeState final : public std::enable_shared_from_this<ActiveRuntimeState> {
 public:
     static Result<std::unique_ptr<ActiveRuntimeState>> Create(
-        RuntimeOptions options, std::uint64_t activation_generation);
+        RuntimeConfig config, std::uint64_t activation_generation);
 
     ActiveRuntimeState(const ActiveRuntimeState&) = delete;
     ActiveRuntimeState& operator=(const ActiveRuntimeState&) = delete;
@@ -147,8 +149,8 @@ public:
     ActiveRuntimeState& operator=(ActiveRuntimeState&&) = delete;
     ~ActiveRuntimeState() noexcept;
 
-    RuntimeOptions& options() noexcept { return options_; }
-    const RuntimeOptions& options() const noexcept { return options_; }
+    RuntimeConfig& options() noexcept { return options_; }
+    const RuntimeConfig& options() const noexcept { return options_; }
     std::uint64_t activation_generation() const noexcept { return activation_generation_; }
 
     void SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control);
@@ -189,12 +191,30 @@ public:
     bool WaitForSubmissions(std::chrono::steady_clock::time_point deadline);
 
     void RequestFailure(Error error) noexcept;
+    void RecordSecondaryFailure(Error error) noexcept;
     bool HasPrimaryFailure() const noexcept;
     Result<Error> PrimaryFailure() const;
     Result<std::vector<Error>> SecondaryFailures() const;
     std::uint64_t SecondaryFailureOverflowCount() const noexcept;
-    RuntimeStatsSnapshot Stats() const noexcept { return stats_.Snapshot(); }
+    RuntimeStatsSnapshot Stats() const noexcept {
+        RuntimeStatsSnapshot snapshot = stats_.Snapshot();
+        snapshot.logging = CurrentLoggingStats();
+        FillLatencyStats(snapshot);
+        return snapshot;
+    }
+    Result<PayloadPoolStats> PayloadPoolStatistics() const;
+    void Log(LogLevel level, std::string_view category, std::string_view message) noexcept;
+    void Diagnostic(
+        rodaq_diagnostic_severity severity, std::string_view code,
+        std::string_view message) noexcept;
+    bool ShutdownLogging(std::chrono::steady_clock::time_point deadline) noexcept;
+    void QuarantineLogging(std::string reason) noexcept;
+
+    LoggingStats CurrentLoggingStats() const noexcept;
     void RecordPreRejected(bool gate_closed, bool timeout) noexcept;
+    void RecordAdmissionWait(std::int64_t duration_ns) noexcept;
+    void RecordStorageLatency(StorageLatencyKind kind, std::int64_t duration_ns) noexcept;
+    void RecordStopLatency() noexcept;
 
     Result<rodaq_runtime_lifecycle_snapshot> LifecycleSnapshot() const;
 
@@ -202,14 +222,15 @@ private:
     friend struct AcquisitionServiceContext;
     friend struct StorageServiceContext;
 
-    ActiveRuntimeState(RuntimeOptions options, std::uint64_t activation_generation);
+    ActiveRuntimeState(RuntimeConfig config, std::uint64_t activation_generation);
 
 public:
     Result<void> RegisterSource(
         std::size_t plugin_index, const rodaq_source_registration& request, SourceHandle& handle);
     Result<void> RegisterClock(
         std::size_t plugin_index, const rodaq_clock_registration& request, ClockHandle& handle);
-    Result<void> RegisterSchema(const rodaq_schema_registration& request, SchemaHandle& handle);
+    Result<void> RegisterSchema(
+        std::size_t plugin_index, const rodaq_schema_registration& request, SchemaHandle& handle);
     Result<void> RegisterStream(
         std::size_t plugin_index, const rodaq_stream_registration& request, StreamHandle& handle);
     Result<void> PublishStreamDescriptor(
@@ -220,6 +241,9 @@ public:
         rodaq_payload_disposition& disposition);
     Result<void> ReportSourceAvailability(SourceHandle source, rodaq_availability_state state);
     Result<void> ReportStreamAvailability(StreamHandle stream, rodaq_availability_state state);
+    Result<void> ReportPluginState(
+        std::size_t plugin_index, rodaq_acquisition_plugin_state state,
+        const rodaq_error* diagnostic);
 
     Result<void> GetSource(SourceHandle handle, rodaq_source_view& view) const;
     Result<void> GetClock(ClockHandle handle, rodaq_clock_view& view) const;
@@ -230,6 +254,7 @@ public:
         StreamDescriptorHandle handle, rodaq_stream_descriptor_view& view) const;
 
     void RetireDrainingBinding(BindingHandle binding) noexcept;
+    void NotifyAdmissionEligibilityChanged() noexcept;
     rodaq_interface AcquisitionServiceInterface(std::size_t plugin_index) noexcept;
     rodaq_interface StorageServiceInterface() noexcept;
 
@@ -263,10 +288,11 @@ private:
         std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
         BindingLifecycle lifecycle);
     Result<void> InitializeIngressClock();
+    void FillLatencyStats(RuntimeStatsSnapshot& snapshot) const noexcept;
     Result<void> SuperviseBindingControl(
         std::function<Result<void>()> operation, const char* reason);
 
-    RuntimeOptions options_;
+    RuntimeConfig options_;
     const std::uint64_t activation_generation_;
     std::unique_ptr<StructuralArena> arena_;
     Registry<SourceEntry, SourceHandle> sources_;
@@ -279,8 +305,10 @@ private:
     AcceptanceSequenceAllocator sequences_;
     PayloadPool payload_pool_;
     std::unique_ptr<StoragePipeline> pipeline_;
+    std::unique_ptr<LoggingContext> logging_context_;
     std::optional<plugin::StoragePluginInstance> storage_instance_;
     std::vector<std::optional<plugin::AcquisitionPluginInstance>> acquisition_instances_;
+    std::vector<std::unique_ptr<std::atomic<std::uint32_t>>> acquisition_health_;
 
     mutable std::mutex control_mutex_;
     std::vector<SourceHandle> source_handles_;
@@ -328,6 +356,7 @@ private:
     mutable std::mutex admission_mutex_;
     std::condition_variable admission_condition_;
     bool gate_open_ = false;
+    std::atomic<std::uint64_t> admission_eligibility_generation_{0};
     std::uint64_t active_submission_calls_ = 0;
     std::uint64_t admission_inflight_ = 0;
     std::atomic<bool> control_quarantine_required_{false};
@@ -337,6 +366,13 @@ private:
     std::vector<Error> secondary_failures_;
     std::uint64_t secondary_overflow_count_ = 0;
     RuntimeStats stats_;
+    std::unique_ptr<LatencyHistogram> admission_wait_latency_;
+    std::unique_ptr<LatencyHistogram> storage_handoff_latency_;
+    std::unique_ptr<LatencyHistogram> payload_consumed_latency_;
+    std::unique_ptr<LatencyHistogram> persistence_latency_;
+    std::unique_ptr<LatencyHistogram> stop_latency_;
+    std::chrono::steady_clock::time_point stop_started_{};
+    bool stop_started_valid_ = false;
 };
 
 }  // namespace rodaq::runtime

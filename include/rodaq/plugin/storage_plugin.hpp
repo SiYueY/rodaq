@@ -59,12 +59,39 @@ inline bool is_valid_storage_submission(const rodaq_storage_submission& submissi
         return false;
     }
     if (!rodaq::is_valid_timestamp_values(
-            submission.timestamp_values, submission.timestamp_value_count)) {
+            submission.timestamp_values, submission.timestamp_value_count,
+            kMaximumCanonicalTimestampSlots)) {
         return false;
     }
     const std::uint8_t* payload_data = nullptr;
     std::size_t payload_size = 0;
     return parse_abi_bytes(submission.payload, &payload_data, &payload_size);
+}
+
+inline bool is_valid_storage_submit_result(const rodaq_storage_submit_result& result) noexcept {
+    if (result.struct_size < RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE || result.reserved != 0 ||
+        (result.payload_state != RODAQ_STORAGE_PAYLOAD_PENDING &&
+         result.payload_state != RODAQ_STORAGE_PAYLOAD_CONSUMED)) {
+        return false;
+    }
+    const bool pending = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_PENDING;
+    const bool succeeded = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
+    const bool failed = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_FAILED;
+    const bool unknown = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
+    if (!pending && !succeeded && !failed && !unknown) {
+        return false;
+    }
+    if (!rodaq::is_valid_abi_error(result.persistence_error)) {
+        return false;
+    }
+    if (pending || succeeded) {
+        return result.persistence_error.code == RODAQ_STATUS_OK &&
+               result.persistence_error.flags == 0 && result.persistence_error.native_code == 0 &&
+               result.persistence_error.domain_size == 0 &&
+               result.persistence_error.message_size == 0;
+    }
+    return result.persistence_error.code != RODAQ_STATUS_OK &&
+           result.persistence_error.message_size != 0;
 }
 
 inline void write_storage_capabilities(

@@ -1,6 +1,7 @@
 #include "plugin/plugin_instance.hpp"
 
 #include <rodaq/plugin/abi_support.hpp>
+#include <rodaq/plugin/storage_plugin.hpp>
 #include "plugin/plugin_error.hpp"
 #include "plugin/plugin_library.hpp"
 
@@ -18,6 +19,7 @@ public:
     using QueryInterfaceFunction = PluginInstanceStateAccess::QueryInterfaceFunction;
     using StartFunction = PluginInstanceStateAccess::StartFunction;
     using StopFunction = PluginInstanceStateAccess::StopFunction;
+    using DestroyFunction = PluginInstanceStateAccess::DestroyFunction;
     using OpenFunction = PluginInstanceStateAccess::OpenFunction;
     using SubmitFunction = PluginInstanceStateAccess::SubmitFunction;
     using FlushFunction = PluginInstanceStateAccess::FlushFunction;
@@ -43,21 +45,30 @@ public:
       close_(close_function) {}
 
     ~PluginInstanceState() {
-        if (instance_ == nullptr || destroy_ == nullptr) {
-            return;
-        }
-        if (quarantined_.load(std::memory_order_acquire)) {
+        if (instance_ != nullptr) {
             library_lease_.quarantine();
-        } else {
-            destroy_(instance_);
         }
-        instance_ = nullptr;
     }
 
     void quarantine() noexcept {
         if (!quarantined_.exchange(true, std::memory_order_acq_rel)) {
             library_lease_.quarantine();
         }
+    }
+
+    void destroy_instance() noexcept {
+        if (instance_ == nullptr) {
+            return;
+        }
+        if (quarantined_.load(std::memory_order_acquire)) {
+            library_lease_.quarantine();
+            return;
+        }
+        if (destroy_ != nullptr) {
+            destroy_(instance_);
+        }
+        instance_ = nullptr;
+        stage_ = LifecycleStage::Destroyed;
     }
 
     Result<void> bind(const rodaq_service_registry& services) {
@@ -199,6 +210,11 @@ public:
         if (status != RODAQ_STATUS_OK) {
             return nonstd::make_unexpected(result_from_status(status, &error, "plugin").error());
         }
+        if (!is_valid_storage_submit_result(output)) {
+            return nonstd::make_unexpected(Error(
+                ErrorCode::InternalError, "plugin", 0,
+                "Storage submit returned an invalid result"));
+        }
         return output;
     }
 
@@ -233,6 +249,7 @@ private:
         Stopped,
         Opened,
         Closed,
+        Destroyed,
     };
 
     static Result<void> invalid_lifecycle(const char* message) {
@@ -241,7 +258,7 @@ private:
 
     PluginLibraryLease library_lease_;
     void* instance_;
-    void (*destroy_)(void*) noexcept;
+    DestroyFunction destroy_;
     BindFunction bind_;
     ConfigureFunction configure_;
     QueryInterfaceFunction query_interface_;
@@ -311,6 +328,13 @@ Result<void> PluginInstanceStateAccess::stop(const std::shared_ptr<PluginInstanc
     return state->stop();
 }
 
+void PluginInstanceStateAccess::destroy(
+    const std::shared_ptr<PluginInstanceState>& state) noexcept {
+    if (state != nullptr) {
+        state->destroy_instance();
+    }
+}
+
 Result<void> PluginInstanceStateAccess::open(
     const std::shared_ptr<PluginInstanceState>& state, const rodaq_storage_open_request& request) {
     if (state == nullptr) {
@@ -363,6 +387,8 @@ PluginInstanceLease::PluginInstanceLease(std::shared_ptr<PluginInstanceState> st
 : state_(std::move(state)) {}
 
 bool PluginInstanceLease::valid() const noexcept { return state_ != nullptr; }
+
+std::shared_ptr<void> PluginInstanceLease::lifetime_owner() const noexcept { return state_; }
 
 void PluginInstanceLease::quarantine() noexcept {
     if (state_ != nullptr) {

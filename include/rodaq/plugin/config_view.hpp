@@ -1,6 +1,7 @@
 #ifndef RODAQ_PLUGIN_CONFIG_VIEW_HPP_
 #define RODAQ_PLUGIN_CONFIG_VIEW_HPP_
 
+#include <rodaq/config/config.hpp>
 #include <rodaq/plugin/abi/config.h>
 #include <rodaq/plugin/abi_support.hpp>
 
@@ -151,5 +152,11 @@ private:
 };
 
 }  // namespace rodaq
+
+namespace rodaq::plugin {
+
+using ConfigTree = rodaq::ConfigTree;
+
+}  // namespace rodaq::plugin
 
 #endif  // RODAQ_PLUGIN_CONFIG_VIEW_HPP_

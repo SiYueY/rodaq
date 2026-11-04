@@ -1,0 +1,79 @@
+{
+  "schema": "rodaq-dependency-inventory-v1",
+  "project": "RoDAQ",
+  "project_version": "@PROJECT_VERSION@",
+  "dependencies": [
+    {
+      "name": "expected-lite",
+      "version": "v0.10.0",
+      "commit": "3583e95bad46f5af7d8a826632bc68a6f7281551",
+      "license": "BSL-1.0",
+      "classification": "required-production",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "HdrHistogram_c",
+      "version": "0.9.6-256-g30e9ce6",
+      "commit": "30e9ce6ef5dcdc60f9270e1ca03c0966eaaf71d0",
+      "license": "BSD-2-Clause",
+      "classification": "required-production-private",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "spdlog",
+      "version": "v1.17.0",
+      "commit": "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+      "license": "MIT",
+      "classification": "required-production-private",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "fmt",
+      "version": "12.1.0",
+      "commit": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+      "license": "MIT",
+      "classification": "required-production-private",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "yaml-cpp",
+      "version": "0.9.0",
+      "commit": "56e3bb550c91fd7005566f19c079cb7a503223cf",
+      "license": "MIT",
+      "classification": "required-production-private",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "GoogleTest",
+      "version": "release-1.8.0-3707-g063de7e9",
+      "commit": "063de7e9578f82b369302001269680b4b1553359",
+      "license": "BSD-3-Clause",
+      "classification": "development-test",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "Google Benchmark",
+      "version": "v1.10.0",
+      "commit": "a6b4a9f00b36c19af9997d68a1cf6e0b5b3d032c",
+      "license": "Apache-2.0",
+      "classification": "development-benchmark",
+      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+    },
+    {
+      "name": "oneTBB",
+      "version": "v2022.3.0",
+      "commit": "f1862f38f83568d96e814e469ab61f88336cc595",
+      "license": "Apache-2.0",
+      "classification": "evaluated-not-selected",
+      "status": ["EVALUATED", "NOT-SELECTED"]
+    },
+    {
+      "name": "mimalloc",
+      "version": "v3.6.1",
+      "commit": "56dc5eb80145f9a3ba7ca23d47c6a248b9d8586c",
+      "license": "MIT",
+      "classification": "evaluated-not-selected",
+      "status": ["EVALUATED", "NOT-SELECTED"]
+    }
+  ]
+}

@@ -299,6 +299,19 @@ public:
             });
             return result;
         }
+        if (scenario_ == "malformed_callback_diagnostic") {
+            result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
+            workers_.emplace_back([this, operation = submission.operation] {
+                rodaq_error error{};
+                rodaq::assign_rodaq_error(
+                    RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
+                    "configured malformed persistence failure", &error);
+                error.reserved[0] = 1;
+                runtime_.storage.PersistenceCompleted(
+                    operation, RODAQ_STORAGE_PERSISTENCE_FAILED, &error);
+            });
+            return result;
+        }
         if (scenario_ == "callback_before_error") {
             std::atomic<bool> callback_done{false};
             workers_.emplace_back([this, operation = submission.operation, &callback_done] {

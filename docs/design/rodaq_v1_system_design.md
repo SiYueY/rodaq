@@ -1040,7 +1040,8 @@ rodaq/
 │   ├── admission_benchmark.cpp
 │   ├── payload_benchmark.cpp
 │   ├── registry_benchmark.cpp
-│   └── runtime_pipeline_benchmark.cpp
+│   ├── runtime_pipeline_benchmark.cpp
+│   └── joint_pipeline_benchmark.cpp
 │
 ├── packaging/
 │   └── appimage/
@@ -1068,13 +1069,11 @@ rodaq/
 │       └── sqlite3.md
 │
 └── third_party/
-    ├── onetbb/
     ├── spdlog/
     ├── fmt/
     ├── hdr_histogram/
     ├── yaml-cpp/
     ├── expected-lite/
-    ├── mimalloc/
     ├── googletest/
     └── benchmark/
 ```
@@ -2502,13 +2501,14 @@ Pool 内部偷偷 fallback 到 unlimited malloc
 
 ## 2.6 Dispatch、Completion 与 oneTBB
 
-V1 冻结：
+V1 approved optional candidate：
 
 ```text
 oneTBB 2022.3.0
 ```
 
-oneTBB 仍保留为 V1 dependency / concurrency reference，但 correctness-critical Dispatch Queue **不再默认冻结为 `oneapi::tbb::concurrent_queue`**。
+oneTBB 保留为 concurrency reference，但 V1 Runtime Core 默认不链接，且
+correctness-critical Dispatch Queue **不冻结为 `oneapi::tbb::concurrent_queue`**。
 
 原因：Admission 的 `dispatch capacity` reservation 必须对应已经可用的 physical enqueue capacity；如果底层 queue 在 Gate pass 后仍可能为新 page/node 动态分配，则 allocation failure 会破坏 Accepted no-drop invariant。
 
@@ -4274,7 +4274,8 @@ C. Negative reference
 
 ```text
 oneTBB
-    Direct dependency
+    Approved optional candidate
+    not linked by the V1 Runtime Core default profile
 
 gRPC ResourceQuota
     Source-level reference
@@ -4282,6 +4283,37 @@ gRPC ResourceQuota
 rosbag2 dropping cache under pressure
     Negative reference
 ```
+
+### 4.10.1 Reference-driven Implementation Audit
+
+任何明确以开源项目为主要参考的 implementation 在对应 milestone closure 前必须
+留下可审查记录，而不是只写“参考了某项目”。记录至少包括：
+
+```text
+reference project
+pinned commit/tag/version
+source files or public API reviewed
+mechanism considered
+mechanism adopted
+mechanism rejected and reason
+RoDAQ-specific semantic differences
+relevant tests/benchmark
+```
+
+M1/M2 closure 至少覆盖：
+
+```text
+ResourceBudget / Admission
+Structural Arena
+PayloadPool / size classes
+Registry / Handles
+Lifecycle / Quiescence
+Plugin ABI / loader
+```
+
+M3/M4/M5 backend closure 至少覆盖 ROS2、Fast DDS、MCAP 和 filesystem
+qualification 所参考的 upstream projects。没有该 audit record 时，相关实现不能
+仅以“借鉴成熟项目”为理由标记 PASS。
 
 ### rosbag2 为什么不能直接作为 Admission 语义
 
@@ -4427,13 +4459,13 @@ AppImage
 
 | 组件 | 冻结版本 | Linkage | 默认 | 备注 |
 |---|---:|---|---|---|
-| oneTBB | **2022.3.0** | shared | 是 | `TBB::tbb` only |
 | spdlog | **1.17.0** | static | 是 | external fmt |
 | fmt | **12.1.0** | static | 是 | 与 spdlog 配套 |
 | HdrHistogram_c | **0.12.1** | core-only static | 是 | minimal core |
 | yaml-cpp | **0.9.0** | static + PIC | 是 | config frontend |
 | expected-lite | **0.10.0** | header-only | 是 | Public C++ `Result<T>` alias dependency |
-| mimalloc | **3.6.1** | static | 否 | optional backend |
+| oneTBB | **2022.3.0** | not linked | 否 | evaluated, not selected for V1 |
+| mimalloc | **3.6.1** | not linked | 否 | evaluated, not selected for V1 |
 | GoogleTest | **1.18.0** | test-only | 开发 | not shipped |
 | Google Benchmark | **1.10.0** | benchmark-only | 开发 | not shipped |
 
@@ -4675,13 +4707,11 @@ include/rodaq/
 
 ```text
 third_party/
-├── onetbb/
 ├── spdlog/
 ├── fmt/
 ├── hdr_histogram/
 ├── yaml-cpp/
 ├── expected-lite/
-├── mimalloc/
 ├── googletest/
 └── benchmark/
 ```
@@ -4753,6 +4783,9 @@ Plugin CMakeLists 不重复配置全局 dependency
 ```text
 oneTBB 2022.3.0
 ```
+
+V1 Runtime Core default profile 不链接 oneTBB。该冻结值只定义未来显式引入
+CPU-parallel work 时的版本、linkage 和 deployment baseline。
 
 RoDAQ 目标：
 
@@ -5502,16 +5535,24 @@ test integration
 Dependency Qualification：
 
 ```text
-oneTBB 2022.3.0
+required:
 spdlog 1.17.0
 fmt 12.1.0
 HdrHistogram_c 0.12.1
 yaml-cpp 0.9.0
 expected-lite 0.10.0 as Public C++ Result alias dependency
-mimalloc 3.6.1 optional
+
+evaluated, not selected:
+oneTBB 2022.3.0
+mimalloc 3.6.1
+
+development:
 GoogleTest 1.18.0
 Google Benchmark 1.10.0
 ```
+
+每个依赖必须单独记录 `PINNED / BUILT / LINKED / USED / QUALIFIED` 状态。仅存在
+submodule 不能算作 build、runtime usage 或 qualification 完成。
 
 第三方依赖必须：
 
@@ -5647,7 +5688,7 @@ native arm64:
     not treated as PASS
     not replaced by x86_64 cross-compilation evidence
 
-oneTBB init/shutdown smoke
+conditional oneTBB init/shutdown smoke when an optional target links it
 dlopen/dlclose smoke
 ```
 
@@ -6158,6 +6199,34 @@ blocked Admission Wait
 Stop while submitting
 ```
 
+Standard core-capacity profiles：
+
+```text
+10 cameras × 1280×720 × 30 FPS
+    encoded camera profile
+    raw RGB8 profile for stress baseline
+
+100 joints × 100 parameters × 1 kHz
+    production qualification: aggregated RobotState Record, 1k records/s
+    small-record stress: per-joint Record, 100k records/s
+
+mixed camera + joint telemetry profile
+```
+
+这些 Fake benchmark 不需要真实 MCAP 或 ROS2，但必须使用与正式 profile 相同的
+payload bytes、Stream 数量、record rate、timestamp count 和配置容量。真实
+backend + filesystem qualification 属于 M3/M4/M5。
+
+Shared runtime foundation closure：
+
+```text
+bounded Runtime LoggingContext + spdlog/fmt backend
+Plugin common log/diagnostic routed through Runtime
+yaml-cpp ConfigLoader -> RoDAQ ConfigTree/ConfigView
+explicit dependency lifecycle state: PINNED/BUILT/LINKED/USED/QUALIFIED
+reference-driven implementation audit records
+```
+
 Fake Storage 必须支持：
 
 ```text
@@ -6351,6 +6420,29 @@ no callback after destroy
 no DSO unload while Plugin code can still execute
 ```
 
+Standard core capacity：
+
+```text
+per-joint joint telemetry
+    sustains >= 100k accepted records/s
+
+aggregated RobotState telemetry
+    sustains >= 1k accepted records/s
+
+camera profiles
+    sustain 10 × 30 FPS offered schedule for the configured payload profile
+
+mixed profile
+    accepted camera + joint offered workload
+    no steady-state unbounded high-water growth
+    no WaitTimeout under the declared finite capacity
+    no silent Accepted Record drop
+```
+
+必须记录 acceptance throughput、payload bytes/s、copy bytes/record、allocation
+count/record、Admission wait、PayloadPool class high-water、Dispatch high-water、
+Completion high-water、CPU/RSS 和 P50/P95/P99/P99.9。
+
 ### Exit Gate
 
 M2 PASS 要求：
@@ -6376,6 +6468,16 @@ M2 PASS 要求：
 
 [PASS] Plugin-origin Payload/operation prevents premature instance/DSO destruction
 
+[PASS] standard camera, joint and mixed Fake capacity profiles meet their declared
+       record-rate, payload-rate and bounded high-water gates
+
+[PASS] bounded logging flush/shutdown and Plugin logging integration pass
+
+[PASS] YAML configuration frontend produces RoDAQ-owned ConfigView
+
+[PASS] dependency lifecycle and reference-audit evidence are complete for all
+       components claimed by the milestone
+
 [PASS] required ASan/UBSan/TSan stress suite is clean
 ```
 
@@ -6390,7 +6492,7 @@ MCAP
 SQLite3（future）
 
 AppImage release qualification
-final performance tuning
+final backend/filesystem performance tuning
 ```
 
 ---
@@ -6831,11 +6933,15 @@ cross-acquisition regression
 Performance：
 
 ```text
-10 cameras × 30 FPS × 1280×720 encoded profile
-raw image stress profile
-mixed small/large message workload
+production: 10 cameras × 30 FPS × 1280×720 encoded profile
+stress: raw RGB8 10-camera profile
+production: 100 joints × 100 parameters × 1 kHz aggregated RobotState telemetry
+stress: 100 joints × 100 parameters × 1 kHz per-joint Records
+production mixed: encoded camera + aggregated RobotState
+stress mixed: raw RGB8 camera + per-joint joint Records
 PayloadPool / queue / batching tuning
 copy count / allocation count / CPU / RSS / tail latency
+minimum 30–60 minute mixed workload soak
 ```
 
 Interoperability regression：
@@ -6864,7 +6970,8 @@ SBOM / licenses / checksums / release manifest
 ```text
 [PASS] sanitizer and long-soak suites are clean
 [PASS] all bounded-resource high-water marks are verified
-[PASS] camera and mixed-workload benchmark baselines are recorded
+[PASS] camera, joint and mixed-workload benchmarks meet their declared production
+       and stress-profile gates; recording a lower baseline is not a substitute
 [PASS] failure/crash matrix preserves deterministic quiescence and artifact status
 [PASS] ROS2 and FastDDS interoperability qualification remains green after tuning
 [PASS] x86_64 and aarch64 release qualification passes
@@ -7013,7 +7120,7 @@ lifetime cannot be proven
 
 ---
 
-## 6.9 10 Camera 性能验收
+## 6.9 Standard Camera / Joint Telemetry 性能验收
 
 基准场景：
 
@@ -7043,7 +7150,7 @@ disk model / filesystem
 
 ### Encoded Image Profile
 
-例如：
+Production camera profile 使用 source-native encoded Payload，例如：
 
 ```text
 JPEG / compressed image
@@ -7059,6 +7166,10 @@ queue contention
 Storage batching
 tail latency
 ```
+
+Encoded payload 的 codec、average/max bytes、timestamp count 和 batching 配置属于
+deployment profile，必须在运行前固定并记录。不能只写“encoded”而不记录实际
+bytes。
 
 ### Raw Image Stress Profile
 
@@ -7090,6 +7201,41 @@ backpressure
 
 它不是对所有实际 camera deployment 的默认持续带宽假设。
 
+### Joint Telemetry Profile
+
+标准关节遥测配置：
+
+```text
+100 joints
+× 100 parameters per joint
+× 1 kHz
+```
+
+首个 benchmark baseline 使用 binary64 parameters。映射必须明确记录粒度：
+
+```text
+Production qualification — Aggregated RobotState Record
+    1,000 records/s
+    100 × 100 × 8 B = 80,000 B payload/record
+    approximately 76 MiB/s payload
+
+Small-record stress — Per-joint Record
+    100,000 records/s
+    100 × 8 B = 800 B minimum payload/record
+    approximately 76 MiB/s payload
+```
+
+Parameter-level Record 不属于 V1 标准映射：
+
+```text
+10,000,000 records/s
+```
+
+该粒度会让参数编码与消息 lifecycle 主导系统，通常应保留在 source-native
+JointState/RobotState Payload 或 Schema 内部。必须报告与 camera profile 相同的
+throughput、copy、allocation、CPU/RSS、Admission wait、queue/payload high-water
+和 tail-latency 指标。
+
 必须报告：
 
 ```text
@@ -7112,6 +7258,42 @@ Payload HWM
 Dispatch HWM
 Storage inflight HWM
 ```
+
+### Standard Generated-Workload Gate
+
+V1 standard profile 的固定门限：
+
+```text
+camera offered record rate
+    10 × 30 = 300 records/s
+
+joint production profile (aggregated RobotState)
+    >= 1,000 accepted records/s
+
+joint small-record stress profile (per-joint)
+    >= 100,000 accepted records/s
+
+mixed profile
+    encoded camera + aggregated joint production profile
+
+mixed small-record stress profile
+    raw camera + per-joint joint profile
+```
+
+steady-state qualification 必须满足：
+
+```text
+all offered Records are Accepted
+no Admission WaitTimeout or configured rejection
+all Accepted Records reach terminal completion
+queue/PayloadPool high-water does not grow without bound
+Stop drains to quiescence within the configured deadline
+```
+
+Encoded camera 是 production qualification；Raw RGB8 是 stress qualification，
+使用固定 2.64 MiB/frame value，并要求 reference filesystem/device 的持续写能力
+高于实测 aggregate payload rate。未达到计算出的持续带宽时，该硬件 profile
+必须 FAIL，不能以降级丢 Record 代替。
 
 ---
 
@@ -7177,6 +7359,19 @@ TF-like small messages
 +
 CAN-like small frames
 ```
+
+V1 production mixed profile：
+
+```text
+10 × 1280×720 × 30 FPS encoded camera
++
+100 joints × 100 parameters × 1 kHz aggregated RobotState telemetry
+```
+
+V1 还必须运行 raw RGB8 + per-joint small-record stress 版本。必须记录 Joint
+Telemetry 的实际 Record 粒度、payload bytes、Stream count、timestamp count、
+Storage batching、磁盘模型和文件系统。不能只报告总 records/s 或总 payload
+MB/s。
 
 目的：
 
@@ -7325,15 +7520,17 @@ RoDAQ V1 的工程边界应当明确：
 
 ```text
 直接采用成熟第三方组件
-    oneTBB
     spdlog
     fmt
     HdrHistogram_c
     yaml-cpp
     expected-lite
-    optional mimalloc
     GoogleTest
     Google Benchmark
+
+批准的 optional candidate
+    oneTBB（V1 Core 默认不链接）
+    mimalloc（explicit MemoryResource only）
 ```
 
 这些依赖全部通过：
@@ -7416,3 +7613,62 @@ Acquisition middleware 可替换
 Ubuntu22/24 + amd64/arm64 可发布
 10-camera 等压力场景具有可测量、可解释的性能
 ```
+
+---
+
+## V1 Convergence Amendments
+
+The following amendments are normative for the M2 convergence baseline.
+
+### Standard workload profiles
+
+The standard workload is not one synthetic Record rate:
+
+```text
+production camera:
+    10 × 1280×720 × 30 FPS
+    source-native encoded Payload
+
+raw camera pressure:
+    10 × 1280×720 RGB8 × 30 FPS
+
+joint production grouping:
+    aggregated RobotState, 1,000 Records/s, 80,000 B/Record
+
+joint source-native/small-Record stress:
+    100 joint Streams × 1 kHz = 100,000 Records/s, >= 800 B/Record
+
+mixed:
+    encoded or raw camera profile plus each joint grouping
+```
+
+Changing native per-joint publication into an aggregated message is a
+distinct production mapping, not a way to replace the source-native profile.
+
+### Capacity contract
+
+All capacities are derived from offered rate, downstream stall tolerance and
+safety factor:
+
+```text
+record_capacity >= peak_records_per_second × tolerated_stall × safety_factor
+byte_capacity   >= peak_payload_bytes_per_second × tolerated_stall × safety_factor
+```
+
+Payload size-class block counts are calculated independently. Concrete class
+sizes, capacities and release-worker counts are benchmark-selected; a queue
+implementation alone does not establish no-drop capacity.
+
+### Dependency baseline
+
+V1 Runtime Core production dependencies are expected-lite, HdrHistogram_c,
+spdlog, fmt and yaml-cpp. oneTBB and mimalloc were evaluated but are not
+selected for the V1 baseline. They may return only through a new durable
+decision backed by a concrete workload and measured evidence.
+
+### Delivery and qualification
+
+The application-facing Runtime is a hidden-visibility shared library. M2
+qualifies Fake Runtime capacity and install consumers. Real ROS2/FastDDS/MCAP,
+storage hardware, filesystem, compression, crash recovery and long-duration
+production throughput remain M3/M4/M5 gates.

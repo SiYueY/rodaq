@@ -1,29 +1,33 @@
 # RoDAQ Development Status
 
-**Updated:** 2026-11-04
+**Updated:** 2026-11-05
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
-**M2 Closure Fix implementation baseline:** `236fc92` — `fix: reap completed quarantine workers on teardown`
+**Convergence implementation baseline:** `3f0f139` plus the reviewed working-tree changes recorded below
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
 ## Current milestone
 
-**M3 — ROS2 Acquisition + MCAP Storage Vertical Slice**
+**M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **ACTIVE**
+Status: **PASS**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
 
-M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. The
-final M2 audit repaired ingress capture ordering, asynchronous Descriptor
-reconciliation, nested failure-history duplication and the activation-root
-budget. The follow-up concurrency review also generation-scoped Storage handoff
-timeouts, established Registry acquire/release publication, and rejected
-duplicate TimestampKeys. M2 is **PASS** and requalified. M3 is now the only
-ACTIVE milestone.
+M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. The V1
+Runtime Foundation Convergence closed all reviewed P0/P1 findings: bounded
+release/destroy quarantine, complete ABI semantic firewall, Plugin health,
+O(1) slot return, isolated Payload size classes, bounded LoggingContext,
+YAML ConfigLoader, shared Runtime delivery, dependency convergence, source
+reference audit, observability and target workload capacity qualification.
+M3 is **NOT STARTED**.
+
+The Release Fake Runtime capacity gate now passes encoded/raw 10-camera 720p30,
+aggregated and per-joint joint telemetry, and both mixed profiles. M2 does not
+claim real MCAP/filesystem/NVMe production capacity; that remains M5 work.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
@@ -59,14 +63,57 @@ contains:
   AcceptanceSequenceAllocator, RuntimeStats, HdrHistogram latency wrapper and a
   no-throw Logger facade.
 
-`third_party/` contains all nine approved pinned submodules. M0 also includes a
+`third_party/` contains seven tracked pinned submodules: the five required
+production dependencies plus GoogleTest and Google Benchmark. M0 also includes a
 bounded Service Registry, ConfigView, activation-lifetime InteropProjection and
 ClockCorrelation services, Fake Plugin lifecycle integration, plugin authoring
 CMake support and an installed SDK consumer smoke. M1 Runtime primitives and the
-M2 production Runtime core are implemented as a static Runtime target. M2 adds
+M2 production Runtime core are delivered as a hidden-visibility shared Runtime
+target with an installable Application API Candidate. M2 adds
 the complete Stable-ABI-backed Fake Acquisition-to-Storage data path,
 Activation/Binding lifecycle, bounded Admission and Dispatch, independent
 Payload/Persistence completion axes, and bounded Stop/Failure quarantine.
+
+Dependency lifecycle is not collapsed into one completion flag:
+
+```text
+expected-lite                  PINNED+BUILT+LINKED+USED+QUALIFIED
+HdrHistogram_c                 PINNED+BUILT+LINKED+USED+QUALIFIED
+spdlog/fmt                     PINNED+BUILT+LINKED+USED+QUALIFIED
+yaml-cpp                       PINNED+BUILT+LINKED+USED+QUALIFIED
+oneTBB                         EVALUATED+NOT-SELECTED; removed from baseline
+mimalloc                       EVALUATED+NOT-SELECTED; removed from baseline
+GoogleTest/Google Benchmark    development dependencies in use
+```
+
+## 2026-11-05 Runtime Foundation Convergence
+
+The reviewed convergence baseline is implemented:
+
+- Pre-Gate Copy materialization and pre-guaranteed external Payload release
+  ownership.
+- Explicit supervised Plugin destroy and blocked release/destroy worker transfer
+  to process-wide quarantine.
+- Per-worker release completion state, no detach and no unsafe join after an
+  expired deadline.
+- Payload move preserves the Plugin lifetime guard.
+- Timestamp arrays are bounded before dereference; malformed ABI diagnostics and
+  Storage submit outputs fail closed.
+- Acquisition health states control submission/rebinding; terminal failure
+  cannot be silent.
+- Storage completion/release never proceeds from a Stop flag while `submit()` is
+  unreconciled.
+- Multi-size isolated Payload classes with exhaustion/physical/HWM statistics.
+- Runtime-owned byte/record bounded asynchronous logging with Plugin routing,
+  backend exception containment and quarantine.
+- Public `RuntimeConfig/ResourceConfig/PluginConfig/StorageConfig`, installed
+  shared Runtime and external consumer smoke.
+- YAML ConfigLoader with pre-read file limit and post-parse depth/node/duplicate
+  validation.
+- Runtime latency summaries for Admission, handoff, Payload terminal,
+  Persistence terminal and Stop.
+- Camera, joint, mixed, storage-slot, Payload-class and Release-worker
+  benchmarks with offered-schedule enforcement.
 
 ## Design baseline
 
@@ -133,7 +180,8 @@ The common Runtime and Plugin infrastructure must be validated with Fake Plugins
   - CMake 3.22 / C++17 baseline,
   - warnings and ASan / UBSan options,
   - CTest integration,
-  - all nine approved dependencies pinned as Git submodules,
+  - five production dependencies plus two development dependencies pinned as
+    Git submodules; oneTBB/mimalloc were later evaluated and removed,
   - expected-lite 0.10.0 installed as the explicit Public C++ header dependency,
   - `rodaq::Error` with the V1 C++ error taxonomy,
   - `rodaq::Result<T>` as the D-025 direct nonstd expected-lite alias,
@@ -238,7 +286,7 @@ Structural convergence validation:
 - clang-format, `git diff --check`, whitespace and recursive submodule audits
   passed.
 
-## M2 completed
+## M2 core implementation
 
 - Production Runtime lifecycle, activation-local Canonical registries and
   generation-protected handles.
@@ -370,8 +418,12 @@ The Result policy is now frozen by D-025:
 
 ## Immediate next actions
 
-1. Begin M3 — ROS2 Acquisition + MCAP Storage Vertical Slice.
-2. Native arm64 closure evidence remains deferred until a runner is available.
+1. Freeze the M3 ROS2 Acquisition + MCAP mapping against the current Stable ABI.
+2. Pin and integrate the MCAP backend without introducing ROS2 runtime coupling
+   into Storage Core.
+3. Implement the ROS2 + MCAP vertical slice and interoperability fixtures.
+4. Revalidate Runtime API Candidate compatibility with real backends.
+5. Native arm64 qualification remains deferred until a runner is available.
 
 ## Validation state
 
@@ -474,8 +526,8 @@ amd64:
   CTest entries passed.
 - Combined ASan + UBSan Debug with warnings-as-errors: build passed and all
   four CTest entries passed under the same ASLR wrapper.
-- `RODAQ_BUILD_TESTS=OFF`, `RODAQ_BUILD_BENCHMARKS=ON` and
-  `RODAQ_USE_MIMALLOC=ON`: configure and build passed.
+- `RODAQ_BUILD_TESTS=OFF` and `RODAQ_BUILD_BENCHMARKS=ON`: configure and build
+  passed.
 - M0-A install smoke: the installed header tree contained the two Public C++
   headers, expected-lite header and expected-lite license. An external C++17
   consumer compiled with warnings-as-errors using only the installed include
@@ -486,8 +538,9 @@ amd64:
 - Network audit: `strace` recorded no network syscalls during a fresh configure
   and build; source audit found no `FetchContent`, `ExternalProject_Add`,
   configure-time clone or download command.
-- Submodule audit: all nine approved submodules and the recursive dependency
-  below HdrHistogram_c report clean worktrees at their pinned commits.
+- Submodule audit: the seven retained production/development submodules and
+  the recursive dependency below HdrHistogram_c report clean worktrees at their
+  pinned commits. oneTBB and mimalloc are no longer tracked dependencies.
 - Formatting and scope audit: clang-format 14 dry-run passed for all new C/C++
   files, `git diff --check` passed, whitespace audit passed, and the
   `include/rodaq/plugin/abi/` tree passed forbidden-type isolation checks.
@@ -513,8 +566,8 @@ M0-A Review Closure and M0-B validation:
   installed include tree; expected-lite license was present.
 - CMake option matrix: `BUILD_TESTING=OFF` and `RODAQ_BUILD_TESTS=OFF` each
   produced zero test targets; the enabled matrix produced all 34 tests.
-- Benchmarks/mimalloc options: benchmarks subtree plus Google Benchmark and
-  optional mimalloc configured and built successfully.
+- Benchmarks options: benchmarks subtree plus Google Benchmark configured and
+  built successfully without optional allocator/concurrency dependencies.
 - ASan, UBSan and combined ASan+UBSan: 34/34 CTest entries passed in each build;
   ASan runs used `setarch x86_64 -R` for the documented host workaround.
 
@@ -657,7 +710,7 @@ M1 closure review answers:
 15. Yes. Normal, ASan, UBSan and required Clang TSan checks pass.
 16. No. No known P0/P1 issue remains.
 
-M2 audit-repair qualification:
+### Historical M2 audit-repair evidence (superseded by final convergence)
 
 - GCC 11.4.0 normal, ASan with LeakSanitizer and UBSan each passed 89/89 CTest
   entries with warnings-as-errors.
@@ -666,7 +719,7 @@ M2 audit-repair qualification:
 - Clang 14 TSan passed the admission, PayloadPool, observability, M1 integration,
   quarantine, Registry publication and complete M2 runtime pipeline subset:
   7/7 CTest entries.
-- The M2 E2E executable now contains 54 Stable-ABI-backed tests covering
+- The M2 E2E executable now contains 55 Stable-ABI-backed tests covering
   lifecycle, Copy/Adopt/Retain, mixed payload modes, immutable canonical views,
   stale handles, multi-producer ordering, Binding switch and abort, saturation,
   blocked Wait timeout, every Payload/Persistence completion ordering,
@@ -676,7 +729,18 @@ M2 audit-repair qualification:
   reconciliation queue bounds, Stop during readiness, the activation-root
   budget, ClockCorrelation, Binding control stalls, multi-Acquisition rollback,
   Stop under load, duplicate TimestampKey rejection, Plugin-local lock isolation,
-  continuous handoff across multiple timeout periods and restart.
+  continuous handoff across multiple timeout periods, rate-controlled exclusive
+  joint-stream production and restart.
+- `benchmarks/joint_pipeline_benchmark.cpp` now measures both 100-joint ×
+  100-binary64-parameter × 1 kHz record groupings:
+  - production aggregated RobotState Record: 1k target records/s, 80 kB payload.
+  - stress per-joint Record: 100k target records/s, 800 B minimum payload.
+- The current three-second Release Fake Pipeline baseline reached approximately
+  83.7k steady-state records/s for per-joint Records and 1.0k steady-state
+  records/s for aggregated RobotState Records. The per-joint profile is
+  therefore not yet a PASS.
+- The new rate-controlled/exclusive Fake Acquisition producer mode passed the
+  complete runtime pipeline test under ASan+LSan, UBSan and Clang TSan.
 - The runtime pipeline stress test passed 20 consecutive repetitions; the
   targeted handoff/Projection/Timestamp tests also passed 20 repetitions.
 - Registry tests cover unpublished/fabricated handles during blocked insertion,
@@ -772,9 +836,31 @@ M2 final review answers:
     exceeding multiple per-Submit timeout periods.
 35. No. No known P0/P1 issue remains.
 
-Current qualification count: **89/89** on Ubuntu 22.04 amd64 for normal, ASan
-and UBSan builds, plus 89/89 on Ubuntu 24.04. Clang TSan concurrency
-qualification passed 7/7 selected CTest entries. M2 baselines are
-`benchmarks/runtime_pipeline_benchmark.cpp` and
-`benchmarks/payload_pool_benchmark.cpp`. Native arm64 remains deferred by
-D-034. M0, M1 and M2 are PASS; M3 is ACTIVE.
+## Final convergence qualification
+
+- GCC 11.4.0 Debug normal, ASan+LSan and UBSan: **93/93 CTest passed** in each
+  build. ASan ran with `detect_leaks=1` and `halt_on_error=1`.
+- GCC 11.4.0 Release with warnings-as-errors: full build and **93/93 CTest
+  passed**.
+- Ubuntu 24.04 container with GCC 13.3.0: full build and **93/93 CTest passed**,
+  including installed Runtime/Plugin consumers and Runtime DSO closure checks.
+- Clang 14 TSan under `setarch x86_64 -R`: admission, PayloadPool,
+  observability, logging, Registry, quarantine, StoragePipeline, M1 integration
+  and complete Runtime pipeline: **9/9 CTest passed**.
+- Normal Runtime build with tests/benchmarks, oneTBB, mimalloc, GoogleTest and
+  Google Benchmark removed from the source copy: configure and build passed.
+- `clang-format 14 --dry-run --Werror` passed for changed/new C/C++ files;
+  `git diff --check` passed; source search found no `detach`,
+  `recursive_mutex`, or Runtime thread `.release()`.
+- Runtime DSO dynamic exports are limited to `rodaq::runtime::Runtime`; private
+  fmt/spdlog/yaml/HdrHistogram symbols and `DT_NEEDED` entries are absent.
+- Capacity evidence is recorded in
+  `docs/development/capacity_qualification.md`. Key Release results:
+  per-joint 99.9k accepted Records/s, raw camera 851.8 MB/s, raw camera +
+  per-joint mixed 905.7 MB/s, encoded camera + aggregated joint 1.3k Records/s,
+  and all profiles converged without rejection/WaitTimeout with zero current
+  occupancy after Stop.
+
+Native arm64 remains deferred by D-034. Stable C ABI layout/protocol/vtable/
+service IDs remain unchanged. M0, M1 and M2 are PASS. M3, M4 and M5 are
+**NOT STARTED**; no milestone is currently ACTIVE.

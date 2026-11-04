@@ -246,17 +246,18 @@ void catalog_remove_with_live_instance(const fs::path& path, const fs::path& eve
         std::vector<std::string> removed_events = read_events(event_path);
         require(!has_event(removed_events, "destroy"), "Catalog removal destroyed instance");
         require(!has_event(removed_events, "unload"), "Catalog removal unloaded DSO");
+        instance.value().destroy();
     }
 
     require(
-        !has_event(read_events(event_path), "destroy"),
-        "Instance destroyed while instance lease remained");
+        count_event(read_events(event_path), "destroy") == 1,
+        "Explicit instance destroy was not recorded exactly once");
+    require(
+        !has_event(read_events(event_path), "unload"),
+        "DSO unloaded while lease remained after instance destroy");
     instance_lease = PluginInstanceLease{};
 
     std::vector<std::string> released_events = read_events(event_path);
-    require(
-        count_event(released_events, "destroy") == 1,
-        "Final instance release did not destroy exactly once");
     require(has_event(released_events, "unload"), "Final instance release did not unload DSO");
 }
 
@@ -304,11 +305,13 @@ void plugin_instance_lease(const fs::path& path, bool acquisition, const fs::pat
                 manager.create_acquisition_plugin_instance(std::move(library.value()));
             require(instance.has_value(), "Acquisition create failed");
             lease = instance.value().lease();
+            instance.value().destroy();
         } else {
             Result<StoragePluginInstance> instance =
                 manager.create_storage_plugin_instance(std::move(library.value()));
             require(instance.has_value(), "Storage create failed");
             lease = instance.value().lease();
+            instance.value().destroy();
         }
         instance_lease = lease;
         Result<void> unloaded = manager.unload(plugin_id);
@@ -316,12 +319,13 @@ void plugin_instance_lease(const fs::path& path, bool acquisition, const fs::pat
     }
 
     std::vector<std::string> before_destroy = read_events(event_path);
-    require(!has_event(before_destroy, "destroy"), "Instance destroyed while lease existed");
+    require(
+        count_event(before_destroy, "destroy") == 1,
+        "Explicit instance destroy was not recorded exactly once");
     require(!has_event(before_destroy, "unload"), "DSO unloaded while instance lease existed");
 
     instance_lease = PluginInstanceLease{};
     std::vector<std::string> after_destroy = read_events(event_path);
-    require(count_event(after_destroy, "destroy") == 1, "Destroy was not exactly once");
     require(has_event(after_destroy, "unload"), "Instance did not transitively hold library");
 }
 

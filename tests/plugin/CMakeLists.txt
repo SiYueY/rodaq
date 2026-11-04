@@ -584,7 +584,7 @@ target_link_libraries(rodaq_plugin_service_integration_test
     PRIVATE
         GTest::gtest_main
         rodaq_plugin
-        rodaq_runtime
+        rodaq_runtime_testing
 )
 rodaq_enable_warnings(rodaq_plugin_service_integration_test)
 rodaq_enable_sanitizers(rodaq_plugin_service_integration_test)

@@ -2137,32 +2137,68 @@ Persistence = Pending
 
 ---
 
-## 6.6 Runtime-owned Allocation
+## 6.6 Runtime-owned Copy Allocation
 
-Copy 可以使用：
+V1 Runtime Copy path 必须使用 activation-owned、显式配置的
+`PayloadPool` size-class 架构。单一 block size 不满足 V1 standard mixed
+workload，因为 large camera Payload 和 high-rate small joint Payload 必须使用
+隔离的 object capacity。
 
-```text
-fixed pool
-size-class allocator
-bounded heap wrapper
-slab
-arena/free-list
-```
-
-等方式。
-
-本文不冻结 allocator。
-
-但禁止：
+每个 activation 的配置至少包括：
 
 ```text
-bounded pool exhausted
-        ↓
-silently fallback
-to unbounded heap
+ordered set of Payload size classes
+
+for each class:
+    maximum payload bytes
+    block count
+    physical byte capacity
 ```
 
-如果系统配置要求 bounded Runtime。
+Reference profile 的初始 class 建议：
+
+```text
+1 KiB
+4 KiB
+16 KiB
+64 KiB
+256 KiB
+1 MiB
+4 MiB
+large configured block
+```
+
+这些尺寸可以在 benchmark 后调整，不属于 Stable ABI。以下语义属于 V1 契约：
+
+```text
+1. 选择能够容纳 Payload 的最小 class。
+2. class selection 发生在 Gate Pass 前。
+3. 对应 class 的 object capacity 必须已经可用。
+4. class 之间默认不互相挪用预留给其它 class 的 capacity。
+5. class 耗尽必须返回 ResourceExhausted/Admission rejection。
+6. Gate Pass 后不得 fallback 到普通 heap 或其它无限 allocator。
+7. Stop / failure 后所有 class accounting 必须归零。
+```
+
+Payload logical-byte budget 与 class object capacity 是两个独立维度。实现必须同时
+维护：
+
+```text
+logical payload bytes in flight
+occupied blocks per class
+physical bytes reserved per class
+high-water per class
+```
+
+small Payload 不得因为 large class 有剩余空间而占用数 MiB block；large Payload
+也不得因为 small class 的 object 配额而无法进入自己的 bounded class。
+
+如果后续配置允许 class overflow/fallback，它必须是显式、有界且由统一
+ResourceBudget 预留的策略，不能成为隐式 malloc fallback。
+
+本文不冻结 allocator backend。mimalloc 等 backend 只能为这些 bounded class
+提供 backing allocation，不能替代 size-class selection、capacity isolation 或
+Reservation/rollback 语义。
 
 ---
 
@@ -3701,3 +3737,22 @@ failure cleanup completeness
 该模型提供：
 
 > **明确的 ownership transfer boundary、严格的 borrowed-input lifetime、永久有效的 PayloadConsumed 终止语义、有界但不冒充物理内存估算器的资源模型，以及无需依赖具体 Middleware 或 Storage Backend 的 Payload Contract。**
+
+---
+
+## M2 Convergence Payload Amendment
+
+V1 Copy uses activated owned size classes. Configuration is a strictly
+increasing ordered set of `{max_payload_bytes, block_count}` entries. The
+smallest accommodating class is selected before Gate Pass; class budgets do
+not borrow from each other and no unbounded heap fallback exists.
+
+Payload accounting exposes logical bytes and per-class physical blocks,
+physical bytes, exhaustion and high-water values. Current occupancy returns to
+zero; high-water values remain available for diagnosis.
+
+Adopt/Retain Runtime anchors carry the Acquisition Plugin instance lifetime
+lease. An Accepted external anchor owns exactly-once release work reserved
+before Gate Pass. Plugin release callbacks execute on bounded Release workers,
+not Storage completion workers. A blocked release worker and its anchor/leases
+transfer to process-wide quarantine instead of being detached or unloaded.

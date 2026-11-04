@@ -2,32 +2,28 @@ include_guard(GLOBAL)
 
 set(RODAQ_THIRD_PARTY_ROOT "${PROJECT_SOURCE_DIR}/third_party")
 
-# Git submodule gitlinks are the authoritative commit pins. This registry only
-# records human-readable release metadata and build integration paths.
-# name|release|tag|path
-set(RODAQ_DEPENDENCY_REGISTRY
-    "expected-lite|0.10.0|v0.10.0|third_party/expected-lite"
-    "onetbb|2022.3.0|v2022.3.0|third_party/onetbb"
-    "spdlog|1.17.0|v1.17.0|third_party/spdlog"
-    "fmt|12.1.0|12.1.0|third_party/fmt"
-    "hdr_histogram|0.12.1|0.12.1|third_party/hdr_histogram"
-    "yaml-cpp|0.9.0|yaml-cpp-0.9.0|third_party/yaml-cpp"
-    "mimalloc|3.6.1|v3.6.1|third_party/mimalloc"
-    "googletest|1.18.0|v1.18.0|third_party/googletest"
-    "benchmark|1.10.0|v1.10.0|third_party/benchmark"
-)
-
-foreach(dependency IN LISTS RODAQ_DEPENDENCY_REGISTRY)
-    string(REPLACE "|" ";" fields "${dependency}")
-    list(GET fields 0 dependency_name)
-    list(GET fields 3 dependency_path)
-
-    if(NOT IS_DIRECTORY "${PROJECT_SOURCE_DIR}/${dependency_path}")
+# Git submodule gitlinks are the authoritative commit pins. Validate only the
+# groups that participate in the requested build.
+function(rodaq_require_dependency name path)
+    if(NOT IS_DIRECTORY "${PROJECT_SOURCE_DIR}/${path}")
         message(FATAL_ERROR
-            "Missing pinned dependency '${dependency_name}'. "
+            "Missing pinned dependency '${name}'. "
             "Run: git submodule update --init --recursive"
         )
     endif()
+endfunction()
+
+foreach(required_dependency
+    "expected-lite|third_party/expected-lite"
+    "spdlog|third_party/spdlog"
+    "fmt|third_party/fmt"
+    "hdr_histogram|third_party/hdr_histogram"
+    "yaml-cpp|third_party/yaml-cpp"
+)
+    string(REPLACE "|" ";" fields "${required_dependency}")
+    list(GET fields 0 dependency_name)
+    list(GET fields 1 dependency_path)
+    rodaq_require_dependency("${dependency_name}" "${dependency_path}")
 endforeach()
 
 set(RODAQ_EXPECTED_LITE_INCLUDE_DIR
@@ -40,7 +36,6 @@ if(NOT EXISTS "${RODAQ_EXPECTED_LITE_INCLUDE_DIR}/nonstd/expected.hpp")
         "Run: git submodule update --init --recursive"
     )
 endif()
-
 add_library(rodaq_expected_lite INTERFACE)
 target_compile_features(rodaq_expected_lite INTERFACE cxx_std_17)
 target_include_directories(rodaq_expected_lite
@@ -60,7 +55,44 @@ add_subdirectory(
     "${CMAKE_BINARY_DIR}/third_party/hdr_histogram"
 )
 
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${RODAQ_THIRD_PARTY_ROOT}/fmt"
+    "${CMAKE_BINARY_DIR}/third_party/fmt"
+    EXCLUDE_FROM_ALL
+)
+
+set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${RODAQ_THIRD_PARTY_ROOT}/spdlog"
+    "${CMAKE_BINARY_DIR}/third_party/spdlog"
+    EXCLUDE_FROM_ALL
+)
+
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${RODAQ_THIRD_PARTY_ROOT}/yaml-cpp"
+    "${CMAKE_BINARY_DIR}/third_party/yaml-cpp"
+    EXCLUDE_FROM_ALL
+)
+target_include_directories(yaml-cpp SYSTEM
+    INTERFACE
+        "$<BUILD_INTERFACE:${RODAQ_THIRD_PARTY_ROOT}/yaml-cpp/include>"
+)
+
 if(BUILD_TESTING AND RODAQ_BUILD_TESTS)
+    rodaq_require_dependency("googletest" "third_party/googletest")
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     add_subdirectory(
@@ -70,22 +102,11 @@ if(BUILD_TESTING AND RODAQ_BUILD_TESTS)
 endif()
 
 if(RODAQ_BUILD_BENCHMARKS)
+    rodaq_require_dependency("benchmark" "third_party/benchmark")
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     add_subdirectory(
         "${RODAQ_THIRD_PARTY_ROOT}/benchmark"
         "${CMAKE_BINARY_DIR}/third_party/benchmark"
-    )
-endif()
-
-if(RODAQ_USE_MIMALLOC)
-    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
-    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(MI_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-    set(MI_OVERRIDE OFF CACHE BOOL "" FORCE)
-    add_subdirectory(
-        "${RODAQ_THIRD_PARTY_ROOT}/mimalloc"
-        "${CMAKE_BINARY_DIR}/third_party/mimalloc"
     )
 endif()

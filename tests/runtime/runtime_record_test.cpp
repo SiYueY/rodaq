@@ -148,7 +148,8 @@ TEST(RuntimeRecordTest, OwnsPayloadAndReservationAndReleasesBoth) {
 TEST(RuntimeRecordTest, MoveTransfersBothOwnerships) {
     auto pool = PayloadPool::Create(8, 1);
     ASSERT_TRUE(pool.has_value());
-    auto payload = pool.value().Acquire(3);
+    const std::array<std::uint8_t, 3> bytes{};
+    auto payload = pool.value().Acquire(3, PayloadView(bytes.data(), bytes.size()));
     ASSERT_TRUE(payload.has_value());
     ResourceBudget budget(ResourceAmount{2, 6});
     auto reservation = budget.TryReserve(ResourceAmount{1, 3});

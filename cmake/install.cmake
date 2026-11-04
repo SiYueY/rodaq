@@ -18,12 +18,39 @@ install(
     DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/expected-lite"
 )
 
+install(
+    FILES
+        "${RODAQ_THIRD_PARTY_ROOT}/hdr_histogram/LICENSE.txt"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/HdrHistogram_c"
+)
+install(
+    FILES
+        "${RODAQ_THIRD_PARTY_ROOT}/spdlog/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/spdlog"
+)
+install(
+    FILES
+        "${RODAQ_THIRD_PARTY_ROOT}/fmt/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/fmt"
+)
+install(
+    FILES
+        "${RODAQ_THIRD_PARTY_ROOT}/yaml-cpp/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/yaml-cpp"
+)
+install(
+    FILES "${CMAKE_BINARY_DIR}/rodaq-dependency-inventory.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/sbom"
+)
+
 install(TARGETS
     rodaq_headers
     rodaq_public_api
     rodaq_expected_lite
     rodaq_foundation
+    rodaq_runtime
     rodaq_sdk
+    yaml-cpp
     EXPORT RoDAQTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"

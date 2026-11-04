@@ -509,8 +509,23 @@ TEST(RuntimeServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachRuntime)
         rodaq::ErrorCode::InvalidArgument,
         acquisition.PublishDescriptor(descriptor).error().code());
 
+    static const rodaq_timestamp_key timestamp_key[] = {
+        {rodaq_string_view{"role", 4}, rodaq_clock_handle{1}}};
+    descriptor = valid_descriptor();
+    descriptor.timestamp_keys = timestamp_key;
+    descriptor.timestamp_key_count = UINT32_MAX;
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidArgument,
+        acquisition.PublishDescriptor(descriptor).error().code());
+
     auto record = valid_record();
     record.timestamp_value_count = 1;
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.Submit(record).error().code());
+
+    static const rodaq_timestamp_value timestamp_value[] = {{RODAQ_FALSE, 0, 0}};
+    record = valid_record();
+    record.timestamp_values = timestamp_value;
+    record.timestamp_value_count = UINT32_MAX;
     EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.Submit(record).error().code());
 
     record = valid_record();

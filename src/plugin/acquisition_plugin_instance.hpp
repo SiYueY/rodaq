@@ -27,6 +27,7 @@ public:
     Result<void> configure(rodaq_config_view config);
     Result<void> start();
     Result<void> stop();
+    void destroy() noexcept;
     Result<rodaq_interface> query_interface(std::string_view interface_id);
     Result<rodaq_interface> required_control_interface() const;
 

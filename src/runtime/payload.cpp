@@ -32,8 +32,12 @@ Result<Payload> Payload::Retain(PayloadView view, void* owner_context, PayloadRe
 
 Payload::Payload(
     std::shared_ptr<PayloadPoolState> pool_state, std::uint8_t* data, std::size_t size,
-    std::size_t block_index) noexcept
-: pool_state_(std::move(pool_state)), data_(data), size_(size), block_index_(block_index) {}
+    std::size_t class_index, std::size_t block_index) noexcept
+: pool_state_(std::move(pool_state)),
+  data_(data),
+  size_(size),
+  block_class_(class_index),
+  block_index_(block_index) {}
 
 Payload::Payload(
     const std::uint8_t* data, std::size_t size, void* owner_context,
@@ -47,11 +51,14 @@ Payload::Payload(Payload&& other) noexcept
 : pool_state_(std::move(other.pool_state_)),
   data_(other.data_),
   size_(other.size_),
+  block_class_(other.block_class_),
   block_index_(other.block_index_),
   owner_context_(other.owner_context_),
-  release_(other.release_) {
+  release_(other.release_),
+  lifetime_guard_(std::move(other.lifetime_guard_)) {
     other.data_ = nullptr;
     other.size_ = 0;
+    other.block_class_ = 0;
     other.block_index_ = 0;
     other.owner_context_ = nullptr;
     other.release_ = nullptr;
@@ -63,11 +70,14 @@ Payload& Payload::operator=(Payload&& other) noexcept {
         pool_state_ = std::move(other.pool_state_);
         data_ = other.data_;
         size_ = other.size_;
+        block_class_ = other.block_class_;
         block_index_ = other.block_index_;
         owner_context_ = other.owner_context_;
         release_ = other.release_;
+        lifetime_guard_ = std::move(other.lifetime_guard_);
         other.data_ = nullptr;
         other.size_ = 0;
+        other.block_class_ = 0;
         other.block_index_ = 0;
         other.owner_context_ = nullptr;
         other.release_ = nullptr;
@@ -83,9 +93,15 @@ std::size_t Payload::Size() const noexcept { return size_; }
 
 bool Payload::Empty() const noexcept { return size_ == 0; }
 
+bool Payload::RequiresExternalRelease() const noexcept { return release_ != nullptr; }
+
+void Payload::AttachLifetimeGuard(std::shared_ptr<void> lifetime_guard) noexcept {
+    lifetime_guard_ = std::move(lifetime_guard);
+}
+
 void Payload::ReleaseCurrent() noexcept {
     if (pool_state_ != nullptr) {
-        pool_state_->Release(block_index_);
+        pool_state_->Release(block_class_, block_index_);
         pool_state_.reset();
     }
     if (release_ != nullptr) {
@@ -97,6 +113,7 @@ void Payload::ReleaseCurrent() noexcept {
     }
     data_ = nullptr;
     size_ = 0;
+    block_class_ = 0;
     block_index_ = 0;
 }
 

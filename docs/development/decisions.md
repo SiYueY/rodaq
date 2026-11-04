@@ -230,14 +230,17 @@ Third-party code is not edited directly; local changes require a patch set or ma
 
 **Status:** Accepted for V1 implementation baseline
 
-Production baseline:
+Required production baseline:
 
-- oneTBB 2022.3.0 — shared, `TBB::tbb` only.
 - spdlog 1.17.0 — static, external fmt.
 - fmt 12.1.0 — static.
 - HdrHistogram_c 0.12.1 — core-only static.
 - yaml-cpp 0.9.0 — static + PIC.
 - expected-lite 0.10.0 — pinned Public C++ header dependency used directly by `rodaq::Result<T>`; see D-025.
+
+Approved optional candidates:
+
+- oneTBB 2022.3.0 — not linked into V1 Runtime Core by default; future explicit CPU-parallel work only.
 - mimalloc 3.6.1 — optional explicit allocator backend.
 
 Development:
@@ -835,3 +838,255 @@ existing external-serialization and reader-lifetime requirements.
 
 **Reference:** `include/rodaq/runtime/registry.hpp`,
 `docs/design/runtime.md`, `docs/development/status.md`.
+
+## D-042 — Joint telemetry has two explicit benchmark record granularities
+
+**Status:** Accepted
+
+The V1 joint benchmark baseline covers 100 joints with 100 binary64 parameters
+per joint at 1 kHz. It distinguishes production and stress groupings:
+
+```text
+production qualification:
+    aggregated RobotState Record
+    1,000 records/s
+    80,000 B/record
+
+small-record stress:
+    per-joint Record
+    100,000 records/s
+    at least 800 B/record
+```
+
+Parameter-level Records are not a V1 standard mapping. The benchmark must state
+which grouping it uses because record-count and mixed-resource behavior differ
+by two orders of magnitude. If a production source natively publishes one
+message per joint, the per-joint grouping becomes a production profile and must
+pass the full production gate rather than only the stress gate.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`,
+`benchmarks/joint_pipeline_benchmark.cpp`, `docs/development/status.md`.
+
+## D-043 — Standard camera + joint workload is an early V1 gate
+
+**Status:** Accepted
+
+The V1 reference workload is:
+
+```text
+10 cameras × 1280×720 × 30 FPS
++
+100 joints × 100 parameters per joint × 1 kHz
+```
+
+Fake Runtime capacity qualification belongs to M2. Real ROS2/FastDDS + MCAP and
+filesystem qualification belongs to M3/M4. Long-duration soak and release
+hardware qualification remain in M5.
+
+A standard profile passes only when the offered workload is accepted without
+steady-state Admission WaitTimeout/rejection, bounded queues do not grow
+without limit, Accepted Records reach terminal completion, and Stop converges.
+Merely recording a lower throughput number is not a PASS.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`, `docs/design/runtime.md`,
+`docs/development/plan.md`.
+
+## D-044 — V1 Copy PayloadPool uses isolated size classes
+
+**Status:** Accepted
+
+V1 Runtime Copy uses activation-owned, fixed-capacity PayloadPool size classes.
+Each class has independent block count and physical-byte capacity. A Payload is
+assigned to the smallest accommodating class before Gate Pass; class exhaustion
+fails Admission rather than borrowing unbounded heap or silently consuming an
+unrelated class.
+
+Logical Payload-byte accounting, class object occupancy and physical reserved
+bytes are all observable. This is required so raw camera frames and high-rate
+small joint Records can coexist without one workload exhausting the other's
+physical resource pool.
+
+**Reference:** `docs/design/payload.md`, `docs/design/runtime.md`,
+`docs/design/admission.md`, `docs/development/status.md`.
+
+## D-045 — Plugin-origin cleanup is supervised and quarantinable
+
+**Status:** Accepted
+
+Every external Adopt/Retain Payload anchor carries the owning Acquisition
+instance lifetime lease until its exactly-once release callback returns.
+Accepted operations have release-work ownership reserved before Gate Pass.
+Plugin release callbacks run on bounded Release Executor workers.
+
+If a release worker cannot make progress before the Runtime Stop deadline, its
+joinable thread and worker state are transferred to the process-wide
+`QuarantineManager`; the activation root, Plugin instance/Dso leases and
+Payload anchor remain retained. The worker is never detached and `dlclose` is
+never attempted while it may still execute.
+
+Plugin `destroy()` is explicit and invoked through the same deadline-supervised
+call path. A timed-out destroy remains owned by its retained supervised call
+and activation root. Implicit destroy from a normal destructor is not part of
+the production lifecycle.
+
+**Reference:** `docs/design/payload.md`,
+`docs/design/rodaq_plugin_system.md`, `docs/design/runtime.md`,
+`tests/integration/runtime_pipeline_test.cpp`.
+
+## D-046 — V1 ABI semantic firewall is fail-closed
+
+**Status:** Accepted
+
+ABI validation order is:
+
+```text
+scalar/count limits
+    -> pointer/count structural relationships
+    -> element dereference
+    -> enum/reserved/presence semantics
+```
+
+Timestamp arrays are bounded before iteration: three Acquisition transport
+timestamps and four canonical slots including Runtime ingress. APPENDABLE
+outputs use only the caller-provided initialized prefix. Storage submit
+outputs validate payload/persistence enums, reserved fields, diagnostics and
+success/failure relationships.
+
+Plugin-origin diagnostic buffers validate status, flags, reserved words,
+capacity bounds and UTF-8 before Runtime reads them. Malformed diagnostics are
+an ABI violation or rejected input, never an indefinite or partially trusted
+value.
+
+**Reference:** `docs/design/canonical_profile.md`,
+`docs/design/rodaq_plugin_system.md`, `docs/design/storage_plugin.md`,
+`docs/development/review_report.md` A-02/A-10.
+
+## D-047 — Acquisition health is operational state
+
+**Status:** Accepted
+
+`AVAILABLE`, `RECOVERABLE_FAILURE`, and `TERMINAL_FAILURE` are Runtime
+operational states, not ordinary diagnostics.
+
+Submission eligibility is centralized as:
+
+```text
+RuntimeRunning
+&& GateOpen
+&& PluginHealth == Available
+&& SourceEligibleIfPresent
+&& StreamAvailable
+&& BindingCurrent
+&& BindingLifecycle == Active
+&& SequenceCanAllocate
+```
+
+A recoverable failure invalidates current routing and requires new Descriptor
+and Binding activation before normal submission resumes. Availability does not
+reactivate stale Bindings. Terminal failure synthesizes an error when no
+diagnostic is supplied and ends that Plugin's participation in the activation.
+
+**Reference:** `docs/design/acquisition_plugin.md`,
+`docs/design/runtime.md`, `tests/integration/runtime_pipeline_test.cpp`.
+
+## D-048 — Dispatch, Payload, release and Persistence axes are orthogonal
+
+**Status:** Accepted
+
+Dispatch and operation state do not encode Payload or Persistence progress.
+Payload consumption, Plugin-origin release work, and Persistence each have an
+independent state dimension. An operation may have Payload Released while
+Persistence remains Pending. An operation slot is not returned until all three
+required axes are terminal.
+
+Normal slot return uses a state/generation transition and does not scan a
+free list. Duplicate or late terminal callbacks fail closed.
+
+**Reference:** `docs/design/runtime.md`,
+`docs/design/storage_plugin.md`, `src/runtime/storage_pipeline.*`.
+
+## D-049 — Copy Payload uses pre-Gate size-class reservation
+
+**Status:** Accepted
+
+Runtime selects the smallest accommodating configured Payload size class
+before Gate Pass. It reserves the physical block, logical Payload bytes,
+dispatch/operation/completion capacity and release ownership as one
+all-or-nothing Pre-Gate set. Copy materialization completes before final
+eligibility revalidation and Gate Pass.
+
+Classes have independent object counts and physical bytes. Exhaustion of one
+class neither borrows from another class nor falls back to ordinary heap
+allocation.
+
+**Reference:** `docs/design/payload.md`,
+`docs/design/admission.md`, `docs/design/runtime.md`,
+`tests/runtime/payload_pool_test.cpp`.
+
+## D-050 — Runtime Application API is an installable Candidate
+
+**Status:** Accepted
+
+`RuntimeConfig`, `ResourceConfig`, `PluginConfig`, `StorageConfig`,
+`Runtime`, Runtime state/failure/stats, Plugin topology and Payload statistics
+form the M2 Runtime Application API Candidate.
+
+The Candidate is installed and validated by an external CMake consumer. It is
+not frozen for arbitrary compiler/STL compatibility and may evolve through
+M3/M4 backend validation. The Stable C Plugin ABI remains independently
+frozen.
+
+**Reference:** `include/rodaq/runtime/`, `cmake/install.cmake`,
+`tests/abi/install/runtime_consumer/`.
+
+## D-051 — Logging is Runtime-owned, bounded and quarantinable
+
+**Status:** Accepted
+
+Runtime owns a `LoggingContext` with fixed record and byte capacity,
+drop-new policy, high-water/drop/backend-failure counters, direct recursion
+detection, bounded flush, bounded shutdown, and Plugin log/diagnostic routing.
+spdlog and fmt are private implementation dependencies and do not appear in
+Public API or Plugin ABI.
+
+A backend exception or timeout is contained. A worker that cannot stop by the
+deadline is transferred to the process-wide worker quarantine rather than
+detached or destroyed while executing backend code.
+
+**Reference:** `docs/design/logging.md`,
+`include/rodaq/runtime/logging.hpp`, `src/runtime/logging_context.*`,
+`src/runtime/spdlog_backend.*`.
+
+## D-052 — Fake Runtime capacity and production storage are separate gates
+
+**Status:** Accepted
+
+M2 qualification proves bounded Fake Runtime capacity for camera, joint and
+mixed workloads. It does not prove MCAP serialization, compression, filesystem
+durability, NVMe sustained write, crash recovery, or long-duration production
+behavior. Those remain M3/M4/M5 evidence.
+
+A benchmark passes a capacity profile only when the offered workload is
+accepted, terminal operation occupancy returns to zero, HWM remains bounded,
+no steady-state WaitTimeout/rejection is introduced by capacity, ordering is
+preserved, and Stop converges.
+
+**Reference:** `docs/design/rodaq_v1_system_design.md`,
+`docs/design/runtime.md`, `benchmarks/`.
+
+## D-053 — Application-facing Runtime ships as a shared library
+
+**Status:** Accepted
+
+The production Runtime target is `librodaq_runtime.so` with hidden default
+visibility. Only the Runtime Application API Candidate uses export
+attributes. Private logging, config parser, Plugin loader, histogram and
+storage-pipeline implementation symbols stay behind the Runtime DSO.
+
+Normal Runtime builds require only the production dependencies. Test and
+benchmark dependencies remain conditional. Static Runtime delivery is not a
+V1 convergence deliverable because it requires a separate fully merged
+transitive static-link closure.
+
+**Reference:** `src/runtime/CMakeLists.txt`, `cmake/install.cmake`,
+`cmake/dependencies.cmake`, `cmake/dependency_inventory.json.in`.

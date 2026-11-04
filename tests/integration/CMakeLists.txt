@@ -22,7 +22,7 @@ add_executable(rodaq_runtime_pipeline_test runtime_pipeline_test.cpp)
 target_link_libraries(rodaq_runtime_pipeline_test
     PRIVATE
         GTest::gtest_main
-        rodaq_runtime
+        rodaq_runtime_testing
 )
 rodaq_enable_warnings(rodaq_runtime_pipeline_test)
 rodaq_enable_sanitizers(rodaq_runtime_pipeline_test)

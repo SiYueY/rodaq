@@ -6217,3 +6217,20 @@ retention / quarantine
 > **以 ROS2、FastDDS 两个 V1 required implementation 验证完整 lifecycle、discovery、identity、schema、clock、timestamp、payload、backpressure、dynamic evolution、failure/recovery、InteropProjection 和 quiescence 能力，同时保持 Contract 对未来 Generic DDS、SocketCAN 等 backend 可扩展；M3 先实现 ROS2，M4 再实现 FastDDS，并继续把单 Stream failure 与 Plugin-wide failure 解耦，使 Payload ownership 在所有正常和异常提交路径上明确、保守且 memory-safe。**
 
 ROS2 与 FastDDS Acquisition 默认是 alternative deployment profiles。V1 不要求它们在同一 process namespace 同时激活；若底层 Fast DDS/Fast CDR dependency closure 未通过 ABI/SONAME/symbol coexistence qualification，Runtime/PluginManager 必须将 simultaneous activation 视为 unsupported combination，而不是依赖动态链接器的偶然解析结果。
+
+---
+
+## M2 Convergence Acquisition Health Amendment
+
+`AVAILABLE`, `RECOVERABLE_FAILURE` and `TERMINAL_FAILURE` are explicit
+operational states. Normal Submit, discovery and canonical registration use
+the same Plugin-health eligibility rule.
+
+Entering recoverable failure retires or invalidates current routing and wakes
+Admission waiters. The Plugin may become `AVAILABLE` again, but that restores
+only discovery/registration eligibility. It does not revive an old Binding;
+new Descriptor readiness and Binding activation are required.
+
+Terminal failure ends the Plugin's participation in the activation. If the
+Plugin did not supply a valid diagnostic, Runtime creates the terminating
+Runtime failure so the condition cannot be silently ignored.

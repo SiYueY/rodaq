@@ -3450,6 +3450,20 @@ V1 Profile too narrow
 
 ---
 
+## M2 Convergence Limits
+
+Acquisition transport timestamp keys and values are limited to three before
+pointer/count dereference. Canonical timestamp slots are limited to four:
+slot 0 is Runtime ingress and slots 1..N are merged transport timestamps.
+Pointer/count mismatch and wrapping additions are rejected.
+
+Activation generation exhaustion is explicit and terminal for that Runtime
+instance. A new activation that could truncate into a stale handle generation
+is refused. Registry slot generation exhaustion retires that slot instead of
+wrapping into a previously used handle value.
+
+---
+
 ## 5.8 V1 Profile 当前基线
 
 v0.5 的核心基线：

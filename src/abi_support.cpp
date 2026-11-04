@@ -131,8 +131,28 @@ bool is_valid_abi_bool(rodaq_bool value) noexcept {
     return value == RODAQ_FALSE || value == RODAQ_TRUE;
 }
 
-bool is_valid_timestamp_values(const rodaq_timestamp_value* values, std::uint32_t count) noexcept {
-    if (count != 0 && values == nullptr) {
+bool is_valid_abi_error(const rodaq_error& error) noexcept {
+    const bool known_status =
+        error.code == RODAQ_STATUS_OK || error.code == RODAQ_STATUS_INVALID_ARGUMENT ||
+        error.code == RODAQ_STATUS_INVALID_STATE || error.code == RODAQ_STATUS_NOT_FOUND ||
+        error.code == RODAQ_STATUS_CONFLICT || error.code == RODAQ_STATUS_RESOURCE_EXHAUSTED ||
+        error.code == RODAQ_STATUS_UNAVAILABLE || error.code == RODAQ_STATUS_STORAGE_ERROR ||
+        error.code == RODAQ_STATUS_TIMEOUT || error.code == RODAQ_STATUS_INTERNAL_ERROR;
+    if (!known_status || (error.flags & ~RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED) != 0 ||
+        error.domain_size > RODAQ_ERROR_DOMAIN_CAPACITY ||
+        error.message_size > RODAQ_ERROR_MESSAGE_CAPACITY || error.reserved[0] != 0 ||
+        error.reserved[1] != 0) {
+        return false;
+    }
+    const std::string_view domain(error.domain, error.domain_size);
+    const std::string_view message(error.message, error.message_size);
+    return is_valid_utf8_without_nul(domain) && is_valid_utf8_without_nul(message);
+}
+
+bool is_valid_timestamp_values(
+    const rodaq_timestamp_value* values, std::uint32_t count,
+    std::uint32_t maximum_count) noexcept {
+    if (count > maximum_count || (count != 0 && values == nullptr)) {
         return false;
     }
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -232,6 +252,11 @@ Result<void> result_from_status(
     std::int64_t native_code = 0;
     std::string message = "plugin ABI call failed";
     if (status_error != nullptr) {
+        if (!is_valid_abi_error(*status_error) || status_error->code != status) {
+            return nonstd::make_unexpected(Error(
+                ErrorCode::InternalError, "plugin", 0,
+                "Plugin returned a malformed ABI diagnostic"));
+        }
         if (status_error->domain_size > 0 &&
             status_error->domain_size <= RODAQ_ERROR_DOMAIN_CAPACITY) {
             domain.assign(status_error->domain, status_error->domain_size);

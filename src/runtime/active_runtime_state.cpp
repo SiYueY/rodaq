@@ -2,6 +2,7 @@
 
 #include "plugin/plugin_error.hpp"
 #include "runtime/quarantine.hpp"
+#include "runtime/spdlog_backend.hpp"
 
 #include <rodaq/plugin/abi_support.hpp>
 #include <rodaq/plugin/runtime_services.hpp>
@@ -31,6 +32,29 @@ constexpr std::size_t kRuntimeClockPluginIndex = std::numeric_limits<std::size_t
 
 Error runtime_error(ErrorCode code, std::string message) {
     return Error(code, "runtime", 0, std::move(message));
+}
+
+std::unique_ptr<LatencyHistogram> make_latency_histogram() {
+    auto result = LatencyHistogram::Create(1, 60LL * 1'000'000'000LL, 3);
+    if (!result.has_value()) {
+        throw std::runtime_error(std::string(result.error().message()));
+    }
+    return std::move(result.value());
+}
+
+LatencySnapshot latency_snapshot(const LatencyHistogram& histogram) noexcept {
+    LatencySnapshot snapshot;
+    snapshot.count = histogram.Count();
+    if (snapshot.count == 0) {
+        return snapshot;
+    }
+    snapshot.minimum_ns = histogram.Min();
+    snapshot.maximum_ns = histogram.Max();
+    snapshot.p50_ns = histogram.P50();
+    snapshot.p95_ns = histogram.P95();
+    snapshot.p99_ns = histogram.P99();
+    snapshot.p999_ns = histogram.Percentile(99.9);
+    return snapshot;
 }
 
 template <typename T, typename HandleType>
@@ -164,7 +188,20 @@ const StorageServiceContext* storage_context_from(void* context) noexcept {
     return static_cast<const StorageServiceContext*>(context);
 }
 
-void common_log(void*, rodaq_log_level, rodaq_string_view, rodaq_string_view) noexcept {}
+void common_log(
+    void* context, rodaq_log_level level, rodaq_string_view category,
+    rodaq_string_view message) noexcept {
+    if (context == nullptr) {
+        return;
+    }
+    auto* state = state_from(context);
+    std::string_view parsed_category;
+    std::string_view parsed_message;
+    if (rodaq::parse_abi_string(category, &parsed_category) &&
+        rodaq::parse_abi_string(message, &parsed_message)) {
+        state->Log(level, parsed_category, parsed_message);
+    }
+}
 
 std::uint64_t common_monotonic_time_ns(void*) noexcept {
     const auto now = Clock::now().time_since_epoch();
@@ -195,7 +232,18 @@ rodaq_status common_lifecycle_snapshot(
 }
 
 void common_diagnostic(
-    void*, rodaq_diagnostic_severity, rodaq_string_view, rodaq_string_view) noexcept {}
+    void* context, rodaq_diagnostic_severity severity, rodaq_string_view code,
+    rodaq_string_view message) noexcept {
+    if (context == nullptr) {
+        return;
+    }
+    std::string_view parsed_code;
+    std::string_view parsed_message;
+    if (rodaq::parse_abi_string(code, &parsed_code) &&
+        rodaq::parse_abi_string(message, &parsed_message)) {
+        state_from(context)->Diagnostic(severity, parsed_code, parsed_message);
+    }
+}
 
 template <typename View, typename Getter>
 rodaq_status canonical_view(
@@ -366,7 +414,8 @@ rodaq_status acquisition_register_schema(
     try {
         auto* service_context = acquisition_context_from(context);
         SchemaHandle handle;
-        const auto result = service_context->state->RegisterSchema(*request, handle);
+        const auto result =
+            service_context->state->RegisterSchema(service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
@@ -476,11 +525,23 @@ rodaq_status acquisition_report_plugin_state(
         return assign_message(
             ErrorCode::InvalidArgument, "plugin state report is invalid", out_error);
     }
-    if (plugin_state == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE && diagnostic != nullptr) {
-        state_from(acquisition_context_from(context)->state)
-            ->RequestFailure(from_abi_error(*diagnostic));
+    if (diagnostic != nullptr && (!rodaq::is_valid_abi_error(*diagnostic) ||
+                                  (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE &&
+                                   diagnostic->code == RODAQ_STATUS_OK))) {
+        return assign_message(
+            ErrorCode::InvalidArgument, "plugin state diagnostic is malformed", out_error);
     }
-    return RODAQ_STATUS_OK;
+    try {
+        const auto* service_context = acquisition_context_from(context);
+        const auto result =
+            state_from(service_context->state)
+                ->ReportPluginState(service_context->plugin_index, plugin_state, diagnostic);
+        return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
+    } catch (const std::exception& error) {
+        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+    } catch (...) {
+        return assign_message(ErrorCode::InternalError, "Plugin state report failed", out_error);
+    }
 }
 
 rodaq_status acquisition_submit(
@@ -532,6 +593,13 @@ void storage_persistence_completed(
     }
     try {
         auto* state = state_from(storage_context_from(context)->state);
+        if (error != nullptr &&
+            (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
+            state->RequestFailure(runtime_error(
+                ErrorCode::InvalidArgument,
+                "Storage persistence callback supplied a malformed diagnostic"));
+            return;
+        }
         if (state->pipeline() != nullptr) {
             state->pipeline()->persistence_completed(operation, state_value, error);
         }
@@ -544,6 +612,14 @@ void storage_report_failure(void* context, const rodaq_error* error) noexcept {
         return;
     }
     try {
+        if (error != nullptr &&
+            (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
+            state_from(storage_context_from(context)->state)
+                ->RequestFailure(runtime_error(
+                    ErrorCode::InvalidArgument,
+                    "Storage failure callback supplied a malformed diagnostic"));
+            return;
+        }
         Error failure = error == nullptr
                             ? runtime_error(ErrorCode::StorageError, "Storage reported failure")
                             : from_abi_error(*error);
@@ -597,10 +673,10 @@ const rodaq_runtime_storage_v1 ActiveRuntimeState::kStorageVtable = {
 };
 
 Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::Create(
-    RuntimeOptions options, std::uint64_t activation_generation) {
+    RuntimeConfig config, std::uint64_t activation_generation) {
     try {
         return std::unique_ptr<ActiveRuntimeState>(
-            new ActiveRuntimeState(std::move(options), activation_generation));
+            new ActiveRuntimeState(std::move(config), activation_generation));
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::ResourceExhausted, "Runtime activation allocation failed"));
@@ -612,57 +688,67 @@ Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::Create(
     }
 }
 
-ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t activation_generation)
-: options_(std::move(options)),
+ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activation_generation)
+: options_(std::move(config)),
   activation_generation_(activation_generation),
   arena_([this] {
-      auto result = StructuralArena::Create(options_.structural_arena_bytes);
+      auto result = StructuralArena::Create(options_.resources.structural_arena_bytes);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
       return std::move(result.value());
   }()),
   sources_(make_registry<SourceEntry, SourceHandle>(
-      options_.max_sources, registry_generation(activation_generation))),
+      options_.resources.max_sources, registry_generation(activation_generation))),
   clocks_(make_registry<ClockEntry, ClockHandle>(
-      options_.max_clocks, registry_generation(activation_generation))),
+      options_.resources.max_clocks, registry_generation(activation_generation))),
   schemas_(make_registry<SchemaEntry, SchemaHandle>(
-      options_.max_schemas, registry_generation(activation_generation))),
+      options_.resources.max_schemas, registry_generation(activation_generation))),
   timestamp_key_sets_(make_registry<TimestampKeySetEntry, TimestampKeySetHandle>(
-      options_.max_timestamp_key_sets, registry_generation(activation_generation))),
+      options_.resources.max_timestamp_key_sets, registry_generation(activation_generation))),
   streams_(make_registry<StreamEntry, StreamHandle>(
-      options_.max_streams, registry_generation(activation_generation))),
+      options_.resources.max_streams, registry_generation(activation_generation))),
   descriptors_(make_registry<StreamDescriptorEntry, StreamDescriptorHandle>(
-      options_.max_stream_descriptors, registry_generation(activation_generation))),
+      options_.resources.max_stream_descriptors, registry_generation(activation_generation))),
   bindings_(make_registry<BindingEntry, BindingHandle>(
-      options_.max_bindings, registry_generation(activation_generation))),
+      options_.resources.max_bindings, registry_generation(activation_generation))),
   sequences_([this] {
-      auto result = AcceptanceSequenceAllocator::Create(options_.max_streams);
+      auto result = AcceptanceSequenceAllocator::Create(options_.resources.max_streams);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
       return std::move(result.value());
   }()),
   payload_pool_([this] {
-      auto result = PayloadPool::Create(options_.payload_block_bytes, options_.payload_block_count);
+      auto result = PayloadPool::Create(options_.resources.payload_pool);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
       return std::move(result.value());
   }()),
   projections_(ProjectionLimits{128, 8, 1024U * 1024U, 8U * 1024U * 1024U}),
-  state_(RuntimeState::Starting) {
-    source_handles_.reserve(options_.max_sources);
-    clock_handles_.reserve(options_.max_clocks);
-    schema_handles_.reserve(options_.max_schemas);
-    timestamp_key_set_handles_.reserve(options_.max_timestamp_key_sets);
-    stream_handles_.reserve(options_.max_streams);
-    descriptor_handles_.reserve(options_.max_stream_descriptors);
-    binding_handles_.reserve(options_.max_bindings);
+  state_(RuntimeState::Starting),
+  admission_wait_latency_(make_latency_histogram()),
+  storage_handoff_latency_(make_latency_histogram()),
+  payload_consumed_latency_(make_latency_histogram()),
+  persistence_latency_(make_latency_histogram()),
+  stop_latency_(make_latency_histogram()) {
+    source_handles_.reserve(options_.resources.max_sources);
+    clock_handles_.reserve(options_.resources.max_clocks);
+    schema_handles_.reserve(options_.resources.max_schemas);
+    timestamp_key_set_handles_.reserve(options_.resources.max_timestamp_key_sets);
+    stream_handles_.reserve(options_.resources.max_streams);
+    descriptor_handles_.reserve(options_.resources.max_stream_descriptors);
+    binding_handles_.reserve(options_.resources.max_bindings);
     secondary_failures_.reserve(kMaxSecondaryFailures);
-    descriptor_worker_requests_.resize(options_.max_stream_descriptors);
+    descriptor_worker_requests_.resize(options_.resources.max_stream_descriptors);
     acquisition_controls_.resize(options_.acquisitions.size());
     acquisition_instances_.resize(options_.acquisitions.size());
+    acquisition_health_.reserve(options_.acquisitions.size());
+    for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+        acquisition_health_.push_back(
+            std::make_unique<std::atomic<std::uint32_t>>(RODAQ_ACQUISITION_PLUGIN_AVAILABLE));
+    }
     acquisition_contexts_.reserve(options_.acquisitions.size());
     for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
         auto context = std::make_unique<AcquisitionServiceContext>();
@@ -672,6 +758,11 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
     }
     storage_context_ = std::make_unique<StorageServiceContext>();
     storage_context_->state = this;
+    auto logging = LoggingContext::Create(options_.logging, std::make_shared<SpdlogBackend>());
+    if (!logging.has_value()) {
+        throw std::runtime_error(std::string(logging.error().message()));
+    }
+    logging_context_ = std::move(logging.value());
     auto ingress = InitializeIngressClock();
     if (!ingress.has_value()) {
         throw std::runtime_error(std::string(ingress.error().message()));
@@ -683,6 +774,7 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeOptions options, std::uint64_t act
 }
 
 ActiveRuntimeState::~ActiveRuntimeState() noexcept {
+    payload_pool_.SetCapacityChangedSink({});
     if (!descriptor_worker_.joinable()) {
         return;
     }
@@ -911,19 +1003,18 @@ Result<void> ActiveRuntimeState::InitializePipeline(
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Runtime pipeline is already initialized"));
     }
-    if (effective_payload_limit == 0 || options_.payload_block_bytes < effective_payload_limit) {
+    const PayloadPoolConfig& pool_config = options_.resources.payload_pool;
+    if (effective_payload_limit == 0 || pool_config.classes.empty() ||
+        pool_config.classes.back().max_payload_bytes < effective_payload_limit) {
         return nonstd::make_unexpected(runtime_error(
             ErrorCode::InvalidArgument,
             "Configured payload block size is below the effective payload limit"));
     }
-    if (options_.payload_block_count < options_.operation_capacity) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidArgument, "Payload pool block count is below operation capacity"));
-    }
     try {
         pipeline_ = std::make_unique<StoragePipeline>(
-            options_.operation_capacity, options_.completion_capacity, effective_payload_limit,
-            maximum_payload_inflight_bytes, storage, progress_timeout,
+            options_.resources.operation_capacity, options_.resources.completion_capacity,
+            effective_payload_limit, maximum_payload_inflight_bytes, storage, progress_timeout,
+            options_.resources.payload_release_workers,
             [this](Error error) { RequestFailure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
                 if (!stats_.RecordPayloadReleased(bytes)) {
@@ -937,6 +1028,9 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                         ErrorCode::InternalError,
                         "Runtime inflight record accounting underflowed"));
                 }
+            },
+            [this](StorageLatencyKind kind, std::int64_t duration_ns) noexcept {
+                RecordStorageLatency(kind, duration_ns);
             },
             [this](
                 const RuntimeRecord& record, rodaq_storage_operation operation,
@@ -983,6 +1077,7 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                 submission.payload = rodaq_bytes_view{payload.Data(), payload.Size()};
                 return Result<rodaq_storage_submission>(submission);
             });
+        payload_pool_.SetCapacityChangedSink([this] { pipeline_->NotifyAdmissionWaiters(); });
         auto started = pipeline_->Start();
         if (!started.has_value()) {
             pipeline_.reset();
@@ -1074,6 +1169,10 @@ void ActiveRuntimeState::MarkRunning() noexcept {
 }
 
 void ActiveRuntimeState::MarkStopping() noexcept {
+    if (!stop_started_valid_) {
+        stop_started_ = Clock::now();
+        stop_started_valid_ = true;
+    }
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         if (state_.load() != RuntimeState::Failed) {
@@ -1094,6 +1193,7 @@ void ActiveRuntimeState::MarkStopping() noexcept {
 }
 
 void ActiveRuntimeState::MarkStopped() noexcept {
+    RecordStopLatency();
     {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         if (state_.load() != RuntimeState::Failed) {
@@ -1168,6 +1268,76 @@ void ActiveRuntimeState::RequestFailure(Error error) noexcept {
         }
         MarkFailed();
     } catch (...) {
+    }
+}
+
+void ActiveRuntimeState::RecordSecondaryFailure(Error error) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(failure_mutex_);
+        if (secondary_failures_.size() < kMaxSecondaryFailures) {
+            secondary_failures_.push_back(std::move(error));
+        } else {
+            ++secondary_overflow_count_;
+        }
+    } catch (...) {
+    }
+}
+
+void ActiveRuntimeState::Log(
+    LogLevel level, std::string_view category, std::string_view message) noexcept {
+    if (logging_context_ != nullptr) {
+        logging_context_->Log(level, category, message);
+    }
+}
+
+void ActiveRuntimeState::Diagnostic(
+    rodaq_diagnostic_severity severity, std::string_view code, std::string_view message) noexcept {
+    LogLevel level = RODAQ_LOG_OFF;
+    switch (severity) {
+        case RODAQ_DIAGNOSTIC_INFO:
+            level = RODAQ_LOG_INFO;
+            break;
+        case RODAQ_DIAGNOSTIC_WARNING:
+            level = RODAQ_LOG_WARN;
+            break;
+        case RODAQ_DIAGNOSTIC_ERROR:
+            level = RODAQ_LOG_ERROR;
+            break;
+        case RODAQ_DIAGNOSTIC_FATAL:
+            level = RODAQ_LOG_CRITICAL;
+            break;
+        default:
+            return;
+    }
+    try {
+        const std::string text = std::string(code) + ": " + std::string(message);
+        Log(level, "rodaq.diagnostic", text);
+    } catch (...) {
+    }
+}
+
+bool ActiveRuntimeState::ShutdownLogging(std::chrono::steady_clock::time_point deadline) noexcept {
+    return logging_context_ == nullptr || logging_context_->Shutdown(deadline);
+}
+
+void ActiveRuntimeState::QuarantineLogging(std::string reason) noexcept {
+    if (logging_context_ != nullptr) {
+        logging_context_->QuarantineWorker(std::move(reason));
+    }
+}
+
+LoggingStats ActiveRuntimeState::CurrentLoggingStats() const noexcept {
+    return logging_context_ == nullptr ? LoggingStats{} : logging_context_->Stats();
+}
+
+Result<PayloadPoolStats> ActiveRuntimeState::PayloadPoolStatistics() const {
+    try {
+        return payload_pool_.Stats();
+    } catch (const std::bad_alloc&) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::ResourceExhausted, "Payload statistics allocation failed"));
+    } catch (const std::exception& error) {
+        return nonstd::make_unexpected(runtime_error(ErrorCode::InternalError, error.what()));
     }
 }
 
@@ -1372,6 +1542,61 @@ void ActiveRuntimeState::RecordPreRejected(bool gate_closed, bool timeout) noexc
     }
 }
 
+void ActiveRuntimeState::RecordAdmissionWait(std::int64_t duration_ns) noexcept {
+    if (duration_ns >= 0 && admission_wait_latency_ != nullptr) {
+        static_cast<void>(admission_wait_latency_->Record(duration_ns));
+    }
+}
+
+void ActiveRuntimeState::RecordStorageLatency(
+    StorageLatencyKind kind, std::int64_t duration_ns) noexcept {
+    LatencyHistogram* histogram = nullptr;
+    switch (kind) {
+        case StorageLatencyKind::Handoff:
+            histogram = storage_handoff_latency_.get();
+            break;
+        case StorageLatencyKind::PayloadConsumed:
+            histogram = payload_consumed_latency_.get();
+            break;
+        case StorageLatencyKind::PersistenceCompleted:
+            histogram = persistence_latency_.get();
+            break;
+    }
+    if (histogram != nullptr && duration_ns >= 0) {
+        static_cast<void>(histogram->Record(duration_ns));
+    }
+}
+
+void ActiveRuntimeState::RecordStopLatency() noexcept {
+    if (!stop_started_valid_ || stop_latency_ == nullptr) {
+        return;
+    }
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - stop_started_).count();
+    if (elapsed >= 0) {
+        static_cast<void>(stop_latency_->Record(elapsed));
+    }
+    stop_started_valid_ = false;
+}
+
+void ActiveRuntimeState::FillLatencyStats(RuntimeStatsSnapshot& snapshot) const noexcept {
+    if (admission_wait_latency_ != nullptr) {
+        snapshot.latencies.admission_wait = latency_snapshot(*admission_wait_latency_);
+    }
+    if (storage_handoff_latency_ != nullptr) {
+        snapshot.latencies.storage_handoff = latency_snapshot(*storage_handoff_latency_);
+    }
+    if (payload_consumed_latency_ != nullptr) {
+        snapshot.latencies.payload_consumed = latency_snapshot(*payload_consumed_latency_);
+    }
+    if (persistence_latency_ != nullptr) {
+        snapshot.latencies.persistence = latency_snapshot(*persistence_latency_);
+    }
+    if (stop_latency_ != nullptr) {
+        snapshot.latencies.stop = latency_snapshot(*stop_latency_);
+    }
+}
+
 Result<rodaq_runtime_lifecycle_snapshot> ActiveRuntimeState::LifecycleSnapshot() const {
     rodaq_runtime_lifecycle_snapshot snapshot{};
     const RuntimeState state = state_.load();
@@ -1404,8 +1629,8 @@ Result<rodaq_runtime_lifecycle_snapshot> ActiveRuntimeState::LifecycleSnapshot()
 
 Result<void> ActiveRuntimeState::RegisterSource(
     std::size_t plugin_index, const rodaq_source_registration& request, SourceHandle& handle) {
-    static_cast<void>(plugin_index);
-    if (!rodaq::plugin::is_valid_source_registration(request)) {
+    if (!rodaq::plugin::is_valid_source_registration(request) ||
+        plugin_index >= acquisition_health_.size()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "Source registration is invalid"));
     }
@@ -1417,6 +1642,11 @@ Result<void> ActiveRuntimeState::RegisterSource(
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Source registration is not allowed"));
+    }
+    if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+        RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidState, "Source registration requires an available Plugin"));
     }
     for (SourceHandle existing : source_handles_) {
         const SourceEntry* entry = sources_.Find(existing);
@@ -1454,6 +1684,11 @@ Result<void> ActiveRuntimeState::RegisterClock(
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Clock registration is not allowed"));
     }
+    if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+        RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidState, "Clock registration requires an available Plugin"));
+    }
     for (ClockHandle existing : clock_handles_) {
         const ClockEntry* entry = clocks_.Find(existing);
         if (entry == nullptr || entry->plugin_index != plugin_index ||
@@ -1488,8 +1723,9 @@ Result<void> ActiveRuntimeState::RegisterClock(
 }
 
 Result<void> ActiveRuntimeState::RegisterSchema(
-    const rodaq_schema_registration& request, SchemaHandle& handle) {
-    if (!rodaq::plugin::is_valid_schema_registration(request)) {
+    std::size_t plugin_index, const rodaq_schema_registration& request, SchemaHandle& handle) {
+    if (!rodaq::plugin::is_valid_schema_registration(request) ||
+        plugin_index >= acquisition_health_.size()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "Schema registration is invalid"));
     }
@@ -1506,6 +1742,11 @@ Result<void> ActiveRuntimeState::RegisterSchema(
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Schema registration is not allowed"));
+    }
+    if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+        RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidState, "Schema registration requires an available Plugin"));
     }
     for (SchemaHandle existing : schema_handles_) {
         const SchemaEntry* entry = schemas_.Find(existing);
@@ -1550,6 +1791,11 @@ Result<void> ActiveRuntimeState::RegisterStream(
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Stream registration is not allowed"));
     }
+    if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+        RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidState, "Stream registration requires an available Plugin"));
+    }
     for (StreamHandle existing : stream_handles_) {
         const StreamEntry* entry = streams_.Find(existing);
         if (entry != nullptr && entry->plugin_index == plugin_index &&
@@ -1587,7 +1833,6 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
     std::size_t plugin_index, const rodaq_stream_descriptor_registration& request,
     StreamDescriptorHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_descriptor_registration(request) ||
-        request.timestamp_key_count + 1U > TimestampState::kMaxSlots ||
         plugin_index >= options_.acquisitions.size()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "StreamDescriptor publication is invalid"));
@@ -1605,6 +1850,11 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidState, "Descriptor publication is not allowed"));
         }
+        if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+            RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+            return nonstd::make_unexpected(runtime_error(
+                ErrorCode::InvalidState, "Descriptor publication requires an available Plugin"));
+        }
         critical_for_start = current_state == RuntimeState::Starting;
         const StreamHandle stream_handle = StreamHandle::FromRaw(request.stream.value);
         StreamEntry* stream = streams_.Find(stream_handle);
@@ -1620,8 +1870,9 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         std::pmr::vector<TimestampKeyRecord> keys(arena_->Resource());
         std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->Resource());
         std::pmr::vector<rodaq_timestamp_key> transport_abi_keys(arena_->Resource());
-        keys.reserve(request.timestamp_key_count + 1U);
-        abi_keys.reserve(request.timestamp_key_count + 1U);
+        const std::size_t key_count = static_cast<std::size_t>(request.timestamp_key_count);
+        keys.reserve(key_count + 1U);
+        abi_keys.reserve(key_count + 1U);
         transport_abi_keys.reserve(request.timestamp_key_count);
         keys.push_back(TimestampKeyRecord{
             copy_string(arena_->Resource(), kIngressTimestampRole), ingress_clock_});
@@ -2064,6 +2315,7 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
             descriptor_entry->lifecycle = DescriptorLifecycle::Active;
         }
     }
+    NotifyAdmissionEligibilityChanged();
     if (transition_stale) {
         const rodaq_binding_abort_disposition disposition =
             old_binding.Valid() && state_.load() == RuntimeState::Running
@@ -2195,37 +2447,114 @@ void ActiveRuntimeState::RetireDrainingBinding(BindingHandle binding) noexcept {
     }
 }
 
+void ActiveRuntimeState::NotifyAdmissionEligibilityChanged() noexcept {
+    admission_eligibility_generation_.fetch_add(1, std::memory_order_acq_rel);
+    if (pipeline_ != nullptr) {
+        pipeline_->NotifyAdmissionWaiters();
+    }
+}
+
 Result<void> ActiveRuntimeState::ReportSourceAvailability(
     SourceHandle source, rodaq_availability_state availability) {
-    std::lock_guard<std::mutex> lock(control_mutex_);
-    SourceEntry* entry = sources_.Find(source);
-    if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Source handle is unknown"));
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        SourceEntry* entry = sources_.Find(source);
+        if (entry == nullptr) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::NotFound, "Source handle is unknown"));
+        }
+        if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
+            availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidArgument, "Source availability is invalid"));
+        }
+        entry->availability->store(availability);
     }
-    if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
-        availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Source availability is invalid"));
-    }
-    entry->availability->store(availability);
+    NotifyAdmissionEligibilityChanged();
     return {};
 }
 
 Result<void> ActiveRuntimeState::ReportStreamAvailability(
     StreamHandle stream, rodaq_availability_state availability) {
-    std::lock_guard<std::mutex> lock(control_mutex_);
-    StreamEntry* entry = streams_.Find(stream);
-    if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Stream handle is unknown"));
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        StreamEntry* entry = streams_.Find(stream);
+        if (entry == nullptr) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::NotFound, "Stream handle is unknown"));
+        }
+        if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
+            availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidArgument, "Stream availability is invalid"));
+        }
+        entry->availability->store(availability);
     }
-    if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
-        availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
+    NotifyAdmissionEligibilityChanged();
+    return {};
+}
+
+Result<void> ActiveRuntimeState::ReportPluginState(
+    std::size_t plugin_index, rodaq_acquisition_plugin_state plugin_state,
+    const rodaq_error* diagnostic) {
+    if (plugin_index >= acquisition_health_.size() ||
+        (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE &&
+         plugin_state != RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE &&
+         plugin_state != RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE)) {
         return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Stream availability is invalid"));
+            runtime_error(ErrorCode::InvalidArgument, "Plugin state is invalid"));
     }
-    entry->availability->store(availability);
+
+    bool notify_eligibility = false;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        const std::uint32_t previous =
+            acquisition_health_[plugin_index]->load(std::memory_order_acquire);
+        if (previous == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE &&
+            plugin_state != RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Terminal Plugin failure cannot recover"));
+        }
+        acquisition_health_[plugin_index]->store(plugin_state, std::memory_order_release);
+
+        if (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+            for (StreamHandle handle : stream_handles_) {
+                StreamEntry* stream = streams_.Find(handle);
+                if (stream == nullptr || stream->plugin_index != plugin_index) {
+                    continue;
+                }
+                stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+                stream->current_binding->store(0, std::memory_order_release);
+            }
+            for (BindingHandle handle : binding_handles_) {
+                BindingEntry* binding = bindings_.Find(handle);
+                if (binding != nullptr && binding->plugin_index == plugin_index) {
+                    binding->lifecycle->store(
+                        static_cast<std::uint32_t>(BindingLifecycle::Retired),
+                        std::memory_order_release);
+                }
+            }
+            for (StreamDescriptorHandle handle : descriptor_handles_) {
+                StreamDescriptorEntry* descriptor = descriptors_.Find(handle);
+                if (descriptor != nullptr && descriptor->plugin_index == plugin_index &&
+                    descriptor->lifecycle != DescriptorLifecycle::Failed) {
+                    descriptor->lifecycle = DescriptorLifecycle::Superseded;
+                }
+            }
+            notify_eligibility = true;
+        }
+    }
+
+    if (notify_eligibility) {
+        NotifyAdmissionEligibilityChanged();
+    }
+    if (plugin_state == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE) {
+        RequestFailure(
+            diagnostic == nullptr
+                ? runtime_error(
+                      ErrorCode::Unavailable, "Acquisition Plugin reported terminal failure")
+                : from_abi_error(*diagnostic));
+    }
     return {};
 }
 
@@ -2377,6 +2706,11 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     if (state_.load() != RuntimeState::Running || !GateOpen() || pipeline_ == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_NOT_RUNNING, disposition, true);
     }
+    if (plugin_index >= acquisition_health_.size() ||
+        acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+            RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+        return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
+    }
 
     const StreamHandle stream_handle = StreamHandle::FromRaw(submission.stream.value);
     const StreamDescriptorHandle descriptor_handle =
@@ -2439,7 +2773,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     }
 
     const std::size_t payload_size = static_cast<std::size_t>(submission.payload.size);
-    if (payload_size > options_.max_single_payload_bytes) {
+    if (payload_size > options_.resources.max_single_payload_bytes) {
         return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_TOO_LARGE, disposition);
     }
     if (submission.payload.data == nullptr && payload_size != 0) {
@@ -2473,7 +2807,13 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     }
 
     const auto deadline = Clock::now() + options_.submit_wait_timeout;
-    auto acquired = pipeline_->AcquirePreGate(payload_size, options_.admission_mode, deadline);
+    const auto admission_wait_started = Clock::now();
+    auto acquired = pipeline_->AcquirePreGate(
+        payload_size, options_.admission_mode, &payload_pool_, payload_mode == RODAQ_PAYLOAD_COPY,
+        deadline, admission_eligibility_generation_);
+    RecordAdmissionWait(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - admission_wait_started)
+            .count());
     if (!acquired.has_value()) {
         return nonstd::make_unexpected(std::move(acquired.error()));
     }
@@ -2484,6 +2824,28 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
             return pre_rejected(*this, RODAQ_REJECTION_WAIT_TIMEOUT, disposition, false, true);
         case PreGateAcquireOutcome::ResourceUnavailable:
             return pre_rejected(*this, RODAQ_REJECTION_RESOURCE_UNAVAILABLE, disposition);
+        case PreGateAcquireOutcome::EligibilityChanged: {
+            if (state_.load() != RuntimeState::Running || !GateOpen()) {
+                return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
+            }
+            const BindingHandle binding_handle =
+                BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
+            const BindingEntry* binding_entry =
+                binding_handle.Valid() ? bindings_.FindStable(binding_handle) : nullptr;
+            if (binding_entry == nullptr || binding_entry->descriptor != descriptor_handle) {
+                return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
+            }
+            if (stream->availability->load(std::memory_order_acquire) !=
+                RODAQ_AVAILABILITY_AVAILABLE) {
+                return pre_rejected(*this, RODAQ_REJECTION_STREAM_UNAVAILABLE, disposition);
+            }
+            if (source_entry != nullptr &&
+                source_entry->availability->load(std::memory_order_acquire) !=
+                    RODAQ_AVAILABILITY_AVAILABLE) {
+                return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);
+            }
+            return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
+        }
         case PreGateAcquireOutcome::Acquired:
             break;
     }
@@ -2492,7 +2854,8 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     const PayloadView payload_view(submission.payload.data, payload_size);
     Payload payload;
     if (payload_mode == RODAQ_PAYLOAD_COPY) {
-        auto copied = payload_pool_.Acquire(payload_size, payload_view);
+        auto copied =
+            payload_pool_.Materialize(reservation.TakePayloadPoolReservation(), payload_view);
         if (!copied.has_value()) {
             return pre_rejected(
                 *this,
@@ -2503,20 +2866,30 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         }
         payload = std::move(copied.value());
     } else if (payload_mode == RODAQ_PAYLOAD_ADOPT) {
+        if (plugin_index >= acquisition_instances_.size() ||
+            !acquisition_instances_[plugin_index].has_value()) {
+            return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
+        }
         auto adopted = Payload::Adopt(
             payload_view, submission.payload.owner_context, submission.payload.release);
         if (!adopted.has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(adopted.value());
+        payload.AttachLifetimeGuard(acquisition_instances_[plugin_index]->lease().lifetime_owner());
         disposition = RODAQ_PAYLOAD_DISPOSITION_RUNTIME_RESPONSIBLE;
     } else {
+        if (plugin_index >= acquisition_instances_.size() ||
+            !acquisition_instances_[plugin_index].has_value()) {
+            return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
+        }
         auto retained = Payload::Retain(
             payload_view, submission.payload.owner_context, submission.payload.release);
         if (!retained.has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(retained.value());
+        payload.AttachLifetimeGuard(acquisition_instances_[plugin_index]->lease().lifetime_owner());
         disposition = RODAQ_PAYLOAD_DISPOSITION_RUNTIME_RESPONSIBLE;
     }
 
@@ -2529,6 +2902,11 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         std::lock_guard<std::mutex> gate_lock(admission_mutex_);
         if (state_.load() != RuntimeState::Running || !gate_open_) {
             return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
+        }
+        if (plugin_index >= acquisition_health_.size() ||
+            acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
+                RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+            return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
         }
         if (!pipeline_->AdmissionOpen()) {
             admission_failure = true;
@@ -2575,9 +2953,14 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
                 deferred_result.emplace(submit_result(
                     RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
             } else {
+                const std::int64_t accepted_steady_time_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now().time_since_epoch())
+                        .count();
                 auto record = RuntimeRecord::Create(
                     final_binding, sequence.value(), source, source_sequence, timestamps,
-                    std::move(payload), reservation.TakeRecordReservation());
+                    std::move(payload), reservation.TakeRecordReservation(),
+                    accepted_steady_time_ns);
                 if (!record.has_value()) {
                     --admission_inflight_;
                     final_binding_entry->admission_inflight->fetch_sub(1);

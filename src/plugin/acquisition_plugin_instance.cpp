@@ -92,6 +92,8 @@ Result<void> AcquisitionPluginInstance::start() { return PluginInstanceStateAcce
 
 Result<void> AcquisitionPluginInstance::stop() { return PluginInstanceStateAccess::stop(state_); }
 
+void AcquisitionPluginInstance::destroy() noexcept { PluginInstanceStateAccess::destroy(state_); }
+
 Result<rodaq_interface> AcquisitionPluginInstance::query_interface(std::string_view interface_id) {
     return PluginInstanceStateAccess::query_interface(state_, interface_id);
 }

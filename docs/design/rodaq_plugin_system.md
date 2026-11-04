@@ -8068,3 +8068,24 @@ Mechanical ABI CI
 > **Runtime 内部可以继续快速演进，而已经开发的 Acquisition / Storage Plugin 不需要随着 Runtime 内部重构反复修改。**
 
 这正是 RoDAQ V1 在正式进入 ROS2、DDS、MCAP、SQLite3 插件开发之前，值得优先投入并冻结的基础设施。
+
+---
+
+## M2 Convergence Plugin Contract
+
+All counts and scalar bounds are enforced before pointer/count arrays are
+dereferenced. `UINT32_MAX`-style inputs fail without arithmetic wraparound.
+APPENDABLE outputs are read only through their declared initialized prefix and
+are rejected when reserved fields, states or diagnostic relationships are
+invalid.
+
+Adopt/Retain anchors carry the Plugin instance lease. Runtime retains the
+instance and library while a release callback, pending operation or extension
+view can still execute Plugin code. Release callbacks execute on bounded
+Release Executor workers. A timed-out release or destroy transfers its worker
+and retained activation state to the process-wide quarantine; implicit
+destructor destroy, detach and premature `dlclose` are forbidden.
+
+Acquisition Plugin health is operational state. Recoverable failure invalidates
+the Plugin's current routing and requires fresh Descriptor/Binding activation.
+Terminal failure synthesizes a failure when no diagnostic is supplied.

@@ -29,6 +29,7 @@ public:
     Result<rodaq_storage_submit_result> submit(const rodaq_storage_submission& submission);
     Result<void> flush();
     Result<void> close(const rodaq_storage_close_request& request);
+    void destroy() noexcept;
     Result<rodaq_interface> query_interface(std::string_view interface_id);
     Result<rodaq_interface> required_control_interface() const;
 

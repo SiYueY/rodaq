@@ -3327,6 +3327,72 @@ Gate pass 前 reserved dispatch slot 必须保证后续 enqueue 不再依赖可�
 
 因此首个实现应采用 fixed-capacity/preallocated transport；oneTBB queue 只有在证明 reservation→enqueue 之间不存在新的 failure-capable allocation 后才能替代。
 
+### 8.3.1 Mixed-Rate Dispatch Capacity
+
+V1 继续使用 one logical Storage Dispatch Lane，但 capacity 不能只按 small
+Record 数或只按 camera byte rate 配置。标准 mixed profile 必须同时满足：
+
+```text
+10 cameras × 1280×720 × 30 FPS
++
+100 joints × 100 parameters × 1 kHz joint telemetry
+```
+
+Runtime 必须分别配置并观测：
+
+```text
+dispatch record slots
+operation tracking slots
+completion tracking slots
+PayloadPool capacity per size class
+maximum payload bytes
+maximum inflight bytes
+```
+
+同一 Stream 仍保持 AcceptanceSequence 与 Storage handoff 顺序。跨 Stream 不要求
+全局时间顺序，但标准 profile 必须证明：
+
+```text
+large camera Record does not permanently starve small joint Records
+small joint Records do not exhaust large camera Payload class capacity
+steady-state dispatch/operation/completion capacity does not saturate
+Stop drains every Accepted Record
+```
+
+one Storage Dispatch Lane 的每次 Storage Plugin submit 仍是一个不可分割调用。
+因此 profile 配置必须覆盖可观测的最长 backend submit 时间；large Record 可能造成
+有限队头延迟，但不能使 small Record 在 steady-state 中持续触发 Admission Wait
+或 WaitTimeout。若标准 profile 无法在该模型下满足声明门槛，必须通过新的设计决策
+调整 lane/fairness 模型，不能只在实现中增加 unbounded queue。
+
+标准 capacity 不得来自无依据的默认常数。每个 profile 至少按以下关系推导：
+
+```text
+record_capacity
+    >= ceil(peak_records_per_second
+             × maximum_tolerated_storage_stall
+             × safety_factor)
+
+byte_capacity
+    >= peak_payload_bytes_per_second
+       × maximum_tolerated_storage_stall
+       × safety_factor
+
+completion/operation capacity
+    >= record_capacity
+
+PayloadPool class object capacity
+    >= peak_class_records_per_second
+       × maximum_tolerated_storage_stall
+       × safety_factor
+```
+
+例如 production aggregated profile 若为 1,300 records/s、要求吸收 100 ms stall、
+safety factor 为 2，则 record capacity 至少为 260，实际应向上取整到 512 并
+通过边界测试确认。Per-joint 100k records/s 的 small-record stress profile 在同一
+100 ms 假设下需要至少 20k slots，不能继续沿用默认 64。具体 safety factor 和
+容差时间必须记录在 qualification profile 中。
+
 ---
 
 ## 8.4 Descriptor Handoff
@@ -7157,3 +7223,86 @@ activation-state reclamation
 这些约束共同形成一个：
 
 > **Control Plane 可动态演化、Data Plane 紧凑、同 Stream 顺序保证链完整、Binding 切换无 Prepared-window 竞态、Source 与 Stream failure 边界清楚、Storage dispatch/completion 具备有界进展语义、停止不会无限悬挂、Handle 与 activation lifetime 可验证、能够直接落地为 C++17 实现的 RoDAQ Runtime。**
+
+---
+
+## M2 Convergence Runtime Contract
+
+### Pre-Gate commit sequence
+
+```text
+structural validation
+    -> ingress timestamp capture
+    -> dispatch/operation/completion/Payload/release reservation
+    -> Copy materialization or external ownership acquisition
+    -> final eligibility revalidation
+    -> per-Stream commit and Gate Pass
+    -> allocation-free ordered publication
+```
+
+Copy materialization and external ownership acquisition must not occur after
+Gate Pass.
+
+### Slot state
+
+Dispatch, operation terminalization, Payload consumption, Plugin-origin
+Payload release and Persistence are separate state dimensions. A normal slot
+return is an O(1) state/generation transition. Duplicate terminal callback or
+duplicate slot return is an invariant failure.
+
+### Release ownership
+
+Every Accepted external Payload has pre-reserved Release work. Release runs
+outside Storage submit/completion callbacks on configured workers. A worker
+that cannot finish before Stop deadline is moved to the bounded process-wide
+worker quarantine with its worker state; the activation root and Plugin leases
+remain retained. Detach, destructive unload and join on an expired deadline
+are forbidden.
+
+### Configuration and metrics
+
+`RuntimeConfig` is split into lifecycle/plugin settings and `ResourceConfig`;
+Runtime code does not accept a single ambiguous Payload block size. Current
+occupancy must converge to zero after normal Stop while bounded high-water
+marks remain observable.
+
+### Lock and callback rule
+
+No Plugin/backend callback executes while holding Canonical Registry,
+StructuralArena, Admission Gate, StoragePipeline or ResourceBudget structural
+locks. A caller that must re-enter Runtime observes a separate lock domain or
+is rejected as a protocol violation.
+
+### Failure disposition
+
+| Condition | Runtime disposition |
+|---|---|
+| Invalid structural input or unknown/stale canonical handle | Pre-Admission rejection; Runtime stays Running |
+| Pre-Gate resource exhaustion or wait deadline | Rejection/WaitTimeout; no Accepted Record |
+| Gate closed during Submit | GateClosed rejection; no Accepted Record |
+| Post-Gate invariant, duplicate callback or impossible release enqueue | Runtime failure; unresolved work is quarantined |
+| Acquisition recoverable health failure | Invalidate affected routing; Runtime stays Running |
+| Acquisition terminal health failure | Runtime failure |
+| Storage submit/background fatal failure | Runtime failure; dependent work is quarantined |
+| Terminal PersistenceFailed/Unknown | Persist record outcome; session policy is not inferred from the per-record axis |
+| Plugin release/destroy or callback progress timeout | Bounded Stop failure with process-wide quarantine |
+
+### Lock ownership
+
+| Lock domain | Owns | Never held while |
+|---|---|---|
+| `control_mutex_` | Canonical registry publication, Binding routing, health snapshots | Calling Storage/Acquisition Plugin code |
+| `admission_mutex_` | Global Gate, submission drain, admission in-flight count | Waiting for canonical metadata or Plugin work |
+| per-Stream admission mutex | Stream sequence/order commit | Global optional work that is not ordered after this Stream |
+| `StoragePipeline::mutex_` | Slot/queue/callback staging state | Executing Storage submit, Payload release or backend callbacks |
+| PayloadPool mutex | Per-class block/free-list state | Copying a large Payload |
+| ResourceBudget mutex | Counter reservation/rollback | Plugin/backend calls |
+| quarantine mutex | Retained calls/workers/activation roots | Joining a worker unless completion was already observed |
+
+### Configuration trust boundary
+
+Runtime/Plugin configuration is operator-controlled local input. RoDAQ never
+accepts an unbounded or remote configuration stream in V1. YAML file size is
+checked before reading; after yaml-cpp constructs its node graph, ConfigLoader
+enforces node count, depth, duplicate keys, scalar conversion and the
+RoDAQ-owned ConfigTree schema. `YAML::Node` never crosses the loader boundary.

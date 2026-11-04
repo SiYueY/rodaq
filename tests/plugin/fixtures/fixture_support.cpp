@@ -415,8 +415,10 @@ void fixture_record_event(const char* event) noexcept {
     if (descriptor < 0) {
         return;
     }
-    static_cast<void>(write(descriptor, event, std::strlen(event)));
-    static_cast<void>(write(descriptor, "\n", 1));
+    const ssize_t event_bytes = write(descriptor, event, std::strlen(event));
+    const ssize_t newline_bytes = write(descriptor, "\n", 1);
+    static_cast<void>(event_bytes);
+    static_cast<void>(newline_bytes);
     static_cast<void>(close(descriptor));
 }
 

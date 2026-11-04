@@ -23,7 +23,9 @@ bool parse_abi_string(rodaq_string_view value, std::string_view* out_value) noex
 bool parse_abi_bytes(
     rodaq_bytes_view value, const std::uint8_t** out_data, std::size_t* out_size) noexcept;
 bool is_valid_abi_bool(rodaq_bool value) noexcept;
-bool is_valid_timestamp_values(const rodaq_timestamp_value* values, std::uint32_t count) noexcept;
+bool is_valid_abi_error(const rodaq_error& error) noexcept;
+bool is_valid_timestamp_values(
+    const rodaq_timestamp_value* values, std::uint32_t count, std::uint32_t maximum_count) noexcept;
 rodaq_status status_from_error_code(ErrorCode code) noexcept;
 void assign_rodaq_error(
     rodaq_status status, std::string_view domain, std::int64_t native_code,

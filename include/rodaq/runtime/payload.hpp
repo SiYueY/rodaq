@@ -10,6 +10,9 @@
 namespace rodaq {
 
 class PayloadPoolState;
+namespace runtime {
+class ActiveRuntimeState;
+}
 
 using PayloadRelease = void (*)(void* owner_context) noexcept;
 
@@ -53,26 +56,32 @@ public:
     PayloadView View() const noexcept;
     std::size_t Size() const noexcept;
     bool Empty() const noexcept;
+    bool RequiresExternalRelease() const noexcept;
+    /// Attaches non-owning-domain lifetime state that must outlive the release
+    /// callback. Runtime uses this for the Acquisition Plugin instance lease.
+    void AttachLifetimeGuard(std::shared_ptr<void> lifetime_guard) noexcept;
 
 private:
     friend class PayloadPool;
     friend class PayloadPoolState;
+    friend class runtime::ActiveRuntimeState;
 
     Payload(
         std::shared_ptr<PayloadPoolState> pool_state, std::uint8_t* data, std::size_t size,
-        std::size_t block_index) noexcept;
+        std::size_t class_index, std::size_t block_index) noexcept;
     Payload(
         const std::uint8_t* data, std::size_t size, void* owner_context,
         PayloadRelease release) noexcept;
 
     void ReleaseCurrent() noexcept;
-
     std::shared_ptr<PayloadPoolState> pool_state_;
     std::uint8_t* data_ = nullptr;
     std::size_t size_ = 0;
+    std::size_t block_class_ = 0;
     std::size_t block_index_ = 0;
     void* owner_context_ = nullptr;
     PayloadRelease release_ = nullptr;
+    std::shared_ptr<void> lifetime_guard_;
 };
 
 }  // namespace rodaq

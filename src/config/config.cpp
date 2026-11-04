@@ -1,4 +1,4 @@
-#include "plugin/config_view.hpp"
+#include <rodaq/config/config.hpp>
 
 #include <rodaq/plugin/abi_support.hpp>
 
@@ -10,7 +10,7 @@
 #include <utility>
 #include <variant>
 
-namespace rodaq::plugin {
+namespace rodaq {
 
 struct ConfigMapEntry;
 
@@ -323,13 +323,13 @@ rodaq_config_view make_abi_view(const ConfigNode* node) noexcept {
 
 }  // namespace
 
-ConfigView::ConfigView(std::shared_ptr<const ConfigNode> node) : node_(std::move(node)) {}
+ConfigNodeView::ConfigNodeView(std::shared_ptr<const ConfigNode> node) : node_(std::move(node)) {}
 
-rodaq_config_kind ConfigView::kind() const noexcept {
+rodaq_config_kind ConfigNodeView::kind() const noexcept {
     return node_ == nullptr ? RODAQ_CONFIG_NULL : abi_kind(*node_);
 }
 
-std::size_t ConfigView::size() const noexcept {
+std::size_t ConfigNodeView::size() const noexcept {
     const std::uint64_t value = abi_size(node_.get());
     if (value > std::numeric_limits<std::size_t>::max()) {
         return std::numeric_limits<std::size_t>::max();
@@ -337,7 +337,7 @@ std::size_t ConfigView::size() const noexcept {
     return static_cast<std::size_t>(value);
 }
 
-Result<ConfigView> ConfigView::find(std::string_view key) const {
+Result<ConfigNodeView> ConfigNodeView::find(std::string_view key) const {
     if (node_ == nullptr) {
         return nonstd::make_unexpected(
             config_error(ErrorCode::InvalidState, "Config view is empty"));
@@ -358,10 +358,10 @@ Result<ConfigView> ConfigView::find(std::string_view key) const {
         return nonstd::make_unexpected(
             config_error(ErrorCode::NotFound, "Config MAP key was not found"));
     }
-    return ConfigView(found->value);
+    return ConfigNodeView(found->value);
 }
 
-Result<ConfigView> ConfigView::at(std::uint64_t index) const {
+Result<ConfigNodeView> ConfigNodeView::at(std::uint64_t index) const {
     if (node_ == nullptr) {
         return nonstd::make_unexpected(
             config_error(ErrorCode::InvalidState, "Config view is empty"));
@@ -376,10 +376,10 @@ Result<ConfigView> ConfigView::at(std::uint64_t index) const {
         return nonstd::make_unexpected(
             config_error(ErrorCode::NotFound, "Config index is out of range"));
     }
-    return ConfigView(std::shared_ptr<const ConfigNode>(node_, child));
+    return ConfigNodeView(std::shared_ptr<const ConfigNode>(node_, child));
 }
 
-Result<std::string_view> ConfigView::key_at(std::uint64_t index) const {
+Result<std::string_view> ConfigNodeView::key_at(std::uint64_t index) const {
     if (node_ == nullptr) {
         return nonstd::make_unexpected(
             config_error(ErrorCode::InvalidState, "Config view is empty"));
@@ -396,7 +396,7 @@ Result<std::string_view> ConfigView::key_at(std::uint64_t index) const {
     return std::string_view((*entries)[static_cast<std::size_t>(index)].key);
 }
 
-Result<bool> ConfigView::as_bool() const {
+Result<bool> ConfigNodeView::as_bool() const {
     const bool* value = node_ == nullptr ? nullptr : std::get_if<bool>(&node_->value);
     if (value == nullptr) {
         return nonstd::make_unexpected(
@@ -405,7 +405,7 @@ Result<bool> ConfigView::as_bool() const {
     return *value;
 }
 
-Result<std::int64_t> ConfigView::as_int64() const {
+Result<std::int64_t> ConfigNodeView::as_int64() const {
     const std::int64_t* value =
         node_ == nullptr ? nullptr : std::get_if<std::int64_t>(&node_->value);
     if (value == nullptr) {
@@ -415,7 +415,7 @@ Result<std::int64_t> ConfigView::as_int64() const {
     return *value;
 }
 
-Result<double> ConfigView::as_double() const {
+Result<double> ConfigNodeView::as_double() const {
     const double* value = node_ == nullptr ? nullptr : std::get_if<double>(&node_->value);
     if (value == nullptr) {
         return nonstd::make_unexpected(
@@ -424,7 +424,7 @@ Result<double> ConfigView::as_double() const {
     return *value;
 }
 
-Result<std::string_view> ConfigView::as_string() const {
+Result<std::string_view> ConfigNodeView::as_string() const {
     const std::string* value = node_ == nullptr ? nullptr : std::get_if<std::string>(&node_->value);
     if (value == nullptr) {
         return nonstd::make_unexpected(
@@ -433,7 +433,7 @@ Result<std::string_view> ConfigView::as_string() const {
     return std::string_view(*value);
 }
 
-rodaq_config_view ConfigView::AbiView() const noexcept { return make_abi_view(node_.get()); }
+rodaq_config_view ConfigNodeView::AbiView() const noexcept { return make_abi_view(node_.get()); }
 
 ConfigTree::ConfigTree(std::shared_ptr<const ConfigNode> root) : root_(std::move(root)) {}
 
@@ -485,6 +485,6 @@ Result<ConfigTree> ConfigTree::List(std::vector<ConfigTree> items) {
     return ConfigTree(make_node(std::move(node_items)));
 }
 
-ConfigView ConfigTree::view() const noexcept { return ConfigView(root_); }
+ConfigNodeView ConfigTree::view() const noexcept { return ConfigNodeView(root_); }
 
-}  // namespace rodaq::plugin
+}  // namespace rodaq

@@ -155,6 +155,7 @@ add_test(
         "-DRODAQ_TEST_CPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/cpp_consumer.cpp"
         "-DRODAQ_TEST_RESULT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/result_consumer.cpp"
         "-DRODAQ_TEST_SDK_PLUGIN_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/sdk_plugin_consumer"
+        "-DRODAQ_TEST_RUNTIME_CONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/runtime_consumer"
         "-DRODAQ_TEST_CONSUMER_SANITIZER_FLAGS=${RODAQ_CONSUMER_SANITIZER_FLAGS}"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/run_install_smoke.cmake"
@@ -249,7 +250,7 @@ add_executable(
 target_link_libraries(rodaq_compat_v1_output_test
     PRIVATE
         GTest::gtest_main
-        rodaq_runtime
+        rodaq_runtime_testing
 )
 rodaq_enable_warnings(rodaq_compat_v1_output_test)
 rodaq_enable_sanitizers(rodaq_compat_v1_output_test)

@@ -35,13 +35,14 @@ Error runtime_error(ErrorCode code, std::string message) {
     return Error(code, "runtime", 0, std::move(message));
 }
 
-Result<void> validate_plugin_options(const RuntimePluginOptions& options) {
+template <typename Config>
+Result<void> validate_plugin_options(const Config& options) {
     std::error_code error;
     if (options.path.empty() || !std::filesystem::is_regular_file(options.path, error)) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "Runtime Plugin path is missing"));
     }
-    const plugin::ConfigView view = options.config.view();
+    const ConfigNodeView view = options.config.view();
     if (view.AbiView().context == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "Runtime Plugin config is empty"));
@@ -49,27 +50,45 @@ Result<void> validate_plugin_options(const RuntimePluginOptions& options) {
     return {};
 }
 
-Result<void> validate_options(const RuntimeOptions& options) {
-    if (options.max_sources == 0 || options.max_clocks == 0 || options.max_schemas == 0 ||
-        options.max_timestamp_key_sets == 0 || options.max_streams == 0 ||
-        options.max_stream_descriptors == 0 || options.max_bindings == 0 ||
-        options.structural_arena_bytes == 0 || options.payload_block_bytes == 0 ||
-        options.payload_block_count == 0 || options.max_single_payload_bytes == 0 ||
-        options.dispatch_capacity == 0 || options.operation_capacity == 0 ||
-        options.completion_capacity == 0 || options.submit_wait_timeout.count() <= 0 ||
-        options.stop_progress_timeout.count() <= 0) {
+Result<void> validate_options(const RuntimeConfig& options) {
+    const ResourceConfig& resources = options.resources;
+    const PayloadPoolConfig& pool_config = resources.payload_pool;
+    if (resources.max_sources == 0 || resources.max_clocks == 0 || resources.max_schemas == 0 ||
+        resources.max_timestamp_key_sets == 0 || resources.max_streams == 0 ||
+        resources.max_stream_descriptors == 0 || resources.max_bindings == 0 ||
+        resources.structural_arena_bytes == 0 || resources.max_single_payload_bytes == 0 ||
+        resources.dispatch_capacity == 0 || resources.operation_capacity == 0 ||
+        resources.completion_capacity == 0 || resources.payload_release_workers == 0 ||
+        options.submit_wait_timeout.count() <= 0 || options.stop_progress_timeout.count() <= 0 ||
+        options.logging.queue_records == 0 || options.logging.queue_bytes == 0 ||
+        options.logging.flush_timeout.count() <= 0 ||
+        options.logging.shutdown_timeout.count() <= 0) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "Runtime capacity configuration is invalid"));
     }
-    if (options.dispatch_capacity != options.operation_capacity) {
+    if (resources.dispatch_capacity != resources.operation_capacity) {
         return nonstd::make_unexpected(runtime_error(
             ErrorCode::InvalidArgument, "V1 requires equal dispatch and operation capacity"));
     }
-    if (options.payload_block_count < options.operation_capacity ||
-        options.payload_block_bytes < options.max_single_payload_bytes) {
+    if (pool_config.classes.empty()) {
+        return nonstd::make_unexpected(runtime_error(
+            ErrorCode::InvalidArgument, "PayloadPool configuration has no size classes"));
+    }
+    std::size_t previous_class_size = 0;
+    for (const PayloadClassConfig& payload_class : pool_config.classes) {
+        if (payload_class.max_payload_bytes == 0 || payload_class.block_count == 0 ||
+            payload_class.max_payload_bytes <= previous_class_size ||
+            payload_class.max_payload_bytes >
+                std::numeric_limits<std::size_t>::max() / payload_class.block_count) {
+            return nonstd::make_unexpected(runtime_error(
+                ErrorCode::InvalidArgument, "PayloadPool size class configuration is invalid"));
+        }
+        previous_class_size = payload_class.max_payload_bytes;
+    }
+    if (pool_config.classes.back().max_payload_bytes < resources.max_single_payload_bytes) {
         return nonstd::make_unexpected(runtime_error(
             ErrorCode::InvalidArgument,
-            "PayloadPool capacity is below the configured record requirements"));
+            "PayloadPool capacity is below the configured payload limit"));
     }
     if (options.session_id.empty() || options.target_uri.empty()) {
         return nonstd::make_unexpected(
@@ -83,7 +102,7 @@ Result<void> validate_options(const RuntimeOptions& options) {
     if (!storage.has_value()) {
         return storage;
     }
-    for (const RuntimePluginOptions& acquisition : options.acquisitions) {
+    for (const PluginConfig& acquisition : options.acquisitions) {
         auto validated = validate_plugin_options(acquisition);
         if (!validated.has_value()) {
             return validated;
@@ -183,8 +202,8 @@ BoundedCallOutcome run_bounded_call(
 
 class Runtime::Impl final {
 public:
-    explicit Impl(RuntimeOptions options)
-    : options_(std::move(options)),
+    explicit Impl(RuntimeConfig config)
+    : options_(std::move(config)),
       acquisition_states_(options_.acquisitions.size(), AcquisitionActivationState::Empty) {}
 
     Result<void> Configure() {
@@ -212,7 +231,7 @@ public:
                 ErrorCode::Unavailable,
                 "Runtime restart is blocked by quarantined callback state"));
         }
-        if (activation_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        if (activation_generation_ == std::numeric_limits<std::uint32_t>::max()) {
             return nonstd::make_unexpected(runtime_error(
                 ErrorCode::ResourceExhausted, "Runtime activation generation is exhausted"));
         }
@@ -391,10 +410,20 @@ public:
         if (pipeline != nullptr) {
             pipeline->CloseCallbacks();
             pipeline->JoinCompletion();
-            if (!pipeline->WaitOperationsIdle(Clock::now() + options_.stop_progress_timeout)) {
+            pipeline->CloseRelease();
+            const auto release_deadline = Clock::now() + options_.stop_progress_timeout;
+            if (!pipeline->WaitReleaseIdle(release_deadline) ||
+                !pipeline->WaitOperationsIdle(release_deadline)) {
+                if (!pipeline->RetainBlockedReleaseWorkers()) {
+                    active_->RecordSecondaryFailure(runtime_error(
+                        ErrorCode::ResourceExhausted,
+                        "Runtime release worker quarantine capacity is exhausted"));
+                }
                 active_->RequestFailure(runtime_error(
-                    ErrorCode::Timeout, "Runtime callback quiescence barrier timed out"));
+                    ErrorCode::Timeout, "Runtime callback/release quiescence barrier timed out"));
+                return quarantine_failure();
             }
+            pipeline->JoinRelease();
         }
 
         const bool unresolved = pipeline != nullptr && pipeline->HasUnresolvedOperations();
@@ -423,9 +452,59 @@ public:
             acquisition_states_[index] = AcquisitionActivationState::Stopped;
         }
 
+        for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+            if (!active_->acquisition_instance(index).has_value()) {
+                continue;
+            }
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto destroyed = run_bounded_call(
+                [state, index]() {
+                    state->acquisition_instance(index)->destroy();
+                    return Result<void>();
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            if (destroyed.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Acquisition destroy timed out"));
+                return quarantine_failure();
+            }
+            if (destroyed.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(destroyed.error.value()));
+                return quarantine_failure();
+            }
+        }
+        if (active_->storage_instance().has_value()) {
+            std::shared_ptr<ActiveRuntimeState> state = active_;
+            auto destroyed = run_bounded_call(
+                [state]() {
+                    state->storage_instance()->destroy();
+                    return Result<void>();
+                },
+                Clock::now() + effective_storage_close_timeout_);
+            if (destroyed.status == BoundedCallOutcome::Status::TimedOut) {
+                active_->RequestFailure(
+                    runtime_error(ErrorCode::Timeout, "Storage destroy timed out"));
+                return quarantine_failure();
+            }
+            if (destroyed.status == BoundedCallOutcome::Status::Failed) {
+                active_->RequestFailure(std::move(destroyed.error.value()));
+                return quarantine_failure();
+            }
+        }
+        if (!active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout)) {
+            active_->QuarantineLogging("Runtime logging shutdown timed out");
+            active_->RecordSecondaryFailure(
+                runtime_error(ErrorCode::Timeout, "Runtime logging shutdown timed out"));
+        }
+
         const bool failed =
             active_->state() == RuntimeState::Failed || active_->PrimaryFailure().has_value();
+        active_->RecordStopLatency();
         last_stats_ = active_->Stats();
+        auto payload_stats = active_->PayloadPoolStatistics();
+        if (payload_stats.has_value()) {
+            last_payload_stats_ = std::move(payload_stats.value());
+        }
         auto primary_failure = active_->PrimaryFailure();
         if (primary_failure.has_value()) {
             auto secondary_failures = active_->SecondaryFailures();
@@ -532,6 +611,21 @@ public:
         }
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Runtime has no active statistics"));
+    }
+
+    Result<PayloadPoolStats> PayloadStats() const {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        if (active_ != nullptr) {
+            return active_->PayloadPoolStatistics();
+        }
+        if (quarantined_ != nullptr) {
+            return quarantined_->PayloadPoolStatistics();
+        }
+        if (last_payload_stats_.has_value()) {
+            return last_payload_stats_.value();
+        }
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InvalidState, "Runtime has no active Payload statistics"));
     }
 
     ~Impl() {
@@ -665,7 +759,7 @@ private:
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidArgument, "Storage capabilities are invalid"));
         }
-        std::size_t effective_payload_limit = options_.max_single_payload_bytes;
+        std::size_t effective_payload_limit = options_.resources.max_single_payload_bytes;
         if (capabilities->maximum_payload_bytes != 0) {
             effective_payload_limit = std::min(
                 effective_payload_limit, bounded_size(capabilities->maximum_payload_bytes));
@@ -678,8 +772,8 @@ private:
         }
 
         const std::size_t effective_capacity = std::min(
-            {options_.operation_capacity, options_.completion_capacity,
-             bounded_size(capabilities->maximum_inflight_records), options_.payload_block_count});
+            {options_.resources.operation_capacity, options_.resources.completion_capacity,
+             bounded_size(capabilities->maximum_inflight_records)});
         if (effective_capacity == 0) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidArgument, "Effective Storage capacity is zero"));
@@ -698,15 +792,15 @@ private:
         effective_storage_close_timeout_ = effective_control_timeout(
             options_.stop_progress_timeout, capabilities->close_progress_timeout_ns);
 
-        active_->options().max_single_payload_bytes = effective_payload_limit;
-        active_->options().dispatch_capacity = effective_capacity;
-        active_->options().operation_capacity = effective_capacity;
-        active_->options().completion_capacity = effective_completion_capacity;
+        active_->options().resources.max_single_payload_bytes = effective_payload_limit;
+        active_->options().resources.dispatch_capacity = effective_capacity;
+        active_->options().resources.operation_capacity = effective_capacity;
+        active_->options().resources.completion_capacity = effective_completion_capacity;
         active_->SetDescriptorProgressTimeout(effective_descriptor_timeout);
         active_->SetBindingProgressTimeout(options_.stop_progress_timeout);
 
         auto opened = supervise_start_call([state]() {
-            const RuntimeOptions& active_options = state->options();
+            const RuntimeConfig& active_options = state->options();
             rodaq_storage_open_request open_request{};
             open_request.struct_size = sizeof(open_request);
             open_request.session_id = rodaq_string_view{
@@ -903,6 +997,51 @@ private:
                 unsafe_to_release = true;
             }
         }
+        if (!unsafe_to_release) {
+            for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+                if (!active_->acquisition_instance(index).has_value()) {
+                    continue;
+                }
+                auto destroyed = run_bounded_call(
+                    [state, index]() {
+                        state->acquisition_instance(index)->destroy();
+                        return Result<void>();
+                    },
+                    Clock::now() + options_.stop_progress_timeout);
+                if (destroyed.status != BoundedCallOutcome::Status::Completed) {
+                    active_->RequestFailure(
+                        destroyed.status == BoundedCallOutcome::Status::TimedOut
+                            ? runtime_error(
+                                  ErrorCode::Timeout,
+                                  "Acquisition destroy timed out during activation abort")
+                            : std::move(destroyed.error.value()));
+                    unsafe_to_release = true;
+                    break;
+                }
+            }
+        }
+        if (!unsafe_to_release && active_->storage_instance().has_value()) {
+            auto destroyed = run_bounded_call(
+                [state]() {
+                    state->storage_instance()->destroy();
+                    return Result<void>();
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            if (destroyed.status != BoundedCallOutcome::Status::Completed) {
+                active_->RequestFailure(
+                    destroyed.status == BoundedCallOutcome::Status::TimedOut
+                        ? runtime_error(
+                              ErrorCode::Timeout,
+                              "Storage destroy timed out during activation abort")
+                        : std::move(destroyed.error.value()));
+                unsafe_to_release = true;
+            }
+        }
+        if (!active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout)) {
+            active_->QuarantineLogging("Runtime logging shutdown timed out during abort");
+            active_->RecordSecondaryFailure(runtime_error(
+                ErrorCode::Timeout, "Runtime logging shutdown timed out during activation abort"));
+        }
         if (unsafe_to_release) {
             capture_activation_outcome();
             quarantined_ = std::move(active_);
@@ -936,7 +1075,12 @@ private:
             return;
         }
         try {
+            active_->RecordStopLatency();
             last_stats_ = active_->Stats();
+            auto payload_stats = active_->PayloadPoolStatistics();
+            if (payload_stats.has_value()) {
+                last_payload_stats_ = std::move(payload_stats.value());
+            }
             auto primary = active_->PrimaryFailure();
             if (primary.has_value()) {
                 auto secondary = active_->SecondaryFailures();
@@ -957,7 +1101,7 @@ private:
         }
     }
 
-    RuntimeOptions options_;
+    RuntimeConfig options_;
     mutable std::mutex lifecycle_mutex_;
     RuntimeState state_ = RuntimeState::Constructed;
     std::uint64_t activation_generation_ = 0;
@@ -969,6 +1113,7 @@ private:
     bool storage_open_ = false;
     bool start_quarantine_required_ = false;
     std::optional<RuntimeStatsSnapshot> last_stats_;
+    std::optional<PayloadPoolStats> last_payload_stats_;
     std::optional<Error> last_primary_failure_;
     std::vector<Error> last_secondary_failures_;
     std::uint64_t last_secondary_failure_overflow_count_ = 0;
@@ -977,7 +1122,7 @@ private:
     std::chrono::nanoseconds effective_storage_close_timeout_{};
 };
 
-Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::move(options))) {}
+Runtime::Runtime(RuntimeConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
 
 Runtime::~Runtime() = default;
 
@@ -1002,5 +1147,7 @@ std::uint64_t Runtime::SecondaryFailureOverflowCount() const noexcept {
 }
 
 Result<RuntimeStatsSnapshot> Runtime::Stats() const { return impl_->Stats(); }
+
+Result<PayloadPoolStats> Runtime::PayloadStats() const { return impl_->PayloadStats(); }
 
 }  // namespace rodaq::runtime

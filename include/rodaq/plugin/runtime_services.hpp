@@ -20,6 +20,9 @@ inline Result<void> runtime_result(rodaq_status status, const rodaq_error& error
 
 namespace plugin {
 
+inline constexpr std::uint32_t kMaximumTransportTimestampKeys = 3;
+inline constexpr std::uint32_t kMaximumCanonicalTimestampSlots = 4;
+
 inline bool is_valid_source_registration(const rodaq_source_registration& request) noexcept {
     const std::uint8_t* source_id = nullptr;
     std::size_t source_id_size = 0;
@@ -69,6 +72,7 @@ inline bool is_valid_stream_registration(const rodaq_stream_registration& reques
 inline bool is_valid_stream_descriptor_registration(
     const rodaq_stream_descriptor_registration& request) noexcept {
     if (request.struct_size < RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE ||
+        request.timestamp_key_count > kMaximumTransportTimestampKeys ||
         !is_valid_abi_bool(request.schema_present) || request.reserved != 0 ||
         request.stream.value == 0 || request.reserved2 != 0 ||
         (request.timestamp_key_count != 0 && request.timestamp_keys == nullptr)) {
@@ -124,7 +128,8 @@ inline bool is_valid_record_submission(const rodaq_record_submission& submission
         return false;
     }
     return is_valid_timestamp_values(
-               submission.timestamp_values, submission.timestamp_value_count) &&
+               submission.timestamp_values, submission.timestamp_value_count,
+               kMaximumTransportTimestampKeys) &&
            is_valid_payload_input(submission.payload);
 }
 

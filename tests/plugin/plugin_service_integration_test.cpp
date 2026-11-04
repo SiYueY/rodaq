@@ -386,6 +386,7 @@ void expect_acquisition_control_failure(const char* path_environment) {
     const auto result = instance.bind(registry->AbiView());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+    instance.destroy();
 }
 
 void expect_storage_control_failure(const char* path_environment) {
@@ -398,6 +399,7 @@ void expect_storage_control_failure(const char* path_environment) {
     const auto result = instance.bind(registry->AbiView());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+    instance.destroy();
 }
 
 }  // namespace
@@ -419,6 +421,8 @@ TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeRuntimeDat
         ASSERT_TRUE(acquisition.configure(config.view().AbiView()).has_value());
         ASSERT_TRUE(storage.bind(registry->AbiView()).has_value());
         ASSERT_TRUE(storage.configure(config.view().AbiView()).has_value());
+        acquisition.destroy();
+        storage.destroy();
     }
 
     expect_event_order(read_events(events_path));
@@ -436,6 +440,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::NotFound, result.error().code());
+        instance.destroy();
     }
     {
         RuntimeServices services;
@@ -446,6 +451,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::NotFound, result.error().code());
+        instance.destroy();
     }
     {
         RuntimeServices services;
@@ -461,6 +467,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::NotFound, result.error().code());
+        instance.destroy();
     }
 }
 
@@ -482,6 +489,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+        instance.destroy();
     }
 
     {
@@ -499,6 +507,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+        instance.destroy();
     }
 
     {
@@ -516,6 +525,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         const auto result = instance.bind(registry->AbiView());
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, result.error().code());
+        instance.destroy();
     }
 }
 
@@ -547,6 +557,7 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         const auto unknown = instance.query_interface("rodaq.test.unknown.v1");
         ASSERT_FALSE(unknown.has_value());
         EXPECT_EQ(rodaq::ErrorCode::NotFound, unknown.error().code());
+        instance.destroy();
     }
 
     {
@@ -565,6 +576,7 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         EXPECT_NE(nullptr, vtable->get_capabilities);
         EXPECT_NE(nullptr, vtable->ensure_descriptor_ready);
         EXPECT_TRUE(instance.configure(config.view().AbiView()).has_value());
+        instance.destroy();
     }
 }
 
@@ -579,6 +591,7 @@ TEST(PluginServiceIntegrationTest, LargerControlInterfaceIsAccepted) {
     ASSERT_TRUE(control.has_value());
     const auto* vtable = static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
     EXPECT_GT(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+    instance.destroy();
 }
 
 TEST(PluginServiceIntegrationTest, IncompatibleControlInterfacesFailBind) {
@@ -616,6 +629,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         EXPECT_EQ(RODAQ_STATUS_OK, table->quiesce_plugin(control.value().context, &error));
         ASSERT_TRUE(instance.stop().has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.stop().error().code());
+        instance.destroy();
     }
 
     {
@@ -672,6 +686,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         close.disposition = RODAQ_STORAGE_CLOSE_NORMAL;
         ASSERT_TRUE(instance.close(close).has_value());
         EXPECT_EQ(rodaq::ErrorCode::InvalidState, instance.close(close).error().code());
+        instance.destroy();
     }
 }
 
@@ -690,6 +705,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::InternalError, result.error().code());
         EXPECT_NE(std::string_view::npos, result.error().message().find("exception"));
+        instance.destroy();
     }
 
     {
@@ -705,6 +721,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         const auto result = instance.open(open);
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(rodaq::ErrorCode::Unavailable, result.error().code());
+        instance.destroy();
     }
 }
 
@@ -720,6 +737,7 @@ TEST(PluginServiceIntegrationTest, FrozenV1PluginsLoadInCurrentHost) {
         ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
         ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
         EXPECT_TRUE(instance.required_control_interface().has_value());
+        instance.destroy();
     }
     {
         RuntimeServices services;
@@ -730,5 +748,6 @@ TEST(PluginServiceIntegrationTest, FrozenV1PluginsLoadInCurrentHost) {
         ASSERT_TRUE(instance.bind(registry->AbiView()).has_value());
         ASSERT_TRUE(instance.configure(config.view().AbiView()).has_value());
         EXPECT_TRUE(instance.required_control_interface().has_value());
+        instance.destroy();
     }
 }

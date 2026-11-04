@@ -36,6 +36,58 @@ jobs:
       - run: cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
 
+  runtime-only-no-dev-submodules:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Remove development and evaluated-only dependencies
+        run: |
+          rm -rf third_party/googletest third_party/benchmark \
+                 third_party/mimalloc third_party/onetbb
+      - name: Configure Runtime only
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DRODAQ_BUILD_TESTS=OFF \
+            -DRODAQ_BUILD_BENCHMARKS=OFF \
+            -DRODAQ_WARNINGS_AS_ERRORS=ON
+      - name: Build Runtime only
+        run: cmake --build build -j2
+
+  ubuntu-22-capacity:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure Release capacity profile
+        run: |
+          cmake -S . -B build-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRODAQ_BUILD_TESTS=ON \
+            -DRODAQ_BUILD_BENCHMARKS=ON \
+            -DRODAQ_WARNINGS_AS_ERRORS=ON
+      - name: Build capacity benchmarks
+        run: |
+          cmake --build build-release -j2 \
+            --target rodaq_fake_acquisition_plugin rodaq_fake_storage_plugin \
+              rodaq_joint_pipeline_benchmark rodaq_camera_pipeline_benchmark \
+              rodaq_mixed_workload_benchmark rodaq_storage_slot_benchmark \
+              rodaq_release_worker_benchmark
+      - name: Run capacity profiles
+        env:
+          RODAQ_FAKE_ACQUISITION_PLUGIN: ${{ github.workspace }}/build-release/tests/integration/librodaq_fake_acquisition_plugin.so
+          RODAQ_FAKE_STORAGE_PLUGIN: ${{ github.workspace }}/build-release/tests/integration/librodaq_fake_storage_plugin.so
+        run: |
+          ./build-release/benchmarks/rodaq_joint_pipeline_benchmark --benchmark_format=json
+          ./build-release/benchmarks/rodaq_camera_pipeline_benchmark --benchmark_format=json
+          ./build-release/benchmarks/rodaq_mixed_workload_benchmark --benchmark_format=json
+          ./build-release/benchmarks/rodaq_storage_slot_benchmark --benchmark_format=json
+          ./build-release/benchmarks/rodaq_release_worker_benchmark --benchmark_format=json
+
   ubuntu-22-clang-tsan:
     runs-on: ubuntu-22.04
     steps:
@@ -60,11 +112,13 @@ jobs:
           cmake --build build -j2 \
             --target rodaq_admission_test rodaq_payload_pool_test \
               rodaq_observability_test rodaq_m1_integration_test \
-              rodaq_quarantine_test rodaq_runtime_pipeline_test
+              rodaq_quarantine_test rodaq_storage_pipeline_test \
+              rodaq_logging_context_test rodaq_handle_registry_test \
+              rodaq_runtime_pipeline_test
       - name: Run TSan tests
         run: |
           setarch "$(uname -m)" -R ctest --test-dir build \
-            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration|quarantine)|rodaq.integration.runtime_pipeline' \
+            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration|quarantine|storage_pipeline|logging_context|handle_registry)|rodaq.integration.runtime_pipeline' \
             --output-on-failure
 
   ubuntu-22-arm64-native:

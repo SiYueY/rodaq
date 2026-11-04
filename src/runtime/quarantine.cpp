@@ -46,6 +46,13 @@ struct QuarantineManager::CallEntry {
     std::string reason;
 };
 
+struct QuarantineManager::WorkerEntry {
+    std::thread worker;
+    std::shared_ptr<void> state;
+    std::shared_ptr<std::atomic<bool>> done;
+    std::string reason;
+};
+
 QuarantineManager::QuarantineManager() noexcept = default;
 
 QuarantineManager& QuarantineManager::Process() noexcept {
@@ -176,6 +183,27 @@ SupervisedCallOutcome QuarantineManager::WaitForCall(
     return SupervisedCallOutcome{SupervisedCallStatus::Completed, std::nullopt};
 }
 
+bool QuarantineManager::RetainWorker(
+    std::thread&& worker, std::shared_ptr<void> state, std::shared_ptr<std::atomic<bool>> done,
+    std::string reason) noexcept {
+    if (!worker.joinable() || state == nullptr || done == nullptr) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ReapCompletedLocked();
+        if (active_calls_ >= kMaxRetainedCalls) {
+            return false;
+        }
+        retired_workers_.push_back(
+            WorkerEntry{std::move(worker), std::move(state), std::move(done), std::move(reason)});
+        ++active_calls_;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 Result<std::uint64_t> QuarantineManager::ReserveActivation(std::string reason) {
     ReapCompleted();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -219,6 +247,10 @@ void QuarantineManager::ReleaseActivation(std::uint64_t activation_id) noexcept 
 
 void QuarantineManager::ReapCompleted() noexcept {
     std::lock_guard<std::mutex> manager_lock(mutex_);
+    ReapCompletedLocked();
+}
+
+void QuarantineManager::ReapCompletedLocked() noexcept {
     for (auto iterator = calls_.begin(); iterator != calls_.end();) {
         const bool complete = [&iterator] {
             std::lock_guard<std::mutex> completion_lock((*iterator)->completion->mutex);
@@ -234,11 +266,27 @@ void QuarantineManager::ReapCompleted() noexcept {
         iterator = calls_.erase(iterator);
         --active_calls_;
     }
+    for (auto iterator = retired_workers_.begin(); iterator != retired_workers_.end();) {
+        if (!iterator->done->load(std::memory_order_acquire)) {
+            ++iterator;
+            continue;
+        }
+        if (iterator->worker.joinable()) {
+            iterator->worker.join();
+        }
+        iterator = retired_workers_.erase(iterator);
+        --active_calls_;
+    }
 }
 
 std::size_t QuarantineManager::RetainedCallCount() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return calls_.size();
+}
+
+std::size_t QuarantineManager::RetainedWorkerCount() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return retired_workers_.size();
 }
 
 std::size_t QuarantineManager::RetainedActivationCount() const noexcept {

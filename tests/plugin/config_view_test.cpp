@@ -12,8 +12,8 @@
 
 namespace {
 
+using rodaq::ConfigNodeView;
 using rodaq::plugin::ConfigTree;
-using rodaq::plugin::ConfigView;
 
 template <typename T>
 T take(rodaq::Result<T> result) {
@@ -77,18 +77,18 @@ TEST(ConfigViewTest, SupportsNullScalarsAndEmptyContainers) {
 
 TEST(ConfigViewTest, SupportsNestedMapListMapAndStableOrdering) {
     ConfigTree tree = make_nested_tree();
-    const ConfigView root = tree.view();
+    const ConfigNodeView root = tree.view();
     EXPECT_EQ(RODAQ_CONFIG_MAP, root.kind());
     EXPECT_EQ(7U, root.size());
 
-    const ConfigView items = take(root.find("items"));
+    const ConfigNodeView items = take(root.find("items"));
     EXPECT_EQ(RODAQ_CONFIG_LIST, items.kind());
     ASSERT_EQ(3U, items.size());
     EXPECT_EQ(1, take(take(items.at(0)).as_int64()));
     EXPECT_EQ(2, take(take(items.at(1)).as_int64()));
     EXPECT_EQ("three", take(take(items.at(2)).as_string()));
 
-    const ConfigView nested = take(root.find("nested"));
+    const ConfigNodeView nested = take(root.find("nested"));
     EXPECT_EQ("name", take(nested.key_at(0)));
     EXPECT_EQ("node", take(take(nested.at(0)).as_string()));
     EXPECT_EQ("level", take(nested.key_at(1)));
@@ -98,7 +98,7 @@ TEST(ConfigViewTest, SupportsNestedMapListMapAndStableOrdering) {
 
 TEST(ConfigViewTest, ReportsNotFoundAndInvalidStateWithoutImplicitConversion) {
     ConfigTree tree = make_nested_tree();
-    const ConfigView root = tree.view();
+    const ConfigNodeView root = tree.view();
 
     EXPECT_EQ(rodaq::ErrorCode::NotFound, root.find("missing").error().code());
     EXPECT_EQ(rodaq::ErrorCode::NotFound, take(root.find("items")).at(3).error().code());
@@ -106,13 +106,13 @@ TEST(ConfigViewTest, ReportsNotFoundAndInvalidStateWithoutImplicitConversion) {
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument, root.find(std::string_view("\xFF", 1)).error().code());
 
-    const ConfigView limit = take(root.find("limit"));
+    const ConfigNodeView limit = take(root.find("limit"));
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.as_double().error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.find("child").error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.at(0).error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.key_at(0).error().code());
 
-    const ConfigView items = take(root.find("items"));
+    const ConfigNodeView items = take(root.find("items"));
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, items.find("child").error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, items.key_at(0).error().code());
 }
@@ -124,7 +124,7 @@ TEST(ConfigViewTest, AllowsEmptyAndUtf8MapKeys) {
          "le",
          ConfigTree::Int64(2)},
     }));
-    const ConfigView root = tree.view();
+    const ConfigNodeView root = tree.view();
     EXPECT_EQ(1, take(take(root.find("")).as_int64()));
     EXPECT_EQ(
         2, take(take(root.find("r\xC3\xB6"
@@ -148,7 +148,7 @@ TEST(ConfigViewTest, RejectsInvalidOrDuplicateMapEntries) {
 }
 
 TEST(ConfigViewTest, BorrowedViewsOutliveTreeOwner) {
-    ConfigView view;
+    ConfigNodeView view;
     ConfigTree tree = make_nested_tree();
     {
         const ConfigTree copy = tree;

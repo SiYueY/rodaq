@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace rodaq {
@@ -12,7 +13,9 @@ namespace {
 constexpr std::size_t kBlockCount = 16;
 
 void fixed_block_acquire_release(benchmark::State& state, std::size_t bytes) {
-    auto pool = PayloadPool::Create(bytes, kBlockCount);
+    PayloadPoolConfig config;
+    config.classes.push_back(PayloadClassConfig{bytes, kBlockCount});
+    auto pool = PayloadPool::Create(config);
     if (!pool.has_value()) {
         state.SkipWithError("failed to create PayloadPool");
         return;
@@ -20,18 +23,20 @@ void fixed_block_acquire_release(benchmark::State& state, std::size_t bytes) {
 
     for (auto iteration : state) {
         static_cast<void>(iteration);
-        auto payload = pool.value().Acquire(bytes);
-        if (!payload.has_value()) {
-            state.SkipWithError("PayloadPool acquire failed");
+        auto reservation = pool.value().TryReserve(bytes);
+        if (!reservation.has_value()) {
+            state.SkipWithError("PayloadPool reserve failed");
             return;
         }
-        benchmark::DoNotOptimize(payload.value());
+        benchmark::DoNotOptimize(reservation.value());
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(bytes));
 }
 
 void fixed_block_acquire_copy_release(benchmark::State& state, std::size_t bytes) {
-    auto pool = PayloadPool::Create(bytes, kBlockCount);
+    PayloadPoolConfig config;
+    config.classes.push_back(PayloadClassConfig{bytes, kBlockCount});
+    auto pool = PayloadPool::Create(config);
     if (!pool.has_value()) {
         state.SkipWithError("failed to create PayloadPool");
         return;
@@ -40,7 +45,13 @@ void fixed_block_acquire_copy_release(benchmark::State& state, std::size_t bytes
 
     for (auto iteration : state) {
         static_cast<void>(iteration);
-        auto payload = pool.value().Acquire(bytes, PayloadView(source.data(), source.size()));
+        auto reservation = pool.value().TryReserve(bytes);
+        if (!reservation.has_value()) {
+            state.SkipWithError("PayloadPool reserve failed");
+            return;
+        }
+        auto payload = pool.value().Materialize(
+            std::move(reservation.value()), PayloadView(source.data(), source.size()));
         if (!payload.has_value()) {
             state.SkipWithError("PayloadPool copy acquire failed");
             return;

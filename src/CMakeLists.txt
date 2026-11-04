@@ -17,9 +17,16 @@ set_target_properties(rodaq_sdk PROPERTIES EXPORT_NAME sdk)
 
 add_library(rodaq_foundation STATIC
     abi_support.cpp
+    config/config.cpp
+    config/yaml_config_loader.cpp
     error.cpp
 )
-target_link_libraries(rodaq_foundation PUBLIC rodaq_public_api)
+target_link_libraries(rodaq_foundation
+    PUBLIC
+        rodaq_public_api
+    PRIVATE
+        yaml-cpp::yaml-cpp
+)
 set_target_properties(rodaq_foundation PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 rodaq_enable_warnings(rodaq_foundation)
