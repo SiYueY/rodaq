@@ -522,6 +522,7 @@ public:
     }
 
     ~Impl() {
+        QuarantineManager::Process().ReapCompleted();
         if (active_ != nullptr) {
             static_cast<void>(Stop());
         }
@@ -542,6 +543,7 @@ public:
         } else {
             release_activation_slot();
         }
+        QuarantineManager::Process().ReapCompleted();
     }
 
 private:
