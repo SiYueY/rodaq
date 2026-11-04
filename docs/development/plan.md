@@ -432,6 +432,7 @@ Prove Runtime correctness end to end with Fake Plugins before introducing real m
 
 - [x] Descriptor publication returns before Projection-dependent readiness.
 - [x] Projection registration retries Descriptor readiness without Plugin-under-lock.
+- [x] Acquisition Binding prepare/commit/abort callbacks are deadline-supervised.
 - [x] Runtime-owned activation ingress Clock and ClockCorrelation service.
 - [x] Mandatory ingress timestamp separated from transport timestamps.
 - [x] Completion bookkeeping capacity included in admitted-work capacity.

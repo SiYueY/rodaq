@@ -4,7 +4,7 @@
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
-**M2 Closure Fix implementation baseline:** `52313f9` — `perf: keep stable registry lookup off the global control lock`
+**M2 Closure Fix implementation baseline:** `236fc92` — `fix: reap completed quarantine workers on teardown`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -270,6 +270,8 @@ Structural convergence validation:
   Storage receives the complete canonical timestamp set.
 - Completion capacity participates in effective admitted-work capacity, and the
   Storage Dispatch Lane has a single bounded watchdog for handoff progress.
+- Descriptor readiness and Acquisition prepare/commit/abort control callbacks
+  are deadline-supervised through the bounded quarantine owner.
 - Multi-Acquisition startup rollback uses explicit lifecycle states, partial
   Start failures are quiesced then stopped in reverse order, and timed-out Start
   calls are quarantined.
@@ -643,14 +645,14 @@ M2 Production Core Runtime Closure Fix validation:
 - Ubuntu 24.04 with its default GCC toolchain passed 89/89 CTest entries.
 - Clang 14 TSan passed the admission, PayloadPool, observability, M1 integration,
   quarantine and complete M2 runtime pipeline subset: 6/6 CTest entries.
-- The M2 E2E executable now contains 46 Stable-ABI-backed tests covering
+- The M2 E2E executable now contains 47 Stable-ABI-backed tests covering
   lifecycle, Copy/Adopt/Retain, mixed payload modes, immutable canonical views,
   stale handles, multi-producer ordering, Binding switch and abort, saturation,
   blocked Wait timeout, every Payload/Persistence completion ordering,
   early-completion reconciliation, contract violations, bounded stalls,
   primary/secondary failure preservation, Projection-dependent readiness,
-  mandatory ingress timestamps, ClockCorrelation, multi-Acquisition rollback,
-  Stop under load and restart.
+  mandatory ingress timestamps, ClockCorrelation, Binding control stalls,
+  multi-Acquisition rollback, Stop under load and restart.
 - Descriptor readiness, initial prepare/commit, switch prepare/commit failure,
   `KEEP_PAUSED`, `RESUME_OLD`, registration capacity and quarantine paths are
   covered.
