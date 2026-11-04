@@ -57,6 +57,7 @@ public:
         callback_delay_us_ = config_int(config, "callback_delay_us", 1000);
         submit_delay_us_ = config_int(config, "submit_delay_us", 0);
         descriptor_scenario_ = config_string(config, "descriptor_scenario", "ready");
+        descriptor_stall_after_ = config_int(config, "descriptor_stall_after", -1);
         required_projection_id_ = config_string(config, "required_projection_id", "");
         maximum_inflight_records_ = config_int(config, "maximum_inflight_records", 128);
         maximum_inflight_bytes_ =
@@ -95,7 +96,10 @@ public:
 
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
         rodaq_stream_descriptor_handle descriptor) override {
-        if (descriptor_scenario_ == "stall") {
+        const std::size_t readiness_call = ++readiness_calls_;
+        if (descriptor_scenario_ == "stall" &&
+            (descriptor_stall_after_ < 0 ||
+             readiness_call > static_cast<std::size_t>(descriptor_stall_after_))) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         rodaq_descriptor_readiness_result value{};
@@ -486,6 +490,7 @@ private:
     Stage stage_ = Stage::Created;
     std::string scenario_ = "sync";
     std::string descriptor_scenario_ = "ready";
+    std::int64_t descriptor_stall_after_ = -1;
     std::string required_projection_id_;
     std::string event_log_;
     std::int64_t callback_delay_us_ = 1000;
@@ -495,6 +500,7 @@ private:
     std::mutex log_mutex_;
     std::vector<std::thread> workers_;
     std::optional<rodaq_storage_operation> last_operation_;
+    std::atomic<std::size_t> readiness_calls_{0};
 };
 
 }  // namespace

@@ -133,7 +133,7 @@ struct StorageServiceContext {
     ActiveRuntimeState* state = nullptr;
 };
 
-class ActiveRuntimeState final {
+class ActiveRuntimeState final : public std::enable_shared_from_this<ActiveRuntimeState> {
 public:
     static Result<std::unique_ptr<ActiveRuntimeState>> Create(
         RuntimeOptions options, std::uint64_t activation_generation);
@@ -150,6 +150,7 @@ public:
 
     void SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control);
     void SetStorageControl(rodaq_interface control);
+    void SetDescriptorProgressTimeout(std::chrono::nanoseconds timeout);
     Result<rodaq_storage_capabilities> StorageCapabilities() const;
 
     Result<void> InitializePipeline(
@@ -282,6 +283,7 @@ private:
 
     std::vector<std::optional<rodaq_interface>> acquisition_controls_;
     std::optional<rodaq_interface> storage_control_;
+    std::chrono::nanoseconds descriptor_progress_timeout_{};
     std::vector<std::unique_ptr<AcquisitionServiceContext>> acquisition_contexts_;
     std::unique_ptr<StorageServiceContext> storage_context_;
     InteropProjectionRegistry projections_;

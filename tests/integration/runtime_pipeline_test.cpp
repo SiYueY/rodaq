@@ -63,7 +63,8 @@ RuntimeOptions options(
     std::string required_projection_id = "", std::string projection_id = "",
     bool projection_before_start = false, int64_t projection_delay_after = -1,
     std::string projection_registration_mode = "", std::string timestamp_scenario = "",
-    int timestamp_key_count = 1, std::size_t completion_capacity = 0) {
+    int timestamp_key_count = 1, std::size_t completion_capacity = 0,
+    int64_t descriptor_stall_after = -1) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -83,6 +84,7 @@ RuntimeOptions options(
         {"callback_delay_us", plugin::ConfigTree::Int64(callback_delay_us)},
         {"submit_delay_us", plugin::ConfigTree::Int64(submit_delay_us)},
         {"descriptor_scenario", plugin::ConfigTree::String(std::move(descriptor_scenario))},
+        {"descriptor_stall_after", plugin::ConfigTree::Int64(descriptor_stall_after)},
         {"maximum_inflight_records", plugin::ConfigTree::Int64(maximum_inflight_records)},
         {"maximum_inflight_bytes", plugin::ConfigTree::Int64(maximum_inflight_bytes)},
         {"required_projection_id", plugin::ConfigTree::String(std::move(required_projection_id))},
@@ -689,6 +691,24 @@ TEST(RuntimePipelineTest, AbortsBindingSwitchWithTheCorrectDisposition) {
     EXPECT_TRUE(log_contains(log, "control commit"));
 }
 
+TEST(RuntimePipelineTest, BoundsDescriptorReadinessDuringRunningSwitch) {
+    const std::string log = unique_log_path("descriptor_readiness_running_stall");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "descriptor_readiness_running_stall", "sync", "copy", 1, 6, 1, log,
+        std::chrono::milliseconds(50), 2, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "stall", "",
+        "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 1, 0, 1));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_failure(runtime));
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+}
+
 TEST(RuntimePipelineTest, RejectsCanonicalRegistrationCapacityExhaustion) {
     const std::string log = unique_log_path("registration_capacity");
     std::error_code removed;
@@ -984,6 +1004,25 @@ TEST(RuntimePipelineTest, BoundsStorageSubmitFlushAndCloseStalls) {
         EXPECT_FALSE(runtime.Stop().has_value());
         EXPECT_EQ(runtime.State(), RuntimeState::Failed);
     }
+}
+
+TEST(RuntimePipelineTest, DetectsStorageHandoffStallWithoutCallingStop) {
+    const std::string log = unique_log_path("handoff_stall_watchdog");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "handoff_stall_watchdog", "storage_stall", "copy", 1, 1, 1, log,
+        std::chrono::milliseconds(50)));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 1));
+    ASSERT_TRUE(wait_for_failure(runtime));
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::Timeout);
+    const auto started = Clock::now();
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(500));
 }
 
 TEST(RuntimePipelineTest, BoundsAcquisitionQuiesceAndStopFailures) {

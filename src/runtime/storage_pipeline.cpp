@@ -170,11 +170,15 @@ StoragePipeline::~StoragePipeline() {
     CloseDispatch();
     completion_condition_.notify_all();
     submit_return_condition_.notify_all();
+    watchdog_condition_.notify_all();
     if (dispatch_thread_.joinable()) {
         dispatch_thread_.join();
     }
     if (completion_thread_.joinable()) {
         completion_thread_.join();
+    }
+    if (watchdog_thread_.joinable()) {
+        watchdog_thread_.join();
     }
 }
 
@@ -184,6 +188,7 @@ Result<void> StoragePipeline::Start() {
             Error(ErrorCode::InvalidState, "runtime", 0, "StoragePipeline is already started"));
     }
     try {
+        watchdog_thread_ = std::thread(&StoragePipeline::WatchdogLoop, this);
         completion_thread_ = std::thread(&StoragePipeline::CompletionLoop, this);
         dispatch_thread_ = std::thread(&StoragePipeline::DispatchLoop, this);
         started_ = true;
@@ -192,11 +197,15 @@ Result<void> StoragePipeline::Start() {
         stopping_ = true;
         CloseDispatch();
         completion_condition_.notify_all();
+        watchdog_condition_.notify_all();
         if (dispatch_thread_.joinable()) {
             dispatch_thread_.join();
         }
         if (completion_thread_.joinable()) {
             completion_thread_.join();
+        }
+        if (watchdog_thread_.joinable()) {
+            watchdog_thread_.join();
         }
         return nonstd::make_unexpected(Error(
             ErrorCode::Unavailable, "runtime", 0,
@@ -332,6 +341,7 @@ void StoragePipeline::CloseCallbacks() noexcept {
     callbacks_closed_ = true;
     stopping_ = true;
     completion_condition_.notify_all();
+    watchdog_condition_.notify_all();
 }
 
 void StoragePipeline::JoinDispatch() noexcept {
@@ -396,13 +406,43 @@ void StoragePipeline::DispatchLoop() {
             --dispatch_count_;
             slots_[index].dispatch_state = Slot::DispatchState::InFlight;
             dispatch_call_active_ = true;
+            dispatch_overdue_reported_ = false;
+            dispatch_deadline_ = Clock::now() + progress_timeout_;
             dispatch_condition_.notify_all();
+            watchdog_condition_.notify_one();
         }
         DispatchOne(index);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             dispatch_call_active_ = false;
             dispatch_condition_.notify_all();
+            watchdog_condition_.notify_all();
+        }
+    }
+}
+
+void StoragePipeline::WatchdogLoop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+        watchdog_condition_.wait(lock, [this] {
+            return dispatch_call_active_ || (stopping_ && !dispatch_call_active_);
+        });
+        if (!dispatch_call_active_) {
+            return;
+        }
+
+        const auto deadline = dispatch_deadline_;
+        if (!watchdog_condition_.wait_until(
+                lock, deadline, [this] { return !dispatch_call_active_; })) {
+            if (!dispatch_overdue_reported_) {
+                dispatch_overdue_reported_ = true;
+                lock.unlock();
+                Fail(Error(
+                    ErrorCode::Timeout, "storage", 0,
+                    "Storage submit exceeded its progress deadline"));
+                lock.lock();
+                watchdog_condition_.wait(lock, [this] { return !dispatch_call_active_; });
+            }
         }
     }
 }

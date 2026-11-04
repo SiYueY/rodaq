@@ -1,6 +1,7 @@
 #include "runtime/active_runtime_state.hpp"
 
 #include "plugin/plugin_error.hpp"
+#include "runtime/quarantine.hpp"
 
 #include <rodaq/plugin/abi_support.hpp>
 #include <rodaq/plugin/runtime_services.hpp>
@@ -778,42 +779,88 @@ Result<rodaq_storage_capabilities> ActiveRuntimeState::StorageCapabilities() con
     return capabilities;
 }
 
+void ActiveRuntimeState::SetDescriptorProgressTimeout(std::chrono::nanoseconds timeout) {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    descriptor_progress_timeout_ = timeout;
+}
+
 Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescriptorReady(
     StreamDescriptorHandle descriptor) {
     if (!storage_control_.has_value()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Storage control interface is unavailable"));
     }
-    const auto* table = static_cast<const rodaq_storage_control_v1*>(storage_control_->vtable);
+    const rodaq_interface control = storage_control_.value();
+    const auto* table = static_cast<const rodaq_storage_control_v1*>(control.vtable);
     if (table->ensure_descriptor_ready == nullptr) {
         return nonstd::make_unexpected(runtime_error(
             ErrorCode::InvalidArgument, "Storage descriptor readiness slot is missing"));
     }
-    rodaq_descriptor_readiness_result readiness{};
-    readiness.struct_size = sizeof(readiness);
-    rodaq_error error{};
-    const rodaq_status status = table->ensure_descriptor_ready(
-        storage_control_->context, rodaq_stream_descriptor_handle{descriptor.Value()}, &readiness,
-        &error);
-    if (status != RODAQ_STATUS_OK) {
-        auto converted = result_from_status(status, &error, "storage");
-        return converted.has_value()
-                   ? nonstd::make_unexpected(runtime_error(
-                         ErrorCode::InternalError, "Storage descriptor readiness failed"))
-                   : nonstd::make_unexpected(std::move(converted.error()));
-    }
-    if (readiness.struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidArgument, "Storage descriptor readiness output is incomplete"));
-    }
-    if (readiness.state == RODAQ_DESCRIPTOR_UNSUPPORTED) {
-        return DescriptorReadiness::Unsupported;
-    }
-    if (readiness.state != RODAQ_DESCRIPTOR_READY) {
+
+    std::shared_ptr<ActiveRuntimeState> state;
+    try {
+        state = shared_from_this();
+    } catch (const std::bad_weak_ptr&) {
         return nonstd::make_unexpected(
-            runtime_error(ErrorCode::StorageError, "Storage descriptor readiness failed"));
+            runtime_error(ErrorCode::InvalidState, "Runtime activation has no shared owner"));
     }
-    return DescriptorReadiness::Ready;
+    auto result = std::make_shared<std::optional<DescriptorReadiness>>();
+    auto result_error = std::make_shared<std::optional<Error>>();
+    const auto descriptor_value = rodaq_stream_descriptor_handle{descriptor.Value()};
+    auto outcome = QuarantineManager::Process().Run(
+        [control, table, descriptor_value, result, result_error, state]() -> Result<void> {
+            static_cast<void>(state);
+            rodaq_descriptor_readiness_result readiness{};
+            readiness.struct_size = sizeof(readiness);
+            rodaq_error error{};
+            const rodaq_status status = table->ensure_descriptor_ready(
+                control.context, descriptor_value, &readiness, &error);
+            if (status != RODAQ_STATUS_OK) {
+                auto converted = result_from_status(status, &error, "storage");
+                result_error->emplace(
+                    converted.has_value()
+                        ? runtime_error(
+                              ErrorCode::InternalError, "Storage descriptor readiness failed")
+                        : std::move(converted.error()));
+                return {};
+            }
+            if (readiness.struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
+                result_error->emplace(runtime_error(
+                    ErrorCode::InvalidArgument,
+                    "Storage descriptor readiness output is incomplete"));
+                return {};
+            }
+            if (readiness.state == RODAQ_DESCRIPTOR_UNSUPPORTED) {
+                result->emplace(DescriptorReadiness::Unsupported);
+            } else if (readiness.state == RODAQ_DESCRIPTOR_READY) {
+                result->emplace(DescriptorReadiness::Ready);
+            } else {
+                result_error->emplace(
+                    runtime_error(ErrorCode::StorageError, "Storage descriptor readiness failed"));
+            }
+            return {};
+        },
+        Clock::now() + descriptor_progress_timeout_, "Descriptor readiness");
+    if (!outcome.has_value()) {
+        return nonstd::make_unexpected(std::move(outcome.error()));
+    }
+    switch (outcome.value().status) {
+        case SupervisedCallStatus::TimedOut:
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::Timeout, "Storage descriptor readiness timed out"));
+        case SupervisedCallStatus::Failed:
+            return nonstd::make_unexpected(std::move(outcome.value().error.value()));
+        case SupervisedCallStatus::Completed:
+            break;
+    }
+    if (result_error->has_value()) {
+        return nonstd::make_unexpected(std::move(result_error->value()));
+    }
+    if (!result->has_value()) {
+        return nonstd::make_unexpected(
+            runtime_error(ErrorCode::InternalError, "Descriptor readiness produced no outcome"));
+    }
+    return result->value();
 }
 
 Result<void> ActiveRuntimeState::InitializePipeline(

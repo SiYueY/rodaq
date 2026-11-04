@@ -173,6 +173,7 @@ private:
     void NotifyPayloadReleased(const CompletionEffects& effects) noexcept;
     void NotifyOperationCompleted(const CompletionEffects& effects) noexcept;
     void DispatchLoop();
+    void WatchdogLoop();
     void DispatchOne(std::size_t index);
     void CompletionLoop();
     void CompleteSubmit(std::size_t index, Result<rodaq_storage_submit_result> result);
@@ -198,6 +199,7 @@ private:
     std::condition_variable dispatch_condition_;
     std::condition_variable completion_condition_;
     std::condition_variable submit_return_condition_;
+    std::condition_variable watchdog_condition_;
 
     std::vector<Slot> slots_;
     std::vector<std::size_t> free_indices_;
@@ -206,6 +208,8 @@ private:
     std::size_t dispatch_head_ = 0;
     std::size_t dispatch_count_ = 0;
     bool dispatch_call_active_ = false;
+    bool dispatch_overdue_reported_ = false;
+    std::chrono::steady_clock::time_point dispatch_deadline_{};
     std::size_t completion_head_ = 0;
     std::size_t completion_count_ = 0;
 
@@ -217,6 +221,7 @@ private:
     std::atomic<bool> failure_reported_{false};
     std::thread dispatch_thread_;
     std::thread completion_thread_;
+    std::thread watchdog_thread_;
 };
 
 }  // namespace rodaq::runtime

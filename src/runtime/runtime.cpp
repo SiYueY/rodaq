@@ -638,6 +638,8 @@ private:
 
         effective_storage_handoff_timeout_ = effective_control_timeout(
             options_.stop_progress_timeout, capabilities->handoff_progress_timeout_ns);
+        const auto effective_descriptor_timeout = effective_control_timeout(
+            options_.stop_progress_timeout, capabilities->descriptor_progress_timeout_ns);
         effective_storage_flush_timeout_ = effective_control_timeout(
             options_.stop_progress_timeout, capabilities->flush_progress_timeout_ns);
         effective_storage_close_timeout_ = effective_control_timeout(
@@ -647,6 +649,7 @@ private:
         active_->options().dispatch_capacity = effective_capacity;
         active_->options().operation_capacity = effective_capacity;
         active_->options().completion_capacity = effective_completion_capacity;
+        active_->SetDescriptorProgressTimeout(effective_descriptor_timeout);
 
         auto opened = supervise_start_call([state]() {
             const RuntimeOptions& active_options = state->options();
