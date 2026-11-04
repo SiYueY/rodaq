@@ -625,14 +625,13 @@ private:
         }
 
         const std::size_t effective_capacity = std::min(
-            {options_.operation_capacity, bounded_size(capabilities->maximum_inflight_records),
-             options_.payload_block_count});
+            {options_.operation_capacity, options_.completion_capacity,
+             bounded_size(capabilities->maximum_inflight_records), options_.payload_block_count});
         if (effective_capacity == 0) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidArgument, "Effective Storage capacity is zero"));
         }
-        const std::size_t effective_completion_capacity =
-            std::min(options_.completion_capacity, effective_capacity);
+        const std::size_t effective_completion_capacity = effective_capacity;
         const std::size_t effective_payload_inflight_bytes = std::min(
             saturating_product(effective_capacity, effective_payload_limit),
             bounded_size(capabilities->maximum_inflight_bytes));

@@ -63,7 +63,7 @@ RuntimeOptions options(
     std::string required_projection_id = "", std::string projection_id = "",
     bool projection_before_start = false, int64_t projection_delay_after = -1,
     std::string projection_registration_mode = "", std::string timestamp_scenario = "",
-    int timestamp_key_count = 1) {
+    int timestamp_key_count = 1, std::size_t completion_capacity = 0) {
     RuntimeOptions value;
     value.target_uri = "file://fake";
     value.session_id = std::string(name);
@@ -72,7 +72,7 @@ RuntimeOptions options(
     value.max_single_payload_bytes = block_bytes;
     value.dispatch_capacity = capacity;
     value.operation_capacity = capacity;
-    value.completion_capacity = capacity;
+    value.completion_capacity = completion_capacity == 0 ? capacity : completion_capacity;
     value.submit_wait_timeout = std::chrono::milliseconds(500);
     value.stop_progress_timeout = stop_timeout;
     value.admission_mode = admission_mode;
@@ -728,6 +728,39 @@ TEST(RuntimePipelineTest, EnforcesNegotiatedStorageInflightCapacity) {
     ASSERT_TRUE(invalid.Configure().has_value());
     EXPECT_FALSE(invalid.Start().has_value());
     EXPECT_EQ(invalid.State(), RuntimeState::Failed);
+}
+
+TEST(RuntimePipelineTest, ReservesCompletionCapacityForEveryAdmittedOperation) {
+    struct Scenario {
+        const char* name;
+        int records;
+        std::size_t completion_capacity;
+    };
+    const Scenario scenarios[] = {
+        {"completion_capacity_two", 12, 2},
+        {"completion_capacity_one", 4, 1},
+    };
+    for (const Scenario& scenario : scenarios) {
+        const std::string log = unique_log_path(scenario.name);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options(
+            scenario.name, "async_payload_async_persistence", "retain", 1, scenario.records, 1, log,
+            std::chrono::seconds(1), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+            "", false, "", 1000, 128, 128LL * 1024LL * 1024LL, "", "", false, -1, "", "", 1,
+            scenario.completion_capacity));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value());
+        ASSERT_TRUE(wait_for_records(runtime, log, static_cast<std::size_t>(scenario.records)));
+        ASSERT_TRUE(runtime.Stop().has_value());
+        const auto snapshot = runtime.Stats();
+        ASSERT_TRUE(snapshot.has_value());
+        EXPECT_EQ(snapshot->accepted_records, static_cast<std::uint64_t>(scenario.records));
+        EXPECT_EQ(snapshot->inflight_records, 0U);
+        EXPECT_EQ(snapshot->inflight_bytes, 0U);
+        EXPECT_LE(snapshot->high_water_records, scenario.completion_capacity);
+        EXPECT_EQ(record_count(log), static_cast<std::size_t>(scenario.records));
+    }
 }
 
 TEST(RuntimePipelineTest, ReconcilesEarlyCrossThreadPayloadCompletion) {
