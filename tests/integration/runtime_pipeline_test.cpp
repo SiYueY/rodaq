@@ -181,6 +181,13 @@ bool log_contains(const std::string& path, std::string_view expected) {
     });
 }
 
+std::size_t log_count(const std::string& path, std::string_view expected) {
+    const auto lines = read_lines(path);
+    return static_cast<std::size_t>(std::count_if(
+        lines.begin(), lines.end(),
+        [expected](auto& line) { return line.find(expected) != std::string::npos; }));
+}
+
 void expect_clean_scenario(
     std::string_view name, std::string storage_scenario, std::string payload_mode,
     int records = 4) {
@@ -1060,6 +1067,72 @@ TEST(RuntimePipelineTest, BoundsAcquisitionQuiesceAndStopFailures) {
             EXPECT_EQ(primary->code(), ErrorCode::Unavailable);
         }
     }
+}
+
+TEST(RuntimePipelineTest, RollsBackPreviouslyStartedAcquisitionsInReverseOrder) {
+    const std::string log = unique_log_path("multi_acquisition_rollback");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto runtime_options = options("multi_acquisition_rollback", "sync", "copy", 1, 1, 1, log);
+    runtime_options.acquisitions.clear();
+    for (const std::string lifecycle_scenario : {"", "start_partial_failure"}) {
+        RuntimePluginOptions acquisition;
+        acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
+        acquisition.config = map_config({
+            {"streams", plugin::ConfigTree::Int64(1)},
+            {"records_per_stream", plugin::ConfigTree::Int64(1)},
+            {"producer_threads", plugin::ConfigTree::Int64(1)},
+            {"payload_size", plugin::ConfigTree::Int64(16)},
+            {"payload_mode", plugin::ConfigTree::String("copy")},
+            {"descriptor_change_after", plugin::ConfigTree::Int64(-1)},
+            {"binding_scenario", plugin::ConfigTree::String("")},
+            {"lifecycle_scenario", plugin::ConfigTree::String(lifecycle_scenario)},
+            {"pause_before_switch", plugin::ConfigTree::Int64(0)},
+            {"stale_handle_file", plugin::ConfigTree::String("")},
+            {"projection_id", plugin::ConfigTree::String("")},
+            {"projection_before_start", plugin::ConfigTree::Int64(0)},
+            {"projection_delay_after", plugin::ConfigTree::Int64(-1)},
+            {"projection_registration_mode", plugin::ConfigTree::String("")},
+            {"timestamp_scenario", plugin::ConfigTree::String("")},
+            {"timestamp_key_count", plugin::ConfigTree::Int64(1)},
+            {"event_log", plugin::ConfigTree::String(log)},
+        });
+        runtime_options.acquisitions.push_back(std::move(acquisition));
+    }
+
+    Runtime runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_NE(primary->message().find("partial start failure"), std::string_view::npos);
+    auto secondary = runtime.SecondaryFailures();
+    ASSERT_TRUE(secondary.has_value());
+    EXPECT_TRUE(secondary->empty())
+        << (secondary->empty() ? std::string_view{} : secondary->front().message());
+    EXPECT_GE(log_count(log, "control quiesce"), 2U);
+    EXPECT_GE(log_count(log, "control stop"), 2U);
+}
+
+TEST(RuntimePipelineTest, PreservesPartialStartAndCleanupFailures) {
+    const std::string log = unique_log_path("partial_start_cleanup_failure");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "partial_start_cleanup_failure", "sync", "copy", 1, 1, 1, log,
+        std::chrono::milliseconds(100), -1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "ready", "",
+        "start_partial_cleanup_failure"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_NE(primary->message().find("partial start failure"), std::string_view::npos);
+    auto secondary = runtime.SecondaryFailures();
+    ASSERT_TRUE(secondary.has_value());
+    ASSERT_FALSE(secondary->empty());
+    EXPECT_NE(secondary->front().message().find("quiesce failure"), std::string_view::npos);
 }
 
 TEST(RuntimePipelineTest, PreservesPrimaryAndSecondaryFailureDiagnostics) {

@@ -94,6 +94,7 @@ public:
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
+        stage_ = Stage::StartAttempted;
         if (lifecycle_scenario_ == "start_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
@@ -189,22 +190,32 @@ public:
         for (std::size_t producer = 0; producer < producer_threads_; ++producer) {
             producers_.emplace_back([this, producer]() { Produce(producer); });
         }
+        if (lifecycle_scenario_ == "start_partial_failure" ||
+            lifecycle_scenario_ == "start_partial_cleanup_failure") {
+            return fail(rodaq::Error(
+                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+                "configured partial start failure"));
+        }
         stage_ = Stage::Started;
         return {};
     }
 
     rodaq::Result<void> Stop() override {
+        LogControl("stop-enter");
         if (stage_ == Stage::Stopped) {
             return {};
         }
         if (stage_ != Stage::Started) {
-            return invalid_state();
+            if (stage_ != Stage::StartAttempted) {
+                return invalid_state();
+            }
         }
         if (lifecycle_scenario_ == "stop_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         Quiesce();
         stage_ = Stage::Stopped;
+        LogControl("stop");
         if (lifecycle_scenario_ == "stop_failure") {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0, "configured stop failure"));
@@ -254,7 +265,8 @@ public:
 
     rodaq::Result<void> QuiescePlugin() override {
         LogControl("quiesce");
-        if (lifecycle_scenario_ == "quiesce_failure") {
+        if (lifecycle_scenario_ == "quiesce_failure" ||
+            lifecycle_scenario_ == "start_partial_cleanup_failure") {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured quiesce failure"));
@@ -271,6 +283,7 @@ private:
         Created,
         Bound,
         Configured,
+        StartAttempted,
         Started,
         Stopped,
     };

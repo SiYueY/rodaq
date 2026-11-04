@@ -152,6 +152,7 @@ public:
         if (stage_ != LifecycleStage::Configured || start_ == nullptr) {
             return invalid_lifecycle("Plugin start requires Configured state");
         }
+        stage_ = LifecycleStage::StartAttempted;
         rodaq_error error{};
         Result<void> result = result_from_status(start_(instance_, &error), &error, "plugin");
         if (result.has_value()) {
@@ -161,8 +162,9 @@ public:
     }
 
     Result<void> stop() {
-        if (stage_ != LifecycleStage::Started || stop_ == nullptr) {
-            return invalid_lifecycle("Plugin stop requires Started state");
+        if ((stage_ != LifecycleStage::Started && stage_ != LifecycleStage::StartAttempted) ||
+            stop_ == nullptr) {
+            return invalid_lifecycle("Plugin stop requires Started or StartAttempted state");
         }
         rodaq_error error{};
         Result<void> result = result_from_status(stop_(instance_, &error), &error, "plugin");
@@ -226,6 +228,7 @@ private:
         Created,
         Bound,
         Configured,
+        StartAttempted,
         Started,
         Stopped,
         Opened,

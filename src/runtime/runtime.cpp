@@ -134,6 +134,28 @@ struct BoundedCallOutcome {
     std::optional<Error> error;
 };
 
+enum class AcquisitionActivationState {
+    Empty,
+    Created,
+    Bound,
+    Configured,
+    StartAttempted,
+    Started,
+    Quiesced,
+    Stopped,
+    Quarantined,
+};
+
+enum class StorageActivationState {
+    Empty,
+    Created,
+    Bound,
+    Configured,
+    Opened,
+    Closed,
+    Quarantined,
+};
+
 template <typename Callable>
 BoundedCallOutcome run_bounded_call(
     Callable callable, std::chrono::steady_clock::time_point deadline) noexcept {
@@ -162,7 +184,8 @@ BoundedCallOutcome run_bounded_call(
 class Runtime::Impl final {
 public:
     explicit Impl(RuntimeOptions options)
-    : options_(std::move(options)), acquisition_started_(options_.acquisitions.size(), false) {}
+    : options_(std::move(options)),
+      acquisition_states_(options_.acquisitions.size(), AcquisitionActivationState::Empty) {}
 
     Result<void> Configure() {
         std::lock_guard<std::mutex> lock(lifecycle_mutex_);
@@ -198,6 +221,10 @@ public:
             return nonstd::make_unexpected(std::move(activation_slot.error()));
         }
         activation_slot_ = activation_slot.value();
+        std::fill(
+            acquisition_states_.begin(), acquisition_states_.end(),
+            AcquisitionActivationState::Empty);
+        storage_state_ = StorageActivationState::Empty;
         ++activation_generation_;
         state_ = RuntimeState::Starting;
         auto created = ActiveRuntimeState::Create(options_, activation_generation_);
@@ -242,8 +269,9 @@ public:
         state_ = RuntimeState::Stopping;
         active_->MarkStopping();
 
-        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
-            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
+        for (std::size_t index = 0; index < acquisition_states_.size(); ++index) {
+            if (acquisition_states_[index] != AcquisitionActivationState::Started ||
+                !active_->acquisition_instance(index).has_value()) {
                 continue;
             }
             std::shared_ptr<ActiveRuntimeState> state = active_;
@@ -273,6 +301,7 @@ public:
                 active_->RequestFailure(std::move(outcome.error.value()));
                 return quarantine_failure();
             }
+            acquisition_states_[index] = AcquisitionActivationState::Quiesced;
         }
 
         if (!active_->WaitForSubmissions(Clock::now() + options_.stop_progress_timeout)) {
@@ -336,8 +365,10 @@ public:
                 return quarantine_failure();
             }
             storage_open_ = false;
+            storage_state_ = StorageActivationState::Closed;
             if (close.status == BoundedCallOutcome::Status::Failed) {
                 active_->RequestFailure(std::move(close.error.value()));
+                storage_state_ = StorageActivationState::Quarantined;
                 return quarantine_failure();
             }
         }
@@ -355,8 +386,9 @@ public:
             return quarantine_failure();
         }
 
-        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
-            if (!acquisition_started_[index] || !active_->acquisition_instance(index).has_value()) {
+        for (std::size_t index = 0; index < acquisition_states_.size(); ++index) {
+            if (acquisition_states_[index] != AcquisitionActivationState::Quiesced ||
+                !active_->acquisition_instance(index).has_value()) {
                 continue;
             }
             std::shared_ptr<ActiveRuntimeState> state = active_;
@@ -372,7 +404,7 @@ public:
                 active_->RequestFailure(std::move(stopped.error.value()));
                 return quarantine_failure();
             }
-            acquisition_started_[index] = false;
+            acquisition_states_[index] = AcquisitionActivationState::Stopped;
         }
 
         const bool failed =
@@ -569,6 +601,7 @@ private:
             return nonstd::make_unexpected(std::move(storage.error()));
         }
         active_->storage_instance().emplace(std::move(storage.value()));
+        storage_state_ = StorageActivationState::Created;
 
         auto storage_registry = std::make_shared<plugin::ServiceRegistry>(6, 128);
         auto registered = active_->RegisterStorageServices(*storage_registry);
@@ -586,6 +619,7 @@ private:
         if (!bound.has_value()) {
             return bound;
         }
+        storage_state_ = StorageActivationState::Bound;
         auto control = supervise_start_value<rodaq_interface>(
             [state]() { return state->storage_instance()->required_control_interface(); });
         if (!control.has_value()) {
@@ -599,6 +633,7 @@ private:
         if (!configured.has_value()) {
             return configured;
         }
+        storage_state_ = StorageActivationState::Configured;
         auto capabilities = supervise_start_value<rodaq_storage_capabilities>(
             [state]() { return state->StorageCapabilities(); });
         if (!capabilities.has_value()) {
@@ -665,6 +700,7 @@ private:
             return opened;
         }
         storage_open_ = true;
+        storage_state_ = StorageActivationState::Opened;
 
         auto pipeline = active_->InitializePipeline(
             effective_payload_limit, effective_payload_inflight_bytes,
@@ -690,6 +726,7 @@ private:
                 return nonstd::make_unexpected(std::move(instance.error()));
             }
             active_->acquisition_instance(index).emplace(std::move(instance.value()));
+            acquisition_states_[index] = AcquisitionActivationState::Created;
 
             auto registry = std::make_shared<plugin::ServiceRegistry>(4, 128);
             auto acquisition_registered = active_->RegisterAcquisitionServices(*registry, index);
@@ -706,6 +743,7 @@ private:
             if (!acquisition_bound.has_value()) {
                 return acquisition_bound;
             }
+            acquisition_states_[index] = AcquisitionActivationState::Bound;
             auto acquisition_control = supervise_start_value<rodaq_interface>([state, index]() {
                 return state->acquisition_instance(index)->required_control_interface();
             });
@@ -722,15 +760,17 @@ private:
             if (!acquisition_configured.has_value()) {
                 return acquisition_configured;
             }
+            acquisition_states_[index] = AcquisitionActivationState::Configured;
         }
 
         for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+            acquisition_states_[index] = AcquisitionActivationState::StartAttempted;
             auto started = supervise_start_call(
                 [state, index]() { return state->acquisition_instance(index)->start(); });
             if (!started.has_value()) {
                 return started;
             }
-            acquisition_started_[index] = true;
+            acquisition_states_[index] = AcquisitionActivationState::Started;
         }
         return {};
     }
@@ -743,7 +783,10 @@ private:
         if (start_quarantine_required_) {
             capture_activation_outcome();
             quarantined_ = std::move(active_);
-            acquisition_started_.assign(options_.acquisitions.size(), false);
+            std::fill(
+                acquisition_states_.begin(), acquisition_states_.end(),
+                AcquisitionActivationState::Quarantined);
+            storage_state_ = StorageActivationState::Quarantined;
             storage_open_ = false;
             start_quarantine_required_ = false;
             state_ = RuntimeState::Failed;
@@ -758,18 +801,61 @@ private:
         }
         bool unsafe_to_release = false;
         std::shared_ptr<ActiveRuntimeState> state = active_;
-        for (std::size_t index = 0; index < acquisition_started_.size(); ++index) {
-            if (acquisition_started_[index] && active_->acquisition_instance(index).has_value()) {
-                auto stopped = run_bounded_call(
-                    [state, index]() { return state->acquisition_instance(index)->stop(); },
-                    Clock::now() + options_.stop_progress_timeout);
-                if (stopped.status != BoundedCallOutcome::Status::Completed) {
-                    unsafe_to_release = true;
-                    break;
-                }
+        for (std::size_t offset = 0; offset < acquisition_states_.size(); ++offset) {
+            const std::size_t index = acquisition_states_.size() - offset - 1U;
+            const AcquisitionActivationState activation_state = acquisition_states_[index];
+            if (!active_->acquisition_instance(index).has_value() ||
+                (activation_state != AcquisitionActivationState::StartAttempted &&
+                 activation_state != AcquisitionActivationState::Started)) {
+                continue;
             }
+
+            auto quiesced = run_bounded_call(
+                [state, index]() -> Result<void> {
+                    auto control = state->acquisition_instance(index)->required_control_interface();
+                    if (!control.has_value()) {
+                        return nonstd::make_unexpected(std::move(control.error()));
+                    }
+                    const auto* table =
+                        static_cast<const rodaq_acquisition_control_v1*>(control->vtable);
+                    rodaq_error error{};
+                    const rodaq_status status = table->quiesce_plugin(control->context, &error);
+                    return status == RODAQ_STATUS_OK
+                               ? Result<void>()
+                               : nonstd::make_unexpected(abi_error(
+                                     status, error, "Acquisition quiescence failed during abort"));
+                },
+                Clock::now() + options_.stop_progress_timeout);
+            if (quiesced.status != BoundedCallOutcome::Status::Completed) {
+                active_->RequestFailure(
+                    quiesced.status == BoundedCallOutcome::Status::TimedOut
+                        ? runtime_error(
+                              ErrorCode::Timeout,
+                              "Acquisition quiescence timed out during activation abort")
+                        : std::move(quiesced.error.value()));
+                unsafe_to_release = true;
+                break;
+            }
+            acquisition_states_[index] = AcquisitionActivationState::Quiesced;
+
+            auto stopped = run_bounded_call(
+                [state, index]() { return state->acquisition_instance(index)->stop(); },
+                Clock::now() + options_.stop_progress_timeout);
+            if (stopped.status != BoundedCallOutcome::Status::Completed) {
+                active_->RequestFailure(
+                    stopped.status == BoundedCallOutcome::Status::TimedOut
+                        ? runtime_error(
+                              ErrorCode::Timeout,
+                              "Acquisition stop timed out during activation abort")
+                        : std::move(stopped.error.value()));
+                unsafe_to_release = true;
+                break;
+            }
+            acquisition_states_[index] = AcquisitionActivationState::Stopped;
         }
-        if (!unsafe_to_release && storage_open_ && active_->storage_instance().has_value()) {
+        if (!unsafe_to_release && storage_open_ &&
+            storage_state_ == StorageActivationState::Opened &&
+            active_->storage_instance().has_value()) {
             rodaq_storage_close_request close_request{};
             close_request.struct_size = sizeof(close_request);
             close_request.disposition = RODAQ_STORAGE_CLOSE_ACTIVATION_ABORT;
@@ -778,7 +864,17 @@ private:
                     return state->storage_instance()->close(close_request);
                 },
                 Clock::now() + options_.stop_progress_timeout);
-            unsafe_to_release = closed.status != BoundedCallOutcome::Status::Completed;
+            if (closed.status == BoundedCallOutcome::Status::Completed) {
+                storage_state_ = StorageActivationState::Closed;
+            } else {
+                active_->RequestFailure(
+                    closed.status == BoundedCallOutcome::Status::TimedOut
+                        ? runtime_error(
+                              ErrorCode::Timeout, "Storage close timed out during activation abort")
+                        : std::move(closed.error.value()));
+                storage_state_ = StorageActivationState::Quarantined;
+                unsafe_to_release = true;
+            }
         }
         if (unsafe_to_release) {
             capture_activation_outcome();
@@ -788,7 +884,12 @@ private:
             active_.reset();
             release_activation_slot();
         }
-        acquisition_started_.assign(options_.acquisitions.size(), false);
+        if (!unsafe_to_release) {
+            std::fill(
+                acquisition_states_.begin(), acquisition_states_.end(),
+                AcquisitionActivationState::Empty);
+            storage_state_ = StorageActivationState::Empty;
+        }
         storage_open_ = false;
         start_quarantine_required_ = false;
         state_ = RuntimeState::Failed;
@@ -836,7 +937,8 @@ private:
     std::shared_ptr<ActiveRuntimeState> active_;
     std::shared_ptr<ActiveRuntimeState> quarantined_;
     std::optional<std::uint64_t> activation_slot_;
-    std::vector<bool> acquisition_started_;
+    std::vector<AcquisitionActivationState> acquisition_states_;
+    StorageActivationState storage_state_ = StorageActivationState::Empty;
     bool storage_open_ = false;
     bool start_quarantine_required_ = false;
     std::optional<RuntimeStatsSnapshot> last_stats_;
