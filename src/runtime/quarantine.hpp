@@ -29,30 +29,30 @@ struct SupervisedCallOutcome {
 
 class QuarantineManager final {
 public:
-    static QuarantineManager& Process() noexcept;
+    static QuarantineManager& process() noexcept;
 
     QuarantineManager(const QuarantineManager&) = delete;
     QuarantineManager& operator=(const QuarantineManager&) = delete;
     QuarantineManager(QuarantineManager&&) = delete;
     QuarantineManager& operator=(QuarantineManager&&) = delete;
 
-    Result<SupervisedCallOutcome> Run(
+    Result<SupervisedCallOutcome> run(
         std::function<Result<void>()> operation, std::chrono::steady_clock::time_point deadline,
         std::string reason, std::shared_ptr<std::atomic<bool>> joined = {});
-    bool RetainWorker(
+    bool retain_worker(
         std::thread&& worker, std::shared_ptr<void> state, std::shared_ptr<std::atomic<bool>> done,
         std::string reason, std::shared_ptr<std::atomic<bool>> joined = {}) noexcept;
 
-    Result<std::uint64_t> ReserveActivation(std::string reason);
-    bool RetainActivation(
+    Result<std::uint64_t> reserve_activation(std::string reason);
+    bool retain_activation(
         std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason,
         std::function<bool()> cleanup = {}) noexcept;
-    void ReleaseActivation(std::uint64_t activation_id) noexcept;
-    void ReapCompleted() noexcept;
+    void release_activation(std::uint64_t activation_id) noexcept;
+    void reap_completed() noexcept;
 
-    std::size_t RetainedCallCount() const noexcept;
-    std::size_t RetainedWorkerCount() const noexcept;
-    std::size_t RetainedActivationCount() const noexcept;
+    std::size_t retained_call_count() const noexcept;
+    std::size_t retained_worker_count() const noexcept;
+    std::size_t retained_activation_count() const noexcept;
 
 private:
     struct Completion;
@@ -76,12 +76,12 @@ private:
     QuarantineManager() noexcept;
     ~QuarantineManager() = delete;
 
-    std::unique_ptr<CallEntry> CreateCallEntry(
+    std::unique_ptr<CallEntry> create_call_entry(
         std::shared_ptr<Completion> completion, std::string reason);
-    SupervisedCallOutcome WaitForCall(
+    SupervisedCallOutcome wait_for_call(
         std::unique_ptr<CallEntry>& entry, std::chrono::steady_clock::time_point deadline);
 
-    void ReapActivations() noexcept;
+    void reap_activations() noexcept;
 
     mutable std::mutex mutex_;
     std::size_t active_calls_ = 0;

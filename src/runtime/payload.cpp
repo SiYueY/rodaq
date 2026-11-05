@@ -6,8 +6,8 @@
 
 namespace rodaq {
 
-Result<Payload> Payload::Adopt(PayloadView view, void* owner_context, PayloadRelease release) {
-    if (!view.Valid()) {
+Result<Payload> Payload::adopt(PayloadView view, void* owner_context, PayloadRelease release) {
+    if (!view.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "adopted payload view is structurally invalid"));
     }
@@ -15,11 +15,11 @@ Result<Payload> Payload::Adopt(PayloadView view, void* owner_context, PayloadRel
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "adopted payload requires a release capability"));
     }
-    return Payload(view.Data(), view.Size(), owner_context, release);
+    return Payload(view.data(), view.size(), owner_context, release);
 }
 
-Result<Payload> Payload::Retain(PayloadView view, void* owner_context, PayloadRelease release) {
-    if (!view.Valid()) {
+Result<Payload> Payload::retain(PayloadView view, void* owner_context, PayloadRelease release) {
+    if (!view.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "retained payload view is structurally invalid"));
     }
@@ -27,7 +27,7 @@ Result<Payload> Payload::Retain(PayloadView view, void* owner_context, PayloadRe
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "retained payload requires a release capability"));
     }
-    return Payload(view.Data(), view.Size(), owner_context, release);
+    return Payload(view.data(), view.size(), owner_context, release);
 }
 
 Payload::Payload(
@@ -66,7 +66,7 @@ Payload::Payload(Payload&& other) noexcept
 
 Payload& Payload::operator=(Payload&& other) noexcept {
     if (this != &other) {
-        ReleaseCurrent();
+        release_current();
         pool_state_ = std::move(other.pool_state_);
         data_ = other.data_;
         size_ = other.size_;
@@ -85,23 +85,23 @@ Payload& Payload::operator=(Payload&& other) noexcept {
     return *this;
 }
 
-Payload::~Payload() { ReleaseCurrent(); }
+Payload::~Payload() { release_current(); }
 
-PayloadView Payload::View() const noexcept { return PayloadView(data_, size_); }
+PayloadView Payload::view() const noexcept { return PayloadView(data_, size_); }
 
-std::size_t Payload::Size() const noexcept { return size_; }
+std::size_t Payload::size() const noexcept { return size_; }
 
-bool Payload::Empty() const noexcept { return size_ == 0; }
+bool Payload::empty() const noexcept { return size_ == 0; }
 
-bool Payload::RequiresExternalRelease() const noexcept { return release_ != nullptr; }
+bool Payload::requires_external_release() const noexcept { return release_ != nullptr; }
 
-void Payload::AttachLifetimeGuard(std::shared_ptr<void> lifetime_guard) noexcept {
+void Payload::attach_lifetime_guard(std::shared_ptr<void> lifetime_guard) noexcept {
     lifetime_guard_ = std::move(lifetime_guard);
 }
 
-void Payload::ReleaseCurrent() noexcept {
+void Payload::release_current() noexcept {
     if (pool_state_ != nullptr) {
-        pool_state_->Release(block_class_, block_index_);
+        pool_state_->release(block_class_, block_index_);
         pool_state_.reset();
     }
     if (release_ != nullptr) {

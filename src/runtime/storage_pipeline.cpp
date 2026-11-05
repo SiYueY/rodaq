@@ -16,6 +16,10 @@
 
 namespace rodaq::runtime {
 
+bool PipelineReservation::active() const noexcept { return pipeline_ != nullptr; }
+std::size_t PipelineReservation::index() const noexcept { return index_; }
+rodaq_storage_operation PipelineReservation::operation() const noexcept { return operation_; }
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -90,7 +94,7 @@ PipelineReservation::PipelineReservation(PipelineReservation&& other) noexcept
 
 PipelineReservation& PipelineReservation::operator=(PipelineReservation&& other) noexcept {
     if (this != &other) {
-        Cancel();
+        cancel();
         pipeline_ = other.pipeline_;
         index_ = other.index_;
         operation_ = other.operation_;
@@ -104,34 +108,34 @@ PipelineReservation& PipelineReservation::operator=(PipelineReservation&& other)
     return *this;
 }
 
-PipelineReservation::~PipelineReservation() { Cancel(); }
+PipelineReservation::~PipelineReservation() { cancel(); }
 
-Reservation PipelineReservation::TakeRecordReservation() noexcept {
+Reservation PipelineReservation::take_record_reservation() noexcept {
     return std::move(record_reservation_);
 }
 
-Reservation PipelineReservation::TakePayloadReservation() noexcept {
+Reservation PipelineReservation::take_payload_reservation() noexcept {
     return std::move(payload_reservation_);
 }
 
-PayloadPoolReservation PipelineReservation::TakePayloadPoolReservation() noexcept {
+PayloadPoolReservation PipelineReservation::take_payload_pool_reservation() noexcept {
     return std::move(payload_pool_reservation_);
 }
 
-void PipelineReservation::Cancel() noexcept {
+void PipelineReservation::cancel() noexcept {
     if (pipeline_ != nullptr) {
         StoragePipeline* pipeline = pipeline_;
         const std::size_t index = index_;
         pipeline_ = nullptr;
-        payload_pool_reservation_.Release();
-        record_reservation_.Release();
-        payload_reservation_.Release();
+        payload_pool_reservation_.release();
+        record_reservation_.release();
+        payload_reservation_.release();
         {
             std::lock_guard<std::mutex> lock(pipeline->mutex_);
             StoragePipeline::Slot& slot = pipeline->slots_[index];
             if (slot.dispatch_state == StoragePipeline::DispatchState::Reserved) {
                 slot.dispatch_state = StoragePipeline::DispatchState::Terminalizing;
-                pipeline->ReturnIndexLocked(index);
+                pipeline->return_index_locked(index);
             }
             pipeline->resource_condition_.notify_all();
         }
@@ -180,9 +184,9 @@ StoragePipeline::StoragePipeline(
 
 StoragePipeline::~StoragePipeline() {
     stopping_ = true;
-    CloseAdmission();
-    CloseDispatch();
-    CloseRelease();
+    close_admission();
+    close_dispatch();
+    close_release();
     completion_condition_.notify_all();
     submit_return_condition_.notify_all();
     watchdog_condition_.notify_all();
@@ -202,22 +206,22 @@ StoragePipeline::~StoragePipeline() {
     }
 }
 
-Result<void> StoragePipeline::Start() {
+Result<void> StoragePipeline::start() {
     if (started_) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidState, "runtime", 0, "StoragePipeline is already started"));
     }
     try {
         watchdog_thread_ = std::thread([this] {
-            WatchdogLoop();
+            watchdog_loop();
             watchdog_done_.store(true, std::memory_order_release);
         });
         completion_thread_ = std::thread([this] {
-            CompletionLoop();
+            completion_loop();
             completion_done_.store(true, std::memory_order_release);
         });
         dispatch_thread_ = std::thread([this] {
-            DispatchLoop();
+            dispatch_loop();
             dispatch_done_.store(true, std::memory_order_release);
         });
         release_threads_.reserve(release_worker_count_);
@@ -225,14 +229,14 @@ Result<void> StoragePipeline::Start() {
         for (std::size_t index = 0; index < release_worker_count_; ++index) {
             auto state = std::make_shared<ReleaseWorkerState>();
             release_worker_states_.push_back(state);
-            release_threads_.emplace_back(&StoragePipeline::ReleaseLoop, this, state);
+            release_threads_.emplace_back(&StoragePipeline::release_loop, this, state);
         }
         started_ = true;
         return {};
     } catch (const std::exception& error) {
         stopping_ = true;
-        CloseDispatch();
-        CloseRelease();
+        close_dispatch();
+        close_release();
         completion_condition_.notify_all();
         watchdog_condition_.notify_all();
         if (dispatch_thread_.joinable()) {
@@ -255,7 +259,7 @@ Result<void> StoragePipeline::Start() {
     }
 }
 
-void StoragePipeline::OpenAdmission() noexcept {
+void StoragePipeline::open_admission() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (failure_cutoff_.load(std::memory_order_acquire)) {
         return;
@@ -264,18 +268,18 @@ void StoragePipeline::OpenAdmission() noexcept {
     resource_condition_.notify_all();
 }
 
-void StoragePipeline::CloseAdmission() noexcept {
+void StoragePipeline::close_admission() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     admission_open_ = false;
     resource_condition_.notify_all();
 }
 
-bool StoragePipeline::AdmissionOpen() const noexcept {
+bool StoragePipeline::admission_open() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return admission_open_;
 }
 
-Result<PreGateAcquireResult> StoragePipeline::AcquirePreGate(
+Result<PreGateAcquireResult> StoragePipeline::acquire_pre_gate(
     std::size_t payload_bytes, AdmissionMode mode, PayloadPool* copy_pool, bool copy_payload,
     std::chrono::steady_clock::time_point deadline,
     const std::atomic<std::uint64_t>& eligibility_generation) {
@@ -299,9 +303,10 @@ Result<PreGateAcquireResult> StoragePipeline::AcquirePreGate(
 
         std::size_t index = kInvalidIndex;
         rodaq_storage_operation operation{};
-        if (TryAcquireLocked(payload_bytes, index, operation)) {
-            auto record_reservation = record_budget_.TryReserve(ResourceAmount{1, 0});
-            auto payload_reservation = payload_budget_.TryReserve(ResourceAmount{0, payload_bytes});
+        if (try_acquire_locked(payload_bytes, index, operation)) {
+            auto record_reservation = record_budget_.try_reserve(ResourceAmount{1, 0});
+            auto payload_reservation =
+                payload_budget_.try_reserve(ResourceAmount{0, payload_bytes});
             PayloadPoolReservation pool_reservation;
             bool pool_reserved = !copy_payload || payload_bytes == 0;
             if (record_reservation.has_value() && payload_reservation.has_value() && copy_payload &&
@@ -311,7 +316,7 @@ Result<PreGateAcquireResult> StoragePipeline::AcquirePreGate(
                         ErrorCode::InvalidState, "runtime", 0,
                         "Copy Payload requires a PayloadPool"));
                 }
-                auto reserved = copy_pool->TryReserve(payload_bytes);
+                auto reserved = copy_pool->try_reserve(payload_bytes);
                 if (reserved.has_value()) {
                     pool_reservation = std::move(reserved.value());
                     pool_reserved = true;
@@ -363,13 +368,13 @@ Result<PreGateAcquireResult> StoragePipeline::AcquirePreGate(
     }
 }
 
-bool StoragePipeline::TryAcquireLocked(
+bool StoragePipeline::try_acquire_locked(
     std::size_t payload_bytes, std::size_t& index, rodaq_storage_operation& operation) {
     if (free_indices_.empty()) {
         return false;
     }
-    if (record_budget_.Available().records == 0 ||
-        payload_budget_.Available().bytes < payload_bytes) {
+    if (record_budget_.available().records == 0 ||
+        payload_budget_.available().bytes < payload_bytes) {
         return false;
     }
 
@@ -379,7 +384,7 @@ bool StoragePipeline::TryAcquireLocked(
     return true;
 }
 
-void StoragePipeline::Publish(PipelineReservation&& reservation, RuntimeRecord&& record) noexcept {
+void StoragePipeline::publish(PipelineReservation&& reservation, RuntimeRecord&& record) noexcept {
     StoragePipeline* pipeline = reservation.pipeline_;
     if (pipeline == nullptr || pipeline != this) {
         std::terminate();
@@ -388,47 +393,47 @@ void StoragePipeline::Publish(PipelineReservation&& reservation, RuntimeRecord&&
     std::lock_guard<std::mutex> lock(mutex_);
     Slot& slot = slots_[index];
     if (slot.dispatch_state != DispatchState::Reserved ||
-        reservation.payload_pool_reservation_.Active()) {
+        reservation.payload_pool_reservation_.active()) {
         std::terminate();
     }
     slot.record.emplace(std::move(record));
-    slot.payload_release_state = slot.record->RecordPayload().RequiresExternalRelease()
+    slot.payload_release_state = slot.record->record_payload().requires_external_release()
                                      ? PayloadReleaseState::Required
                                      : PayloadReleaseState::NotRequired;
     slot.payload_reservation = std::move(reservation.payload_reservation_);
     slot.dispatch_state = DispatchState::Ready;
     if (failure_cutoff_.load(std::memory_order_acquire)) {
-        ClassifyNeverHandedOffLocked(index);
+        classify_never_handed_off_locked(index);
     } else {
         const std::size_t tail = (dispatch_head_ + dispatch_count_) % capacity_;
         dispatch_ring_[tail] = index;
         ++dispatch_count_;
     }
     reservation.pipeline_ = nullptr;
-    reservation.record_reservation_.Release();
+    reservation.record_reservation_.release();
     dispatch_condition_.notify_one();
 }
 
-void StoragePipeline::CloseDispatch() noexcept {
+void StoragePipeline::close_dispatch() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     dispatch_closed_ = true;
     dispatch_condition_.notify_all();
 }
 
-void StoragePipeline::ClassifyNeverHandedOffLocked(std::size_t index) noexcept {
+void StoragePipeline::classify_never_handed_off_locked(std::size_t index) noexcept {
     Slot& slot = slots_[index];
     // Admission history is immutable. Only the independent Storage axes end.
     slot.submit_return = SubmitReturn::ReturnedError;
     slot.payload_axis = PayloadAxis::Consumed;
     slot.persistence_axis = PersistenceAxis::Failed;
     slot.dispatch_state = DispatchState::Terminalizing;
-    if (!ScheduleCompletionLocked(index)) {
+    if (!schedule_completion_locked(index)) {
         std::terminate();  // Pre-reserved completion capacity covers every slot.
     }
     submit_return_condition_.notify_all();
 }
 
-void StoragePipeline::BeginFailureCutoff() noexcept {
+void StoragePipeline::begin_failure_cutoff() noexcept {
     failure_cutoff_.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lock(mutex_);
     admission_open_ = false;
@@ -437,13 +442,13 @@ void StoragePipeline::BeginFailureCutoff() noexcept {
         const std::size_t index = dispatch_ring_[dispatch_head_];
         dispatch_head_ = (dispatch_head_ + 1U) % capacity_;
         --dispatch_count_;
-        ClassifyNeverHandedOffLocked(index);
+        classify_never_handed_off_locked(index);
     }
     dispatch_condition_.notify_all();
     resource_condition_.notify_all();
 }
 
-void StoragePipeline::ResolveAfterClose() noexcept {
+void StoragePipeline::resolve_after_close() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     // A returned, successful close is the no-future-access barrier. It proves
     // Payload safety, never a previously unconfirmed persistence success.
@@ -458,13 +463,13 @@ void StoragePipeline::ResolveAfterClose() noexcept {
         if (slot.persistence_axis == PersistenceAxis::Pending && !slot.persistence_event_seen) {
             slot.persistence_axis = PersistenceAxis::Unknown;
         }
-        if (!ScheduleCompletionLocked(index)) {
+        if (!schedule_completion_locked(index)) {
             std::terminate();
         }
     }
 }
 
-void StoragePipeline::CloseCallbacks() noexcept {
+void StoragePipeline::close_callbacks() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     callbacks_closed_ = true;
     stopping_ = true;
@@ -472,30 +477,30 @@ void StoragePipeline::CloseCallbacks() noexcept {
     watchdog_condition_.notify_all();
 }
 
-void StoragePipeline::CloseRelease() noexcept {
+void StoragePipeline::close_release() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     release_closed_ = true;
     release_condition_.notify_all();
 }
 
-void StoragePipeline::NotifyAdmissionWaiters() noexcept {
+void StoragePipeline::notify_admission_waiters() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     resource_condition_.notify_all();
 }
 
-void StoragePipeline::JoinDispatch() noexcept {
+void StoragePipeline::join_dispatch() noexcept {
     if (dispatch_thread_.joinable()) {
         dispatch_thread_.join();
     }
 }
 
-void StoragePipeline::JoinCompletion() noexcept {
+void StoragePipeline::join_completion() noexcept {
     if (completion_thread_.joinable()) {
         completion_thread_.join();
     }
 }
 
-void StoragePipeline::JoinRelease() noexcept {
+void StoragePipeline::join_release() noexcept {
     for (std::size_t index = 0; index < release_threads_.size(); ++index) {
         if (release_threads_[index].joinable()) {
             release_threads_[index].join();
@@ -504,7 +509,7 @@ void StoragePipeline::JoinRelease() noexcept {
     }
 }
 
-void StoragePipeline::ReapCompletedWorkers() noexcept {
+void StoragePipeline::reap_completed_workers() noexcept {
     if (dispatch_done_.load(std::memory_order_acquire) && dispatch_thread_.joinable()) {
         dispatch_thread_.join();
     }
@@ -523,7 +528,7 @@ void StoragePipeline::ReapCompletedWorkers() noexcept {
     }
 }
 
-bool StoragePipeline::RetainBlockedReleaseWorkers() noexcept {
+bool StoragePipeline::retain_blocked_release_workers() noexcept {
     bool retained = true;
     for (std::size_t index = 0; index < release_threads_.size(); ++index) {
         std::thread& worker = release_threads_[index];
@@ -536,7 +541,7 @@ bool StoragePipeline::RetainBlockedReleaseWorkers() noexcept {
             state->joined->store(true, std::memory_order_release);
             continue;
         }
-        if (state == nullptr || !QuarantineManager::Process().RetainWorker(
+        if (state == nullptr || !QuarantineManager::process().retain_worker(
                                     std::move(worker), state, state->done,
                                     "Storage Payload release worker", state->joined)) {
             retained = false;
@@ -545,14 +550,14 @@ bool StoragePipeline::RetainBlockedReleaseWorkers() noexcept {
     return retained;
 }
 
-bool StoragePipeline::WaitDispatchIdle(std::chrono::steady_clock::time_point deadline) {
+bool StoragePipeline::wait_dispatch_idle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
     return dispatch_condition_.wait_until(lock, deadline, [this] {
         return dispatch_count_ == 0 && dispatch_active_generation_ == 0;
     });
 }
 
-bool StoragePipeline::WaitOperationsIdle(std::chrono::steady_clock::time_point deadline) {
+bool StoragePipeline::wait_operations_idle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
     return resource_condition_.wait_until(lock, deadline, [this] {
         return std::none_of(
@@ -560,7 +565,7 @@ bool StoragePipeline::WaitOperationsIdle(std::chrono::steady_clock::time_point d
     });
 }
 
-bool StoragePipeline::WaitReleaseIdle(std::chrono::steady_clock::time_point deadline) {
+bool StoragePipeline::wait_release_idle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
     // A transferred worker still executes against this Pipeline. Empty queues
     // alone do not establish its lifetime barrier; require the manager's Join.
@@ -578,28 +583,29 @@ bool StoragePipeline::WaitReleaseIdle(std::chrono::steady_clock::time_point dead
     });
 }
 
-bool StoragePipeline::WaitStorageQuiescent(std::chrono::steady_clock::time_point deadline) {
-    return WaitDispatchIdle(deadline) && WaitReleaseIdle(deadline) && WaitOperationsIdle(deadline);
+bool StoragePipeline::wait_storage_quiescent(std::chrono::steady_clock::time_point deadline) {
+    return wait_dispatch_idle(deadline) && wait_release_idle(deadline) &&
+           wait_operations_idle(deadline);
 }
 
-bool StoragePipeline::HasUnresolvedOperations() const noexcept {
+bool StoragePipeline::has_unresolved_operations() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return std::any_of(
         slots_.begin(), slots_.end(), [](const Slot& slot) { return slot.operation_active; });
 }
 
-std::size_t StoragePipeline::ActiveOperationCount() const noexcept {
+std::size_t StoragePipeline::active_operation_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<std::size_t>(std::count_if(
         slots_.begin(), slots_.end(), [](const Slot& slot) { return slot.operation_active; }));
 }
 
-std::size_t StoragePipeline::ReadyDispatchCount() const noexcept {
+std::size_t StoragePipeline::ready_dispatch_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return dispatch_count_;
 }
 
-void StoragePipeline::DispatchLoop() {
+void StoragePipeline::dispatch_loop() {
     while (true) {
         std::size_t index = kInvalidIndex;
         std::uint64_t call_generation = 0;
@@ -624,7 +630,7 @@ void StoragePipeline::DispatchLoop() {
             dispatch_condition_.notify_all();
             watchdog_condition_.notify_one();
         }
-        DispatchOne(index);
+        dispatch_one(index);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (dispatch_active_generation_ == call_generation) {
@@ -636,7 +642,7 @@ void StoragePipeline::DispatchLoop() {
     }
 }
 
-void StoragePipeline::WatchdogLoop() {
+void StoragePipeline::watchdog_loop() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (true) {
         watchdog_condition_.wait(lock, [this] {
@@ -657,7 +663,7 @@ void StoragePipeline::WatchdogLoop() {
                 dispatch_overdue_generation_ != generation) {
                 dispatch_overdue_generation_ = generation;
                 lock.unlock();
-                Fail(Error(
+                fail(Error(
                     ErrorCode::Timeout, "storage", 0,
                     "Storage submit exceeded its progress deadline"));
                 lock.lock();
@@ -670,7 +676,7 @@ void StoragePipeline::WatchdogLoop() {
     }
 }
 
-void StoragePipeline::DispatchOne(std::size_t index) {
+void StoragePipeline::dispatch_one(std::size_t index) {
     std::array<rodaq_timestamp_value, TimestampState::kMaxSlots> timestamp_values{};
     rodaq_storage_operation operation{};
     Result<rodaq_storage_submission> submission = nonstd::make_unexpected(
@@ -685,7 +691,7 @@ void StoragePipeline::DispatchOne(std::size_t index) {
         }
         operation = slot.operation;
         record = &slot.record.value();
-        accepted_steady_time_ns = record->AcceptedSteadyTimeNs();
+        accepted_steady_time_ns = record->accepted_steady_time_ns();
     }
     try {
         submission = submission_builder_(*record, operation, timestamp_values);
@@ -697,9 +703,9 @@ void StoragePipeline::DispatchOne(std::size_t index) {
             Error(ErrorCode::InternalError, "storage", 0, "Storage submission construction threw"));
     }
     if (!submission.has_value()) {
-        ObserveLatency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        CompleteSubmit(index, nonstd::make_unexpected(submission.error()));
-        Fail(Error(
+        observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
+        complete_submit(index, nonstd::make_unexpected(submission.error()));
+        fail(Error(
             ErrorCode::InternalError, "storage", 0, "Storage submission construction failed"));
         return;
     }
@@ -709,7 +715,7 @@ void StoragePipeline::DispatchOne(std::size_t index) {
     // failure path alone needs the queue mutex to terminalize a skipped slot.
     if (failure_cutoff_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(mutex_);
-        ClassifyNeverHandedOffLocked(index);
+        classify_never_handed_off_locked(index);
         return;
     }
     SubmitCallFrame frame{this, operation};
@@ -722,23 +728,23 @@ void StoragePipeline::DispatchOne(std::size_t index) {
         active_submit_frame = previous;
         result =
             nonstd::make_unexpected(Error(ErrorCode::InternalError, "storage", 0, error.what()));
-        ObserveLatency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        CompleteSubmit(index, std::move(result));
+        observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
+        complete_submit(index, std::move(result));
         return;
     } catch (...) {
         active_submit_frame = previous;
         result = nonstd::make_unexpected(
             Error(ErrorCode::InternalError, "storage", 0, "Storage submit threw"));
-        ObserveLatency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        CompleteSubmit(index, std::move(result));
+        observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
+        complete_submit(index, std::move(result));
         return;
     }
     active_submit_frame = previous;
-    ObserveLatency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-    CompleteSubmit(index, std::move(result));
+    observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
+    complete_submit(index, std::move(result));
 }
 
-void StoragePipeline::CompleteSubmit(
+void StoragePipeline::complete_submit(
     std::size_t index, Result<rodaq_storage_submit_result> result) {
     CompletionEffects effects;
     std::int64_t accepted_steady_time_ns = 0;
@@ -750,20 +756,20 @@ void StoragePipeline::CompleteSubmit(
         if (!slot.operation_active || !slot.record.has_value()) {
             return;
         }
-        accepted_steady_time_ns = slot.record->AcceptedSteadyTimeNs();
+        accepted_steady_time_ns = slot.record->accepted_steady_time_ns();
 
         if (!result.has_value()) {
             slot.submit_return = SubmitReturn::ReturnedError;
             if (slot.payload_event_seen || slot.persistence_event_seen) {
-                ApplyViolation(
+                apply_violation(
                     effects, "Storage emitted completion before returning a non-OK submit result");
             }
             effects.failure.emplace(std::move(result.error()));
             slot.payload_axis = PayloadAxis::Consumed;
             slot.persistence_axis = PersistenceAxis::Failed;
-            ReleasePayloadLocked(index, slot, effects);
-            if (CanTerminalizeLocked(slot)) {
-                TerminalizeOperationLocked(index, slot, effects);
+            release_payload_locked(index, slot, effects);
+            if (can_terminalize_locked(slot)) {
+                terminalize_operation_locked(index, slot, effects);
             }
             submit_return_condition_.notify_all();
             resource_condition_.notify_all();
@@ -773,7 +779,7 @@ void StoragePipeline::CompleteSubmit(
                  value.payload_state != RODAQ_STORAGE_PAYLOAD_CONSUMED) ||
                 (!is_terminal(value.persistence_state) &&
                  value.persistence_state != RODAQ_STORAGE_PERSISTENCE_PENDING)) {
-                ApplyViolation(effects, "Storage returned an invalid submit state");
+                apply_violation(effects, "Storage returned an invalid submit state");
             }
 
             slot.submit_return = SubmitReturn::ReturnedOK;
@@ -782,11 +788,11 @@ void StoragePipeline::CompleteSubmit(
                 observed_payload_consumed = true;
                 slot.payload_axis = PayloadAxis::Consumed;
                 if (slot.payload_event_seen) {
-                    ApplyViolation(
+                    apply_violation(
                         effects,
                         "Storage emitted PayloadConsumed for a synchronously consumed axis");
                 }
-                ReleasePayloadLocked(index, slot, effects);
+                release_payload_locked(index, slot, effects);
             } else {
                 slot.payload_axis = PayloadAxis::Pending;
             }
@@ -809,15 +815,15 @@ void StoragePipeline::CompleteSubmit(
                     break;
                 default:
                     slot.persistence_axis = PersistenceAxis::Unknown;
-                    ApplyViolation(effects, "Storage returned an invalid persistence state");
+                    apply_violation(effects, "Storage returned an invalid persistence state");
                     break;
             }
             if (slot.persistence_axis != PersistenceAxis::Pending && slot.persistence_event_seen) {
-                ApplyViolation(
+                apply_violation(
                     effects, "Storage completed a synchronous-terminal persistence axis");
             }
-            if (CanTerminalizeLocked(slot)) {
-                TerminalizeOperationLocked(index, slot, effects);
+            if (can_terminalize_locked(slot)) {
+                terminalize_operation_locked(index, slot, effects);
             }
             submit_return_condition_.notify_all();
             resource_condition_.notify_all();
@@ -825,17 +831,17 @@ void StoragePipeline::CompleteSubmit(
     }
 
     if (observed_payload_consumed) {
-        ObserveLatency(StorageLatencyKind::PayloadConsumed, accepted_steady_time_ns);
+        observe_latency(StorageLatencyKind::PayloadConsumed, accepted_steady_time_ns);
     }
     if (observed_persistence_completed) {
-        ObserveLatency(StorageLatencyKind::PersistenceCompleted, accepted_steady_time_ns);
+        observe_latency(StorageLatencyKind::PersistenceCompleted, accepted_steady_time_ns);
     }
-    NotifyPayloadReleased(effects);
-    NotifyOperationCompleted(effects);
+    notify_payload_released(effects);
+    notify_operation_completed(effects);
     if (effects.violation.has_value()) {
-        Fail(std::move(effects.violation.value()));
+        fail(std::move(effects.violation.value()));
     } else if (effects.failure.has_value()) {
-        Fail(std::move(effects.failure.value()));
+        fail(std::move(effects.failure.value()));
     }
     effects.payload_to_release = Payload();
     effects.record_to_destroy.reset();
@@ -850,13 +856,13 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
             violation.emplace(
                 ErrorCode::InternalError, "storage", 0,
                 "Storage emitted same-stack PayloadConsumed during submit");
-            Fail(std::move(violation.value()));
+            fail(std::move(violation.value()));
             return;
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
         std::size_t index = 0;
-        if (!FindOperationLocked(operation, index)) {
+        if (!find_operation_locked(operation, index)) {
             violation.emplace(
                 ErrorCode::InternalError, "storage", 0,
                 "Storage emitted PayloadConsumed for an unknown operation");
@@ -873,9 +879,9 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
             } else {
                 slot.payload_event_seen = true;
                 if (slot.record.has_value()) {
-                    accepted_steady_time_ns = slot.record->AcceptedSteadyTimeNs();
+                    accepted_steady_time_ns = slot.record->accepted_steady_time_ns();
                 }
-                if (!ScheduleCompletionLocked(index)) {
+                if (!schedule_completion_locked(index)) {
                     violation.emplace(
                         ErrorCode::InternalError, "storage", 0,
                         "Completion scheduling capacity was exceeded");
@@ -887,9 +893,9 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
             ErrorCode::InternalError, "storage", 0, "Storage PayloadConsumed staging failed");
     }
     if (violation.has_value()) {
-        Fail(std::move(violation.value()));
+        fail(std::move(violation.value()));
     } else {
-        ObserveLatency(StorageLatencyKind::PayloadConsumed, accepted_steady_time_ns);
+        observe_latency(StorageLatencyKind::PayloadConsumed, accepted_steady_time_ns);
     }
 }
 
@@ -904,13 +910,13 @@ void StoragePipeline::persistence_completed(
             violation.emplace(
                 ErrorCode::InternalError, "storage", 0,
                 "Storage emitted same-stack persistence completion during submit");
-            Fail(std::move(violation.value()));
+            fail(std::move(violation.value()));
             return;
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
         std::size_t index = 0;
-        if (!FindOperationLocked(operation, index)) {
+        if (!find_operation_locked(operation, index)) {
             violation.emplace(
                 ErrorCode::InternalError, "storage", 0,
                 "Storage completed an unknown persistence operation");
@@ -943,10 +949,10 @@ void StoragePipeline::persistence_completed(
                 slot.persistence_event_seen = true;
                 slot.persistence_event_state = state;
                 if (slot.record.has_value()) {
-                    accepted_steady_time_ns = slot.record->AcceptedSteadyTimeNs();
+                    accepted_steady_time_ns = slot.record->accepted_steady_time_ns();
                 }
-                CopyDiagnostic(error, slot);
-                if (!ScheduleCompletionLocked(index)) {
+                copy_diagnostic(error, slot);
+                if (!schedule_completion_locked(index)) {
                     violation.emplace(
                         ErrorCode::InternalError, "storage", 0,
                         "Completion scheduling capacity was exceeded");
@@ -959,13 +965,13 @@ void StoragePipeline::persistence_completed(
             "Storage persistence completion staging failed");
     }
     if (violation.has_value()) {
-        Fail(std::move(violation.value()));
+        fail(std::move(violation.value()));
     } else {
-        ObserveLatency(StorageLatencyKind::PersistenceCompleted, accepted_steady_time_ns);
+        observe_latency(StorageLatencyKind::PersistenceCompleted, accepted_steady_time_ns);
     }
 }
 
-void StoragePipeline::CompletionLoop() {
+void StoragePipeline::completion_loop() {
     while (true) {
         std::size_t index = kInvalidIndex;
         {
@@ -980,24 +986,24 @@ void StoragePipeline::CompletionLoop() {
             --completion_count_;
         }
 
-        if (!WaitForSubmitReturn(index, Clock::now() + progress_timeout_)) {
-            Fail(Error(
+        if (!wait_for_submit_return(index, Clock::now() + progress_timeout_)) {
+            fail(Error(
                 ErrorCode::Timeout, "storage", 0,
                 "Storage completion arrived but submit return was not reconciled"));
             continue;
         }
-        CompletionEffects effects = ProcessCompletion(index);
-        NotifyPayloadReleased(effects);
-        NotifyOperationCompleted(effects);
+        CompletionEffects effects = process_completion(index);
+        notify_payload_released(effects);
+        notify_operation_completed(effects);
         if (effects.violation.has_value()) {
-            Fail(std::move(effects.violation.value()));
+            fail(std::move(effects.violation.value()));
         }
         effects.payload_to_release = Payload();
         effects.record_to_destroy.reset();
     }
 }
 
-void StoragePipeline::ReleaseLoop(const std::shared_ptr<ReleaseWorkerState>& state) {
+void StoragePipeline::release_loop(const std::shared_ptr<ReleaseWorkerState>& state) {
     struct DoneGuard {
         const std::shared_ptr<ReleaseWorkerState>& state;
         ~DoneGuard() { state->done->store(true, std::memory_order_release); }
@@ -1025,7 +1031,7 @@ void StoragePipeline::ReleaseLoop(const std::shared_ptr<ReleaseWorkerState>& sta
             release_condition_.notify_all();
         }
 
-        if (!WaitForSubmitReturn(index, Clock::now() + progress_timeout_)) {
+        if (!wait_for_submit_return(index, Clock::now() + progress_timeout_)) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 Slot& slot = slots_[index];
@@ -1035,7 +1041,7 @@ void StoragePipeline::ReleaseLoop(const std::shared_ptr<ReleaseWorkerState>& sta
                 }
                 release_condition_.notify_all();
             }
-            Fail(Error(
+            fail(Error(
                 ErrorCode::Timeout, "storage", 0,
                 "Payload release waited for an unreconciled Storage submit"));
             continue;
@@ -1063,24 +1069,24 @@ void StoragePipeline::ReleaseLoop(const std::shared_ptr<ReleaseWorkerState>& sta
             Slot& slot = slots_[index];
             if (slot.payload_release_state == PayloadReleaseState::Running) {
                 slot.payload_release_state = PayloadReleaseState::Released;
-                slot.payload_reservation.Release();
+                slot.payload_reservation.release();
                 effects.payload_released = true;
                 effects.released_bytes = slot.payload_size;
-                if (CanTerminalizeLocked(slot)) {
-                    TerminalizeOperationLocked(index, slot, effects);
+                if (can_terminalize_locked(slot)) {
+                    terminalize_operation_locked(index, slot, effects);
                 }
                 --release_active_count_;
                 resource_condition_.notify_all();
                 release_condition_.notify_all();
             }
         }
-        NotifyPayloadReleased(effects);
-        NotifyOperationCompleted(effects);
+        notify_payload_released(effects);
+        notify_operation_completed(effects);
         effects.record_to_destroy.reset();
     }
 }
 
-bool StoragePipeline::WaitForSubmitReturn(
+bool StoragePipeline::wait_for_submit_return(
     std::size_t index, std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
     return submit_return_condition_.wait_until(lock, deadline, [this, index] {
@@ -1089,7 +1095,7 @@ bool StoragePipeline::WaitForSubmitReturn(
     });
 }
 
-StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_t index) {
+StoragePipeline::CompletionEffects StoragePipeline::process_completion(std::size_t index) {
     CompletionEffects effects;
     std::lock_guard<std::mutex> lock(mutex_);
     Slot& slot = slots_[index];
@@ -1100,15 +1106,15 @@ StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_
     if (slot.payload_axis == PayloadAxis::Consumed &&
         (slot.payload_release_state == PayloadReleaseState::Required ||
          slot.payload_release_state == PayloadReleaseState::NotRequired)) {
-        ReleasePayloadLocked(index, slot, effects);
+        release_payload_locked(index, slot, effects);
     }
     if (slot.payload_event_seen) {
         slot.payload_event_seen = false;
         if (slot.payload_axis == PayloadAxis::Consumed) {
-            ApplyViolation(effects, "PayloadConsumed callback was already terminal");
+            apply_violation(effects, "PayloadConsumed callback was already terminal");
         } else {
             slot.payload_axis = PayloadAxis::Consumed;
-            ReleasePayloadLocked(index, slot, effects);
+            release_payload_locked(index, slot, effects);
         }
     }
 
@@ -1117,7 +1123,7 @@ StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_
         if (slot.persistence_axis == PersistenceAxis::Succeeded ||
             slot.persistence_axis == PersistenceAxis::Failed ||
             slot.persistence_axis == PersistenceAxis::Unknown) {
-            ApplyViolation(effects, "Persistence callback was already terminal");
+            apply_violation(effects, "Persistence callback was already terminal");
         } else {
             switch (slot.persistence_event_state) {
                 case RODAQ_STORAGE_PERSISTENCE_SUCCEEDED:
@@ -1130,14 +1136,14 @@ StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_
                     slot.persistence_axis = PersistenceAxis::Unknown;
                     break;
                 default:
-                    ApplyViolation(effects, "Invalid staged persistence state");
+                    apply_violation(effects, "Invalid staged persistence state");
                     break;
             }
         }
     }
 
-    if (CanTerminalizeLocked(slot)) {
-        TerminalizeOperationLocked(index, slot, effects);
+    if (can_terminalize_locked(slot)) {
+        terminalize_operation_locked(index, slot, effects);
     } else {
         slot.scheduled = false;
     }
@@ -1146,27 +1152,27 @@ StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_
     return effects;
 }
 
-void StoragePipeline::ReleasePayloadLocked(
+void StoragePipeline::release_payload_locked(
     std::size_t index, Slot& slot, CompletionEffects& effects) noexcept {
     if (slot.payload_axis != PayloadAxis::Consumed || !slot.record.has_value()) {
         return;
     }
     if (slot.payload_release_state == PayloadReleaseState::Required) {
-        slot.release_payload = slot.record->TakePayload();
-        if (!ScheduleReleaseLocked(index)) {
-            ApplyViolation(effects, "Payload release scheduling capacity was exceeded");
+        slot.release_payload = slot.record->take_payload();
+        if (!schedule_release_locked(index)) {
+            apply_violation(effects, "Payload release scheduling capacity was exceeded");
         }
         return;
     }
-    effects.payload_to_release = slot.record->TakePayload();
+    effects.payload_to_release = slot.record->take_payload();
     slot.payload_release_state = PayloadReleaseState::Released;
-    slot.payload_reservation.Release();
+    slot.payload_reservation.release();
     effects.payload_released = true;
     effects.released_bytes = slot.payload_size;
     resource_condition_.notify_all();
 }
 
-bool StoragePipeline::CanTerminalizeLocked(const Slot& slot) const noexcept {
+bool StoragePipeline::can_terminalize_locked(const Slot& slot) const noexcept {
     const bool payload_terminal = slot.payload_axis == PayloadAxis::Consumed &&
                                   (slot.payload_release_state == PayloadReleaseState::NotRequired ||
                                    slot.payload_release_state == PayloadReleaseState::Released);
@@ -1174,7 +1180,7 @@ bool StoragePipeline::CanTerminalizeLocked(const Slot& slot) const noexcept {
            slot.persistence_axis != PersistenceAxis::AwaitingReturn;
 }
 
-void StoragePipeline::TerminalizeOperationLocked(
+void StoragePipeline::terminalize_operation_locked(
     std::size_t index, Slot& slot, CompletionEffects& effects) noexcept {
     if (!slot.operation_active) {
         return;
@@ -1199,36 +1205,36 @@ void StoragePipeline::TerminalizeOperationLocked(
     slot.operation_active = false;
     slot.dispatch_state = DispatchState::Terminalizing;
     slot.scheduled = false;
-    ReturnIndexLocked(index);
+    return_index_locked(index);
 }
 
-void StoragePipeline::NotifyPayloadReleased(const CompletionEffects& effects) noexcept {
+void StoragePipeline::notify_payload_released(const CompletionEffects& effects) noexcept {
     if (!effects.payload_released) {
         return;
     }
     try {
         payload_release_sink_(effects.released_bytes);
     } catch (...) {
-        Fail(Error(
+        fail(Error(
             ErrorCode::InternalError, "storage", 0,
             "Payload-release observer raised an exception"));
     }
 }
 
-void StoragePipeline::NotifyOperationCompleted(const CompletionEffects& effects) noexcept {
+void StoragePipeline::notify_operation_completed(const CompletionEffects& effects) noexcept {
     if (!effects.operation_completed) {
         return;
     }
     try {
         operation_complete_sink_(effects.persistence);
     } catch (...) {
-        Fail(Error(
+        fail(Error(
             ErrorCode::InternalError, "storage", 0,
             "Storage-completion observer raised an exception"));
     }
 }
 
-void StoragePipeline::ObserveLatency(StorageLatencyKind kind, std::int64_t accepted_ns) noexcept {
+void StoragePipeline::observe_latency(StorageLatencyKind kind, std::int64_t accepted_ns) noexcept {
     if (accepted_ns <= 0) {
         return;
     }
@@ -1240,13 +1246,13 @@ void StoragePipeline::ObserveLatency(StorageLatencyKind kind, std::int64_t accep
     try {
         latency_sink_(kind, now_ns - accepted_ns);
     } catch (...) {
-        Fail(Error(
+        fail(Error(
             ErrorCode::InternalError, "storage", 0,
             "Storage latency observer raised an exception"));
     }
 }
 
-void StoragePipeline::ReturnIndexLocked(std::size_t index) noexcept {
+void StoragePipeline::return_index_locked(std::size_t index) noexcept {
     Slot& slot = slots_[index];
     if (slot.dispatch_state != DispatchState::Terminalizing) {
         return;
@@ -1261,7 +1267,7 @@ void StoragePipeline::ReturnIndexLocked(std::size_t index) noexcept {
     resource_condition_.notify_all();
 }
 
-bool StoragePipeline::ScheduleReleaseLocked(std::size_t index) noexcept {
+bool StoragePipeline::schedule_release_locked(std::size_t index) noexcept {
     Slot& slot = slots_[index];
     if (slot.payload_release_state == PayloadReleaseState::Queued ||
         slot.payload_release_state == PayloadReleaseState::Running ||
@@ -1280,7 +1286,7 @@ bool StoragePipeline::ScheduleReleaseLocked(std::size_t index) noexcept {
     return true;
 }
 
-bool StoragePipeline::FindOperationLocked(
+bool StoragePipeline::find_operation_locked(
     rodaq_storage_operation operation, std::size_t& index) noexcept {
     if (operation.value == 0) {
         return false;
@@ -1300,7 +1306,7 @@ bool StoragePipeline::FindOperationLocked(
     return true;
 }
 
-bool StoragePipeline::ScheduleCompletionLocked(std::size_t index) noexcept {
+bool StoragePipeline::schedule_completion_locked(std::size_t index) noexcept {
     Slot& slot = slots_[index];
     if (slot.scheduled) {
         return true;
@@ -1316,7 +1322,7 @@ bool StoragePipeline::ScheduleCompletionLocked(std::size_t index) noexcept {
     return true;
 }
 
-void StoragePipeline::ApplyViolation(CompletionEffects& effects, const char* message) noexcept {
+void StoragePipeline::apply_violation(CompletionEffects& effects, const char* message) noexcept {
     if (!effects.violation.has_value()) {
         try {
             effects.violation.emplace(ErrorCode::InternalError, "storage", 0, message);
@@ -1325,7 +1331,7 @@ void StoragePipeline::ApplyViolation(CompletionEffects& effects, const char* mes
     }
 }
 
-void StoragePipeline::Fail(Error error) noexcept {
+void StoragePipeline::fail(Error error) noexcept {
     if (failure_reported_.exchange(true)) {
         return;
     }
@@ -1335,7 +1341,7 @@ void StoragePipeline::Fail(Error error) noexcept {
     }
 }
 
-void StoragePipeline::CopyDiagnostic(const rodaq_error* error, Slot& slot) noexcept {
+void StoragePipeline::copy_diagnostic(const rodaq_error* error, Slot& slot) noexcept {
     slot.persistence_diagnostic_present = error != nullptr;
     if (error != nullptr) {
         slot.persistence_diagnostic = *error;

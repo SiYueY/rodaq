@@ -1690,11 +1690,8 @@ Required / Optional 属于 Plugin policy。
 C++ SDK：
 
 ```cpp
-auto service =
-    runtime.Require<AcquisitionRuntime>();
-
-auto metrics =
-    runtime.Optional<MetricsRuntime>();
+auto acquisition = services.query(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID);
+// The Plugin handles a missing required or optional service according to policy.
 ```
 
 如果 required Service 不存在：
@@ -6269,10 +6266,10 @@ PluginManager
 ```cpp
 class SharedLibrary {
 public:
-    static Result<SharedLibrary> Open(
+    static Result<SharedLibrary> open(
         const std::filesystem::path& path);
 
-    Result<void*> Symbol(
+    Result<void*> find_symbol(
         std::string_view name) const;
 
 private:
@@ -6631,9 +6628,19 @@ include/rodaq/plugin/abi/
 
 直接开发。
 
+SDK 中不依赖模板实例化或常量求值的实现放在 `src/sdk/`，通过
+`rodaq::sdk` 所依赖的静态 foundation 库链接到 Plugin；模板、`constexpr`
+和必须在 Plugin 中展开的导出 / trampoline 代码保留在头文件。Plugin 不因此
+依赖 Runtime C++ 共享库，Stable C ABI 的符号与布局不变。
+
 ---
 
 ## 5.16 Acquisition SDK
+
+The C++ SDK authoring names below use `snake_case` (D-056). Existing Plugin
+source written against the former PascalCase interface must be migrated and
+rebuilt. The Stable C ABI, its entry points, tables and binary Plugin protocol
+are unchanged; the C++ facade remains local to the Plugin binary.
 
 `AcquisitionRuntime` / common-service façade 至少必须提供 typed wrapper：
 
@@ -6645,15 +6652,15 @@ LifecycleSnapshot   // wraps rodaq.runtime.common.v1::get_lifecycle_snapshot()
 Log / Diagnostic / MonotonicTime
 ```
 
-`LifecycleSnapshot()` 返回一次性 observation，不返回持久 capability token；后续 Runtime operation 仍重新验证当前 lifecycle/admission state。
+`lifecycle_snapshot()` 返回一次性 observation，不返回持久 capability token；后续 Runtime operation 仍重新验证当前 lifecycle/admission state。
 
-所有 public Runtime Service wrapper 提供 `Valid()` 并使用统一 invalid-state
+所有 public Runtime Service wrapper 提供 `valid()` 并使用统一 invalid-state
 语义：`Result<T>` / `Result<void>` API 返回 `ErrorCode::InvalidState`，
-`Log()` / `Diagnostic()` 以及 Storage completion callbacks 安全 no-op。
+`log()` / `diagnostic()` 以及 Storage completion callbacks 安全 no-op。
 Monotonic time 不能假定 `0` 是 error sentinel，因此 SDK surface 为：
 
 ```cpp
-Result<std::uint64_t> MonotonicTimeNs() const;
+Result<std::uint64_t> monotonic_time_ns() const;
 ```
 
 Default-constructed 或缺失 context/vtable 的 wrapper 不得解引用 Service table。
@@ -6667,33 +6674,33 @@ class AcquisitionPlugin {
 public:
     virtual ~AcquisitionPlugin() = default;
 
-    virtual Result<void> Bind(
+    virtual Result<void> bind(
         AcquisitionRuntime runtime) = 0;
 
-    virtual Result<void> Configure(
+    virtual Result<void> configure(
         const ConfigView& config) = 0;
 
-    virtual Result<void> Start() = 0;
+    virtual Result<void> start() = 0;
 
-    virtual Result<void> Stop() = 0;
+    virtual Result<void> stop() = 0;
 
-    virtual Result<void> PrepareBindingSwitch(
+    virtual Result<void> prepare_binding_switch(
         BindingTransition transition,
         StreamHandle stream,
         StreamDescriptorHandle old_descriptor,
         StreamDescriptorHandle new_descriptor) = 0;
 
-    virtual Result<void> CommitBindingSwitch(
+    virtual Result<void> commit_binding_switch(
         BindingTransition transition) = 0;
 
-    virtual Result<void> AbortBindingSwitch(
+    virtual Result<void> abort_binding_switch(
         BindingTransition transition,
         BindingAbortDisposition disposition) = 0;
 
-    virtual Result<void> QuiesceStream(
+    virtual Result<void> quiesce_stream(
         StreamHandle stream) = 0;
 
-    virtual Result<void> QuiescePlugin() = 0;
+    virtual Result<void> quiesce_plugin() = 0;
 };
 
 }
@@ -6706,33 +6713,33 @@ class Ros2Acquisition final
     : public rodaq::AcquisitionPlugin
 {
 public:
-    Result<void> Bind(
+    Result<void> bind(
         rodaq::AcquisitionRuntime runtime) override;
 
-    Result<void> Configure(
+    Result<void> configure(
         const rodaq::ConfigView& config) override;
 
-    Result<void> Start() override;
+    Result<void> start() override;
 
-    Result<void> Stop() override;
+    Result<void> stop() override;
 
-    Result<void> PrepareBindingSwitch(
+    Result<void> prepare_binding_switch(
         rodaq::BindingTransition transition,
         rodaq::StreamHandle stream,
         rodaq::StreamDescriptorHandle old_descriptor,
         rodaq::StreamDescriptorHandle new_descriptor) override;
 
-    Result<void> CommitBindingSwitch(
+    Result<void> commit_binding_switch(
         rodaq::BindingTransition transition) override;
 
-    Result<void> AbortBindingSwitch(
+    Result<void> abort_binding_switch(
         rodaq::BindingTransition transition,
         rodaq::BindingAbortDisposition disposition) override;
 
-    Result<void> QuiesceStream(
+    Result<void> quiesce_stream(
         rodaq::StreamHandle stream) override;
 
-    Result<void> QuiescePlugin() override;
+    Result<void> quiesce_plugin() override;
 };
 ```
 
@@ -6755,26 +6762,26 @@ class StoragePlugin {
 public:
     virtual ~StoragePlugin() = default;
 
-    virtual Result<void> Bind(
+    virtual Result<void> bind(
         StorageRuntime runtime) = 0;
 
-    virtual Result<void> Configure(
+    virtual Result<void> configure(
         const ConfigView& config) = 0;
 
-    virtual Result<void> Open(
+    virtual Result<void> open(
         const StorageOpenRequest& request) = 0;
 
-    virtual Result<StorageCapabilities> GetCapabilities() = 0;
+    virtual Result<StorageCapabilities> get_capabilities() = 0;
 
-    virtual Result<DescriptorReadinessResult> EnsureDescriptorReady(
+    virtual Result<DescriptorReadinessResult> ensure_descriptor_ready(
         StreamDescriptorHandle descriptor) = 0;
 
-    virtual Result<StorageSubmitResult> Submit(
+    virtual Result<StorageSubmitResult> submit(
         const StorageSubmission& submission) = 0;
 
-    virtual Result<void> Flush() = 0;
+    virtual Result<void> flush() = 0;
 
-    virtual Result<void> Close(
+    virtual Result<void> close(
         StorageCloseDisposition disposition) = 0;
 };
 
@@ -6790,7 +6797,7 @@ virtual 仅存在 Plugin binary 内部 SDK 层
 不会作为跨 DSO ABI。
 
 Storage Runtime completion wrapper 的 invalid-state 行为是安全 no-op；
-有效的 `PayloadConsumed()`、`PersistenceCompleted()` 和 `ReportFailure()`
+有效的 `payload_consumed()`、`persistence_completed()` 和 `report_failure()`
 仍保持原有 callback 顺序与 ownership 语义。
 
 ---

@@ -40,7 +40,7 @@ extern "C" void* __wrap__Znam(std::size_t size) {
 int main() {
     using namespace rodaq::runtime;
     using namespace std::chrono_literals;
-    auto& manager = QuarantineManager::Process();
+    auto& manager = QuarantineManager::process();
     std::atomic<bool> fail{false};
     auto release = std::make_shared<std::atomic<bool>>(false);
     auto joined_call = std::make_shared<std::atomic<bool>>(false);
@@ -55,7 +55,7 @@ int main() {
     }
     fail.store(false);
     denied_allocations.store(0);
-    auto outcome = manager.Run(
+    auto outcome = manager.run(
         [&fail, release] {
             fail.store(true, std::memory_order_release);
             while (!release->load(std::memory_order_acquire)) {
@@ -82,17 +82,19 @@ int main() {
     allocation_failure = &fail;
     fail.store(true);
     const bool retained =
-        manager.RetainWorker(std::move(worker), release, done, std::move(reason), joined_worker);
+        manager.retain_worker(std::move(worker), release, done, std::move(reason), joined_worker);
     fail.store(false);
     allocation_failure = nullptr;
     release->store(true, std::memory_order_release);
+    // Failed retention preserves the caller's thread; a moved-from thread is queryable.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     if (worker.joinable()) {
         worker.join();
     }
     const auto deadline = std::chrono::steady_clock::now() + 2s;
     while ((!joined_call->load() || !joined_worker->load()) &&
            std::chrono::steady_clock::now() < deadline) {
-        manager.ReapCompleted();
+        manager.reap_completed();
         std::this_thread::yield();
     }
     return injection_works && timeout_guard_enabled && timed_out && retained &&

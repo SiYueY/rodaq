@@ -24,7 +24,7 @@ namespace {
 
 class SdkAcquisitionFixture final : public rodaq::AcquisitionPlugin {
 public:
-    rodaq::Result<void> Bind(rodaq::AcquisitionRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::AcquisitionRuntime runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -35,7 +35,7 @@ public:
         stage_ = Stage::Bound;
         return {};
     }
-    rodaq::Result<void> Configure(const rodaq::ConfigView& view) override {
+    rodaq::Result<void> configure(const rodaq::ConfigView& view) override {
         static_cast<void>(view);
         if (stage_ != Stage::Bound) {
             return invalid_state();
@@ -46,7 +46,7 @@ public:
         stage_ = Stage::Configured;
         return {};
     }
-    rodaq::Result<void> Start() override {
+    rodaq::Result<void> start() override {
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
@@ -59,7 +59,7 @@ public:
         stage_ = Stage::Started;
         return {};
     }
-    rodaq::Result<void> Stop() override {
+    rodaq::Result<void> stop() override {
         if (stage_ != Stage::Started) {
             return invalid_state();
         }
@@ -69,18 +69,18 @@ public:
         stage_ = Stage::Stopped;
         return {};
     }
-    rodaq::Result<void> PrepareBindingSwitch(
+    rodaq::Result<void> prepare_binding_switch(
         rodaq_binding_transition, rodaq_stream_handle, rodaq_stream_descriptor_handle,
         rodaq_stream_descriptor_handle) override {
         return {};
     }
-    rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition) override { return {}; }
-    rodaq::Result<void> AbortBindingSwitch(
+    rodaq::Result<void> commit_binding_switch(rodaq_binding_transition) override { return {}; }
+    rodaq::Result<void> abort_binding_switch(
         rodaq_binding_transition, rodaq_binding_abort_disposition) override {
         return {};
     }
-    rodaq::Result<void> QuiesceStream(rodaq_stream_handle) override { return {}; }
-    rodaq::Result<void> QuiescePlugin() override { return {}; }
+    rodaq::Result<void> quiesce_stream(rodaq_stream_handle) override { return {}; }
+    rodaq::Result<void> quiesce_plugin() override { return {}; }
 
 private:
     enum class Stage { Created, Bound, Configured, Started, Stopped };

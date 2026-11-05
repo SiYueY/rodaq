@@ -17,7 +17,7 @@ namespace rodaq {
 /// serialized; returned addresses remain stable until the arena is destroyed.
 class StructuralArena final {
 public:
-    static Result<std::unique_ptr<StructuralArena>> Create(std::size_t capacity_bytes);
+    static Result<std::unique_ptr<StructuralArena>> create(std::size_t capacity_bytes);
 
     StructuralArena(const StructuralArena&) = delete;
     StructuralArena& operator=(const StructuralArena&) = delete;
@@ -25,12 +25,12 @@ public:
     StructuralArena& operator=(StructuralArena&&) = delete;
     ~StructuralArena();
 
-    Result<void*> AllocateBytes(
+    Result<void*> allocate_bytes(
         std::size_t size, std::size_t alignment = alignof(std::max_align_t));
-    std::pmr::memory_resource* Resource() noexcept;
+    std::pmr::memory_resource* resource() noexcept;
 
     template <typename T>
-    Result<T*> Allocate(std::size_t count = 1) {
+    Result<T*> allocate(std::size_t count = 1) {
         if (count == 0) {
             return static_cast<T*>(nullptr);
         }
@@ -38,14 +38,14 @@ public:
             return nonstd::make_unexpected(
                 Error(ErrorCode::InvalidArgument, "arena allocation size overflows"));
         }
-        const auto bytes = AllocateBytes(count * sizeof(T), alignof(T));
+        const auto bytes = allocate_bytes(count * sizeof(T), alignof(T));
         if (!bytes.has_value()) {
             return nonstd::make_unexpected(bytes.error());
         }
         return static_cast<T*>(bytes.value());
     }
 
-    std::size_t CapacityBytes() const noexcept;
+    std::size_t capacity_bytes() const noexcept;
 
 private:
     class Impl;

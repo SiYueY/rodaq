@@ -433,21 +433,21 @@ Result<std::string_view> ConfigNodeView::as_string() const {
     return std::string_view(*value);
 }
 
-rodaq_config_view ConfigNodeView::AbiView() const noexcept { return make_abi_view(node_.get()); }
+rodaq_config_view ConfigNodeView::abi_view() const noexcept { return make_abi_view(node_.get()); }
 
 ConfigTree::ConfigTree(std::shared_ptr<const ConfigNode> root) : root_(std::move(root)) {}
 
-ConfigTree ConfigTree::Null() { return ConfigTree(make_node(std::monostate{})); }
+ConfigTree ConfigTree::null() { return ConfigTree(make_node(std::monostate{})); }
 
-ConfigTree ConfigTree::Boolean(bool value) { return ConfigTree(make_node(value)); }
+ConfigTree ConfigTree::boolean(bool value) { return ConfigTree(make_node(value)); }
 
-ConfigTree ConfigTree::Int64(std::int64_t value) { return ConfigTree(make_node(value)); }
+ConfigTree ConfigTree::int64(std::int64_t value) { return ConfigTree(make_node(value)); }
 
-ConfigTree ConfigTree::Double(double value) { return ConfigTree(make_node(value)); }
+ConfigTree ConfigTree::float64(double value) { return ConfigTree(make_node(value)); }
 
-ConfigTree ConfigTree::String(std::string value) { return ConfigTree(make_node(std::move(value))); }
+ConfigTree ConfigTree::string(std::string value) { return ConfigTree(make_node(std::move(value))); }
 
-Result<ConfigTree> ConfigTree::Map(std::vector<MapEntry> entries) {
+Result<ConfigTree> ConfigTree::map(std::vector<MapEntry> entries) {
     ConfigNode::Map node_entries;
     node_entries.reserve(entries.size());
     for (MapEntry& entry : entries) {
@@ -472,7 +472,7 @@ Result<ConfigTree> ConfigTree::Map(std::vector<MapEntry> entries) {
     return ConfigTree(make_node(std::move(node_entries)));
 }
 
-Result<ConfigTree> ConfigTree::List(std::vector<ConfigTree> items) {
+Result<ConfigTree> ConfigTree::list(std::vector<ConfigTree> items) {
     ConfigNode::List node_items;
     node_items.reserve(items.size());
     for (ConfigTree& item : items) {

@@ -671,11 +671,12 @@ must not be reported as full M0 PASS.
 
 ## D-033 — M0 plugin foundation is frozen for V1 implementation
 
-**Status:** Accepted
+**Status:** Accepted; C++ SDK source names superseded by D-056.
 
 M0 PASS freezes the Stable ABI core prefix, Service Registry, ConfigView,
-Plugin Interface Query, C++ SDK authoring surface, exception firewall,
-metadata/CMake authoring pipeline and initial V1 compatibility fixtures.
+Plugin Interface Query, C++ SDK authoring semantics, exception firewall,
+metadata/CMake authoring pipeline and initial V1 compatibility fixtures. D-056
+revises the C++ SDK source names to snake_case without changing the Stable C ABI.
 M1/M2 own behavioral ownership, quiescence, timeout and completion proof.
 
 ## D-034 — Native arm64 qualification is deferred for M0 closure
@@ -801,7 +802,7 @@ the current bounded Plugin calls to converge, or quarantines the activation.
 
 A process may retain at most 32 activation roots at once. The count includes
 healthy activation slots as well as roots retained for uncertain Plugin
-progress. Every `Runtime::Start()` reserves one root slot before activation;
+progress. Every `Runtime::start()` reserves one root slot before activation;
 exhaustion returns `ResourceExhausted` without entering `Running`.
 
 This capacity is reserved in full at Start so every running activation has a
@@ -1137,3 +1138,22 @@ new/delete interceptors remain active.
 
 **Reference:** `docs/design/runtime.md §11.6.4`,
 `tests/runtime/quarantine_allocation_test.cpp`, D-054.
+
+## D-056 — C++ authoring interfaces use snake_case
+
+**Status:** Accepted; supersedes the C++ SDK source-name freeze in D-033.
+
+Project-owned C++ functions, including Runtime Application and Plugin SDK
+interfaces and virtual authoring hooks, use snake_case. The SDK's previous
+PascalCase names and the Runtime Application Candidate's old C++ symbols are
+removed rather than aliased; C++ applications and Plugin source must migrate
+and rebuild. This user-approved source-level revision changes neither the Stable
+C Plugin ABI nor its table layouts, exported C entry points, semantics or V1
+compatibility fixtures. Prebuilt Stable-C-ABI Plugin binaries remain compatible.
+
+The GNU linker `__real__`/`__wrap__` hooks, external overrides, C++ operators,
+generated code and frozen ABI fixtures retain externally mandated names.
+Clang-tidy 14 and clang-format 14 check project code in CI without adding a
+production dependency or a network fetch to normal builds.
+
+**Reference:** `docs/coding_guidelines/cpp_coding_guidelines.md`, D-033, D-050.

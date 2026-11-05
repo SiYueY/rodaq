@@ -17,11 +17,11 @@ class Handle final {
 public:
     constexpr Handle() noexcept = default;
 
-    static constexpr Handle FromRaw(std::uint64_t value) noexcept { return Handle(value); }
+    static constexpr Handle from_raw(std::uint64_t value) noexcept { return Handle(value); }
 
-    constexpr bool Valid() const noexcept { return value_ != 0; }
+    constexpr bool valid() const noexcept { return value_ != 0; }
 
-    constexpr std::uint64_t Value() const noexcept { return value_; }
+    constexpr std::uint64_t value() const noexcept { return value_; }
 
     friend constexpr bool operator==(Handle lhs, Handle rhs) noexcept {
         return lhs.value_ == rhs.value_;
@@ -44,7 +44,7 @@ public:
     explicit constexpr HandleAllocator(std::uint64_t first_value = 1) noexcept
     : next_value_(first_value) {}
 
-    Result<HandleType> Allocate() {
+    Result<HandleType> allocate() {
         if (next_value_ == 0) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::ResourceExhausted, "runtime handle identity space is exhausted"));
@@ -56,7 +56,7 @@ public:
         } else {
             ++next_value_;
         }
-        return HandleType::FromRaw(value);
+        return HandleType::from_raw(value);
     }
 
 private:

@@ -52,7 +52,7 @@ source-native facts
         ↓
 Runtime registration / Binding
         ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 Plugin 不得：
@@ -539,7 +539,7 @@ normal serialized take
 Plugin 可以在 Activation Commit 前创建 subscription/native resource，但不得让正常 callback 进入：
 
 ```text
-Runtime::Submit
+Runtime::submit
 ```
 
 Dynamic topic discovery 在 Running 阶段继续支持。
@@ -817,7 +817,7 @@ Data Plane
     MessageInfo extraction
     Source lookup
     timestamp slots
-    Runtime::Submit
+    Runtime::submit
 ```
 
 但这不要求两个独立 manager hierarchy。
@@ -898,7 +898,7 @@ lookup current Binding / optional SourceHandle
     ↓
 construct timestamp submission slots
     ↓
-Runtime::Submit(Copy payload)
+Runtime::submit(Copy payload)
     ↓
 return native serialized buffer
 ```
@@ -1445,7 +1445,7 @@ V1 这是同一 ROS2 active path 内的语义替换，不是 multi-path failover
 
 ## 4.2 Backpressure
 
-`Runtime::Submit` 返回同步 terminal admission result：
+`Runtime::submit` 返回同步 terminal admission result：
 
 ```text
 Accepted
@@ -1535,7 +1535,7 @@ ROS2 Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin
 
 ```text
 no new ROS callback / take execution
-can begin Runtime::Submit
+can begin Runtime::submit
 ```
 
 但这不等于已经进入 Runtime 的 Submit call 全部返回。

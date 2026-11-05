@@ -571,7 +571,7 @@ Canonical registration
 required Bindings ready
         ↓
 Plugin remains unable to start
-normal Runtime::Submit
+normal Runtime::submit
         ↓
 Runtime Activation Commit
 publishes Running + Gate Open
@@ -936,7 +936,7 @@ Plugin Enabled
 
 根据 backend 特性，Runtime 可以允许：
 
-> 在 Plugin Enabled 前提前允许 native reader 进入 normal `Runtime::Submit` path。
+> 在 Plugin Enabled 前提前允许 native reader 进入 normal `Runtime::submit` path。
 
 Plugin 可以在 Prepared 阶段建立 native reader / discovery resources，但必须通过 local routing gate / callback barrier 保证 normal Submit permission 直到 Activation Commit 后才发布。
 
@@ -1005,7 +1005,7 @@ BoundedBuffer
 则该 sample 真正进入：
 
 ```text
-Runtime::Submit
+Runtime::submit
 ```
 
 时，Runtime 才捕获：
@@ -1107,7 +1107,7 @@ Plugin 在 Quiescing 期间：
 已经进入：
 
 ```text
-Runtime::Submit
+Runtime::submit
 ```
 
 的调用：
@@ -1272,7 +1272,7 @@ Stopped 时 Plugin 必须保证：
 
 ```text
 no new native callback
-can reach Runtime::Submit
+can reach Runtime::submit
 
 no Plugin worker
 can begin a new Submit
@@ -1300,7 +1300,7 @@ native event thread
 并允许多个线程同时：
 
 ```text
-Runtime::Submit
+Runtime::submit
 ```
 
 Runtime Admission 负责：
@@ -2404,7 +2404,7 @@ native event dispatch task
 已经在 ReadyToCommit 前进入：
 
 ```text
-Runtime::Submit(old_binding)
+Runtime::submit(old_binding)
 ```
 
 的 synchronous call：
@@ -3272,7 +3272,7 @@ construct local state
         ↓
 release Plugin routing lock
         ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 ---
@@ -3458,7 +3458,7 @@ Plugin 可以：
 ```text
 multiple callback threads
         ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 并发提交同一 Stream。
@@ -3882,7 +3882,7 @@ Runtime failure cleanup
 目标：
 
 ```text
-no future Runtime::Submit
+no future Runtime::submit
 from this Plugin can begin
 ```
 
@@ -3909,7 +3909,7 @@ NativeBackpressure
 Quiescence 只建立：
 
 ```text
-no future normal Runtime::Submit can begin
+no future normal Runtime::submit can begin
 ```
 
 它不表示 Runtime 中所有已经进入的 Submit call 已返回；后者由 Runtime `active_submission_calls` barrier 负责。
@@ -3963,7 +3963,7 @@ visible to all submit contexts
 已经进入：
 
 ```text
-Runtime::Submit
+Runtime::submit
 ```
 
 的调用：
@@ -4516,7 +4516,7 @@ submission state
         ↓
 release Plugin lock
         ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 ReadyToCommit / Quiescence：
@@ -5043,7 +5043,7 @@ Runtime 不依赖 Plugin type 额外参与 SourceId equality。
 让 Plugin 在 Enable permission 发布后立即产生 callback。验证：
 
 ```text
-callback may call Runtime::Submit
+callback may call Runtime::submit
 ⇒
 Runtime Running
 AND Gate Open
@@ -5935,7 +5935,7 @@ Timestamp State
 +
 Payload Input
         ↓
-Runtime::Submit
+Runtime::submit
         ↓
 Admission
 ```

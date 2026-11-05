@@ -409,7 +409,7 @@ six state objects
 实际实现可以由一个紧凑的：
 
 ```text
-Runtime::Submit(...)
+Runtime::submit(...)
 ```
 
 完成。
@@ -3425,7 +3425,7 @@ BackpressureManager
 一个合理实现可以只是：
 
 ```text
-Runtime::Submit(...)
+Runtime::submit(...)
 ```
 
 配合：
@@ -4091,7 +4091,7 @@ PreAdmissionRejected
 
 ### Active Submission Barrier
 
-构造 submission A 已进入 `Runtime::Submit`，仍处于 pre-gate validation / Copy materialization；此时：
+构造 submission A 已进入 `Runtime::submit`，仍处于 pre-gate validation / Copy materialization；此时：
 
 ```text
 global admission in-flight == 0

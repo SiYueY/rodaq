@@ -40,16 +40,16 @@ public:
     InteropProjectionRegistry& operator=(InteropProjectionRegistry&&) = delete;
     ~InteropProjectionRegistry() = default;
 
-    void SetRegistrationSink(RegistrationSink sink);
+    void set_registration_sink(RegistrationSink sink);
 
-    Result<void> Register(
+    Result<void> register_entry(
         rodaq_stream_descriptor_handle descriptor, std::string_view projection_id,
         const std::uint8_t* payload, std::size_t payload_size);
 
-    Result<ProjectionView> Get(
+    Result<ProjectionView> get(
         rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) const;
 
-    rodaq_interface AbiInterface() noexcept;
+    rodaq_interface abi_interface() noexcept;
 
 private:
     struct Entry {

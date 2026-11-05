@@ -20,7 +20,7 @@ TEST(RuntimeConfigTest, RejectsEmptyOrIncompleteResourceConfiguration) {
     empty_classes.resources.payload_pool.classes.clear();
     empty_classes.target_uri = "file://unused";
     Runtime empty_runtime(std::move(empty_classes));
-    auto empty_result = empty_runtime.Configure();
+    auto empty_result = empty_runtime.configure();
     ASSERT_FALSE(empty_result.has_value());
     EXPECT_EQ(ErrorCode::InvalidArgument, empty_result.error().code());
 }
@@ -31,7 +31,7 @@ TEST(RuntimeConfigTest, ValidatesPayloadClassCoverageAndCapacityConsistency) {
     uncovered.resources.payload_pool.classes = {PayloadClassConfig{1024, 4}};
     uncovered.resources.max_single_payload_bytes = 2048;
     Runtime unfinished(std::move(uncovered));
-    auto uncovered_result = unfinished.Configure();
+    auto uncovered_result = unfinished.configure();
     ASSERT_FALSE(uncovered_result.has_value());
     EXPECT_EQ(ErrorCode::InvalidArgument, uncovered_result.error().code());
 
@@ -40,7 +40,7 @@ TEST(RuntimeConfigTest, ValidatesPayloadClassCoverageAndCapacityConsistency) {
     mismatched.resources.dispatch_capacity = 8;
     mismatched.resources.operation_capacity = 7;
     Runtime mismatch_runtime(std::move(mismatched));
-    auto mismatch_result = mismatch_runtime.Configure();
+    auto mismatch_result = mismatch_runtime.configure();
     ASSERT_FALSE(mismatch_result.has_value());
     EXPECT_EQ(ErrorCode::InvalidArgument, mismatch_result.error().code());
 }

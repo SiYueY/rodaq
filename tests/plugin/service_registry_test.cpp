@@ -33,13 +33,13 @@ TEST(ServiceRegistryTest, RegistersAndQueriesBorrowedInterfaces) {
     const rodaq_interface first = make_service(&first_context, &first_vtable);
     const rodaq_interface second = make_service(&second_context, &second_vtable);
 
-    ASSERT_TRUE(registry.Register("rodaq.test.first.v1", first).has_value());
-    ASSERT_TRUE(registry.Register("rodaq.test.second.v1", second).has_value());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, registry.Query("rodaq.test.first.v1").error().code());
-    ASSERT_TRUE(registry.Freeze().has_value());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.first.v1", first).has_value());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.second.v1", second).has_value());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, registry.query("rodaq.test.first.v1").error().code());
+    ASSERT_TRUE(registry.freeze().has_value());
 
-    const auto queried_first = registry.Query("rodaq.test.first.v1");
-    const auto queried_second = registry.Query("rodaq.test.second.v1");
+    const auto queried_first = registry.query("rodaq.test.first.v1");
+    const auto queried_second = registry.query("rodaq.test.second.v1");
     ASSERT_TRUE(queried_first.has_value());
     ASSERT_TRUE(queried_second.has_value());
     EXPECT_EQ(first.context, queried_first.value().context);
@@ -50,13 +50,13 @@ TEST(ServiceRegistryTest, RegistersAndQueriesBorrowedInterfaces) {
 
 TEST(ServiceRegistryTest, FreezeIsIdempotentAndPreventsRegistration) {
     auto registry = make_registry();
-    ASSERT_TRUE(registry.Freeze().has_value());
-    ASSERT_TRUE(registry.Freeze().has_value());
+    ASSERT_TRUE(registry.freeze().has_value());
+    ASSERT_TRUE(registry.freeze().has_value());
 
     int context = 0;
     int vtable = 0;
     const auto result =
-        registry.Register("rodaq.test.after_freeze.v1", make_service(&context, &vtable));
+        registry.register_entry("rodaq.test.after_freeze.v1", make_service(&context, &vtable));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, result.error().code());
 }
@@ -67,33 +67,35 @@ TEST(ServiceRegistryTest, RejectsInvalidIdsDuplicatesAndCapacityExhaustion) {
     int vtable = 0;
     const rodaq_interface service = make_service(&context, &vtable);
 
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, registry.Register("", service).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidArgument, registry.register_entry("", service).error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        registry.Register(std::string_view("\xFF", 1), service).error().code());
+        registry.register_entry(std::string_view("\xFF", 1), service).error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        registry.Register("far.too.long", service).error().code());
+        registry.register_entry("far.too.long", service).error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        registry.Register("valid.id", rodaq_interface{}).error().code());
+        registry.register_entry("valid.id", rodaq_interface{}).error().code());
 
-    ASSERT_TRUE(registry.Register("one", service).has_value());
-    EXPECT_EQ(rodaq::ErrorCode::Conflict, registry.Register("one", service).error().code());
-    ASSERT_TRUE(registry.Register("two", service).has_value());
+    ASSERT_TRUE(registry.register_entry("one", service).has_value());
+    EXPECT_EQ(rodaq::ErrorCode::Conflict, registry.register_entry("one", service).error().code());
+    ASSERT_TRUE(registry.register_entry("two", service).has_value());
     EXPECT_EQ(
-        rodaq::ErrorCode::ResourceExhausted, registry.Register("tri", service).error().code());
+        rodaq::ErrorCode::ResourceExhausted,
+        registry.register_entry("tri", service).error().code());
 }
 
 TEST(ServiceRegistryTest, QueryReportsNotFoundAndRejectsInvalidIds) {
     auto registry = make_registry();
-    ASSERT_TRUE(registry.Freeze().has_value());
+    ASSERT_TRUE(registry.freeze().has_value());
 
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, registry.Query("missing").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, registry.Query("").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::NotFound, registry.query("missing").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, registry.query("").error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        registry.Query(std::string_view("\xFF", 1)).error().code());
+        registry.query(std::string_view("\xFF", 1)).error().code());
 }
 
 TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
@@ -101,10 +103,10 @@ TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
     int context = 0;
     int vtable = 0;
     const rodaq_interface service = make_service(&context, &vtable);
-    ASSERT_TRUE(registry.Register("rodaq.test.abi.v1", service).has_value());
-    ASSERT_TRUE(registry.Freeze().has_value());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.abi.v1", service).has_value());
+    ASSERT_TRUE(registry.freeze().has_value());
 
-    const rodaq_service_registry abi = registry.AbiView();
+    const rodaq_service_registry abi = registry.abi_view();
     ASSERT_NE(nullptr, abi.context);
     ASSERT_NE(nullptr, abi.vtable);
     EXPECT_EQ(RODAQ_SERVICE_REGISTRY_PROTOCOL_VERSION, abi.vtable->protocol_version);

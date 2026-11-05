@@ -27,32 +27,32 @@ struct LogRecord {
 class LoggingBackend {
 public:
     virtual ~LoggingBackend() = default;
-    virtual Result<void> Write(const LogRecord& record) = 0;
-    virtual Result<void> Flush() = 0;
-    virtual Result<void> Shutdown() = 0;
+    virtual Result<void> write(const LogRecord& record) = 0;
+    virtual Result<void> flush() = 0;
+    virtual Result<void> shutdown() = 0;
 };
 
 class LoggingContext final {
 public:
-    static Result<std::unique_ptr<LoggingContext>> Create(
+    static Result<std::unique_ptr<LoggingContext>> create(
         LoggingConfig config, std::shared_ptr<LoggingBackend> backend);
 
     LoggingContext(const LoggingContext&) = delete;
     LoggingContext& operator=(const LoggingContext&) = delete;
     ~LoggingContext();
 
-    void Log(LogLevel level, std::string_view category, std::string_view message) noexcept;
-    bool Flush(std::chrono::steady_clock::time_point deadline) noexcept;
-    bool Shutdown(std::chrono::steady_clock::time_point deadline) noexcept;
-    void QuarantineWorker(std::string reason) noexcept;
-    LoggingStats Stats() const noexcept;
+    void log(LogLevel level, std::string_view category, std::string_view message) noexcept;
+    bool flush(std::chrono::steady_clock::time_point deadline) noexcept;
+    bool shutdown(std::chrono::steady_clock::time_point deadline) noexcept;
+    void quarantine_worker(std::string reason) noexcept;
+    LoggingStats stats() const noexcept;
 
 private:
     struct State;
     struct RecordingSink;
 
     LoggingContext(LoggingConfig config, std::shared_ptr<LoggingBackend> backend);
-    static void WorkerLoop(std::shared_ptr<State> state) noexcept;
+    static void worker_loop(std::shared_ptr<State> state) noexcept;
 
     LoggingConfig config_;
     std::shared_ptr<State> state_;

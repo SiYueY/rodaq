@@ -45,7 +45,7 @@ inline std::filesystem::path required_path(const char* environment_name) {
 }
 
 inline ConfigTree config(std::vector<ConfigTree::MapEntry> entries) {
-    auto result = ConfigTree::Map(std::move(entries));
+    auto result = ConfigTree::map(std::move(entries));
     if (!result.has_value()) {
         throw std::runtime_error("Failed to construct benchmark config");
     }
@@ -59,21 +59,21 @@ inline runtime::PluginConfig acquisition(
     runtime::PluginConfig value;
     value.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
     value.config = config({
-        {"source_id", ConfigTree::String(std::move(source_id))},
-        {"streams", ConfigTree::Int64(static_cast<std::int64_t>(streams))},
-        {"records_per_stream", ConfigTree::Int64(static_cast<std::int64_t>(records_per_stream))},
-        {"producer_threads", ConfigTree::Int64(static_cast<std::int64_t>(streams))},
-        {"producer_stream_mode", ConfigTree::String("exclusive")},
+        {"source_id", ConfigTree::string(std::move(source_id))},
+        {"streams", ConfigTree::int64(static_cast<std::int64_t>(streams))},
+        {"records_per_stream", ConfigTree::int64(static_cast<std::int64_t>(records_per_stream))},
+        {"producer_threads", ConfigTree::int64(static_cast<std::int64_t>(streams))},
+        {"producer_stream_mode", ConfigTree::string("exclusive")},
         {"record_interval_us",
-         ConfigTree::Int64(static_cast<std::int64_t>(record_interval_ns / 1'000U))},
-        {"payload_size", ConfigTree::Int64(static_cast<std::int64_t>(payload_bytes))},
-        {"payload_mode", ConfigTree::String(std::move(payload_mode))},
-        {"descriptor_change_after", ConfigTree::Int64(-1)},
-        {"binding_scenario", ConfigTree::String("")},
-        {"lifecycle_scenario", ConfigTree::String("")},
-        {"pause_before_switch", ConfigTree::Int64(0)},
-        {"stale_handle_file", ConfigTree::String("")},
-        {"event_log", ConfigTree::String("")},
+         ConfigTree::int64(static_cast<std::int64_t>(record_interval_ns / 1'000U))},
+        {"payload_size", ConfigTree::int64(static_cast<std::int64_t>(payload_bytes))},
+        {"payload_mode", ConfigTree::string(std::move(payload_mode))},
+        {"descriptor_change_after", ConfigTree::int64(-1)},
+        {"binding_scenario", ConfigTree::string("")},
+        {"lifecycle_scenario", ConfigTree::string("")},
+        {"pause_before_switch", ConfigTree::int64(0)},
+        {"stale_handle_file", ConfigTree::string("")},
+        {"event_log", ConfigTree::string("")},
     });
     return value;
 }
@@ -101,15 +101,15 @@ inline runtime::RuntimeConfig runtime_config(
     value.logging.stderr_sink = false;
     value.storage.path = required_path("RODAQ_FAKE_STORAGE_PLUGIN");
     value.storage.config = config({
-        {"scenario", ConfigTree::String("sync")},
-        {"event_log", ConfigTree::String("")},
-        {"callback_delay_us", ConfigTree::Int64(0)},
-        {"submit_delay_us", ConfigTree::Int64(0)},
-        {"descriptor_scenario", ConfigTree::String("ready")},
+        {"scenario", ConfigTree::string("sync")},
+        {"event_log", ConfigTree::string("")},
+        {"callback_delay_us", ConfigTree::int64(0)},
+        {"submit_delay_us", ConfigTree::int64(0)},
+        {"descriptor_scenario", ConfigTree::string("ready")},
         {"maximum_inflight_records",
-         ConfigTree::Int64(static_cast<std::int64_t>(operation_capacity))},
+         ConfigTree::int64(static_cast<std::int64_t>(operation_capacity))},
         {"maximum_inflight_bytes",
-         ConfigTree::Int64(static_cast<std::int64_t>(maximum_payload_inflight_bytes))},
+         ConfigTree::int64(static_cast<std::int64_t>(maximum_payload_inflight_bytes))},
     });
     value.acquisitions = std::move(acquisitions);
     return value;
@@ -149,12 +149,12 @@ inline RunResult execute(
     Clock::time_point started{};
     try {
         runtime::Runtime runtime(std::move(config));
-        auto configured = runtime.Configure();
+        auto configured = runtime.configure();
         if (!configured.has_value()) {
             result.error = std::string(configured.error().message());
             return result;
         }
-        auto started_result = runtime.Start();
+        auto started_result = runtime.start();
         if (!started_result.has_value()) {
             result.error = std::string(started_result.error().message());
             return result;
@@ -165,14 +165,14 @@ inline RunResult execute(
         const auto deadline = Clock::now() + deadline_duration;
         bool converged = false;
         while (Clock::now() < deadline) {
-            auto stats = runtime.Stats();
+            auto stats = runtime.stats();
             if (stats.has_value()) {
                 if (stats->accepted_records == expected_records && stats->inflight_records == 0) {
                     converged = true;
                     break;
                 }
             }
-            if (runtime.State() == runtime::RuntimeState::Failed) {
+            if (runtime.state() == runtime::RuntimeState::Failed) {
                 break;
             }
             std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -182,8 +182,8 @@ inline RunResult execute(
         }
         const auto measurement_ended = Clock::now();
         const double cpu_at_end = process_cpu_seconds();
-        auto stopped = runtime.Stop();
-        auto stats = runtime.Stats();
+        auto stopped = runtime.stop();
+        auto stats = runtime.stats();
         if (stats.has_value()) {
             result.stats = std::move(stats.value());
             result.passed =

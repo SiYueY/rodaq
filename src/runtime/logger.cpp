@@ -4,13 +4,13 @@
 
 namespace rodaq {
 
-void Logger::Log(
+void Logger::log(
     LogLevel level, std::string_view category, std::string_view message) const noexcept {
     if (sink_ == nullptr) {
         return;
     }
     try {
-        sink_->Write(level, category, message);
+        sink_->write(level, category, message);
     } catch (...) {
     }
 }

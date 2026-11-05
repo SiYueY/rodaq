@@ -62,7 +62,7 @@ PayloadPoolReservation::PayloadPoolReservation(PayloadPoolReservation&& other) n
 
 PayloadPoolReservation& PayloadPoolReservation::operator=(PayloadPoolReservation&& other) noexcept {
     if (this != &other) {
-        Release();
+        release();
         state_ = std::move(other.state_);
         class_index_ = other.class_index_;
         block_index_ = other.block_index_;
@@ -74,15 +74,15 @@ PayloadPoolReservation& PayloadPoolReservation::operator=(PayloadPoolReservation
     return *this;
 }
 
-PayloadPoolReservation::~PayloadPoolReservation() { Release(); }
+PayloadPoolReservation::~PayloadPoolReservation() { release(); }
 
-bool PayloadPoolReservation::Active() const noexcept { return state_ != nullptr; }
+bool PayloadPoolReservation::active() const noexcept { return state_ != nullptr; }
 
-std::size_t PayloadPoolReservation::ClassIndex() const noexcept { return class_index_; }
+std::size_t PayloadPoolReservation::class_index() const noexcept { return class_index_; }
 
-std::size_t PayloadPoolReservation::BlockIndex() const noexcept { return block_index_; }
+std::size_t PayloadPoolReservation::block_index() const noexcept { return block_index_; }
 
-void PayloadPoolReservation::Release() noexcept {
+void PayloadPoolReservation::release() noexcept {
     if (state_ != nullptr) {
         std::shared_ptr<PayloadPoolState> state = std::move(state_);
         const std::size_t class_index = class_index_;
@@ -90,11 +90,11 @@ void PayloadPoolReservation::Release() noexcept {
         class_index_ = 0;
         block_index_ = 0;
         payload_size_ = 0;
-        state->Release(class_index, block_index);
+        state->release(class_index, block_index);
     }
 }
 
-std::size_t PayloadPoolState::SelectClassLocked(std::size_t bytes) const noexcept {
+std::size_t PayloadPoolState::select_class_locked(std::size_t bytes) const noexcept {
     for (std::size_t index = 0; index < classes_.size(); ++index) {
         if (bytes <= classes_[index]->max_payload_bytes) {
             return index;
@@ -103,13 +103,13 @@ std::size_t PayloadPoolState::SelectClassLocked(std::size_t bytes) const noexcep
     return classes_.size();
 }
 
-Result<PayloadPoolReservation> PayloadPoolState::TryReserve(std::size_t bytes) {
+Result<PayloadPoolReservation> PayloadPoolState::try_reserve(std::size_t bytes) {
     if (bytes == 0) {
         return PayloadPoolReservation();
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    const std::size_t class_index = SelectClassLocked(bytes);
+    const std::size_t class_index = select_class_locked(bytes);
     if (class_index >= classes_.size()) {
         return nonstd::make_unexpected(Error(
             ErrorCode::ResourceExhausted, "payload exceeds all configured Payload size classes"));
@@ -132,9 +132,9 @@ Result<PayloadPoolReservation> PayloadPoolState::TryReserve(std::size_t bytes) {
     return PayloadPoolReservation(shared_from_this(), class_index, block_index, bytes);
 }
 
-Payload PayloadPoolState::Materialize(PayloadPoolReservation&& reservation, PayloadView source) {
-    if (!reservation.Active() || reservation.state_.get() != this ||
-        source.Size() != reservation.payload_size_ || !source.Valid() ||
+Payload PayloadPoolState::materialize(PayloadPoolReservation&& reservation, PayloadView source) {
+    if (!reservation.active() || reservation.state_.get() != this ||
+        source.size() != reservation.payload_size_ || !source.valid() ||
         reservation.class_index_ >= classes_.size()) {
         return Payload();
     }
@@ -142,12 +142,12 @@ Payload PayloadPoolState::Materialize(PayloadPoolReservation&& reservation, Payl
     ClassState& size_class = *classes_[reservation.class_index_];
     std::uint8_t* destination =
         size_class.storage.get() + reservation.block_index_ * size_class.max_payload_bytes;
-    if (source.Size() != 0) {
-        std::memcpy(destination, source.Data(), source.Size());
+    if (source.size() != 0) {
+        std::memcpy(destination, source.data(), source.size());
     }
 
     Payload payload(
-        std::move(reservation.state_), destination, source.Size(), reservation.class_index_,
+        std::move(reservation.state_), destination, source.size(), reservation.class_index_,
         reservation.block_index_);
     reservation.class_index_ = 0;
     reservation.block_index_ = 0;
@@ -155,7 +155,7 @@ Payload PayloadPoolState::Materialize(PayloadPoolReservation&& reservation, Payl
     return payload;
 }
 
-void PayloadPoolState::Release(std::size_t class_index, std::size_t block_index) noexcept {
+void PayloadPoolState::release(std::size_t class_index, std::size_t block_index) noexcept {
     std::function<void()> sink;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -172,7 +172,7 @@ void PayloadPoolState::Release(std::size_t class_index, std::size_t block_index)
     }
 }
 
-PayloadPoolStats PayloadPoolState::Stats() const {
+PayloadPoolStats PayloadPoolState::stats() const {
     PayloadPoolStats stats;
     stats.classes.reserve(classes_.size());
     for (const std::unique_ptr<ClassState>& class_state : classes_) {
@@ -193,11 +193,11 @@ PayloadPoolStats PayloadPoolState::Stats() const {
     return stats;
 }
 
-std::size_t PayloadPoolState::BlockSizeBytes() const noexcept {
+std::size_t PayloadPoolState::block_size_bytes() const noexcept {
     return classes_.empty() ? 0 : classes_.back()->max_payload_bytes;
 }
 
-std::size_t PayloadPoolState::BlockCount() const noexcept {
+std::size_t PayloadPoolState::block_count() const noexcept {
     std::size_t count = 0;
     for (const auto& size_class : classes_) {
         count += size_class->block_count;
@@ -205,7 +205,7 @@ std::size_t PayloadPoolState::BlockCount() const noexcept {
     return count;
 }
 
-std::size_t PayloadPoolState::CapacityBytes() const noexcept {
+std::size_t PayloadPoolState::capacity_bytes() const noexcept {
     std::size_t bytes = 0;
     for (const auto& size_class : classes_) {
         bytes += size_class->max_payload_bytes * size_class->block_count;
@@ -213,7 +213,7 @@ std::size_t PayloadPoolState::CapacityBytes() const noexcept {
     return bytes;
 }
 
-std::size_t PayloadPoolState::UsedBytes() const noexcept {
+std::size_t PayloadPoolState::used_bytes() const noexcept {
     std::size_t bytes = 0;
     for (const auto& size_class : classes_) {
         bytes +=
@@ -222,11 +222,11 @@ std::size_t PayloadPoolState::UsedBytes() const noexcept {
     return bytes;
 }
 
-std::size_t PayloadPoolState::AvailableBytes() const noexcept {
-    return CapacityBytes() - UsedBytes();
+std::size_t PayloadPoolState::available_bytes() const noexcept {
+    return capacity_bytes() - used_bytes();
 }
 
-std::size_t PayloadPoolState::HighWaterBytes() const noexcept {
+std::size_t PayloadPoolState::high_water_bytes() const noexcept {
     std::size_t bytes = 0;
     for (const auto& size_class : classes_) {
         bytes += size_class->max_payload_bytes *
@@ -235,12 +235,12 @@ std::size_t PayloadPoolState::HighWaterBytes() const noexcept {
     return bytes;
 }
 
-void PayloadPoolState::SetCapacityChangedSink(std::function<void()> sink) {
+void PayloadPoolState::set_capacity_changed_sink(std::function<void()> sink) {
     std::lock_guard<std::mutex> lock(mutex_);
     capacity_changed_sink_ = std::move(sink);
 }
 
-Result<PayloadPool> PayloadPool::Create(const PayloadPoolConfig& config) {
+Result<PayloadPool> PayloadPool::create(const PayloadPoolConfig& config) {
     try {
         return PayloadPool(std::make_shared<PayloadPoolState>(config));
     } catch (const std::bad_alloc&) {
@@ -254,71 +254,71 @@ Result<PayloadPool> PayloadPool::Create(const PayloadPoolConfig& config) {
     }
 }
 
-Result<PayloadPool> PayloadPool::Create(std::size_t block_size_bytes, std::size_t block_count) {
+Result<PayloadPool> PayloadPool::create(std::size_t block_size_bytes, std::size_t block_count) {
     PayloadPoolConfig config;
     config.classes.push_back(PayloadClassConfig{block_size_bytes, block_count});
-    return Create(config);
+    return create(config);
 }
 
-Result<PayloadPoolReservation> PayloadPool::TryReserve(std::size_t bytes) {
-    return state_->TryReserve(bytes);
+Result<PayloadPoolReservation> PayloadPool::try_reserve(std::size_t bytes) {
+    return state_->try_reserve(bytes);
 }
 
-Result<Payload> PayloadPool::Materialize(PayloadPoolReservation&& reservation, PayloadView source) {
-    if (!reservation.Active()) {
-        if (source.Size() == 0 && source.Valid()) {
+Result<Payload> PayloadPool::materialize(PayloadPoolReservation&& reservation, PayloadView source) {
+    if (!reservation.active()) {
+        if (source.size() == 0 && source.valid()) {
             return Payload();
         }
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "payload reservation is not active"));
     }
-    if (!source.Valid()) {
+    if (!source.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "payload source view is invalid"));
     }
     const std::size_t expected = reservation.payload_size_;
-    if (source.Size() != expected) {
+    if (source.size() != expected) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "payload source size does not match reservation"));
     }
-    return state_->Materialize(std::move(reservation), source);
+    return state_->materialize(std::move(reservation), source);
 }
 
-Result<Payload> PayloadPool::Acquire(std::size_t bytes, PayloadView source) {
-    if (source.Size() != bytes) {
+Result<Payload> PayloadPool::acquire(std::size_t bytes, PayloadView source) {
+    if (source.size() != bytes) {
         return nonstd::make_unexpected(Error(
             ErrorCode::InvalidArgument, "payload source size does not match the requested size"));
     }
-    if (!source.Valid()) {
+    if (!source.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "payload source view is structurally invalid"));
     }
-    auto reserved = TryReserve(bytes);
+    auto reserved = try_reserve(bytes);
     if (!reserved.has_value()) {
         return nonstd::make_unexpected(std::move(reserved.error()));
     }
     if (bytes == 0) {
         return Payload();
     }
-    return state_->Materialize(std::move(reserved.value()), source);
+    return state_->materialize(std::move(reserved.value()), source);
 }
 
-PayloadPoolStats PayloadPool::Stats() const { return state_->Stats(); }
+PayloadPoolStats PayloadPool::stats() const { return state_->stats(); }
 
-std::size_t PayloadPool::BlockSizeBytes() const noexcept { return state_->BlockSizeBytes(); }
+std::size_t PayloadPool::block_size_bytes() const noexcept { return state_->block_size_bytes(); }
 
-std::size_t PayloadPool::BlockCount() const noexcept { return state_->BlockCount(); }
+std::size_t PayloadPool::block_count() const noexcept { return state_->block_count(); }
 
-std::size_t PayloadPool::CapacityBytes() const noexcept { return state_->CapacityBytes(); }
+std::size_t PayloadPool::capacity_bytes() const noexcept { return state_->capacity_bytes(); }
 
-std::size_t PayloadPool::UsedBytes() const noexcept { return state_->UsedBytes(); }
+std::size_t PayloadPool::used_bytes() const noexcept { return state_->used_bytes(); }
 
-std::size_t PayloadPool::AvailableBytes() const noexcept { return state_->AvailableBytes(); }
+std::size_t PayloadPool::available_bytes() const noexcept { return state_->available_bytes(); }
 
-std::size_t PayloadPool::HighWaterBytes() const noexcept { return state_->HighWaterBytes(); }
+std::size_t PayloadPool::high_water_bytes() const noexcept { return state_->high_water_bytes(); }
 
-void PayloadPool::SetCapacityChangedSink(std::function<void()> sink) {
-    state_->SetCapacityChangedSink(std::move(sink));
+void PayloadPool::set_capacity_changed_sink(std::function<void()> sink) {
+    state_->set_capacity_changed_sink(std::move(sink));
 }
 
 PayloadPool::PayloadPool(std::shared_ptr<PayloadPoolState> state) noexcept

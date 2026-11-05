@@ -45,7 +45,7 @@ const rodaq_runtime_clock_correlation_v1 ClockCorrelation::kClockCorrelationVtab
     &ClockCorrelation::get_unix_epoch_anchor,
 };
 
-Result<std::uint64_t> ProjectUnixNanoseconds(
+Result<std::uint64_t> project_unix_nanoseconds(
     std::int64_t reading, const UnixEpochClockAnchor& anchor) {
     if (reading >= anchor.clock_reading) {
         const std::uint64_t delta =
@@ -69,7 +69,7 @@ Result<std::uint64_t> ProjectUnixNanoseconds(
 ClockCorrelation::ClockCorrelation(std::unique_ptr<State> state) noexcept
 : state_(std::move(state)) {}
 
-Result<ClockCorrelation> ClockCorrelation::Establish(
+Result<ClockCorrelation> ClockCorrelation::establish(
     rodaq_clock_handle clock, ClockReadingFunction clock_reading, UnixTimeFunction unix_time) {
     if (clock.value == 0) {
         return nonstd::make_unexpected(clock_error(
@@ -88,7 +88,7 @@ Result<ClockCorrelation> ClockCorrelation::Establish(
             return nonstd::make_unexpected(clock_error(
                 ErrorCode::Unavailable, "Ingress clock moved backward during anchor capture"));
         }
-        return FromAnchor(UnixEpochClockAnchor{clock, midpoint(before, after), unix_ns});
+        return from_anchor(UnixEpochClockAnchor{clock, midpoint(before, after), unix_ns});
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(clock_error(
             ErrorCode::ResourceExhausted, "Memory exhausted while capturing Clock anchor"));
@@ -101,7 +101,7 @@ Result<ClockCorrelation> ClockCorrelation::Establish(
     }
 }
 
-Result<ClockCorrelation> ClockCorrelation::FromAnchor(UnixEpochClockAnchor anchor) {
+Result<ClockCorrelation> ClockCorrelation::from_anchor(UnixEpochClockAnchor anchor) {
     if (anchor.clock.value == 0) {
         return nonstd::make_unexpected(clock_error(
             ErrorCode::InvalidArgument, "Clock correlation requires a valid ingress Clock"));
@@ -117,7 +117,7 @@ Result<ClockCorrelation> ClockCorrelation::FromAnchor(UnixEpochClockAnchor ancho
     }
 }
 
-Result<UnixEpochClockAnchor> ClockCorrelation::GetAnchor(rodaq_clock_handle clock) const {
+Result<UnixEpochClockAnchor> ClockCorrelation::get_anchor(rodaq_clock_handle clock) const {
     if (clock.value == 0) {
         return nonstd::make_unexpected(
             clock_error(ErrorCode::InvalidArgument, "Clock handle is invalid"));
@@ -133,7 +133,7 @@ Result<UnixEpochClockAnchor> ClockCorrelation::GetAnchor(rodaq_clock_handle cloc
     return state_->anchor;
 }
 
-rodaq_interface ClockCorrelation::AbiInterface() noexcept {
+rodaq_interface ClockCorrelation::abi_interface() noexcept {
     return rodaq_interface{state_.get(), &kClockCorrelationVtable};
 }
 

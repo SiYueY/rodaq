@@ -33,34 +33,34 @@ void update_high_water(std::atomic<std::uint64_t>& high_water, std::uint64_t obs
 
 }  // namespace
 
-void RuntimeStats::RecordAccepted(std::uint64_t bytes) noexcept {
+void RuntimeStats::record_accepted(std::uint64_t bytes) noexcept {
     add_saturated(accepted_records_, 1);
     add_saturated(accepted_bytes_, bytes);
 }
 
-void RuntimeStats::RecordRejected() noexcept { add_saturated(rejected_records_, 1); }
+void RuntimeStats::record_rejected() noexcept { add_saturated(rejected_records_, 1); }
 
-void RuntimeStats::RecordTimedOut() noexcept { add_saturated(timed_out_records_, 1); }
+void RuntimeStats::record_timed_out() noexcept { add_saturated(timed_out_records_, 1); }
 
-void RuntimeStats::RecordCancelled() noexcept { add_saturated(cancelled_records_, 1); }
+void RuntimeStats::record_cancelled() noexcept { add_saturated(cancelled_records_, 1); }
 
-void RuntimeStats::RecordGateClosed() noexcept { add_saturated(gate_closed_records_, 1); }
+void RuntimeStats::record_gate_closed() noexcept { add_saturated(gate_closed_records_, 1); }
 
-void RuntimeStats::RecordInflightAcquired(std::uint64_t bytes) noexcept {
+void RuntimeStats::record_inflight_acquired(std::uint64_t bytes) noexcept {
     const std::uint64_t records = inflight_records_.fetch_add(1) + 1U;
     update_high_water(high_water_records_, records);
     const std::uint64_t total_bytes = inflight_bytes_.fetch_add(bytes) + bytes;
     update_high_water(high_water_bytes_, total_bytes);
 }
 
-bool RuntimeStats::RecordInflightReleased(std::uint64_t bytes) noexcept {
-    if (!RecordPayloadReleased(bytes)) {
+bool RuntimeStats::record_inflight_released(std::uint64_t bytes) noexcept {
+    if (!record_payload_released(bytes)) {
         return false;
     }
-    return RecordOperationCompleted();
+    return record_operation_completed();
 }
 
-bool RuntimeStats::RecordPayloadReleased(std::uint64_t bytes) noexcept {
+bool RuntimeStats::record_payload_released(std::uint64_t bytes) noexcept {
     std::uint64_t current_bytes = inflight_bytes_.load();
     if (bytes > current_bytes) {
         return false;
@@ -73,7 +73,7 @@ bool RuntimeStats::RecordPayloadReleased(std::uint64_t bytes) noexcept {
     return true;
 }
 
-bool RuntimeStats::RecordOperationCompleted() noexcept {
+bool RuntimeStats::record_operation_completed() noexcept {
     std::uint64_t current_records = inflight_records_.load();
     while (current_records != 0) {
         if (inflight_records_.compare_exchange_weak(current_records, current_records - 1U)) {
@@ -83,7 +83,7 @@ bool RuntimeStats::RecordOperationCompleted() noexcept {
     return false;
 }
 
-void RuntimeStats::RecordPersistence(std::uint32_t state) noexcept {
+void RuntimeStats::record_persistence(std::uint32_t state) noexcept {
     if (state == RODAQ_STORAGE_PERSISTENCE_SUCCEEDED) {
         add_saturated(persistence_succeeded_, 1);
     } else if (state == RODAQ_STORAGE_PERSISTENCE_FAILED) {
@@ -93,7 +93,7 @@ void RuntimeStats::RecordPersistence(std::uint32_t state) noexcept {
     }
 }
 
-RuntimeStatsSnapshot RuntimeStats::Snapshot() const noexcept {
+RuntimeStatsSnapshot RuntimeStats::snapshot() const noexcept {
     RuntimeStatsSnapshot snapshot;
     snapshot.persistence_succeeded_records = persistence_succeeded_.load();
     snapshot.persistence_failed_records = persistence_failed_.load();

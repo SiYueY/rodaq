@@ -10,14 +10,14 @@
 namespace rodaq {
 namespace {
 
-void BM_MixedSizeClassReserveCopyRelease(benchmark::State& state) {
+void bm_mixed_size_class_reserve_copy_release(benchmark::State& state) {
     PayloadPoolConfig config;
     config.classes = {
         PayloadClassConfig{1024, 1024},
         PayloadClassConfig{96U * 1024U, 256},
         PayloadClassConfig{4U * 1024U * 1024U, 32},
     };
-    auto pool = PayloadPool::Create(config);
+    auto pool = PayloadPool::create(config);
     if (!pool.has_value()) {
         state.SkipWithError("failed to create multi-class PayloadPool");
         return;
@@ -38,19 +38,19 @@ void BM_MixedSizeClassReserveCopyRelease(benchmark::State& state) {
     for (auto iteration : state) {
         static_cast<void>(iteration);
         const std::size_t index = selected++ % request_sizes.size();
-        auto reservation = pool.value().TryReserve(request_sizes[index]);
+        auto reservation = pool.value().try_reserve(request_sizes[index]);
         if (!reservation.has_value()) {
             state.SkipWithError("mixed size-class reserve failed");
             return;
         }
-        auto payload = pool.value().Materialize(
+        auto payload = pool.value().materialize(
             std::move(reservation.value()),
             PayloadView(sources[index].data(), sources[index].size()));
         if (!payload.has_value()) {
             state.SkipWithError("mixed size-class materialization failed");
             return;
         }
-        benchmark::DoNotOptimize(payload.value().View().Data());
+        benchmark::DoNotOptimize(payload.value().view().data());
     }
     state.SetBytesProcessed(
         static_cast<std::int64_t>(state.iterations()) *
@@ -60,6 +60,6 @@ void BM_MixedSizeClassReserveCopyRelease(benchmark::State& state) {
 }  // namespace
 }  // namespace rodaq
 
-BENCHMARK(rodaq::BM_MixedSizeClassReserveCopyRelease)->Unit(benchmark::kMicrosecond);
+BENCHMARK(rodaq::bm_mixed_size_class_reserve_copy_release)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();

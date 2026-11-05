@@ -13,21 +13,21 @@ namespace rodaq::runtime {
 namespace {
 
 TEST(QuarantineManagerTest, CompletesAndReapsSupervisedCalls) {
-    auto& manager = QuarantineManager::Process();
-    const std::size_t before = manager.RetainedCallCount();
-    auto outcome = manager.Run(
+    auto& manager = QuarantineManager::process();
+    const std::size_t before = manager.retained_call_count();
+    auto outcome = manager.run(
         [] { return Result<void>(); }, std::chrono::steady_clock::now() + std::chrono::seconds(1),
         "completed call");
     ASSERT_TRUE(outcome.has_value());
     EXPECT_EQ(outcome.value().status, SupervisedCallStatus::Completed);
-    EXPECT_EQ(manager.RetainedCallCount(), before);
+    EXPECT_EQ(manager.retained_call_count(), before);
 }
 
 TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
-    auto& manager = QuarantineManager::Process();
-    const std::size_t before = manager.RetainedCallCount();
+    auto& manager = QuarantineManager::process();
+    const std::size_t before = manager.retained_call_count();
     auto gate = std::make_shared<std::atomic<bool>>(false);
-    auto outcome = manager.Run(
+    auto outcome = manager.run(
         [gate] {
             while (!gate->load(std::memory_order_acquire)) {
                 std::this_thread::yield();
@@ -37,28 +37,28 @@ TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
         std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "timed out call");
     ASSERT_TRUE(outcome.has_value());
     EXPECT_EQ(outcome.value().status, SupervisedCallStatus::TimedOut);
-    EXPECT_GT(manager.RetainedCallCount(), before);
+    EXPECT_GT(manager.retained_call_count(), before);
 
     gate->store(true, std::memory_order_release);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (manager.RetainedCallCount() != before && std::chrono::steady_clock::now() < deadline) {
-        manager.ReapCompleted();
+    while (manager.retained_call_count() != before && std::chrono::steady_clock::now() < deadline) {
+        manager.reap_completed();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    EXPECT_EQ(manager.RetainedCallCount(), before);
+    EXPECT_EQ(manager.retained_call_count(), before);
 }
 
 TEST(QuarantineManagerTest, ConcurrentReapersJoinOnceAndReleaseStateOutsideManagerLock) {
-    auto& manager = QuarantineManager::Process();
-    manager.ReapCompleted();
-    const auto before = manager.RetainedWorkerCount();
+    auto& manager = QuarantineManager::process();
+    manager.reap_completed();
+    const auto before = manager.retained_worker_count();
     auto released = std::make_shared<std::atomic<bool>>(false);
     auto destroyed = std::make_shared<std::atomic<int>>(0);
     struct WorkerState {
         std::shared_ptr<std::atomic<int>> destroyed;
         ~WorkerState() {
             // Capture destruction may call Runtime infrastructure after Join.
-            static_cast<void>(QuarantineManager::Process().RetainedCallCount());
+            static_cast<void>(QuarantineManager::process().retained_call_count());
             destroyed->fetch_add(1);
         }
     };
@@ -76,14 +76,14 @@ TEST(QuarantineManagerTest, ConcurrentReapersJoinOnceAndReleaseStateOutsideManag
             // protect this final use of the retained capture.
             EXPECT_LT(state->destroyed->load(), kWorkers);
         });
-        ASSERT_TRUE(manager.RetainWorker(std::move(worker), state, done, "reaper race"));
+        ASSERT_TRUE(manager.retain_worker(std::move(worker), state, done, "reaper race"));
     }
-    EXPECT_EQ(manager.RetainedWorkerCount(), before + kWorkers);
+    EXPECT_EQ(manager.retained_worker_count(), before + kWorkers);
     auto reap = [&] {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (manager.RetainedWorkerCount() != before &&
+        while (manager.retained_worker_count() != before &&
                std::chrono::steady_clock::now() < deadline) {
-            manager.ReapCompleted();
+            manager.reap_completed();
             std::this_thread::yield();
         }
     };
@@ -92,15 +92,15 @@ TEST(QuarantineManagerTest, ConcurrentReapersJoinOnceAndReleaseStateOutsideManag
     released->store(true, std::memory_order_release);
     first.join();
     second.join();
-    manager.ReapCompleted();
-    manager.ReapCompleted();
-    EXPECT_EQ(manager.RetainedWorkerCount(), before);
+    manager.reap_completed();
+    manager.reap_completed();
+    EXPECT_EQ(manager.retained_worker_count(), before);
     EXPECT_EQ(destroyed->load(), kWorkers);
 }
 
 TEST(QuarantineManagerTest, CompletedWorkerMayReenterReapingWithoutJoiningItself) {
-    auto& manager = QuarantineManager::Process();
-    const auto before = manager.RetainedWorkerCount();
+    auto& manager = QuarantineManager::process();
+    const auto before = manager.retained_worker_count();
     auto entered = std::make_shared<std::atomic<bool>>(false);
     auto done = std::make_shared<std::atomic<bool>>(false);
     auto returned = std::make_shared<std::atomic<bool>>(false);
@@ -110,23 +110,24 @@ TEST(QuarantineManagerTest, CompletedWorkerMayReenterReapingWithoutJoiningItself
             std::this_thread::yield();
         }
         done->store(true, std::memory_order_release);
-        manager.ReapCompleted();
+        manager.reap_completed();
         returned->store(true, std::memory_order_release);
     });
-    ASSERT_TRUE(manager.RetainWorker(std::move(worker), state, done, "self-reap test"));
+    ASSERT_TRUE(manager.retain_worker(std::move(worker), state, done, "self-reap test"));
     entered->store(true, std::memory_order_release);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (manager.RetainedWorkerCount() != before && std::chrono::steady_clock::now() < deadline) {
-        manager.ReapCompleted();
+    while (manager.retained_worker_count() != before &&
+           std::chrono::steady_clock::now() < deadline) {
+        manager.reap_completed();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    EXPECT_EQ(manager.RetainedWorkerCount(), before);
+    EXPECT_EQ(manager.retained_worker_count(), before);
     EXPECT_TRUE(returned->load(std::memory_order_acquire));
 }
 
 TEST(QuarantineManagerTest, CaptureDestructionCompletesBeforeJoinPublication) {
-    auto& manager = QuarantineManager::Process();
-    const auto before = manager.RetainedCallCount();
+    auto& manager = QuarantineManager::process();
+    const auto before = manager.retained_call_count();
     auto release = std::make_shared<std::atomic<bool>>(false);
     auto entered = std::make_shared<std::atomic<bool>>(false);
     auto joined = std::make_shared<std::atomic<bool>>(false);
@@ -149,7 +150,7 @@ TEST(QuarantineManagerTest, CaptureDestructionCompletesBeforeJoinPublication) {
     capture->entered = entered;
     std::function<Result<void>()> operation = [capture] { return Result<void>(); };
     capture.reset();
-    auto outcome = manager.Run(
+    auto outcome = manager.run(
         std::move(operation), std::chrono::steady_clock::now() + std::chrono::milliseconds(10),
         "blocking capture destruction", joined);
     ASSERT_TRUE(outcome.has_value());
@@ -163,21 +164,21 @@ TEST(QuarantineManagerTest, CaptureDestructionCompletesBeforeJoinPublication) {
     EXPECT_FALSE(joined->load(std::memory_order_acquire));
     release->store(true, std::memory_order_release);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while ((!joined->load(std::memory_order_acquire) || manager.RetainedCallCount() != before) &&
+    while ((!joined->load(std::memory_order_acquire) || manager.retained_call_count() != before) &&
            std::chrono::steady_clock::now() < deadline) {
-        manager.ReapCompleted();
+        manager.reap_completed();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_TRUE(joined->load(std::memory_order_acquire));
-    EXPECT_EQ(manager.RetainedCallCount(), before);
+    EXPECT_EQ(manager.retained_call_count(), before);
 }
 
 TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
-    auto& manager = QuarantineManager::Process();
-    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
+    auto& manager = QuarantineManager::process();
+    EXPECT_EQ(manager.retained_activation_count(), 0U);
     std::vector<std::uint64_t> slots;
     while (true) {
-        auto slot = manager.ReserveActivation("activation slot test");
+        auto slot = manager.reserve_activation("activation slot test");
         if (!slot.has_value()) {
             EXPECT_EQ(slot.error().code(), ErrorCode::ResourceExhausted);
             break;
@@ -186,36 +187,36 @@ TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
         ASSERT_LE(slots.size(), 64U);
     }
     ASSERT_EQ(slots.size(), 32U);
-    EXPECT_EQ(manager.RetainedActivationCount(), 32U);
+    EXPECT_EQ(manager.retained_activation_count(), 32U);
 
     for (const std::uint64_t slot : slots) {
-        manager.ReleaseActivation(slot);
+        manager.release_activation(slot);
     }
-    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
+    EXPECT_EQ(manager.retained_activation_count(), 0U);
 
     for (std::uint64_t& slot : slots) {
-        auto reserved = manager.ReserveActivation("activation slot reuse test");
+        auto reserved = manager.reserve_activation("activation slot reuse test");
         ASSERT_TRUE(reserved.has_value());
         slot = reserved.value();
     }
-    auto exhausted = manager.ReserveActivation("activation slot exhaustion test");
+    auto exhausted = manager.reserve_activation("activation slot exhaustion test");
     ASSERT_FALSE(exhausted.has_value());
     EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
     for (const std::uint64_t slot : slots) {
-        manager.ReleaseActivation(slot);
+        manager.release_activation(slot);
     }
-    EXPECT_EQ(manager.RetainedActivationCount(), 0U);
+    EXPECT_EQ(manager.retained_activation_count(), 0U);
 }
 
 TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreReusable) {
-    auto& manager = QuarantineManager::Process();
+    auto& manager = QuarantineManager::process();
     auto release = std::make_shared<std::atomic<bool>>(false);
     std::vector<std::shared_ptr<std::atomic<bool>>> joined;
     joined.reserve(64);
     for (int index = 0; index < 32; ++index) {
         auto signal = std::make_shared<std::atomic<bool>>(false);
         joined.push_back(signal);
-        auto result = manager.Run(
+        auto result = manager.run(
             [release] {
                 while (!release->load(std::memory_order_acquire)) {
                     std::this_thread::yield();
@@ -240,26 +241,30 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
             done->store(true, std::memory_order_release);
         });
         const bool retained =
-            manager.RetainWorker(std::move(worker), release, done, "capacity worker", signal);
+            manager.retain_worker(std::move(worker), release, done, "capacity worker", signal);
         EXPECT_TRUE(retained);
         if (!retained) {
             release->store(true, std::memory_order_release);
+            // A failed retention does not acquire the caller's thread.
+            // NOLINTNEXTLINE(bugprone-use-after-move)
             worker.join();
         }
     }
-    EXPECT_EQ(manager.RetainedCallCount(), 32U);
-    EXPECT_EQ(manager.RetainedWorkerCount(), 32U);
+    EXPECT_EQ(manager.retained_call_count(), 32U);
+    EXPECT_EQ(manager.retained_worker_count(), 32U);
     auto done = std::make_shared<std::atomic<bool>>(false);
     std::thread rejected([done] { done->store(true, std::memory_order_release); });
     const auto worker_id = rejected.get_id();
-    EXPECT_FALSE(manager.RetainWorker(std::move(rejected), release, done, "capacity exhausted"));
+    EXPECT_FALSE(manager.retain_worker(std::move(rejected), release, done, "capacity exhausted"));
+    // Exhausted capacity must leave the thread with its caller.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     EXPECT_TRUE(rejected.joinable());
     EXPECT_EQ(rejected.get_id(), worker_id);
     if (rejected.joinable()) {
         rejected.join();
     }
     bool invoked = false;
-    auto exhausted = manager.Run(
+    auto exhausted = manager.run(
         [&invoked] {
             invoked = true;
             return Result<void>();
@@ -269,19 +274,19 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
     EXPECT_FALSE(invoked);
     release->store(true, std::memory_order_release);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while ((manager.RetainedCallCount() != 0 || manager.RetainedWorkerCount() != 0) &&
+    while ((manager.retained_call_count() != 0 || manager.retained_worker_count() != 0) &&
            std::chrono::steady_clock::now() < deadline) {
-        manager.ReapCompleted();
+        manager.reap_completed();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     for (const auto& signal : joined) {
         EXPECT_TRUE(signal->load(std::memory_order_acquire));
     }
-    EXPECT_EQ(manager.RetainedCallCount(), 0U);
-    EXPECT_EQ(manager.RetainedWorkerCount(), 0U);
+    EXPECT_EQ(manager.retained_call_count(), 0U);
+    EXPECT_EQ(manager.retained_worker_count(), 0U);
     release->store(false, std::memory_order_release);
     auto reused_joined = std::make_shared<std::atomic<bool>>(false);
-    auto reused = manager.Run(
+    auto reused = manager.run(
         [release] {
             while (!release->load(std::memory_order_acquire)) {
                 std::this_thread::yield();
@@ -302,23 +307,25 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
         }
         done->store(true, std::memory_order_release);
     });
-    const bool retained =
-        manager.RetainWorker(std::move(worker), release, done, "reused worker slot", worker_joined);
+    const bool retained = manager.retain_worker(
+        std::move(worker), release, done, "reused worker slot", worker_joined);
     EXPECT_TRUE(retained);
     release->store(true, std::memory_order_release);
+    // Failed retention preserves the caller's thread; a moved-from thread is queryable.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     if (worker.joinable()) {
         worker.join();
     }
     const auto reuse_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while ((manager.RetainedCallCount() != 0 || manager.RetainedWorkerCount() != 0) &&
+    while ((manager.retained_call_count() != 0 || manager.retained_worker_count() != 0) &&
            std::chrono::steady_clock::now() < reuse_deadline) {
-        manager.ReapCompleted();
+        manager.reap_completed();
         std::this_thread::yield();
     }
     EXPECT_TRUE(reused_joined->load());
     EXPECT_TRUE(worker_joined->load());
-    EXPECT_EQ(manager.RetainedCallCount(), 0U);
-    EXPECT_EQ(manager.RetainedWorkerCount(), 0U);
+    EXPECT_EQ(manager.retained_call_count(), 0U);
+    EXPECT_EQ(manager.retained_worker_count(), 0U);
 }
 
 }  // namespace

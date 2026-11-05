@@ -17,14 +17,14 @@ namespace {
 
 TEST(RuntimeStatsTest, RecordsCountersAndSnapshot) {
     RuntimeStats stats;
-    stats.RecordAccepted(10);
-    stats.RecordAccepted(20);
-    stats.RecordRejected();
-    stats.RecordTimedOut();
-    stats.RecordCancelled();
-    stats.RecordGateClosed();
+    stats.record_accepted(10);
+    stats.record_accepted(20);
+    stats.record_rejected();
+    stats.record_timed_out();
+    stats.record_cancelled();
+    stats.record_gate_closed();
 
-    const RuntimeStatsSnapshot snapshot = stats.Snapshot();
+    const RuntimeStatsSnapshot snapshot = stats.snapshot();
     EXPECT_EQ(snapshot.accepted_records, 2U);
     EXPECT_EQ(snapshot.accepted_bytes, 30U);
     EXPECT_EQ(snapshot.rejected_records, 1U);
@@ -35,27 +35,27 @@ TEST(RuntimeStatsTest, RecordsCountersAndSnapshot) {
 
 TEST(RuntimeStatsTest, TracksInflightAndHighWater) {
     RuntimeStats stats;
-    stats.RecordInflightAcquired(10);
-    stats.RecordInflightAcquired(20);
+    stats.record_inflight_acquired(10);
+    stats.record_inflight_acquired(20);
 
-    RuntimeStatsSnapshot snapshot = stats.Snapshot();
+    RuntimeStatsSnapshot snapshot = stats.snapshot();
     EXPECT_EQ(snapshot.inflight_records, 2U);
     EXPECT_EQ(snapshot.inflight_bytes, 30U);
     EXPECT_EQ(snapshot.high_water_records, 2U);
     EXPECT_EQ(snapshot.high_water_bytes, 30U);
 
-    EXPECT_TRUE(stats.RecordInflightReleased(20));
-    stats.RecordInflightAcquired(5);
-    snapshot = stats.Snapshot();
+    EXPECT_TRUE(stats.record_inflight_released(20));
+    stats.record_inflight_acquired(5);
+    snapshot = stats.snapshot();
     EXPECT_EQ(snapshot.inflight_records, 2U);
     EXPECT_EQ(snapshot.inflight_bytes, 15U);
     EXPECT_EQ(snapshot.high_water_bytes, 30U);
 
-    EXPECT_TRUE(stats.RecordInflightReleased(10));
-    EXPECT_TRUE(stats.RecordInflightReleased(5));
-    EXPECT_FALSE(stats.RecordInflightReleased(1));
-    EXPECT_EQ(stats.Snapshot().inflight_records, 0U);
-    EXPECT_EQ(stats.Snapshot().inflight_bytes, 0U);
+    EXPECT_TRUE(stats.record_inflight_released(10));
+    EXPECT_TRUE(stats.record_inflight_released(5));
+    EXPECT_FALSE(stats.record_inflight_released(1));
+    EXPECT_EQ(stats.snapshot().inflight_records, 0U);
+    EXPECT_EQ(stats.snapshot().inflight_bytes, 0U);
 }
 
 TEST(RuntimeStatsTest, ConcurrentHighWaterIsContentionSafe) {
@@ -68,12 +68,12 @@ TEST(RuntimeStatsTest, ConcurrentHighWaterIsContentionSafe) {
 
     for (int index = 0; index < kThreadCount; ++index) {
         threads.emplace_back([&]() {
-            stats.RecordInflightAcquired(10);
+            stats.record_inflight_acquired(10);
             ready.fetch_add(1);
             while (!release.load()) {
                 std::this_thread::yield();
             }
-            EXPECT_TRUE(stats.RecordInflightReleased(10));
+            EXPECT_TRUE(stats.record_inflight_released(10));
         });
     }
     while (ready.load() != kThreadCount) {
@@ -84,7 +84,7 @@ TEST(RuntimeStatsTest, ConcurrentHighWaterIsContentionSafe) {
         thread.join();
     }
 
-    const RuntimeStatsSnapshot snapshot = stats.Snapshot();
+    const RuntimeStatsSnapshot snapshot = stats.snapshot();
     EXPECT_EQ(snapshot.inflight_records, 0U);
     EXPECT_GE(snapshot.high_water_records, kThreadCount);
     EXPECT_GE(snapshot.high_water_bytes, kThreadCount * 10U);
@@ -92,48 +92,48 @@ TEST(RuntimeStatsTest, ConcurrentHighWaterIsContentionSafe) {
 
 TEST(RuntimeStatsTest, ReleasesPayloadBytesAndOperationRecordsIndependently) {
     RuntimeStats stats;
-    stats.RecordInflightAcquired(1024);
-    EXPECT_EQ(stats.Snapshot().inflight_records, 1U);
-    EXPECT_EQ(stats.Snapshot().inflight_bytes, 1024U);
+    stats.record_inflight_acquired(1024);
+    EXPECT_EQ(stats.snapshot().inflight_records, 1U);
+    EXPECT_EQ(stats.snapshot().inflight_bytes, 1024U);
 
-    EXPECT_TRUE(stats.RecordPayloadReleased(1024));
-    EXPECT_EQ(stats.Snapshot().inflight_records, 1U);
-    EXPECT_EQ(stats.Snapshot().inflight_bytes, 0U);
+    EXPECT_TRUE(stats.record_payload_released(1024));
+    EXPECT_EQ(stats.snapshot().inflight_records, 1U);
+    EXPECT_EQ(stats.snapshot().inflight_bytes, 0U);
 
-    EXPECT_TRUE(stats.RecordOperationCompleted());
-    EXPECT_EQ(stats.Snapshot().inflight_records, 0U);
-    EXPECT_FALSE(stats.RecordOperationCompleted());
+    EXPECT_TRUE(stats.record_operation_completed());
+    EXPECT_EQ(stats.snapshot().inflight_records, 0U);
+    EXPECT_FALSE(stats.record_operation_completed());
 }
 
 TEST(LatencyHistogramTest, RecordsSamplesAndComputesPercentiles) {
-    auto histogram = LatencyHistogram::Create(1, 10000, 3);
+    auto histogram = LatencyHistogram::create(1, 10000, 3);
     ASSERT_TRUE(histogram.has_value());
 
     for (std::int64_t value = 1; value <= 1000; ++value) {
-        ASSERT_TRUE(histogram.value()->Record(value));
+        ASSERT_TRUE(histogram.value()->record(value));
     }
 
-    EXPECT_EQ(histogram.value()->Count(), 1000U);
-    EXPECT_EQ(histogram.value()->Min(), 1);
-    EXPECT_EQ(histogram.value()->Max(), 1000);
-    EXPECT_NEAR(static_cast<double>(histogram.value()->P50()), 500.0, 5.0);
-    EXPECT_NEAR(static_cast<double>(histogram.value()->P95()), 950.0, 5.0);
-    EXPECT_NEAR(static_cast<double>(histogram.value()->P99()), 990.0, 5.0);
+    EXPECT_EQ(histogram.value()->count(), 1000U);
+    EXPECT_EQ(histogram.value()->min(), 1);
+    EXPECT_EQ(histogram.value()->max(), 1000);
+    EXPECT_NEAR(static_cast<double>(histogram.value()->p50()), 500.0, 5.0);
+    EXPECT_NEAR(static_cast<double>(histogram.value()->p95()), 950.0, 5.0);
+    EXPECT_NEAR(static_cast<double>(histogram.value()->p99()), 990.0, 5.0);
 }
 
 TEST(LatencyHistogramTest, RejectsInvalidConfigurationAndOutOfRangeSamples) {
-    const auto invalid = LatencyHistogram::Create(0, 100, 3);
+    const auto invalid = LatencyHistogram::create(0, 100, 3);
     ASSERT_FALSE(invalid.has_value());
     EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
 
-    auto histogram = LatencyHistogram::Create(1, 100, 3);
+    auto histogram = LatencyHistogram::create(1, 100, 3);
     ASSERT_TRUE(histogram.has_value());
-    EXPECT_FALSE(histogram.value()->Record(101));
-    EXPECT_EQ(histogram.value()->Count(), 0U);
+    EXPECT_FALSE(histogram.value()->record(101));
+    EXPECT_EQ(histogram.value()->count(), 0U);
 }
 
 TEST(LatencyHistogramTest, SupportsConcurrentRecording) {
-    auto histogram = LatencyHistogram::Create(1, 1000, 3);
+    auto histogram = LatencyHistogram::create(1, 1000, 3);
     ASSERT_TRUE(histogram.has_value());
     constexpr int kThreadCount = 4;
     constexpr int kSamplesPerThread = 250;
@@ -143,7 +143,7 @@ TEST(LatencyHistogramTest, SupportsConcurrentRecording) {
     for (int index = 0; index < kThreadCount; ++index) {
         threads.emplace_back([&]() {
             for (int sample = 1; sample <= kSamplesPerThread; ++sample) {
-                EXPECT_TRUE(histogram.value()->Record(sample));
+                EXPECT_TRUE(histogram.value()->record(sample));
             }
         });
     }
@@ -151,12 +151,12 @@ TEST(LatencyHistogramTest, SupportsConcurrentRecording) {
         thread.join();
     }
 
-    EXPECT_EQ(histogram.value()->Count(), kThreadCount * kSamplesPerThread);
+    EXPECT_EQ(histogram.value()->count(), kThreadCount * kSamplesPerThread);
 }
 
 class RecordingSink final : public LoggerSink {
 public:
-    void Write(LogLevel level, std::string_view category, std::string_view message) override {
+    void write(LogLevel level, std::string_view category, std::string_view message) override {
         level_ = level;
         category_ = std::string(category);
         message_ = std::string(message);
@@ -171,7 +171,7 @@ public:
 
 class ThrowingSink final : public LoggerSink {
 public:
-    void Write(LogLevel, std::string_view, std::string_view) override {
+    void write(LogLevel, std::string_view, std::string_view) override {
         throw std::runtime_error("sink failure");
     }
 };
@@ -179,7 +179,7 @@ public:
 TEST(LoggerTest, ForwardsLevelCategoryAndMessage) {
     RecordingSink sink;
     const Logger logger(sink);
-    logger.Log(RODAQ_LOG_WARN, "runtime.admission", "resource pressure");
+    logger.log(RODAQ_LOG_WARN, "runtime.admission", "resource pressure");
 
     EXPECT_EQ(sink.calls_, 1);
     EXPECT_EQ(sink.level_, RODAQ_LOG_WARN);
@@ -189,12 +189,12 @@ TEST(LoggerTest, ForwardsLevelCategoryAndMessage) {
 
 TEST(LoggerTest, InvalidAndThrowingSinksDoNotPropagateExceptions) {
     const Logger invalid;
-    EXPECT_FALSE(invalid.Valid());
-    EXPECT_NO_THROW(invalid.Log(RODAQ_LOG_ERROR, "runtime", "ignored"));
+    EXPECT_FALSE(invalid.valid());
+    EXPECT_NO_THROW(invalid.log(RODAQ_LOG_ERROR, "runtime", "ignored"));
 
     ThrowingSink sink;
     const Logger logger(sink);
-    EXPECT_NO_THROW(logger.Log(RODAQ_LOG_ERROR, "runtime", "caught"));
+    EXPECT_NO_THROW(logger.log(RODAQ_LOG_ERROR, "runtime", "caught"));
 }
 
 }  // namespace

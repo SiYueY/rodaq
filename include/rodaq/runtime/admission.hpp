@@ -48,8 +48,8 @@ public:
     AdmissionCancellation(AdmissionCancellation&&) = delete;
     AdmissionCancellation& operator=(AdmissionCancellation&&) = delete;
 
-    void Cancel() noexcept;
-    bool IsCancelled() const noexcept;
+    void cancel() noexcept;
+    bool is_cancelled() const noexcept;
 
 private:
     friend class AdmissionGate;
@@ -72,20 +72,20 @@ public:
     AdmissionGate(AdmissionGate&&) = delete;
     AdmissionGate& operator=(AdmissionGate&&) = delete;
 
-    Result<AdmissionGateDecision> Admit(const AdmissionRequest& request);
-    Result<AdmissionGateDecision> Admit(
+    Result<AdmissionGateDecision> admit(const AdmissionRequest& request);
+    Result<AdmissionGateDecision> admit(
         const AdmissionRequest& request, const AdmissionCancellation& cancellation);
 
-    void Open() noexcept;
-    void Close() noexcept;
-    bool IsOpen() const noexcept;
-    std::uint64_t Generation() const noexcept;
-    std::size_t WaitingCount() const noexcept;
+    void open() noexcept;
+    void close() noexcept;
+    bool is_open() const noexcept;
+    std::uint64_t generation() const noexcept;
+    std::size_t waiting_count() const noexcept;
 
 private:
-    Result<AdmissionGateDecision> AdmitWithCancellation(
+    Result<AdmissionGateDecision> admit_with_cancellation(
         const AdmissionRequest& request, const AdmissionCancellation* cancellation);
-    bool AdvanceGenerationLocked() noexcept;
+    bool advance_generation_locked() noexcept;
 
     ResourceBudget& budget_;
     bool open_ = false;

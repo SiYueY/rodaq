@@ -343,171 +343,179 @@ TEST(RuntimeServicesTest, DefaultWrappersAreSafeAndResultApisReportInvalidState)
     rodaq::ConfigView config;
     rodaq::ServiceRegistryView registry;
 
-    EXPECT_FALSE(common.Valid());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.MonotonicTimeNs().error().code());
-    common.Log(RODAQ_LOG_INFO, "category", "message");
-    common.Diagnostic(RODAQ_DIAGNOSTIC_INFO, "code", "message");
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.LifecycleSnapshot().error().code());
+    EXPECT_FALSE(common.valid());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.monotonic_time_ns().error().code());
+    common.log(RODAQ_LOG_INFO, "category", "message");
+    common.diagnostic(RODAQ_DIAGNOSTIC_INFO, "code", "message");
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.lifecycle_snapshot().error().code());
 
-    EXPECT_FALSE(canonical.Valid());
+    EXPECT_FALSE(canonical.valid());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_source({}).error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_clock({}).error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_schema({}).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.GetTimestampKeySet(1).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_timestamp_key_set(1).error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_stream({}).error().code());
     EXPECT_EQ(rodaq::ErrorCode::InvalidState, canonical.get_stream_descriptor({}).error().code());
 
-    EXPECT_FALSE(projection.Valid());
+    EXPECT_FALSE(projection.valid());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidState,
-        projection.Register(rodaq_stream_descriptor_handle{1}, "id", nullptr, 0).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState,
-        projection.Get(rodaq_stream_descriptor_handle{1}, "id").error().code());
-
-    EXPECT_FALSE(clock.Valid());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, clock.Anchor(rodaq_clock_handle{1}).error().code());
-
-    EXPECT_FALSE(acquisition.Valid());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState, acquisition.RegisterSource(valid_source()).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState, acquisition.RegisterClock(valid_clock()).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState, acquisition.RegisterSchema(valid_schema()).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState, acquisition.RegisterStream(valid_stream()).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState,
-        acquisition.PublishDescriptor(valid_descriptor()).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, acquisition.Submit(valid_record()).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidState,
-        acquisition.ReportSource(rodaq_source_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+        projection.register_entry(rodaq_stream_descriptor_handle{1}, "id", nullptr, 0)
             .error()
             .code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidState,
-        acquisition.ReportStream(rodaq_stream_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+        projection.get(rodaq_stream_descriptor_handle{1}, "id").error().code());
+
+    EXPECT_FALSE(clock.valid());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, clock.anchor(rodaq_clock_handle{1}).error().code());
+
+    EXPECT_FALSE(acquisition.valid());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState, acquisition.register_source(valid_source()).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState, acquisition.register_clock(valid_clock()).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState, acquisition.register_schema(valid_schema()).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState, acquisition.register_stream(valid_stream()).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState,
+        acquisition.publish_descriptor(valid_descriptor()).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, acquisition.submit(valid_record()).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState,
+        acquisition.report_source(rodaq_source_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
             .error()
             .code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidState,
-        acquisition.ReportPluginState(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr).error().code());
+        acquisition.report_stream(rodaq_stream_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+            .error()
+            .code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidState,
+        acquisition.report_plugin_state(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
+            .error()
+            .code());
 
-    EXPECT_FALSE(storage.Valid());
-    storage.PayloadConsumed(rodaq_storage_operation{1});
-    storage.PersistenceCompleted(
+    EXPECT_FALSE(storage.valid());
+    storage.payload_consumed(rodaq_storage_operation{1});
+    storage.persistence_completed(
         rodaq_storage_operation{1}, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED, nullptr);
-    storage.ReportFailure(nullptr);
+    storage.report_failure(nullptr);
 
-    EXPECT_FALSE(config.Valid());
-    EXPECT_EQ(RODAQ_CONFIG_NULL, config.Kind());
-    EXPECT_EQ(0U, config.Size());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.Find("key").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.At(0).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.KeyAt(0).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.AsBool().error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.AsInt64().error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.AsDouble().error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.AsString().error().code());
+    EXPECT_FALSE(config.valid());
+    EXPECT_EQ(RODAQ_CONFIG_NULL, config.kind());
+    EXPECT_EQ(0U, config.size());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.find("key").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.at(0).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.key_at(0).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.as_bool().error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.as_int64().error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.as_double().error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, config.as_string().error().code());
 
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, registry.Query("service").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, registry.query("service").error().code());
 }
 
 TEST(RuntimeServicesTest, ValidWrappersForwardEveryPublicOperation) {
     counts = {};
     int context = 0;
-    auto common = take(rodaq::CommonRuntimeService::From(
+    auto common = take(rodaq::CommonRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &common_vtable}}));
-    auto canonical = take(rodaq::CanonicalRuntimeService::From(
+    auto canonical = take(rodaq::CanonicalRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &canonical_vtable}}));
-    auto projection = take(rodaq::ProjectionRuntimeService::From(
+    auto projection = take(rodaq::ProjectionRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &projection_vtable}}));
-    auto clock = take(rodaq::ClockCorrelationRuntimeService::From(
+    auto clock = take(rodaq::ClockCorrelationRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &clock_vtable}}));
-    auto acquisition = take(rodaq::AcquisitionRuntimeService::From(
+    auto acquisition = take(rodaq::AcquisitionRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &acquisition_vtable}}));
-    auto storage = take(rodaq::StorageRuntimeService::From(
+    auto storage = take(rodaq::StorageRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &storage_vtable}}));
 
-    common.Log(RODAQ_LOG_INFO, "category", "message");
-    const auto monotonic = common.MonotonicTimeNs();
+    common.log(RODAQ_LOG_INFO, "category", "message");
+    const auto monotonic = common.monotonic_time_ns();
     ASSERT_TRUE(monotonic.has_value());
     EXPECT_EQ(0U, monotonic.value());
-    ASSERT_TRUE(common.LifecycleSnapshot().has_value());
-    common.Diagnostic(RODAQ_DIAGNOSTIC_INFO, "code", "message");
+    ASSERT_TRUE(common.lifecycle_snapshot().has_value());
+    common.diagnostic(RODAQ_DIAGNOSTIC_INFO, "code", "message");
     EXPECT_EQ(4, counts.common);
 
     ASSERT_TRUE(canonical.get_source(rodaq_source_handle{1}).has_value());
     ASSERT_TRUE(canonical.get_clock(rodaq_clock_handle{1}).has_value());
     ASSERT_TRUE(canonical.get_schema(rodaq_schema_handle{1}).has_value());
-    ASSERT_TRUE(canonical.GetTimestampKeySet(1).has_value());
+    ASSERT_TRUE(canonical.get_timestamp_key_set(1).has_value());
     ASSERT_TRUE(canonical.get_stream(rodaq_stream_handle{1}).has_value());
     ASSERT_TRUE(canonical.get_stream_descriptor(rodaq_stream_descriptor_handle{1}).has_value());
     EXPECT_EQ(6, counts.canonical);
 
     const std::uint8_t projection_payload[] = {1};
     ASSERT_TRUE(
-        projection.Register(rodaq_stream_descriptor_handle{1}, "projection", projection_payload, 1)
+        projection
+            .register_entry(rodaq_stream_descriptor_handle{1}, "projection", projection_payload, 1)
             .has_value());
-    ASSERT_TRUE(projection.Get(rodaq_stream_descriptor_handle{1}, "projection").has_value());
+    ASSERT_TRUE(projection.get(rodaq_stream_descriptor_handle{1}, "projection").has_value());
     EXPECT_EQ(2, counts.projection);
 
-    ASSERT_TRUE(clock.Anchor(rodaq_clock_handle{1}).has_value());
+    ASSERT_TRUE(clock.anchor(rodaq_clock_handle{1}).has_value());
     EXPECT_EQ(1, counts.clock);
 
-    ASSERT_TRUE(acquisition.RegisterSource(valid_source()).has_value());
-    ASSERT_TRUE(acquisition.RegisterClock(valid_clock()).has_value());
-    ASSERT_TRUE(acquisition.RegisterSchema(valid_schema()).has_value());
-    ASSERT_TRUE(acquisition.RegisterStream(valid_stream()).has_value());
-    ASSERT_TRUE(acquisition.PublishDescriptor(valid_descriptor()).has_value());
-    ASSERT_TRUE(acquisition.Submit(valid_record()).has_value());
+    ASSERT_TRUE(acquisition.register_source(valid_source()).has_value());
+    ASSERT_TRUE(acquisition.register_clock(valid_clock()).has_value());
+    ASSERT_TRUE(acquisition.register_schema(valid_schema()).has_value());
+    ASSERT_TRUE(acquisition.register_stream(valid_stream()).has_value());
+    ASSERT_TRUE(acquisition.publish_descriptor(valid_descriptor()).has_value());
+    ASSERT_TRUE(acquisition.submit(valid_record()).has_value());
     ASSERT_TRUE(
-        acquisition.ReportSource(rodaq_source_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+        acquisition.report_source(rodaq_source_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
             .has_value());
     ASSERT_TRUE(
-        acquisition.ReportStream(rodaq_stream_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+        acquisition.report_stream(rodaq_stream_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
             .has_value());
     ASSERT_TRUE(
-        acquisition.ReportPluginState(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr).has_value());
+        acquisition.report_plugin_state(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr).has_value());
     EXPECT_EQ(9, counts.acquisition);
 
-    storage.PayloadConsumed(rodaq_storage_operation{1});
-    storage.PersistenceCompleted(
+    storage.payload_consumed(rodaq_storage_operation{1});
+    storage.persistence_completed(
         rodaq_storage_operation{1}, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED, nullptr);
-    storage.ReportFailure(nullptr);
+    storage.report_failure(nullptr);
     EXPECT_EQ(3, counts.storage);
 }
 
 TEST(RuntimeServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachRuntime) {
     int context = 0;
-    auto acquisition = take(rodaq::AcquisitionRuntimeService::From(
+    auto acquisition = take(rodaq::AcquisitionRuntimeService::from(
         rodaq::InterfaceView{rodaq_interface{&context, &acquisition_vtable}}));
     counts = {};
 
     auto source = valid_source();
     source.source_id.data = nullptr;
     source.source_id.size = 1;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.RegisterSource(source).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidArgument, acquisition.register_source(source).error().code());
 
     auto clock = valid_clock();
     clock.resolution_denominator = 0;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.RegisterClock(clock).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.register_clock(clock).error().code());
 
     auto schema = valid_schema();
     schema.type_identifier_present = 2;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.RegisterSchema(schema).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidArgument, acquisition.register_schema(schema).error().code());
 
     auto stream = valid_stream();
     stream.native_id.size = 0;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.RegisterStream(stream).error().code());
+    EXPECT_EQ(
+        rodaq::ErrorCode::InvalidArgument, acquisition.register_stream(stream).error().code());
 
     auto descriptor = valid_descriptor();
     descriptor.timestamp_key_count = 1;
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        acquisition.PublishDescriptor(descriptor).error().code());
+        acquisition.publish_descriptor(descriptor).error().code());
 
     static const rodaq_timestamp_key timestamp_key[] = {
         {rodaq_string_view{"role", 4}, rodaq_clock_handle{1}}};
@@ -516,21 +524,21 @@ TEST(RuntimeServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachRuntime)
     descriptor.timestamp_key_count = UINT32_MAX;
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidArgument,
-        acquisition.PublishDescriptor(descriptor).error().code());
+        acquisition.publish_descriptor(descriptor).error().code());
 
     auto record = valid_record();
     record.timestamp_value_count = 1;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.Submit(record).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.submit(record).error().code());
 
     static const rodaq_timestamp_value timestamp_value[] = {{RODAQ_FALSE, 0, 0}};
     record = valid_record();
     record.timestamp_values = timestamp_value;
     record.timestamp_value_count = UINT32_MAX;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.Submit(record).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.submit(record).error().code());
 
     record = valid_record();
     record.payload.mode = RODAQ_PAYLOAD_ADOPT;
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.Submit(record).error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, acquisition.submit(record).error().code());
 
     EXPECT_EQ(0, counts.acquisition);
 }

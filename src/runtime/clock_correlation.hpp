@@ -19,15 +19,15 @@ struct UnixEpochClockAnchor {
 using ClockReadingFunction = std::function<std::int64_t()>;
 using UnixTimeFunction = std::function<std::uint64_t()>;
 
-Result<std::uint64_t> ProjectUnixNanoseconds(
+Result<std::uint64_t> project_unix_nanoseconds(
     std::int64_t reading, const UnixEpochClockAnchor& anchor);
 
 class ClockCorrelation final {
 public:
-    static Result<ClockCorrelation> Establish(
+    static Result<ClockCorrelation> establish(
         rodaq_clock_handle clock, ClockReadingFunction clock_reading, UnixTimeFunction unix_time);
 
-    static Result<ClockCorrelation> FromAnchor(UnixEpochClockAnchor anchor);
+    static Result<ClockCorrelation> from_anchor(UnixEpochClockAnchor anchor);
 
     ClockCorrelation(const ClockCorrelation&) = delete;
     ClockCorrelation& operator=(const ClockCorrelation&) = delete;
@@ -35,9 +35,9 @@ public:
     ClockCorrelation& operator=(ClockCorrelation&&) noexcept;
     ~ClockCorrelation();
 
-    Result<UnixEpochClockAnchor> GetAnchor(rodaq_clock_handle clock) const;
+    Result<UnixEpochClockAnchor> get_anchor(rodaq_clock_handle clock) const;
 
-    rodaq_interface AbiInterface() noexcept;
+    rodaq_interface abi_interface() noexcept;
 
 private:
     struct State;

@@ -33,7 +33,7 @@ public:
     Result<double> as_double() const;
     Result<std::string_view> as_string() const;
 
-    rodaq_config_view AbiView() const noexcept;
+    rodaq_config_view abi_view() const noexcept;
 
 private:
     explicit ConfigNodeView(std::shared_ptr<const ConfigNode> node);
@@ -49,13 +49,13 @@ public:
 
     ConfigTree() = default;
 
-    static ConfigTree Null();
-    static ConfigTree Boolean(bool value);
-    static ConfigTree Int64(std::int64_t value);
-    static ConfigTree Double(double value);
-    static ConfigTree String(std::string value);
-    static Result<ConfigTree> Map(std::vector<MapEntry> entries);
-    static Result<ConfigTree> List(std::vector<ConfigTree> items);
+    static ConfigTree null();
+    static ConfigTree boolean(bool value);
+    static ConfigTree int64(std::int64_t value);
+    static ConfigTree float64(double value);
+    static ConfigTree string(std::string value);
+    static Result<ConfigTree> map(std::vector<MapEntry> entries);
+    static Result<ConfigTree> list(std::vector<ConfigTree> items);
 
     ConfigNodeView view() const noexcept;
 

@@ -14,7 +14,7 @@ public:
       resource_(buffer_.get(), capacity_bytes, std::pmr::null_memory_resource()),
       capacity_bytes_(capacity_bytes) {}
 
-    Result<void*> AllocateBytes(std::size_t size, std::size_t alignment) {
+    Result<void*> allocate_bytes(std::size_t size, std::size_t alignment) {
         if (size == 0) {
             return static_cast<void*>(nullptr);
         }
@@ -31,9 +31,9 @@ public:
         }
     }
 
-    std::size_t CapacityBytes() const noexcept { return capacity_bytes_; }
+    std::size_t capacity_bytes() const noexcept { return capacity_bytes_; }
 
-    std::pmr::memory_resource* Resource() noexcept { return &resource_; }
+    std::pmr::memory_resource* resource() noexcept { return &resource_; }
 
 private:
     std::unique_ptr<std::byte[]> buffer_;
@@ -41,7 +41,7 @@ private:
     std::size_t capacity_bytes_ = 0;
 };
 
-Result<std::unique_ptr<StructuralArena>> StructuralArena::Create(std::size_t capacity_bytes) {
+Result<std::unique_ptr<StructuralArena>> StructuralArena::create(std::size_t capacity_bytes) {
     try {
         auto impl = std::make_unique<Impl>(capacity_bytes);
         return std::unique_ptr<StructuralArena>(new StructuralArena(std::move(impl)));
@@ -55,12 +55,12 @@ StructuralArena::StructuralArena(std::unique_ptr<Impl> impl) noexcept : impl_(st
 
 StructuralArena::~StructuralArena() = default;
 
-Result<void*> StructuralArena::AllocateBytes(std::size_t size, std::size_t alignment) {
-    return impl_->AllocateBytes(size, alignment);
+Result<void*> StructuralArena::allocate_bytes(std::size_t size, std::size_t alignment) {
+    return impl_->allocate_bytes(size, alignment);
 }
 
-std::size_t StructuralArena::CapacityBytes() const noexcept { return impl_->CapacityBytes(); }
+std::size_t StructuralArena::capacity_bytes() const noexcept { return impl_->capacity_bytes(); }
 
-std::pmr::memory_resource* StructuralArena::Resource() noexcept { return impl_->Resource(); }
+std::pmr::memory_resource* StructuralArena::resource() noexcept { return impl_->resource(); }
 
 }  // namespace rodaq

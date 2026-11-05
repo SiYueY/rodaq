@@ -23,27 +23,27 @@ public:
         }
     }
 
-    bool Record(std::int64_t value) noexcept {
+    bool record(std::int64_t value) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return hdr_record_value(histogram_, value);
     }
 
-    std::uint64_t Count() const noexcept {
+    std::uint64_t count() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return static_cast<std::uint64_t>(hdr_total_count(histogram_));
     }
 
-    std::int64_t Min() const noexcept {
+    std::int64_t min() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return hdr_min(histogram_);
     }
 
-    std::int64_t Max() const noexcept {
+    std::int64_t max() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return hdr_max(histogram_);
     }
 
-    std::int64_t Percentile(double percentile) const noexcept {
+    std::int64_t percentile(double percentile) const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return hdr_value_at_percentile(histogram_, percentile);
     }
@@ -53,7 +53,7 @@ private:
     mutable std::mutex mutex_;
 };
 
-Result<std::unique_ptr<LatencyHistogram>> LatencyHistogram::Create(
+Result<std::unique_ptr<LatencyHistogram>> LatencyHistogram::create(
     std::int64_t lowest_discernible_value, std::int64_t highest_trackable_value,
     int significant_figures) {
     if (lowest_discernible_value < 1 || highest_trackable_value < lowest_discernible_value ||
@@ -88,16 +88,16 @@ LatencyHistogram::LatencyHistogram(std::unique_ptr<Impl> impl) noexcept : impl_(
 
 LatencyHistogram::~LatencyHistogram() = default;
 
-bool LatencyHistogram::Record(std::int64_t value) noexcept { return impl_->Record(value); }
+bool LatencyHistogram::record(std::int64_t value) noexcept { return impl_->record(value); }
 
-std::uint64_t LatencyHistogram::Count() const noexcept { return impl_->Count(); }
+std::uint64_t LatencyHistogram::count() const noexcept { return impl_->count(); }
 
-std::int64_t LatencyHistogram::Min() const noexcept { return impl_->Min(); }
+std::int64_t LatencyHistogram::min() const noexcept { return impl_->min(); }
 
-std::int64_t LatencyHistogram::Max() const noexcept { return impl_->Max(); }
+std::int64_t LatencyHistogram::max() const noexcept { return impl_->max(); }
 
-std::int64_t LatencyHistogram::Percentile(double percentile) const noexcept {
-    return impl_->Percentile(percentile);
+std::int64_t LatencyHistogram::percentile(double percentile) const noexcept {
+    return impl_->percentile(percentile);
 }
 
 }  // namespace rodaq

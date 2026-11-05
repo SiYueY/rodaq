@@ -56,7 +56,7 @@ void maybe_throw(ThrowMethod method) {
 
 class SdkStorageFixture final : public rodaq::StoragePlugin {
 public:
-    rodaq::Result<void> Bind(rodaq::StorageRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::StorageRuntime runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -64,14 +64,14 @@ public:
         stage_ = Stage::Bound;
         return {};
     }
-    rodaq::Result<void> Configure(const rodaq::ConfigView&) override {
+    rodaq::Result<void> configure(const rodaq::ConfigView&) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
         stage_ = Stage::Configured;
         return {};
     }
-    rodaq::Result<void> Open(const rodaq_storage_open_request&) override {
+    rodaq::Result<void> open(const rodaq_storage_open_request&) override {
 #if RODAQ_SDK_STORAGE_ALLOW_DIRECT_OPEN
         if (stage_ == Stage::Created) {
             stage_ = Stage::Opened;
@@ -87,7 +87,7 @@ public:
         stage_ = Stage::Opened;
         return {};
     }
-    rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+    rodaq::Result<rodaq_storage_capabilities> get_capabilities() override {
         maybe_throw(ThrowMethod::Capabilities);
         rodaq_storage_capabilities value{};
         value.struct_size = sizeof(value);
@@ -101,7 +101,7 @@ public:
         value.close_progress_timeout_ns = 1'000'000;
         return value;
     }
-    rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
+    rodaq::Result<rodaq_descriptor_readiness_result> ensure_descriptor_ready(
         rodaq_stream_descriptor_handle) override {
         maybe_throw(ThrowMethod::DescriptorReady);
         rodaq_descriptor_readiness_result value{};
@@ -109,7 +109,7 @@ public:
         value.state = RODAQ_DESCRIPTOR_READY;
         return value;
     }
-    rodaq::Result<rodaq_storage_submit_result> Submit(const rodaq_storage_submission&) override {
+    rodaq::Result<rodaq_storage_submit_result> submit(const rodaq_storage_submission&) override {
         maybe_throw(ThrowMethod::Submit);
         if (stage_ != Stage::Opened) {
             return invalid_state_value();
@@ -120,13 +120,13 @@ public:
         value.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
         return value;
     }
-    rodaq::Result<void> Flush() override {
+    rodaq::Result<void> flush() override {
 #if RODAQ_SDK_STORAGE_FAIL_FLUSH
         return failure();
 #endif
         return stage_ == Stage::Opened ? rodaq::Result<void>() : invalid_state();
     }
-    rodaq::Result<void> Close(rodaq_storage_close_disposition) override {
+    rodaq::Result<void> close(rodaq_storage_close_disposition) override {
         if (stage_ != Stage::Opened) {
             return invalid_state();
         }

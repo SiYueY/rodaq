@@ -20,6 +20,12 @@ add_library(rodaq_foundation STATIC
     config/config.cpp
     config/yaml_config_loader.cpp
     error.cpp
+    sdk/config_view.cpp
+    sdk/runtime_services.cpp
+    sdk/runtime_validation.cpp
+    sdk/storage_validation.cpp
+    sdk/plugin.cpp
+    sdk/service_registry.cpp
 )
 target_link_libraries(rodaq_foundation
     PUBLIC

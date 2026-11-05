@@ -17,7 +17,7 @@ public:
     LoggerSink& operator=(const LoggerSink&) = delete;
     virtual ~LoggerSink() = default;
 
-    virtual void Write(LogLevel level, std::string_view category, std::string_view message) = 0;
+    virtual void write(LogLevel level, std::string_view category, std::string_view message) = 0;
 };
 
 /// A no-throw logging facade that does not own the sink or global state.
@@ -29,9 +29,9 @@ public:
     Logger(const Logger&) = default;
     Logger& operator=(const Logger&) = default;
 
-    bool Valid() const noexcept { return sink_ != nullptr; }
+    bool valid() const noexcept { return sink_ != nullptr; }
 
-    void Log(LogLevel level, std::string_view category, std::string_view message) const noexcept;
+    void log(LogLevel level, std::string_view category, std::string_view message) const noexcept;
 
 private:
     LoggerSink* sink_ = nullptr;

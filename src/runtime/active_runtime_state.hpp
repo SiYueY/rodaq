@@ -143,7 +143,7 @@ struct StorageServiceContext {
 
 class ActiveRuntimeState final : public std::enable_shared_from_this<ActiveRuntimeState> {
 public:
-    static Result<std::unique_ptr<ActiveRuntimeState>> Create(
+    static Result<std::unique_ptr<ActiveRuntimeState>> create(
         RuntimeConfig config, std::uint64_t activation_generation);
 
     ActiveRuntimeState(const ActiveRuntimeState&) = delete;
@@ -152,81 +152,67 @@ public:
     ActiveRuntimeState& operator=(ActiveRuntimeState&&) = delete;
     ~ActiveRuntimeState() noexcept;
 
-    RuntimeConfig& options() noexcept { return options_; }
-    const RuntimeConfig& options() const noexcept { return options_; }
-    std::uint64_t activation_generation() const noexcept { return activation_generation_; }
+    RuntimeConfig& options() noexcept;
+    const RuntimeConfig& options() const noexcept;
+    std::uint64_t activation_generation() const noexcept;
 
-    void SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control);
-    void SetStorageControl(rodaq_interface control);
-    void SetDescriptorProgressTimeout(std::chrono::nanoseconds timeout);
-    void SetBindingProgressTimeout(std::chrono::nanoseconds timeout);
-    Result<rodaq_storage_capabilities> StorageCapabilities() const;
+    void set_acquisition_control(std::size_t plugin_index, rodaq_interface control);
+    void set_storage_control(rodaq_interface control);
+    void set_descriptor_progress_timeout(std::chrono::nanoseconds timeout);
+    void set_binding_progress_timeout(std::chrono::nanoseconds timeout);
+    Result<rodaq_storage_capabilities> storage_capabilities() const;
 
-    Result<void> InitializePipeline(
+    Result<void> initialize_pipeline(
         std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
         plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout);
-    StoragePipeline* pipeline() noexcept { return pipeline_.get(); }
-    std::optional<plugin::StoragePluginInstance>& storage_instance() noexcept {
-        return storage_instance_;
-    }
+    StoragePipeline* pipeline() noexcept;
+    std::optional<plugin::StoragePluginInstance>& storage_instance() noexcept;
     std::optional<plugin::AcquisitionPluginInstance>& acquisition_instance(
-        std::size_t index) noexcept {
-        return acquisition_instances_[index];
-    }
+        std::size_t index) noexcept;
 
-    Result<void> RegisterAcquisitionServices(
+    Result<void> register_acquisition_services(
         plugin::ServiceRegistry& registry, std::size_t plugin_index);
-    Result<void> RegisterStorageServices(plugin::ServiceRegistry& registry);
+    Result<void> register_storage_services(plugin::ServiceRegistry& registry);
 
-    bool MarkRunning() noexcept;
-    void MarkStopping() noexcept;
-    void MarkStopped() noexcept;
-    void MarkFailed() noexcept;
-    RuntimeState state() const noexcept { return state_.load(); }
-    bool GateOpen() const noexcept;
-    bool RequiresQuarantine() const noexcept {
-        return control_quarantine_required_.load(std::memory_order_acquire) &&
-               active_control_calls_.load(std::memory_order_acquire) != 0;
-    }
+    bool mark_running() noexcept;
+    void mark_stopping() noexcept;
+    void mark_stopped() noexcept;
+    void mark_failed() noexcept;
+    RuntimeState state() const noexcept;
+    bool gate_open() const noexcept;
+    bool requires_quarantine() const noexcept;
 
-    void ReapQuarantinedWorkers() noexcept;
-    std::shared_ptr<void> TrackControlCall();
+    void reap_quarantined_workers() noexcept;
+    std::shared_ptr<void> track_control_call();
 
-    bool BeginSubmission() noexcept;
-    void EndSubmission() noexcept;
-    bool WaitForAdmissionDrain(std::chrono::steady_clock::time_point deadline);
-    bool WaitForSubmissions(std::chrono::steady_clock::time_point deadline);
+    bool begin_submission() noexcept;
+    void end_submission() noexcept;
+    bool wait_for_admission_drain(std::chrono::steady_clock::time_point deadline);
+    bool wait_for_submissions(std::chrono::steady_clock::time_point deadline);
 
-    void SetFailureSignal(std::shared_ptr<FailureSignal> signal) noexcept {
-        failure_signal_ = std::move(signal);
-    }
-    void RequestFailure(Error error) noexcept;
-    void RecordSecondaryFailure(Error error) noexcept;
-    bool HasPrimaryFailure() const noexcept;
-    Result<Error> PrimaryFailure() const;
-    Result<std::vector<Error>> SecondaryFailures() const;
-    std::uint64_t SecondaryFailureOverflowCount() const noexcept;
-    RuntimeStatsSnapshot Stats() const noexcept {
-        RuntimeStatsSnapshot snapshot = stats_.Snapshot();
-        snapshot.logging = CurrentLoggingStats();
-        FillLatencyStats(snapshot);
-        return snapshot;
-    }
-    Result<PayloadPoolStats> PayloadPoolStatistics() const;
-    void Log(LogLevel level, std::string_view category, std::string_view message) noexcept;
-    void Diagnostic(
+    void set_failure_signal(std::shared_ptr<FailureSignal> signal) noexcept;
+    void request_failure(Error error) noexcept;
+    void record_secondary_failure(Error error) noexcept;
+    bool has_primary_failure() const noexcept;
+    Result<Error> primary_failure() const;
+    Result<std::vector<Error>> secondary_failures() const;
+    std::uint64_t secondary_failure_overflow_count() const noexcept;
+    RuntimeStatsSnapshot stats() const noexcept;
+    Result<PayloadPoolStats> payload_pool_statistics() const;
+    void log(LogLevel level, std::string_view category, std::string_view message) noexcept;
+    void diagnostic(
         rodaq_diagnostic_severity severity, std::string_view code,
         std::string_view message) noexcept;
-    bool ShutdownLogging(std::chrono::steady_clock::time_point deadline) noexcept;
-    void QuarantineLogging(std::string reason) noexcept;
+    bool shutdown_logging(std::chrono::steady_clock::time_point deadline) noexcept;
+    void quarantine_logging(std::string reason) noexcept;
 
-    LoggingStats CurrentLoggingStats() const noexcept;
-    void RecordPreRejected(bool gate_closed, bool timeout) noexcept;
-    void RecordAdmissionWait(std::int64_t duration_ns) noexcept;
-    void RecordStorageLatency(StorageLatencyKind kind, std::int64_t duration_ns) noexcept;
-    void RecordStopLatency() noexcept;
+    LoggingStats current_logging_stats() const noexcept;
+    void record_pre_rejected(bool gate_closed, bool timeout) noexcept;
+    void record_admission_wait(std::int64_t duration_ns) noexcept;
+    void record_storage_latency(StorageLatencyKind kind, std::int64_t duration_ns) noexcept;
+    void record_stop_latency() noexcept;
 
-    Result<rodaq_runtime_lifecycle_snapshot> LifecycleSnapshot() const;
+    Result<rodaq_runtime_lifecycle_snapshot> lifecycle_snapshot() const;
 
 private:
     friend struct AcquisitionServiceContext;
@@ -235,44 +221,44 @@ private:
     ActiveRuntimeState(RuntimeConfig config, std::uint64_t activation_generation);
 
 public:
-    Result<void> RegisterSource(
+    Result<void> register_source(
         std::size_t plugin_index, const rodaq_source_registration& request, SourceHandle& handle);
-    Result<void> RegisterClock(
+    Result<void> register_clock(
         std::size_t plugin_index, const rodaq_clock_registration& request, ClockHandle& handle);
-    Result<void> RegisterSchema(
+    Result<void> register_schema(
         std::size_t plugin_index, const rodaq_schema_registration& request, SchemaHandle& handle);
-    Result<void> RegisterStream(
+    Result<void> register_stream(
         std::size_t plugin_index, const rodaq_stream_registration& request, StreamHandle& handle);
-    Result<void> PublishStreamDescriptor(
+    Result<void> publish_stream_descriptor(
         std::size_t plugin_index, const rodaq_stream_descriptor_registration& request,
         StreamDescriptorHandle& handle);
-    Result<rodaq_acquisition_submit_result> Submit(
+    Result<rodaq_acquisition_submit_result> submit(
         std::size_t plugin_index, const rodaq_record_submission& submission,
         rodaq_payload_disposition& disposition);
-    Result<void> ReportSourceAvailability(
+    Result<void> report_source_availability(
         std::size_t plugin_index, SourceHandle source, rodaq_availability_state state);
-    Result<void> ReportStreamAvailability(
+    Result<void> report_stream_availability(
         std::size_t plugin_index, StreamHandle stream, rodaq_availability_state state);
-    Result<void> ReportPluginState(
+    Result<void> report_plugin_state(
         std::size_t plugin_index, rodaq_acquisition_plugin_state state,
         const rodaq_error* diagnostic);
 
-    Result<void> GetSource(SourceHandle handle, rodaq_source_view& view) const;
-    Result<void> GetClock(ClockHandle handle, rodaq_clock_view& view) const;
-    Result<void> GetSchema(SchemaHandle handle, rodaq_schema_view& view) const;
-    Result<void> GetTimestampKeySet(std::uint64_t id, rodaq_timestamp_key_set_view& view) const;
-    Result<void> GetStream(StreamHandle handle, rodaq_stream_view& view) const;
-    Result<void> GetStreamDescriptor(
+    Result<void> get_source(SourceHandle handle, rodaq_source_view& view) const;
+    Result<void> get_clock(ClockHandle handle, rodaq_clock_view& view) const;
+    Result<void> get_schema(SchemaHandle handle, rodaq_schema_view& view) const;
+    Result<void> get_timestamp_key_set(std::uint64_t id, rodaq_timestamp_key_set_view& view) const;
+    Result<void> get_stream(StreamHandle handle, rodaq_stream_view& view) const;
+    Result<void> get_stream_descriptor(
         StreamDescriptorHandle handle, rodaq_stream_descriptor_view& view) const;
 
-    void RetireDrainingBinding(BindingHandle binding) noexcept;
-    void NotifyAdmissionEligibilityChanged() noexcept;
-    rodaq_interface AcquisitionServiceInterface(std::size_t plugin_index) noexcept;
-    rodaq_interface StorageServiceInterface() noexcept;
+    void retire_draining_binding(BindingHandle binding) noexcept;
+    void notify_admission_eligibility_changed() noexcept;
+    rodaq_interface acquisition_service_interface(std::size_t plugin_index) noexcept;
+    rodaq_interface storage_service_interface() noexcept;
 
-    Result<void> StartDescriptorReconciliation();
-    Result<void> WaitForDescriptorReconciliation(std::chrono::steady_clock::time_point deadline);
-    bool CloseAndJoinDescriptorReconciliation(std::chrono::steady_clock::time_point deadline);
+    Result<void> start_descriptor_reconciliation();
+    Result<void> wait_for_descriptor_reconciliation(std::chrono::steady_clock::time_point deadline);
+    bool close_and_join_descriptor_reconciliation(std::chrono::steady_clock::time_point deadline);
 
 private:
     enum class DescriptorReadiness {
@@ -286,22 +272,22 @@ private:
     static const rodaq_runtime_acquisition_v1 kAcquisitionVtable;
     static const rodaq_runtime_storage_v1 kStorageVtable;
 
-    Result<DescriptorReadiness> EnsureDescriptorReady(StreamDescriptorHandle descriptor);
-    Result<bool> ReconcileDescriptor(StreamDescriptorHandle descriptor);
-    Result<void> RequestDescriptorReconciliation(
+    Result<DescriptorReadiness> ensure_descriptor_ready(StreamDescriptorHandle descriptor);
+    Result<bool> reconcile_descriptor(StreamDescriptorHandle descriptor);
+    Result<void> request_descriptor_reconciliation(
         StreamDescriptorHandle descriptor, bool critical_for_start);
-    void RunDescriptorReconciliation() noexcept;
-    Result<void> ActivateDescriptorBinding(
+    void run_descriptor_reconciliation() noexcept;
+    Result<void> activate_descriptor_binding(
         StreamDescriptorHandle descriptor, StreamHandle stream, std::size_t plugin_index,
         rodaq_interface control);
-    void OnProjectionRegistered(
+    void on_projection_registered(
         rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) noexcept;
-    Result<BindingHandle> CreateBindingLocked(
+    Result<BindingHandle> create_binding_locked(
         std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
         BindingLifecycle lifecycle);
-    Result<void> InitializeIngressClock();
-    void FillLatencyStats(RuntimeStatsSnapshot& snapshot) const noexcept;
-    Result<void> SuperviseBindingControl(
+    Result<void> initialize_ingress_clock();
+    void fill_latency_stats(RuntimeStatsSnapshot& snapshot) const noexcept;
+    Result<void> supervise_binding_control(
         std::function<Result<void>()> operation, const char* reason);
 
     RuntimeConfig options_;

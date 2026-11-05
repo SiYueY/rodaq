@@ -13,24 +13,20 @@ namespace rodaq {
 class AcquisitionPlugin {
 public:
     virtual ~AcquisitionPlugin() = default;
-    virtual Result<void> Bind(AcquisitionRuntime runtime) = 0;
-    virtual Result<void> Configure(const ConfigView& config) = 0;
-    virtual Result<void> Start() = 0;
-    virtual Result<void> Stop() = 0;
-    virtual Result<void> PrepareBindingSwitch(
+    virtual Result<void> bind(AcquisitionRuntime runtime) = 0;
+    virtual Result<void> configure(const ConfigView& config) = 0;
+    virtual Result<void> start() = 0;
+    virtual Result<void> stop() = 0;
+    virtual Result<void> prepare_binding_switch(
         rodaq_binding_transition transition, rodaq_stream_handle stream,
         rodaq_stream_descriptor_handle old_descriptor,
         rodaq_stream_descriptor_handle new_descriptor) = 0;
-    virtual Result<void> CommitBindingSwitch(rodaq_binding_transition transition) = 0;
-    virtual Result<void> AbortBindingSwitch(
+    virtual Result<void> commit_binding_switch(rodaq_binding_transition transition) = 0;
+    virtual Result<void> abort_binding_switch(
         rodaq_binding_transition transition, rodaq_binding_abort_disposition disposition) = 0;
-    virtual Result<void> QuiesceStream(rodaq_stream_handle stream) = 0;
-    virtual Result<void> QuiescePlugin() = 0;
-    virtual Result<InterfaceView> QueryInterface(std::string_view interface_id) {
-        static_cast<void>(interface_id);
-        return nonstd::make_unexpected(
-            Error(ErrorCode::NotFound, "sdk", 0, "Optional Plugin interface is unavailable"));
-    }
+    virtual Result<void> quiesce_stream(rodaq_stream_handle stream) = 0;
+    virtual Result<void> quiesce_plugin() = 0;
+    virtual Result<InterfaceView> query_interface(std::string_view interface_id);
 };
 
 }  // namespace rodaq
@@ -74,17 +70,17 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services] {                                                                 \
-                auto registry = rodaq::ServiceRegistryView::FromAbi(*services);                    \
+                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                   \
                 if (!registry.has_value()) {                                                       \
                     return rodaq::Result<void>(                                                    \
                         nonstd::make_unexpected(std::move(registry.error())));                     \
                 }                                                                                  \
-                auto runtime = rodaq::AcquisitionRuntime::Bind(registry.value());                  \
+                auto runtime = rodaq::AcquisitionRuntime::bind(registry.value());                  \
                 if (!runtime.has_value()) {                                                        \
                     return rodaq::Result<void>(                                                    \
                         nonstd::make_unexpected(std::move(runtime.error())));                      \
                 }                                                                                  \
-                return static_cast<PluginType*>(instance)->Bind(std::move(runtime.value()));       \
+                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));       \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -95,11 +91,11 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, config] {                                                                   \
-                auto view = rodaq::ConfigView::FromAbi(config);                                    \
+                auto view = rodaq::ConfigView::from_abi(config);                                   \
                 if (!view.has_value()) {                                                           \
                     return rodaq::Result<void>(nonstd::make_unexpected(std::move(view.error())));  \
                 }                                                                                  \
-                return static_cast<PluginType*>(instance)->Configure(view.value());                \
+                return static_cast<PluginType*>(instance)->configure(view.value());                \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -110,7 +106,7 @@ public:
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
-            [instance] { return static_cast<PluginType*>(instance)->Start(); }, out_error);        \
+            [instance] { return static_cast<PluginType*>(instance)->start(); }, out_error);        \
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_stop(void* instance, rodaq_error* out_error) noexcept {     \
         if (instance == nullptr) {                                                                 \
@@ -119,7 +115,7 @@ public:
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
-            [instance] { return static_cast<PluginType*>(instance)->Stop(); }, out_error);         \
+            [instance] { return static_cast<PluginType*>(instance)->stop(); }, out_error);         \
     }                                                                                              \
     rodaq_status rodaq_sdk_acquisition_prepare(                                                    \
         void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,            \
@@ -131,7 +127,7 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, stream, old_descriptor, new_descriptor] {                        \
-                return static_cast<PluginType*>(context)->PrepareBindingSwitch(                    \
+                return static_cast<PluginType*>(context)->prepare_binding_switch(                  \
                     transition, stream, old_descriptor, new_descriptor);                           \
             },                                                                                     \
             out_error);                                                                            \
@@ -143,7 +139,7 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition] {                                                                \
-                return static_cast<PluginType*>(context)->CommitBindingSwitch(transition);         \
+                return static_cast<PluginType*>(context)->commit_binding_switch(transition);       \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -157,7 +153,7 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, transition, disposition] {                                                   \
-                return static_cast<PluginType*>(context)->AbortBindingSwitch(                      \
+                return static_cast<PluginType*>(context)->abort_binding_switch(                    \
                     transition, disposition);                                                      \
             },                                                                                     \
             out_error);                                                                            \
@@ -169,7 +165,7 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [context, stream] {                                                                    \
-                return static_cast<PluginType*>(context)->QuiesceStream(stream);                   \
+                return static_cast<PluginType*>(context)->quiesce_stream(stream);                  \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -179,7 +175,7 @@ public:
             return rodaq::plugin::invalid_input("instance is null", out_error);                    \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
-            [context] { return static_cast<PluginType*>(context)->QuiescePlugin(); }, out_error);  \
+            [context] { return static_cast<PluginType*>(context)->quiesce_plugin(); }, out_error); \
     }                                                                                              \
     const rodaq_acquisition_control_v1 rodaq_sdk_acquisition_control = {                           \
         RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,                                                \
@@ -211,7 +207,7 @@ public:
         }                                                                                          \
         return rodaq::plugin::invoke_interface(                                                    \
             [instance, parsed_id] {                                                                \
-                return static_cast<PluginType*>(instance)->QueryInterface(parsed_id);              \
+                return static_cast<PluginType*>(instance)->query_interface(parsed_id);             \
             },                                                                                     \
             out_interface, out_error);                                                             \
     }                                                                                              \

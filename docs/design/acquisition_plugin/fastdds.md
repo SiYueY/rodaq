@@ -126,7 +126,7 @@ Canonical registration + rodaq.projection.ros2.v1
         ↓
 Runtime Binding
         ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 V1 scope only admits **ROS2-compatible DDS pub/sub streams** into the qualified recording path. Arbitrary native DDS topics, arbitrary OMG-IDL-only artifacts, ROS2 service/action wire capture and DDS replay/routing are future capabilities.
@@ -790,7 +790,7 @@ create/activate DataReader only when Binding can become usable
 如果实际 Fast DDS API 要求先有 DataReader 才能获得某些 type/data facts，也可以提前创建 Reader，但必须保持：
 
 ```text
-normal Runtime::Submit disabled before Binding Active
+normal Runtime::submit disabled before Binding Active
 ```
 
 ### DataReader processing
@@ -818,7 +818,7 @@ extract sequence / timestamps
     ↓
 serialize exact declared PayloadEncoding
     ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 ### DynamicTypes 与 serialized data path
@@ -1353,7 +1353,7 @@ Plugin 必须采用 bounded pre-enable policy：
 ```text
 drop before Plugin Enable
 or
-bounded native queue without Runtime::Submit
+bounded native queue without Runtime::submit
 ```
 
 不得让早到 callback 在 Runtime 仍 `Starting` 时进入 normal Submit。
@@ -1445,7 +1445,7 @@ bounded Plugin-owned queue
     ↓
 Plugin worker
     ↓
-Runtime::Submit
+Runtime::submit
 ```
 
 前提是 queue：
@@ -1502,7 +1502,7 @@ FastDDS Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plu
 
 ```text
 no new DataReader/listener/worker
-can begin Runtime::Submit
+can begin Runtime::submit
 ```
 
 Runtime 再等待：

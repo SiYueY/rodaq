@@ -9,19 +9,8 @@ namespace rodaq::runtime {
 // Activation callbacks retain only this mailbox, never a Runtime pointer.
 // One bit coalesces any number of failures; it owns no activation resources.
 struct FailureSignal final {
-    void Notify() noexcept {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (!closed) {
-            requested = true;
-            condition.notify_one();
-        }
-    }
-
-    void Close() noexcept {
-        std::lock_guard<std::mutex> lock(mutex);
-        closed = true;
-        condition.notify_all();
-    }
+    void notify() noexcept;
+    void close() noexcept;
 
     std::mutex mutex;
     std::condition_variable condition;

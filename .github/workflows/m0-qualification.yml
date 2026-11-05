@@ -6,6 +6,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  cpp-style:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install clang-tidy and clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy-14 clang-format-14
+      - name: Configure and build checks
+        run: |
+          cmake -S . -B build-style \
+            -DRODAQ_BUILD_TESTS=ON -DRODAQ_BUILD_BENCHMARKS=ON \
+            -DRODAQ_WARNINGS_AS_ERRORS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build-style -j2
+          ctest --test-dir build-style -R '^rodaq.abi.install_smoke$' --output-on-failure
+      - name: Check project C++ style
+        run: python3 tools/check_cpp_style.py --build-dir build-style --jobs 2
+
   ubuntu-22-amd64:
     runs-on: ubuntu-22.04
     strategy:

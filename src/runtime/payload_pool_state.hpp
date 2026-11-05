@@ -22,17 +22,17 @@ public:
     PayloadPoolState(PayloadPoolState&&) = delete;
     PayloadPoolState& operator=(PayloadPoolState&&) = delete;
 
-    Result<PayloadPoolReservation> TryReserve(std::size_t bytes);
-    Payload Materialize(PayloadPoolReservation&& reservation, PayloadView source);
-    PayloadPoolStats Stats() const;
-    std::size_t BlockSizeBytes() const noexcept;
-    std::size_t BlockCount() const noexcept;
-    std::size_t CapacityBytes() const noexcept;
-    std::size_t UsedBytes() const noexcept;
-    std::size_t AvailableBytes() const noexcept;
-    std::size_t HighWaterBytes() const noexcept;
-    void Release(std::size_t class_index, std::size_t block_index) noexcept;
-    void SetCapacityChangedSink(std::function<void()> sink);
+    Result<PayloadPoolReservation> try_reserve(std::size_t bytes);
+    Payload materialize(PayloadPoolReservation&& reservation, PayloadView source);
+    PayloadPoolStats stats() const;
+    std::size_t block_size_bytes() const noexcept;
+    std::size_t block_count() const noexcept;
+    std::size_t capacity_bytes() const noexcept;
+    std::size_t used_bytes() const noexcept;
+    std::size_t available_bytes() const noexcept;
+    std::size_t high_water_bytes() const noexcept;
+    void release(std::size_t class_index, std::size_t block_index) noexcept;
+    void set_capacity_changed_sink(std::function<void()> sink);
 
 private:
     struct ClassState {
@@ -45,7 +45,7 @@ private:
         std::atomic<std::uint64_t> exhaustion_count{0};
     };
 
-    std::size_t SelectClassLocked(std::size_t bytes) const noexcept;
+    std::size_t select_class_locked(std::size_t bytes) const noexcept;
 
     std::vector<std::unique_ptr<ClassState>> classes_;
     mutable std::mutex mutex_;

@@ -11,7 +11,7 @@ namespace rodaq {
 namespace {
 
 TEST(ConfigLoaderTest, ConvertsScalarsMapsAndListsWithoutYamlNodeLeakage) {
-    const auto config = LoadYamlConfig(R"(
+    const auto config = load_yaml_config(R"(
 runtime:
   enabled: true
   limit: 42
@@ -48,13 +48,13 @@ runtime:
 }
 
 TEST(ConfigLoaderTest, RejectsDuplicateKeysAndFileSizeOverflow) {
-    const auto duplicate = LoadYamlConfig("key: 1\nkey: 2\n");
+    const auto duplicate = load_yaml_config("key: 1\nkey: 2\n");
     ASSERT_FALSE(duplicate.has_value());
     EXPECT_EQ(ErrorCode::Conflict, duplicate.error().code());
 
     YamlConfigLimits limits;
     limits.max_file_bytes = 4;
-    const auto oversized = LoadYamlConfig("longer-than-four", limits);
+    const auto oversized = load_yaml_config("longer-than-four", limits);
     ASSERT_FALSE(oversized.has_value());
     EXPECT_EQ(ErrorCode::ResourceExhausted, oversized.error().code());
 }
@@ -62,7 +62,7 @@ TEST(ConfigLoaderTest, RejectsDuplicateKeysAndFileSizeOverflow) {
 TEST(ConfigLoaderTest, EnforcesPostParseDepthLimit) {
     YamlConfigLimits limits;
     limits.max_depth = 1;
-    const auto config = LoadYamlConfig("a:\n  b:\n    c: 1\n", limits);
+    const auto config = load_yaml_config("a:\n  b:\n    c: 1\n", limits);
     ASSERT_FALSE(config.has_value());
     EXPECT_EQ(ErrorCode::ResourceExhausted, config.error().code());
 }
@@ -70,7 +70,7 @@ TEST(ConfigLoaderTest, EnforcesPostParseDepthLimit) {
 TEST(ConfigLoaderTest, EnforcesPostParseNodeCountLimit) {
     YamlConfigLimits limits;
     limits.max_nodes = 3;
-    const auto config = LoadYamlConfig("root:\n  first: 1\n  second: 2\n", limits);
+    const auto config = load_yaml_config("root:\n  first: 1\n  second: 2\n", limits);
     ASSERT_FALSE(config.has_value());
     EXPECT_EQ(ErrorCode::ResourceExhausted, config.error().code());
 }
@@ -84,7 +84,7 @@ TEST(ConfigLoaderTest, LoadsFromFile) {
         std::ofstream output(path);
         output << "session: test\n";
     }
-    const auto config = LoadYamlConfigFile(path);
+    const auto config = load_yaml_config_file(path);
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
     ASSERT_TRUE(config.has_value()) << config.error().message();

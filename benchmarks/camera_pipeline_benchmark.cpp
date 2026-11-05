@@ -29,20 +29,22 @@ void run_camera_profile(benchmark::State& state, std::size_t frame_bytes, std::s
     run_profile(state, config, expected_records, expected_bytes, std::chrono::seconds(30), 1.10);
 }
 
-void BM_EncodedCamera10x720p30(benchmark::State& state) {
+void bm_encoded_camera10x720p30(benchmark::State& state) {
     run_camera_profile(state, kEncodedFrameBytes, "camera-encoded-capacity");
 }
 
-void BM_RawCamera10x720p30(benchmark::State& state) {
+void bm_raw_camera10x720p30(benchmark::State& state) {
     run_camera_profile(state, kRawRgb8FrameBytes, "camera-raw-capacity");
 }
 
 }  // namespace
 }  // namespace rodaq::benchmark_support
 
-BENCHMARK(rodaq::benchmark_support::BM_EncodedCamera10x720p30)
+BENCHMARK(rodaq::benchmark_support::bm_encoded_camera10x720p30)
     ->Iterations(1)
     ->Unit(benchmark::kSecond);
-BENCHMARK(rodaq::benchmark_support::BM_RawCamera10x720p30)->Iterations(1)->Unit(benchmark::kSecond);
+BENCHMARK(rodaq::benchmark_support::bm_raw_camera10x720p30)
+    ->Iterations(1)
+    ->Unit(benchmark::kSecond);
 
 BENCHMARK_MAIN();

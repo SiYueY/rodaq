@@ -424,9 +424,10 @@ Do not implement in M1:
 
 ## M2 — Fake End-to-End Runtime
 
-**Status:** PASS — local required qualification; new hosted CI pending
+**Status:** PASS — coding standards local qualification; new hosted CI pending
 
-**Current sub-phase:** **M2 Ownership Closure — COMPLETE / local PASS**.
+**Current sub-phase:** **C++ coding standards review — COMPLETE / local PASS**.
+M2 Ownership Closure remains COMPLETE / PASS.
 Previous M2 Final Closure Fix remains COMPLETE / PASS.
 
 - [x] FR-01 automatic failure convergence and dispatch cutoff.
@@ -948,8 +949,41 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 
 Prior baseline: local `fe4f938` PASS; hosted `3adefb28`
 [RoDAQ Qualification #41968952350](https://github.com/SiYueY/rodaq/actions/runs/41968952350) SUCCESS.
-Local qualification was performed on the working tree based on `3adefb28`
-before commit/push. **New hosted qualification PENDING** until its associated
-workflow completes; native arm64 remains D-034 DEFERRED.
+Local qualification was performed before commit/push; subsequent hosted
+qualification of `be448c8` succeeded at [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291).
+Native arm64 remains D-034 DEFERRED.
 The generic M2 Runtime is frozen for this milestone. M3 remains NOT STARTED;
 start ROS2 Acquisition + MCAP Storage only as a separate development task.
+
+## 2026-11-05 C++ coding standards review — COMPLETE / local PASS
+
+- [x] Review applicable C++17 coding guidelines; record automated diagnostics,
+  intentional exceptions and scoped ownership/lifetime/concurrency review.
+- [x] Migrate project-owned functions, C++ SDK authoring hooks, Runtime
+  Application Candidate, tests, benchmarks and install consumers to snake_case.
+- [x] Revise D-033 source-name freeze via D-056; document required source/binary
+  migration. Stable C Plugin ABI and frozen V1 binary fixtures remain unchanged.
+- [x] Clang-format 14 and seven clang-tidy 14 checks pass; CI check added for
+  translation units, C/C++ public headers and install consumers.
+- [x] Normal, ASan/LSan, UBSan, Release and Ubuntu 24: 94/94 each; Clang 14
+  TSan: 10/10; Runtime-only Release and Release capacity PASS.
+- [x] Design, decision, review and capacity documents updated; native arm64
+  remains D-034 DEFERRED. M3 remains NOT STARTED.
+
+This is local qualification of the uncommitted working tree. New hosted
+qualification for these changes remains PENDING until committed, pushed and run.
+
+
+## 2026-11-05 C++ declaration separation
+
+- [x] Move SDK and applicable internal Runtime function definitions into source
+  files, retaining template, constant evaluation, Plugin export and necessary
+  public inline linking cases in headers.
+- [x] Recheck installed SDK / Stable C ABI compatibility, full local functional
+  and sanitizer matrices, Runtime-only build and automated C++ style checks.
+- [ ] Obtain hosted qualification for the current uncommitted changes. Full
+  Clang TSan target build additionally exposes an existing unused-variable
+  warning in a null-descriptor test fixture; CI's specified TSan subset passes.
+
+M3 remains NOT STARTED. The earlier M2 local qualification and hosted runs are
+historical evidence and do not qualify the latest uncommitted changes.

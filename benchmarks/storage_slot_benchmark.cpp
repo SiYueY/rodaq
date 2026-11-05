@@ -8,7 +8,7 @@
 namespace rodaq::benchmark_support {
 namespace {
 
-void BM_StorageSlotTerminalization100k(benchmark::State& state) {
+void bm_storage_slot_terminalization100k(benchmark::State& state) {
     constexpr std::size_t kRecords = 100'000;
     constexpr std::size_t kPayloadBytes = 16;
     const std::size_t capacity = record_capacity(kRecords);
@@ -21,7 +21,7 @@ void BM_StorageSlotTerminalization100k(benchmark::State& state) {
 }  // namespace
 }  // namespace rodaq::benchmark_support
 
-BENCHMARK(rodaq::benchmark_support::BM_StorageSlotTerminalization100k)
+BENCHMARK(rodaq::benchmark_support::bm_storage_slot_terminalization100k)
     ->Iterations(1)
     ->Unit(benchmark::kSecond);
 

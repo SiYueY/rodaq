@@ -4,5 +4,5 @@
 int main() {
     rodaq::runtime::RuntimeConfig config;
     rodaq::runtime::Runtime runtime(config);
-    return runtime.State() == rodaq::runtime::RuntimeState::Constructed ? 0 : 1;
+    return runtime.state() == rodaq::runtime::RuntimeState::Constructed ? 0 : 1;
 }

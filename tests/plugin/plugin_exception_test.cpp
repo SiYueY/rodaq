@@ -67,17 +67,17 @@ TEST(PluginExceptionTest, DefaultRuntimeWrappersFailWithoutDereferencingNull) {
     rodaq::AcquisitionRuntimeService acquisition;
     rodaq::StorageRuntimeService storage;
 
-    EXPECT_FALSE(common.Valid());
-    EXPECT_FALSE(canonical.Valid());
-    EXPECT_FALSE(projection.Valid());
-    EXPECT_FALSE(clock.Valid());
-    EXPECT_FALSE(acquisition.Valid());
-    EXPECT_FALSE(storage.Valid());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.LifecycleSnapshot().error().code());
+    EXPECT_FALSE(common.valid());
+    EXPECT_FALSE(canonical.valid());
+    EXPECT_FALSE(projection.valid());
+    EXPECT_FALSE(clock.valid());
+    EXPECT_FALSE(acquisition.valid());
+    EXPECT_FALSE(storage.valid());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, common.lifecycle_snapshot().error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidState, canonical.get_stream(rodaq_stream_handle{}).error().code());
     EXPECT_EQ(
         rodaq::ErrorCode::InvalidState,
-        projection.Get(rodaq_stream_descriptor_handle{}, "id").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, clock.Anchor(rodaq_clock_handle{}).error().code());
+        projection.get(rodaq_stream_descriptor_handle{}, "id").error().code());
+    EXPECT_EQ(rodaq::ErrorCode::InvalidState, clock.anchor(rodaq_clock_handle{}).error().code());
 }

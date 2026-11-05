@@ -24,21 +24,21 @@ T take(rodaq::Result<T> result) {
 }
 
 ConfigTree make_nested_tree() {
-    ConfigTree nested = take(ConfigTree::Map({
-        {"name", ConfigTree::String("node")},
-        {"level", ConfigTree::Int64(2)},
+    ConfigTree nested = take(ConfigTree::map({
+        {"name", ConfigTree::string("node")},
+        {"level", ConfigTree::int64(2)},
     }));
-    ConfigTree list = take(ConfigTree::List({
-        ConfigTree::Int64(1),
-        ConfigTree::Int64(2),
-        ConfigTree::String("three"),
+    ConfigTree list = take(ConfigTree::list({
+        ConfigTree::int64(1),
+        ConfigTree::int64(2),
+        ConfigTree::string("three"),
     }));
-    return take(ConfigTree::Map({
-        {"enabled", ConfigTree::Boolean(true)},
-        {"limit", ConfigTree::Int64(std::numeric_limits<std::int64_t>::max())},
-        {"gain", ConfigTree::Double(0.25)},
-        {"mode", ConfigTree::String("fixture")},
-        {"empty", ConfigTree::String("")},
+    return take(ConfigTree::map({
+        {"enabled", ConfigTree::boolean(true)},
+        {"limit", ConfigTree::int64(std::numeric_limits<std::int64_t>::max())},
+        {"gain", ConfigTree::float64(0.25)},
+        {"mode", ConfigTree::string("fixture")},
+        {"empty", ConfigTree::string("")},
         {"nested", std::move(nested)},
         {"items", std::move(list)},
     }));
@@ -47,28 +47,28 @@ ConfigTree make_nested_tree() {
 }  // namespace
 
 TEST(ConfigViewTest, SupportsNullScalarsAndEmptyContainers) {
-    EXPECT_EQ(RODAQ_CONFIG_NULL, ConfigTree::Null().view().kind());
+    EXPECT_EQ(RODAQ_CONFIG_NULL, ConfigTree::null().view().kind());
 
-    EXPECT_EQ(true, take(ConfigTree::Boolean(true).view().as_bool()));
-    EXPECT_EQ(false, take(ConfigTree::Boolean(false).view().as_bool()));
+    EXPECT_EQ(true, take(ConfigTree::boolean(true).view().as_bool()));
+    EXPECT_EQ(false, take(ConfigTree::boolean(false).view().as_bool()));
     EXPECT_EQ(
         std::numeric_limits<std::int64_t>::min(),
-        take(ConfigTree::Int64(std::numeric_limits<std::int64_t>::min()).view().as_int64()));
+        take(ConfigTree::int64(std::numeric_limits<std::int64_t>::min()).view().as_int64()));
     EXPECT_EQ(
         std::numeric_limits<std::int64_t>::max(),
-        take(ConfigTree::Int64(std::numeric_limits<std::int64_t>::max()).view().as_int64()));
-    EXPECT_DOUBLE_EQ(1.5, take(ConfigTree::Double(1.5).view().as_double()));
-    EXPECT_EQ("", take(ConfigTree::String("").view().as_string()));
+        take(ConfigTree::int64(std::numeric_limits<std::int64_t>::max()).view().as_int64()));
+    EXPECT_DOUBLE_EQ(1.5, take(ConfigTree::float64(1.5).view().as_double()));
+    EXPECT_EQ("", take(ConfigTree::string("").view().as_string()));
     EXPECT_EQ(
         "r\xC3\xB6"
         "daq",
-        take(ConfigTree::String("r\xC3\xB6"
+        take(ConfigTree::string("r\xC3\xB6"
                                 "daq")
                  .view()
                  .as_string()));
 
-    const ConfigTree empty_map = take(ConfigTree::Map({}));
-    const ConfigTree empty_list = take(ConfigTree::List({}));
+    const ConfigTree empty_map = take(ConfigTree::map({}));
+    const ConfigTree empty_list = take(ConfigTree::list({}));
     EXPECT_EQ(RODAQ_CONFIG_MAP, empty_map.view().kind());
     EXPECT_EQ(RODAQ_CONFIG_LIST, empty_list.view().kind());
     EXPECT_EQ(0U, empty_map.view().size());
@@ -118,11 +118,11 @@ TEST(ConfigViewTest, ReportsNotFoundAndInvalidStateWithoutImplicitConversion) {
 }
 
 TEST(ConfigViewTest, AllowsEmptyAndUtf8MapKeys) {
-    const ConfigTree tree = take(ConfigTree::Map({
-        {"", ConfigTree::Int64(1)},
+    const ConfigTree tree = take(ConfigTree::map({
+        {"", ConfigTree::int64(1)},
         {"r\xC3\xB6"
          "le",
-         ConfigTree::Int64(2)},
+         ConfigTree::int64(2)},
     }));
     const ConfigNodeView root = tree.view();
     EXPECT_EQ(1, take(take(root.find("")).as_int64()));
@@ -133,15 +133,15 @@ TEST(ConfigViewTest, AllowsEmptyAndUtf8MapKeys) {
 }
 
 TEST(ConfigViewTest, RejectsInvalidOrDuplicateMapEntries) {
-    const auto invalid_key = ConfigTree::Map({
-        {std::string("\xFF", 1), ConfigTree::Null()},
+    const auto invalid_key = ConfigTree::map({
+        {std::string("\xFF", 1), ConfigTree::null()},
     });
     ASSERT_FALSE(invalid_key.has_value());
     EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, invalid_key.error().code());
 
-    const auto duplicate = ConfigTree::Map({
-        {"key", ConfigTree::Int64(1)},
-        {"key", ConfigTree::Int64(2)},
+    const auto duplicate = ConfigTree::map({
+        {"key", ConfigTree::int64(1)},
+        {"key", ConfigTree::int64(2)},
     });
     ASSERT_FALSE(duplicate.has_value());
     EXPECT_EQ(rodaq::ErrorCode::Conflict, duplicate.error().code());
@@ -154,13 +154,13 @@ TEST(ConfigViewTest, BorrowedViewsOutliveTreeOwner) {
         const ConfigTree copy = tree;
         view = take(copy.view().find("mode"));
     }
-    tree = ConfigTree::Null();
+    tree = ConfigTree::null();
     EXPECT_EQ("fixture", take(view.as_string()));
 }
 
 TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
     ConfigTree tree = make_nested_tree();
-    const rodaq_config_view root = tree.view().AbiView();
+    const rodaq_config_view root = tree.view().abi_view();
     ASSERT_NE(nullptr, root.context);
     ASSERT_NE(nullptr, root.vtable);
     EXPECT_EQ(RODAQ_CONFIG_PROTOCOL_VERSION, root.vtable->protocol_version);
@@ -195,7 +195,7 @@ TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
 
 TEST(ConfigViewTest, AbiAdapterRejectsNullOutputsAndClearsFailedOutputs) {
     ConfigTree tree = make_nested_tree();
-    const rodaq_config_view root = tree.view().AbiView();
+    const rodaq_config_view root = tree.view().abi_view();
     rodaq_error error{};
 
     EXPECT_EQ(
@@ -203,7 +203,7 @@ TEST(ConfigViewTest, AbiAdapterRejectsNullOutputsAndClearsFailedOutputs) {
         root.vtable->find(root.context, rodaq_string_view{"items", 5}, nullptr, &error));
     EXPECT_NE(0U, error.message_size);
 
-    rodaq_config_view child = take(tree.view().find("items")).AbiView();
+    rodaq_config_view child = take(tree.view().find("items")).abi_view();
     EXPECT_EQ(RODAQ_STATUS_NOT_FOUND, root.vtable->at(root.context, 99, &child, &error));
     EXPECT_EQ(nullptr, child.context);
     EXPECT_EQ(nullptr, child.vtable);

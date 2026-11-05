@@ -13,143 +13,40 @@ namespace rodaq {
 class StoragePlugin {
 public:
     virtual ~StoragePlugin() = default;
-    virtual Result<void> Bind(StorageRuntime runtime) = 0;
-    virtual Result<void> Configure(const ConfigView& config) = 0;
-    virtual Result<void> Open(const rodaq_storage_open_request& request) = 0;
-    virtual Result<rodaq_storage_capabilities> GetCapabilities() = 0;
-    virtual Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
+    virtual Result<void> bind(StorageRuntime runtime) = 0;
+    virtual Result<void> configure(const ConfigView& config) = 0;
+    virtual Result<void> open(const rodaq_storage_open_request& request) = 0;
+    virtual Result<rodaq_storage_capabilities> get_capabilities() = 0;
+    virtual Result<rodaq_descriptor_readiness_result> ensure_descriptor_ready(
         rodaq_stream_descriptor_handle descriptor) = 0;
-    virtual Result<rodaq_storage_submit_result> Submit(
+    virtual Result<rodaq_storage_submit_result> submit(
         const rodaq_storage_submission& submission) = 0;
-    virtual Result<void> Flush() = 0;
-    virtual Result<void> Close(rodaq_storage_close_disposition disposition) = 0;
-    virtual Result<InterfaceView> QueryInterface(std::string_view interface_id) {
-        static_cast<void>(interface_id);
-        return nonstd::make_unexpected(
-            Error(ErrorCode::NotFound, "sdk", 0, "Optional Plugin interface is unavailable"));
-    }
+    virtual Result<void> flush() = 0;
+    virtual Result<void> close(rodaq_storage_close_disposition disposition) = 0;
+    virtual Result<InterfaceView> query_interface(std::string_view interface_id);
 };
 
 }  // namespace rodaq
 
 namespace rodaq::plugin {
 
-inline bool is_valid_storage_open_request(const rodaq_storage_open_request& request) noexcept {
-    if (request.struct_size < RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE || request.flags != 0) {
-        return false;
-    }
-    std::string_view session_id;
-    std::string_view target_uri;
-    return parse_abi_string(request.session_id, &session_id) &&
-           parse_abi_string(request.target_uri, &target_uri);
-}
+bool is_valid_storage_open_request(const rodaq_storage_open_request& request) noexcept;
 
-inline bool is_valid_storage_submission(const rodaq_storage_submission& submission) noexcept {
-    if (submission.struct_size < RODAQ_STORAGE_SUBMISSION_MIN_STRUCT_SIZE ||
-        submission.flags != 0 || submission.reserved != 0 || submission.operation.value == 0 ||
-        submission.stream.value == 0 || submission.descriptor.value == 0 ||
-        !rodaq::is_valid_abi_bool(submission.source_present) ||
-        !rodaq::is_valid_abi_bool(submission.source_sequence_present)) {
-        return false;
-    }
-    if (!submission.source_present && submission.source_sequence_present) {
-        return false;
-    }
-    if (submission.source_present && submission.source.value == 0) {
-        return false;
-    }
-    if (!rodaq::is_valid_timestamp_values(
-            submission.timestamp_values, submission.timestamp_value_count,
-            kMaximumCanonicalTimestampSlots)) {
-        return false;
-    }
-    const std::uint8_t* payload_data = nullptr;
-    std::size_t payload_size = 0;
-    return parse_abi_bytes(submission.payload, &payload_data, &payload_size);
-}
+bool is_valid_storage_submission(const rodaq_storage_submission& submission) noexcept;
 
-inline bool is_valid_storage_submit_result(const rodaq_storage_submit_result& result) noexcept {
-    if (result.struct_size < RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE || result.reserved != 0 ||
-        (result.payload_state != RODAQ_STORAGE_PAYLOAD_PENDING &&
-         result.payload_state != RODAQ_STORAGE_PAYLOAD_CONSUMED)) {
-        return false;
-    }
-    const bool pending = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_PENDING;
-    const bool succeeded = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
-    const bool failed = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_FAILED;
-    const bool unknown = result.persistence_state == RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
-    if (!pending && !succeeded && !failed && !unknown) {
-        return false;
-    }
-    if (!rodaq::is_valid_abi_error(result.persistence_error)) {
-        return false;
-    }
-    if (pending || succeeded) {
-        return result.persistence_error.code == RODAQ_STATUS_OK &&
-               result.persistence_error.flags == 0 && result.persistence_error.native_code == 0 &&
-               result.persistence_error.domain_size == 0 &&
-               result.persistence_error.message_size == 0;
-    }
-    return result.persistence_error.code != RODAQ_STATUS_OK &&
-           result.persistence_error.message_size != 0;
-}
+bool is_valid_storage_submit_result(const rodaq_storage_submit_result& result) noexcept;
 
-inline void write_storage_capabilities(
+void write_storage_capabilities(
     rodaq_storage_capabilities* output, std::uint32_t capacity,
-    const rodaq_storage_capabilities& value) noexcept {
-    const std::uint32_t initialized = clear_output_prefix(output, capacity);
-    output->struct_size = initialized;
-    output->flags = 0;
-    output->full_fidelity = value.full_fidelity;
-    output->reserved = 0;
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_payload_bytes)) {
-        output->maximum_payload_bytes = value.maximum_payload_bytes;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_inflight_records)) {
-        output->maximum_inflight_records = value.maximum_inflight_records;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, maximum_inflight_bytes)) {
-        output->maximum_inflight_bytes = value.maximum_inflight_bytes;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(
-            rodaq_storage_capabilities, capacity, handoff_progress_timeout_ns)) {
-        output->handoff_progress_timeout_ns = value.handoff_progress_timeout_ns;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(
-            rodaq_storage_capabilities, capacity, descriptor_progress_timeout_ns)) {
-        output->descriptor_progress_timeout_ns = value.descriptor_progress_timeout_ns;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, flush_progress_timeout_ns)) {
-        output->flush_progress_timeout_ns = value.flush_progress_timeout_ns;
-    }
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_capabilities, capacity, close_progress_timeout_ns)) {
-        output->close_progress_timeout_ns = value.close_progress_timeout_ns;
-    }
-}
+    const rodaq_storage_capabilities& value) noexcept;
 
-inline void write_storage_submit_result(
+void write_storage_submit_result(
     rodaq_storage_submit_result* output, std::uint32_t capacity,
-    const rodaq_storage_submit_result& value) noexcept {
-    const std::uint32_t initialized = clear_output_prefix(output, capacity);
-    output->struct_size = initialized;
-    output->reserved = 0;
-    output->payload_state = value.payload_state;
-    output->persistence_state = value.persistence_state;
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_storage_submit_result, capacity, persistence_error)) {
-        output->persistence_error = value.persistence_error;
-    }
-}
+    const rodaq_storage_submit_result& value) noexcept;
 
-inline void write_descriptor_readiness_result(
+void write_descriptor_readiness_result(
     rodaq_descriptor_readiness_result* output, std::uint32_t capacity,
-    const rodaq_descriptor_readiness_result& value) noexcept {
-    const std::uint32_t initialized = clear_output_prefix(output, capacity);
-    output->struct_size = initialized;
-    output->state = value.state;
-    if (RODAQ_HAS_FIELD_CAPACITY(rodaq_descriptor_readiness_result, capacity, failure)) {
-        output->failure = value.failure;
-    }
-}
+    const rodaq_descriptor_readiness_result& value) noexcept;
 
 }  // namespace rodaq::plugin
 
@@ -191,17 +88,17 @@ inline void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services] {                                                                 \
-                auto registry = rodaq::ServiceRegistryView::FromAbi(*services);                    \
+                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                   \
                 if (!registry.has_value()) {                                                       \
                     return rodaq::Result<void>(                                                    \
                         nonstd::make_unexpected(std::move(registry.error())));                     \
                 }                                                                                  \
-                auto runtime = rodaq::StorageRuntime::Bind(registry.value());                      \
+                auto runtime = rodaq::StorageRuntime::bind(registry.value());                      \
                 if (!runtime.has_value()) {                                                        \
                     return rodaq::Result<void>(                                                    \
                         nonstd::make_unexpected(std::move(runtime.error())));                      \
                 }                                                                                  \
-                return static_cast<PluginType*>(instance)->Bind(std::move(runtime.value()));       \
+                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));       \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -212,11 +109,11 @@ inline void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, config] {                                                                   \
-                auto view = rodaq::ConfigView::FromAbi(config);                                    \
+                auto view = rodaq::ConfigView::from_abi(config);                                   \
                 if (!view.has_value()) {                                                           \
                     return rodaq::Result<void>(nonstd::make_unexpected(std::move(view.error())));  \
                 }                                                                                  \
-                return static_cast<PluginType*>(instance)->Configure(view.value());                \
+                return static_cast<PluginType*>(instance)->configure(view.value());                \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -230,7 +127,7 @@ inline void write_descriptor_readiness_result(
             return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
-            [instance, request] { return static_cast<PluginType*>(instance)->Open(*request); },    \
+            [instance, request] { return static_cast<PluginType*>(instance)->open(*request); },    \
             out_error);                                                                            \
     }                                                                                              \
     rodaq_status rodaq_sdk_storage_submit(                                                         \
@@ -245,7 +142,7 @@ inline void write_descriptor_readiness_result(
         return rodaq::plugin::invoke_struct_output(                                                \
             out_result, RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE,                               \
             [instance, submission] {                                                               \
-                return static_cast<PluginType*>(instance)->Submit(*submission);                    \
+                return static_cast<PluginType*>(instance)->submit(*submission);                    \
             },                                                                                     \
             [](auto* output, std::uint32_t capacity, const auto& value) {                          \
                 rodaq::plugin::write_storage_submit_result(output, capacity, value);               \
@@ -257,7 +154,7 @@ inline void write_descriptor_readiness_result(
             return rodaq::plugin::invalid_input("instance is null", out_error);                    \
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
-            [instance] { return static_cast<PluginType*>(instance)->Flush(); }, out_error);        \
+            [instance] { return static_cast<PluginType*>(instance)->flush(); }, out_error);        \
     }                                                                                              \
     rodaq_status rodaq_sdk_storage_close(                                                          \
         void* instance, const rodaq_storage_close_request* request,                                \
@@ -274,7 +171,7 @@ inline void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, request] {                                                                  \
-                return static_cast<PluginType*>(instance)->Close(request->disposition);            \
+                return static_cast<PluginType*>(instance)->close(request->disposition);            \
             },                                                                                     \
             out_error);                                                                            \
     }                                                                                              \
@@ -286,7 +183,7 @@ inline void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_struct_output(                                                \
             out_capabilities, RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE,                          \
-            [context] { return static_cast<PluginType*>(context)->GetCapabilities(); },            \
+            [context] { return static_cast<PluginType*>(context)->get_capabilities(); },           \
             [](auto* output, std::uint32_t capacity, const auto& value) {                          \
                 rodaq::plugin::write_storage_capabilities(output, capacity, value);                \
             },                                                                                     \
@@ -302,7 +199,7 @@ inline void write_descriptor_readiness_result(
         return rodaq::plugin::invoke_struct_output(                                                \
             out_result, RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE,                         \
             [context, descriptor] {                                                                \
-                return static_cast<PluginType*>(context)->EnsureDescriptorReady(descriptor);       \
+                return static_cast<PluginType*>(context)->ensure_descriptor_ready(descriptor);     \
             },                                                                                     \
             [](auto* output, std::uint32_t capacity, const auto& value) {                          \
                 rodaq::plugin::write_descriptor_readiness_result(output, capacity, value);         \
@@ -336,7 +233,7 @@ inline void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_interface(                                                    \
             [instance, parsed_id] {                                                                \
-                return static_cast<PluginType*>(instance)->QueryInterface(parsed_id);              \
+                return static_cast<PluginType*>(instance)->query_interface(parsed_id);             \
             },                                                                                     \
             out_interface, out_error);                                                             \
     }                                                                                              \

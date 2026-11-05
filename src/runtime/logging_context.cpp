@@ -51,7 +51,7 @@ struct LoggingContext::State {
 LoggingContext::LoggingContext(LoggingConfig config, std::shared_ptr<LoggingBackend> backend)
 : config_(config), state_(std::make_shared<State>(config, std::move(backend))) {}
 
-Result<std::unique_ptr<LoggingContext>> LoggingContext::Create(
+Result<std::unique_ptr<LoggingContext>> LoggingContext::create(
     LoggingConfig config, std::shared_ptr<LoggingBackend> backend) {
     if (config.queue_records == 0 || config.queue_bytes == 0 || config.flush_timeout.count() <= 0 ||
         config.shutdown_timeout.count() <= 0 || !is_log_level_valid(config.level) ||
@@ -63,7 +63,7 @@ Result<std::unique_ptr<LoggingContext>> LoggingContext::Create(
         auto context =
             std::unique_ptr<LoggingContext>(new LoggingContext(config, std::move(backend)));
         context->worker_ = std::thread(
-            [state = context->state_]() mutable { LoggingContext::WorkerLoop(std::move(state)); });
+            [state = context->state_]() mutable { LoggingContext::worker_loop(std::move(state)); });
         return context;
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(
@@ -79,13 +79,13 @@ LoggingContext::~LoggingContext() {
     if (!worker_.joinable()) {
         return;
     }
-    const bool stopped = Shutdown(std::chrono::steady_clock::now() + config_.shutdown_timeout);
+    const bool stopped = shutdown(std::chrono::steady_clock::now() + config_.shutdown_timeout);
     if (!stopped) {
-        QuarantineWorker("Logging worker did not stop before destructor");
+        quarantine_worker("Logging worker did not stop before destructor");
     }
 }
 
-void LoggingContext::Log(
+void LoggingContext::log(
     LogLevel level, std::string_view category, std::string_view message) noexcept {
     try {
         if (!is_log_level_valid(level) || level < config_.level || level == RODAQ_LOG_OFF) {
@@ -140,7 +140,7 @@ void LoggingContext::Log(
     }
 }
 
-void LoggingContext::WorkerLoop(std::shared_ptr<State> state) noexcept {
+void LoggingContext::worker_loop(std::shared_ptr<State> state) noexcept {
     struct LoggingReentryGuard {
         LoggingReentryGuard(const void* logging_state, const void* previous_state) noexcept
         : previous(previous_state) {
@@ -176,7 +176,7 @@ void LoggingContext::WorkerLoop(std::shared_ptr<State> state) noexcept {
         if (!backend_failed) {
             LoggingReentryGuard guard(state.get(), active_logging_state);
             try {
-                written = state->backend->Write(record).has_value();
+                written = state->backend->write(record).has_value();
             } catch (...) {
                 written = false;
             }
@@ -197,7 +197,7 @@ void LoggingContext::WorkerLoop(std::shared_ptr<State> state) noexcept {
     }
 }
 
-bool LoggingContext::Flush(std::chrono::steady_clock::time_point deadline) noexcept {
+bool LoggingContext::flush(std::chrono::steady_clock::time_point deadline) noexcept {
     std::uint64_t target = 0;
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -213,7 +213,7 @@ bool LoggingContext::Flush(std::chrono::steady_clock::time_point deadline) noexc
         }
     }
     try {
-        auto flushed = state_->backend->Flush();
+        auto flushed = state_->backend->flush();
         if (!flushed.has_value()) {
             std::lock_guard<std::mutex> lock(state_->mutex);
             ++state_->stats.backend_failures;
@@ -229,7 +229,7 @@ bool LoggingContext::Flush(std::chrono::steady_clock::time_point deadline) noexc
     }
 }
 
-bool LoggingContext::Shutdown(std::chrono::steady_clock::time_point deadline) noexcept {
+bool LoggingContext::shutdown(std::chrono::steady_clock::time_point deadline) noexcept {
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         state_->accepting = false;
@@ -246,7 +246,7 @@ bool LoggingContext::Shutdown(std::chrono::steady_clock::time_point deadline) no
         worker_.join();
     }
     try {
-        auto shutdown = state_->backend->Shutdown();
+        auto shutdown = state_->backend->shutdown();
         if (!shutdown.has_value()) {
             std::lock_guard<std::mutex> lock(state_->mutex);
             ++state_->stats.backend_failures;
@@ -260,7 +260,7 @@ bool LoggingContext::Shutdown(std::chrono::steady_clock::time_point deadline) no
     }
 }
 
-void LoggingContext::QuarantineWorker(std::string reason) noexcept {
+void LoggingContext::quarantine_worker(std::string reason) noexcept {
     if (!worker_.joinable()) {
         return;
     }
@@ -268,7 +268,7 @@ void LoggingContext::QuarantineWorker(std::string reason) noexcept {
     // thread rather than detaching it.
     auto state = state_;
     try {
-        if (!QuarantineManager::Process().RetainWorker(
+        if (!QuarantineManager::process().retain_worker(
                 std::move(worker_), state, state_->detached_done, std::move(reason))) {
             std::abort();
         }
@@ -277,7 +277,7 @@ void LoggingContext::QuarantineWorker(std::string reason) noexcept {
     }
 }
 
-LoggingStats LoggingContext::Stats() const noexcept {
+LoggingStats LoggingContext::stats() const noexcept {
     std::lock_guard<std::mutex> lock(state_->mutex);
     return state_->stats;
 }

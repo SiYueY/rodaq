@@ -15,9 +15,9 @@ struct YamlConfigLimits {
     std::size_t max_depth = 64;
 };
 
-Result<ConfigTree> LoadYamlConfig(std::string_view input, const YamlConfigLimits& limits = {});
+Result<ConfigTree> load_yaml_config(std::string_view input, const YamlConfigLimits& limits = {});
 
-Result<ConfigTree> LoadYamlConfigFile(
+Result<ConfigTree> load_yaml_config_file(
     const std::filesystem::path& path, const YamlConfigLimits& limits = {});
 
 }  // namespace rodaq

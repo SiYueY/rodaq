@@ -16,61 +16,61 @@ AdmissionGateDecision decision(AdmissionGateOutcome outcome) {
 
 AdmissionCancellation::AdmissionCancellation(ResourceBudget& budget) noexcept : budget_(&budget) {}
 
-void AdmissionCancellation::Cancel() noexcept {
+void AdmissionCancellation::cancel() noexcept {
     cancelled_.store(true);
-    budget_->NotifyWaiters();
+    budget_->notify_waiters();
 }
 
-bool AdmissionCancellation::IsCancelled() const noexcept { return cancelled_.load(); }
+bool AdmissionCancellation::is_cancelled() const noexcept { return cancelled_.load(); }
 
 AdmissionGate::AdmissionGate(ResourceBudget& budget) noexcept : budget_(budget) {}
 
 AdmissionGate::AdmissionGate(ResourceBudget& budget, std::uint64_t initial_generation) noexcept
 : budget_(budget), generation_(initial_generation) {}
 
-Result<AdmissionGateDecision> AdmissionGate::Admit(const AdmissionRequest& request) {
-    return AdmitWithCancellation(request, nullptr);
+Result<AdmissionGateDecision> AdmissionGate::admit(const AdmissionRequest& request) {
+    return admit_with_cancellation(request, nullptr);
 }
 
-Result<AdmissionGateDecision> AdmissionGate::Admit(
+Result<AdmissionGateDecision> AdmissionGate::admit(
     const AdmissionRequest& request, const AdmissionCancellation& cancellation) {
-    return AdmitWithCancellation(request, &cancellation);
+    return admit_with_cancellation(request, &cancellation);
 }
 
-void AdmissionGate::Open() noexcept {
+void AdmissionGate::open() noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     if (open_ || generation_ == std::numeric_limits<std::uint64_t>::max()) {
         return;
     }
-    open_ = AdvanceGenerationLocked();
+    open_ = advance_generation_locked();
     budget_.wait_condition_.notify_all();
 }
 
-void AdmissionGate::Close() noexcept {
+void AdmissionGate::close() noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     if (open_) {
         open_ = false;
-        static_cast<void>(AdvanceGenerationLocked());
+        static_cast<void>(advance_generation_locked());
         budget_.wait_condition_.notify_all();
     }
 }
 
-bool AdmissionGate::IsOpen() const noexcept {
+bool AdmissionGate::is_open() const noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     return open_;
 }
 
-std::uint64_t AdmissionGate::Generation() const noexcept {
+std::uint64_t AdmissionGate::generation() const noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     return generation_;
 }
 
-std::size_t AdmissionGate::WaitingCount() const noexcept {
+std::size_t AdmissionGate::waiting_count() const noexcept {
     std::lock_guard<std::mutex> lock(budget_.mutex_);
     return waiting_count_;
 }
 
-Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
+Result<AdmissionGateDecision> AdmissionGate::admit_with_cancellation(
     const AdmissionRequest& request, const AdmissionCancellation* cancellation) {
     if (request.mode != AdmissionMode::Reject && request.mode != AdmissionMode::Wait) {
         return nonstd::make_unexpected(
@@ -90,12 +90,13 @@ Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
     if (!open_) {
         return decision(AdmissionGateOutcome::GateClosed);
     }
-    if (cancellation != nullptr && cancellation->IsCancelled()) {
+    if (cancellation != nullptr && cancellation->is_cancelled()) {
         return decision(AdmissionGateOutcome::Cancelled);
     }
 
     if (request.mode == AdmissionMode::Reject) {
-        const ResourceBudget::ReserveResult reserved = budget_.TryReserveLocked(request.resources);
+        const ResourceBudget::ReserveResult reserved =
+            budget_.try_reserve_locked(request.resources);
         if (!reserved.reserved) {
             return decision(AdmissionGateOutcome::ResourceUnavailable);
         }
@@ -106,7 +107,7 @@ Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
     const std::uint64_t waiting_generation = generation_;
     const std::chrono::steady_clock::time_point deadline = *request.deadline;
     while (true) {
-        if (cancellation != nullptr && cancellation->IsCancelled()) {
+        if (cancellation != nullptr && cancellation->is_cancelled()) {
             return decision(AdmissionGateOutcome::Cancelled);
         }
         if (!open_ || generation_ != waiting_generation) {
@@ -116,7 +117,8 @@ Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
             return decision(AdmissionGateOutcome::Timeout);
         }
 
-        const ResourceBudget::ReserveResult reserved = budget_.TryReserveLocked(request.resources);
+        const ResourceBudget::ReserveResult reserved =
+            budget_.try_reserve_locked(request.resources);
         if (reserved.reserved) {
             return AdmissionGateDecision{
                 AdmissionGateOutcome::Granted, Reservation(budget_, request.resources)};
@@ -127,7 +129,7 @@ Result<AdmissionGateDecision> AdmissionGate::AdmitWithCancellation(
     }
 }
 
-bool AdmissionGate::AdvanceGenerationLocked() noexcept {
+bool AdmissionGate::advance_generation_locked() noexcept {
     if (generation_ == std::numeric_limits<std::uint64_t>::max()) {
         return false;
     }

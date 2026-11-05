@@ -2,6 +2,7 @@ set(RODAQ_RUNTIME_SOURCES
     active_runtime_state.cpp
     admission.cpp
     clock_correlation.cpp
+    failure_signal.cpp
     interop_projection_registry.cpp
     latency_histogram.cpp
     logging_context.cpp

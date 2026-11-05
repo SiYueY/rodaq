@@ -107,10 +107,10 @@ const rodaq_plugin_descriptor compatibility_descriptor = {
 
 class CompatibilityStoragePlugin final : public rodaq::StoragePlugin {
 public:
-    rodaq::Result<void> Bind(rodaq::StorageRuntime) override { return {}; }
-    rodaq::Result<void> Configure(const rodaq::ConfigView&) override { return {}; }
-    rodaq::Result<void> Open(const rodaq_storage_open_request&) override { return {}; }
-    rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+    rodaq::Result<void> bind(rodaq::StorageRuntime) override { return {}; }
+    rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> open(const rodaq_storage_open_request&) override { return {}; }
+    rodaq::Result<rodaq_storage_capabilities> get_capabilities() override {
         rodaq_storage_capabilities value{};
         value.struct_size = sizeof(value);
         value.flags = 7;
@@ -124,22 +124,22 @@ public:
         value.close_progress_timeout_ns = 17;
         return value;
     }
-    rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
+    rodaq::Result<rodaq_descriptor_readiness_result> ensure_descriptor_ready(
         rodaq_stream_descriptor_handle) override {
         rodaq_descriptor_readiness_result value{};
         value.struct_size = sizeof(value);
         value.state = RODAQ_DESCRIPTOR_READY;
         return value;
     }
-    rodaq::Result<rodaq_storage_submit_result> Submit(const rodaq_storage_submission&) override {
+    rodaq::Result<rodaq_storage_submit_result> submit(const rodaq_storage_submission&) override {
         rodaq_storage_submit_result value{};
         value.struct_size = sizeof(value);
         value.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
         value.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
         return value;
     }
-    rodaq::Result<void> Flush() override { return {}; }
-    rodaq::Result<void> Close(rodaq_storage_close_disposition) override { return {}; }
+    rodaq::Result<void> flush() override { return {}; }
+    rodaq::Result<void> close(rodaq_storage_close_disposition) override { return {}; }
 };
 
 struct StorageAbiInstance {
@@ -196,11 +196,11 @@ RODAQ_EXPORT_STORAGE_PLUGIN(CompatibilityStoragePlugin, compatibility_descriptor
 TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
     rodaq::runtime::InteropProjectionRegistry registry({64, 4, 128, 256});
     ASSERT_TRUE(registry
-                    .Register(
+                    .register_entry(
                         rodaq_stream_descriptor_handle{7}, "rodaq.test.projection.v1",
                         reinterpret_cast<const std::uint8_t*>("x"), 1)
                     .has_value());
-    const auto interface = registry.AbiInterface();
+    const auto interface = registry.abi_interface();
     const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(interface.vtable);
 
     struct ProjectionBuffer {
@@ -277,11 +277,11 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
         expect_canary(larger.canary, sizeof(larger.canary));
     }
 
-    auto clock = rodaq::runtime::ClockCorrelation::FromAnchor(
+    auto clock = rodaq::runtime::ClockCorrelation::from_anchor(
         rodaq::runtime::UnixEpochClockAnchor{rodaq_clock_handle{3}, 10, 1'000});
     ASSERT_TRUE(clock.has_value());
     auto correlation = std::move(clock.value());
-    const auto clock_interface = correlation.AbiInterface();
+    const auto clock_interface = correlation.abi_interface();
     const auto* clock_table =
         static_cast<const rodaq_runtime_clock_correlation_v1*>(clock_interface.vtable);
     struct ClockBuffer {

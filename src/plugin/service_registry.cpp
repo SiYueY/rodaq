@@ -22,7 +22,7 @@ ServiceRegistry::ServiceRegistry(std::size_t max_service_count, std::size_t max_
     services_.reserve(max_service_count);
 }
 
-Result<void> ServiceRegistry::Register(std::string_view service_id, rodaq_interface service) {
+Result<void> ServiceRegistry::register_entry(std::string_view service_id, rodaq_interface service) {
     if (service_id.empty()) {
         return nonstd::make_unexpected(Error(
             ErrorCode::InvalidArgument, "service_registry", 0, "Service ID must not be empty"));
@@ -71,13 +71,13 @@ Result<void> ServiceRegistry::Register(std::string_view service_id, rodaq_interf
     return {};
 }
 
-Result<void> ServiceRegistry::Freeze() {
+Result<void> ServiceRegistry::freeze() {
     std::lock_guard<std::mutex> lock(mutex_);
     frozen_ = true;
     return {};
 }
 
-Result<rodaq_interface> ServiceRegistry::Query(std::string_view service_id) const {
+Result<rodaq_interface> ServiceRegistry::query(std::string_view service_id) const {
     if (service_id.empty() || !rodaq::is_valid_utf8_without_nul(service_id) ||
         service_id.size() > max_service_id_bytes_) {
         return nonstd::make_unexpected(
@@ -100,7 +100,7 @@ Result<rodaq_interface> ServiceRegistry::Query(std::string_view service_id) cons
     return found->service;
 }
 
-rodaq_service_registry ServiceRegistry::AbiView() noexcept {
+rodaq_service_registry ServiceRegistry::abi_view() noexcept {
     return rodaq_service_registry{this, &kRegistryVtable};
 }
 
@@ -132,7 +132,7 @@ rodaq_status ServiceRegistry::query(
 
     try {
         const auto* registry = static_cast<const ServiceRegistry*>(context);
-        Result<rodaq_interface> result = registry->Query(parsed_id);
+        Result<rodaq_interface> result = registry->query(parsed_id);
         if (!result.has_value()) {
             assign_rodaq_error(result.error(), out_error);
             return status_from_error_code(result.error().code());

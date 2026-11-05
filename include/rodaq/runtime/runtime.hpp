@@ -35,17 +35,17 @@ public:
     Runtime& operator=(Runtime&&) = delete;
     ~Runtime();
 
-    Result<void> Configure();
-    Result<void> Start();
-    Result<void> Stop();
+    Result<void> configure();
+    Result<void> start();
+    Result<void> stop();
 
-    RuntimeState State() const noexcept;
-    Result<rodaq_runtime_lifecycle_snapshot> LifecycleSnapshot() const;
-    Result<Error> PrimaryFailure() const;
-    Result<std::vector<Error>> SecondaryFailures() const;
-    std::uint64_t SecondaryFailureOverflowCount() const noexcept;
-    Result<RuntimeStatsSnapshot> Stats() const;
-    Result<PayloadPoolStats> PayloadStats() const;
+    RuntimeState state() const noexcept;
+    Result<rodaq_runtime_lifecycle_snapshot> lifecycle_snapshot() const;
+    Result<Error> primary_failure() const;
+    Result<std::vector<Error>> secondary_failures() const;
+    std::uint64_t secondary_failure_overflow_count() const noexcept;
+    Result<RuntimeStatsSnapshot> stats() const;
+    Result<PayloadPoolStats> payload_stats() const;
 
 private:
     class Impl;

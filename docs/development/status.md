@@ -12,7 +12,7 @@ This file records factual current repository state. Keep it concise and update i
 
 **M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **PASS — local required qualification; new hosted CI pending**
+Status: **PASS — coding standards local qualification; new hosted CI pending**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
@@ -914,8 +914,57 @@ whitespace and public-header/ABI diff checks passed.
 
 Historical evidence: local `fe4f938` qualification PASS; subsequent `3adefb28`
 [RoDAQ Qualification #41968952350](https://github.com/SiYueY/rodaq/actions/runs/41968952350) **SUCCESS**, independently verified.
-Local qualification preceded commit/push; **new hosted qualification is
-PENDING** until the associated workflow completes. The previous run does not
-qualify these changes. Native arm64
+Local qualification preceded commit/push; subsequent hosted qualification for
+`be448c8` passed at [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291). The older `3adefb28` run does not
+qualify those changes. Native arm64
 remains DEFERRED under D-034. Detailed evidence is in `review_report.md` and
 `capacity_qualification.md`. No remaining P0/P1 finding from this closure.
+
+## 2026-11-05 C++ coding standards review — COMPLETE / local PASS
+
+Project-owned C++ functions, including the Runtime Application Candidate and
+Plugin SDK authoring hooks, use snake_case. D-056 deliberately supersedes the
+SDK source-name freeze in D-033: existing C++ applications and Plugin sources
+must migrate and rebuild; C++ Runtime symbols changed. Stable C Plugin ABI
+headers, layouts, entry points and frozen V1 binary fixtures remain unchanged.
+No legacy PascalCase aliases were added. M3 remains NOT STARTED.
+
+Clang-format 14 and clang-tidy 14 passed for 182 project C/C++ files, 110 build
+translation units, 26 public C++ headers, eight C ABI headers in both C/C++
+modes and five installed-consumer sources. Two intentionally failing compile-fail
+fixtures are verified by CTest instead of being linted as valid translation
+units. Seven approved lint checks are automated in CI; documented exceptions are
+limited to externally mandated identifiers and targeted moved-from tests.
+
+Final local qualification: Normal, ASan/LSan, UBSan, Release and Ubuntu 24/GCC
+13 each **94/94 PASS**; Clang 14 TSan **10/10 PASS** with thread-leak detection;
+Runtime-only Release **PASS**; all eight Release capacity executables passed
+three repetitions. No known P0/P1 issue was confirmed by this review. See
+`review_report.md` and `capacity_qualification.md` for scope and evidence.
+
+Historical `be448c8` hosted qualification: [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291) **SUCCESS**.
+Current changes are uncommitted and have no new hosted run; **new hosted
+qualification is PENDING**. Native arm64 remains DEFERRED under D-034.
+
+
+## 2026-11-05 Declaration / implementation separation
+
+After the C++ naming review, non-template SDK service, configuration and
+validation implementations were moved to `src/sdk/` and linked through the
+existing static `rodaq_foundation` dependency of `rodaq::sdk`. Selected internal
+Runtime definitions were moved to their corresponding `.cpp` files. Templates,
+`constexpr`, Plugin entrypoint/trampoline definitions and public Runtime inline
+accessors needed for the existing hidden-visibility linking contract remain in
+headers. The Stable C ABI headers and Plugin C exports remain unchanged.
+
+The working tree after this separation passed Normal, Release, ASan/LSan,
+UBSan and offline Ubuntu 24: 94/94 CTest each; the Clang 14 TSan CI subset:
+10/10 with thread-leak detection; and Runtime-only Release build. Clang-format
+and clang-tidy passed for 189 C/C++ files and 117 build translation units,
+including public headers and installed consumers. All eight Release capacity
+benchmark executables passed three repetitions; see `capacity_qualification.md`.
+The full Clang TSan build
+was also attempted: an existing null-descriptor fixture fails `-Werror` for an
+unused `descriptor`; the specified TSan subset builds and passes. The earlier
+qualification and hosted evidence above predate this additional refactoring;
+new hosted qualification is PENDING, and M3 remains NOT STARTED.

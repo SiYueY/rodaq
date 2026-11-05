@@ -466,7 +466,7 @@ Runtime logically Running
 Global Admission Gate Open
 ```
 
-之后才允许 required Acquisition Plugins 的 normal routing / callbacks 获得 `Runtime::Submit` permission。
+之后才允许 required Acquisition Plugins 的 normal routing / callbacks 获得 `Runtime::submit` permission。
 
 因此必须满足：
 
@@ -488,7 +488,7 @@ serialized Control Plane commit
 
 等机制，但不得存在 Plugin 已能正常 Submit、Runtime 却仍因 `Starting` 状态拒绝的窗口。
 
-`Start()` 只有在 Activation Commit 成功且 required Acquisition Plugins 完成 enable/release 后才返回 success。
+`start()` 只有在 Activation Commit 成功且 required Acquisition Plugins 完成 enable/release 后才返回 success。
 
 ### 2.4.4 Activation Abort
 
@@ -574,7 +574,7 @@ failure admission cutoff
 ```text
 close / wake pre-gate submission work
 quiesce Acquisition Plugins
-wait active Runtime::Submit calls to return
+wait active Runtime::submit calls to return
 resolve Gate-passed admission attempts
 dispatch accepted Runtime Records
 flush / finalize Storage according to Storage Contract
@@ -888,7 +888,7 @@ active_submission_calls
 
 它表示：
 
-> 已经进入 `Runtime::Submit(...)`、但该 synchronous Submit call 尚未返回的 execution 数量。
+> 已经进入 `Runtime::submit(...)`、但该 synchronous Submit call 尚未返回的 execution 数量。
 
 生命周期为：
 
@@ -4965,9 +4965,9 @@ V1 正常停止逻辑顺序为：
    Runtime-owned Payload anchor release
 
 5. confirm no current/newly-discovered Plugin execution context
-   can begin Runtime::Submit
+   can begin Runtime::submit
 
-6. wait all active Runtime::Submit calls
+6. wait all active Runtime::submit calls
    to return
    active_submission_calls == 0
 
@@ -5339,7 +5339,7 @@ Runtime → Failed
 Quiescence 只保证：
 
 ```text
-no future Runtime::Submit
+no future Runtime::submit
 ```
 
 它不等于 native resource 已关闭。
@@ -5955,7 +5955,7 @@ Failed is terminal
 
 ### Activation Commit Atomicity
 
-构造 required Plugin 在 Enable permission 发布后立即产生 callback。验证任何 normal `Runtime::Submit` 开始时：
+构造 required Plugin 在 Enable permission 发布后立即产生 callback。验证任何 normal `Runtime::submit` 开始时：
 
 ```text
 Runtime == Running
@@ -6387,7 +6387,7 @@ other Streams continue
 
 ```text
 A: Gate-passed before cutoff
-B: entered Runtime::Submit but remains pre-gate during resource wait / Copy
+B: entered Runtime::submit but remains pre-gate during resource wait / Copy
 C: races Gate pass with cutoff
 D: begins after cutoff
 ```
@@ -7171,7 +7171,7 @@ Runtime
 ```text
 Acquisition callback
         ↓
-Runtime::Submit entry
+Runtime::submit entry
         ↓
 active_submission_calls +1
         ↓

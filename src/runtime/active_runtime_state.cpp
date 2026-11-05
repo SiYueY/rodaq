@@ -35,7 +35,7 @@ Error runtime_error(ErrorCode code, std::string message) {
 }
 
 std::unique_ptr<LatencyHistogram> make_latency_histogram() {
-    auto result = LatencyHistogram::Create(1, 60LL * 1'000'000'000LL, 3);
+    auto result = LatencyHistogram::create(1, 60LL * 1'000'000'000LL, 3);
     if (!result.has_value()) {
         throw std::runtime_error(std::string(result.error().message()));
     }
@@ -44,22 +44,22 @@ std::unique_ptr<LatencyHistogram> make_latency_histogram() {
 
 LatencySnapshot latency_snapshot(const LatencyHistogram& histogram) noexcept {
     LatencySnapshot snapshot;
-    snapshot.count = histogram.Count();
+    snapshot.count = histogram.count();
     if (snapshot.count == 0) {
         return snapshot;
     }
-    snapshot.minimum_ns = histogram.Min();
-    snapshot.maximum_ns = histogram.Max();
-    snapshot.p50_ns = histogram.P50();
-    snapshot.p95_ns = histogram.P95();
-    snapshot.p99_ns = histogram.P99();
-    snapshot.p999_ns = histogram.Percentile(99.9);
+    snapshot.minimum_ns = histogram.min();
+    snapshot.maximum_ns = histogram.max();
+    snapshot.p50_ns = histogram.p50();
+    snapshot.p95_ns = histogram.p95();
+    snapshot.p99_ns = histogram.p99();
+    snapshot.p999_ns = histogram.percentile(99.9);
     return snapshot;
 }
 
 template <typename T, typename HandleType>
 Registry<T, HandleType> make_registry(std::size_t capacity, std::uint32_t generation) {
-    auto result = Registry<T, HandleType>::Create(capacity, generation);
+    auto result = Registry<T, HandleType>::create(capacity, generation);
     if (!result.has_value()) {
         throw std::runtime_error(std::string(result.error().message()));
     }
@@ -199,7 +199,7 @@ void common_log(
     std::string_view parsed_message;
     if (rodaq::parse_abi_string(category, &parsed_category) &&
         rodaq::parse_abi_string(message, &parsed_message)) {
-        state->Log(level, parsed_category, parsed_message);
+        state->log(level, parsed_category, parsed_message);
     }
 }
 
@@ -218,7 +218,7 @@ rodaq_status common_lifecycle_snapshot(
     }
     try {
         *out_snapshot = {};
-        const auto result = state_from(context)->LifecycleSnapshot();
+        const auto result = state_from(context)->lifecycle_snapshot();
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
@@ -241,7 +241,7 @@ void common_diagnostic(
     std::string_view parsed_message;
     if (rodaq::parse_abi_string(code, &parsed_code) &&
         rodaq::parse_abi_string(message, &parsed_message)) {
-        state_from(context)->Diagnostic(severity, parsed_code, parsed_message);
+        state_from(context)->diagnostic(severity, parsed_code, parsed_message);
     }
 }
 
@@ -272,7 +272,7 @@ rodaq_status canonical_get_source(
     return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
         rodaq_source_view view{};
         view.struct_size = sizeof(view);
-        auto result = state.GetSource(SourceHandle::FromRaw(handle.value), view);
+        auto result = state.get_source(SourceHandle::from_raw(handle.value), view);
         if (!result.has_value()) {
             return Result<rodaq_source_view>(nonstd::make_unexpected(std::move(result.error())));
         }
@@ -286,7 +286,7 @@ rodaq_status canonical_get_clock(
     return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
         rodaq_clock_view view{};
         view.struct_size = sizeof(view);
-        auto result = state.GetClock(ClockHandle::FromRaw(handle.value), view);
+        auto result = state.get_clock(ClockHandle::from_raw(handle.value), view);
         if (!result.has_value()) {
             return Result<rodaq_clock_view>(nonstd::make_unexpected(std::move(result.error())));
         }
@@ -300,7 +300,7 @@ rodaq_status canonical_get_schema(
     return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
         rodaq_schema_view view{};
         view.struct_size = sizeof(view);
-        auto result = state.GetSchema(SchemaHandle::FromRaw(handle.value), view);
+        auto result = state.get_schema(SchemaHandle::from_raw(handle.value), view);
         if (!result.has_value()) {
             return Result<rodaq_schema_view>(nonstd::make_unexpected(std::move(result.error())));
         }
@@ -314,7 +314,7 @@ rodaq_status canonical_get_timestamp_key_set(
     return canonical_view(context, out_view, out_error, [id](ActiveRuntimeState& state) {
         rodaq_timestamp_key_set_view view{};
         view.struct_size = sizeof(view);
-        auto result = state.GetTimestampKeySet(id, view);
+        auto result = state.get_timestamp_key_set(id, view);
         if (!result.has_value()) {
             return Result<rodaq_timestamp_key_set_view>(
                 nonstd::make_unexpected(std::move(result.error())));
@@ -329,7 +329,7 @@ rodaq_status canonical_get_stream(
     return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
         rodaq_stream_view view{};
         view.struct_size = sizeof(view);
-        auto result = state.GetStream(StreamHandle::FromRaw(handle.value), view);
+        auto result = state.get_stream(StreamHandle::from_raw(handle.value), view);
         if (!result.has_value()) {
             return Result<rodaq_stream_view>(nonstd::make_unexpected(std::move(result.error())));
         }
@@ -344,7 +344,7 @@ rodaq_status canonical_get_stream_descriptor(
         rodaq_stream_descriptor_view view{};
         view.struct_size = sizeof(view);
         auto result =
-            state.GetStreamDescriptor(StreamDescriptorHandle::FromRaw(handle.value), view);
+            state.get_stream_descriptor(StreamDescriptorHandle::from_raw(handle.value), view);
         if (!result.has_value()) {
             return Result<rodaq_stream_descriptor_view>(
                 nonstd::make_unexpected(std::move(result.error())));
@@ -364,12 +364,12 @@ rodaq_status acquisition_register_source(
     try {
         auto* service_context = acquisition_context_from(context);
         SourceHandle handle;
-        const auto result =
-            service_context->state->RegisterSource(service_context->plugin_index, *request, handle);
+        const auto result = service_context->state->register_source(
+            service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
-        out_handle->value = handle.Value();
+        out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -390,11 +390,11 @@ rodaq_status acquisition_register_clock(
         auto* service_context = acquisition_context_from(context);
         ClockHandle handle;
         const auto result =
-            service_context->state->RegisterClock(service_context->plugin_index, *request, handle);
+            service_context->state->register_clock(service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
-        out_handle->value = handle.Value();
+        out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -414,12 +414,12 @@ rodaq_status acquisition_register_schema(
     try {
         auto* service_context = acquisition_context_from(context);
         SchemaHandle handle;
-        const auto result =
-            service_context->state->RegisterSchema(service_context->plugin_index, *request, handle);
+        const auto result = service_context->state->register_schema(
+            service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
-        out_handle->value = handle.Value();
+        out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -439,12 +439,12 @@ rodaq_status acquisition_register_stream(
     try {
         auto* service_context = acquisition_context_from(context);
         StreamHandle handle;
-        const auto result =
-            service_context->state->RegisterStream(service_context->plugin_index, *request, handle);
+        const auto result = service_context->state->register_stream(
+            service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
-        out_handle->value = handle.Value();
+        out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -464,12 +464,12 @@ rodaq_status acquisition_publish_descriptor(
     try {
         auto* service_context = acquisition_context_from(context);
         StreamDescriptorHandle handle;
-        const auto result = service_context->state->PublishStreamDescriptor(
+        const auto result = service_context->state->publish_stream_descriptor(
             service_context->plugin_index, *request, handle);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
-        out_handle->value = handle.Value();
+        out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -487,9 +487,9 @@ rodaq_status acquisition_report_source(
     }
     try {
         const auto result = state_from(acquisition_context_from(context)->state)
-                                ->ReportSourceAvailability(
+                                ->report_source_availability(
                                     acquisition_context_from(context)->plugin_index,
-                                    SourceHandle::FromRaw(source.value), availability);
+                                    SourceHandle::from_raw(source.value), availability);
         return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -507,9 +507,9 @@ rodaq_status acquisition_report_stream(
     }
     try {
         const auto result = state_from(acquisition_context_from(context)->state)
-                                ->ReportStreamAvailability(
+                                ->report_stream_availability(
                                     acquisition_context_from(context)->plugin_index,
-                                    StreamHandle::FromRaw(stream.value), availability);
+                                    StreamHandle::from_raw(stream.value), availability);
         return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -537,7 +537,7 @@ rodaq_status acquisition_report_plugin_state(
         const auto* service_context = acquisition_context_from(context);
         const auto result =
             state_from(service_context->state)
-                ->ReportPluginState(service_context->plugin_index, plugin_state, diagnostic);
+                ->report_plugin_state(service_context->plugin_index, plugin_state, diagnostic);
         return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -561,7 +561,7 @@ rodaq_status acquisition_submit(
         auto* service_context = acquisition_context_from(context);
         rodaq_payload_disposition disposition = RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE;
         const auto result =
-            service_context->state->Submit(service_context->plugin_index, *submission, disposition);
+            service_context->state->submit(service_context->plugin_index, *submission, disposition);
         if (!result.has_value()) {
             return assign_status(result.error(), out_error);
         }
@@ -597,7 +597,7 @@ void storage_persistence_completed(
         auto* state = state_from(storage_context_from(context)->state);
         if (error != nullptr &&
             (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
-            state->RequestFailure(runtime_error(
+            state->request_failure(runtime_error(
                 ErrorCode::InvalidArgument,
                 "Storage persistence callback supplied a malformed diagnostic"));
             return;
@@ -617,7 +617,7 @@ void storage_report_failure(void* context, const rodaq_error* error) noexcept {
         if (error != nullptr &&
             (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
             state_from(storage_context_from(context)->state)
-                ->RequestFailure(runtime_error(
+                ->request_failure(runtime_error(
                     ErrorCode::InvalidArgument,
                     "Storage failure callback supplied a malformed diagnostic"));
             return;
@@ -625,7 +625,7 @@ void storage_report_failure(void* context, const rodaq_error* error) noexcept {
         Error failure = error == nullptr
                             ? runtime_error(ErrorCode::StorageError, "Storage reported failure")
                             : from_abi_error(*error);
-        state_from(storage_context_from(context)->state)->RequestFailure(std::move(failure));
+        state_from(storage_context_from(context)->state)->request_failure(std::move(failure));
     } catch (...) {
     }
 }
@@ -674,7 +674,7 @@ const rodaq_runtime_storage_v1 ActiveRuntimeState::kStorageVtable = {
     &storage_report_failure,
 };
 
-Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::Create(
+Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::create(
     RuntimeConfig config, std::uint64_t activation_generation) {
     try {
         return std::unique_ptr<ActiveRuntimeState>(
@@ -694,7 +694,7 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
 : options_(std::move(config)),
   activation_generation_(activation_generation),
   arena_([this] {
-      auto result = StructuralArena::Create(options_.resources.structural_arena_bytes);
+      auto result = StructuralArena::create(options_.resources.structural_arena_bytes);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
@@ -715,14 +715,14 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
   bindings_(make_registry<BindingEntry, BindingHandle>(
       options_.resources.max_bindings, registry_generation(activation_generation))),
   sequences_([this] {
-      auto result = AcceptanceSequenceAllocator::Create(options_.resources.max_streams);
+      auto result = AcceptanceSequenceAllocator::create(options_.resources.max_streams);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
       return std::move(result.value());
   }()),
   payload_pool_([this] {
-      auto result = PayloadPool::Create(options_.resources.payload_pool);
+      auto result = PayloadPool::create(options_.resources.payload_pool);
       if (!result.has_value()) {
           throw std::runtime_error(std::string(result.error().message()));
       }
@@ -760,23 +760,23 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
     }
     storage_context_ = std::make_unique<StorageServiceContext>();
     storage_context_->state = this;
-    auto logging = LoggingContext::Create(options_.logging, std::make_shared<SpdlogBackend>());
+    auto logging = LoggingContext::create(options_.logging, std::make_shared<SpdlogBackend>());
     if (!logging.has_value()) {
         throw std::runtime_error(std::string(logging.error().message()));
     }
     logging_context_ = std::move(logging.value());
-    auto ingress = InitializeIngressClock();
+    auto ingress = initialize_ingress_clock();
     if (!ingress.has_value()) {
         throw std::runtime_error(std::string(ingress.error().message()));
     }
-    projections_.SetRegistrationSink(
+    projections_.set_registration_sink(
         [this](rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) {
-            OnProjectionRegistered(descriptor, projection_id);
+            on_projection_registered(descriptor, projection_id);
         });
 }
 
 ActiveRuntimeState::~ActiveRuntimeState() noexcept {
-    payload_pool_.SetCapacityChangedSink({});
+    payload_pool_.set_capacity_changed_sink({});
     if (!descriptor_worker_.joinable()) {
         return;
     }
@@ -789,7 +789,8 @@ ActiveRuntimeState::~ActiveRuntimeState() noexcept {
     descriptor_worker_.join();
 }
 
-void ActiveRuntimeState::SetAcquisitionControl(std::size_t plugin_index, rodaq_interface control) {
+void ActiveRuntimeState::set_acquisition_control(
+    std::size_t plugin_index, rodaq_interface control) {
     std::lock_guard<std::mutex> lock(control_mutex_);
     if (plugin_index >= acquisition_controls_.size() || control.context == nullptr ||
         control.vtable == nullptr) {
@@ -798,7 +799,7 @@ void ActiveRuntimeState::SetAcquisitionControl(std::size_t plugin_index, rodaq_i
     acquisition_controls_[plugin_index] = control;
 }
 
-void ActiveRuntimeState::SetStorageControl(rodaq_interface control) {
+void ActiveRuntimeState::set_storage_control(rodaq_interface control) {
     std::lock_guard<std::mutex> lock(control_mutex_);
     if (control.context == nullptr || control.vtable == nullptr) {
         throw std::invalid_argument("Storage control interface is invalid");
@@ -806,24 +807,24 @@ void ActiveRuntimeState::SetStorageControl(rodaq_interface control) {
     storage_control_ = control;
 }
 
-Result<void> ActiveRuntimeState::InitializeIngressClock() {
+Result<void> ActiveRuntimeState::initialize_ingress_clock() {
     static constexpr std::string_view kNativeId = "rodaq/runtime/ingress";
     static constexpr std::string_view kOrigin = "monotonic_since_boot";
 
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        if (ingress_clock_.Valid()) {
+        if (ingress_clock_.valid()) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is already created"));
         }
-        auto inserted = clocks_.Insert(ClockEntry{
+        auto inserted = clocks_.insert(ClockEntry{
             copy_bytes(
-                arena_->Resource(), reinterpret_cast<const std::uint8_t*>(kNativeId.data()),
+                arena_->resource(), reinterpret_cast<const std::uint8_t*>(kNativeId.data()),
                 kNativeId.size()),
             next_clock_id_++,
             1,
             1'000'000'000,
-            copy_string(arena_->Resource(), kOrigin),
+            copy_string(arena_->resource(), kOrigin),
             kRuntimeClockPluginIndex,
         });
         if (!inserted.has_value()) {
@@ -833,8 +834,8 @@ Result<void> ActiveRuntimeState::InitializeIngressClock() {
         clock_handles_.push_back(ingress_clock_);
     }
 
-    auto correlation = ClockCorrelation::Establish(
-        rodaq_clock_handle{ingress_clock_.Value()},
+    auto correlation = ClockCorrelation::establish(
+        rodaq_clock_handle{ingress_clock_.value()},
         []() -> std::int64_t {
             auto reading = capture_ingress_reading();
             if (!reading.has_value()) {
@@ -858,7 +859,7 @@ Result<void> ActiveRuntimeState::InitializeIngressClock() {
     return {};
 }
 
-Result<rodaq_storage_capabilities> ActiveRuntimeState::StorageCapabilities() const {
+Result<rodaq_storage_capabilities> ActiveRuntimeState::storage_capabilities() const {
     if (!storage_control_.has_value()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Storage control interface is unavailable"));
@@ -887,17 +888,17 @@ Result<rodaq_storage_capabilities> ActiveRuntimeState::StorageCapabilities() con
     return capabilities;
 }
 
-void ActiveRuntimeState::SetDescriptorProgressTimeout(std::chrono::nanoseconds timeout) {
+void ActiveRuntimeState::set_descriptor_progress_timeout(std::chrono::nanoseconds timeout) {
     std::lock_guard<std::mutex> lock(control_mutex_);
     descriptor_progress_timeout_ = timeout;
 }
 
-void ActiveRuntimeState::SetBindingProgressTimeout(std::chrono::nanoseconds timeout) {
+void ActiveRuntimeState::set_binding_progress_timeout(std::chrono::nanoseconds timeout) {
     std::lock_guard<std::mutex> lock(control_mutex_);
     binding_progress_timeout_ = timeout;
 }
 
-std::shared_ptr<void> ActiveRuntimeState::TrackControlCall() {
+std::shared_ptr<void> ActiveRuntimeState::track_control_call() {
     auto state = shared_from_this();
     // shared_ptr invokes its deleter if control-block allocation fails too.
     // Establish the count first so that path also has a matching decrement.
@@ -907,7 +908,7 @@ std::shared_ptr<void> ActiveRuntimeState::TrackControlCall() {
     });
 }
 
-void ActiveRuntimeState::ReapQuarantinedWorkers() noexcept {
+void ActiveRuntimeState::reap_quarantined_workers() noexcept {
     bool descriptor_done = false;
     {
         std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
@@ -917,14 +918,14 @@ void ActiveRuntimeState::ReapQuarantinedWorkers() noexcept {
         descriptor_worker_.join();
     }
     if (pipeline_ != nullptr) {
-        pipeline_->ReapCompletedWorkers();
+        pipeline_->reap_completed_workers();
     }
 }
 
-Result<void> ActiveRuntimeState::SuperviseBindingControl(
+Result<void> ActiveRuntimeState::supervise_binding_control(
     std::function<Result<void>()> operation, const char* reason) {
-    auto guard = TrackControlCall();
-    auto outcome = QuarantineManager::Process().Run(
+    auto guard = track_control_call();
+    auto outcome = QuarantineManager::process().run(
         [guard, operation = std::move(operation)]() mutable { return operation(); },
         Clock::now() + binding_progress_timeout_, reason);
     if (!outcome.has_value()) {
@@ -944,7 +945,7 @@ Result<void> ActiveRuntimeState::SuperviseBindingControl(
         runtime_error(ErrorCode::InternalError, "Unknown Binding control outcome"));
 }
 
-Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescriptorReady(
+Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::ensure_descriptor_ready(
     StreamDescriptorHandle descriptor) {
     if (!storage_control_.has_value()) {
         return nonstd::make_unexpected(
@@ -966,9 +967,9 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescri
     }
     auto result = std::make_shared<std::optional<DescriptorReadiness>>();
     auto result_error = std::make_shared<std::optional<Error>>();
-    const auto descriptor_value = rodaq_stream_descriptor_handle{descriptor.Value()};
-    auto guard = TrackControlCall();
-    auto outcome = QuarantineManager::Process().Run(
+    const auto descriptor_value = rodaq_stream_descriptor_handle{descriptor.value()};
+    auto guard = track_control_call();
+    auto outcome = QuarantineManager::process().run(
         [control, table, descriptor_value, result, result_error, state, guard]() -> Result<void> {
             static_cast<void>(state);
             rodaq_descriptor_readiness_result readiness{};
@@ -1029,7 +1030,7 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescri
     return result->value();
 }
 
-Result<void> ActiveRuntimeState::InitializePipeline(
+Result<void> ActiveRuntimeState::initialize_pipeline(
     std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
     plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout) {
     if (pipeline_ != nullptr) {
@@ -1048,41 +1049,41 @@ Result<void> ActiveRuntimeState::InitializePipeline(
             options_.resources.operation_capacity, options_.resources.completion_capacity,
             effective_payload_limit, maximum_payload_inflight_bytes, storage, progress_timeout,
             options_.resources.payload_release_workers,
-            [this](Error error) { RequestFailure(std::move(error)); },
+            [this](Error error) { request_failure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
-                if (!stats_.RecordPayloadReleased(bytes)) {
-                    RequestFailure(runtime_error(
+                if (!stats_.record_payload_released(bytes)) {
+                    request_failure(runtime_error(
                         ErrorCode::InternalError, "Runtime inflight byte accounting underflowed"));
                 }
             },
             [this](rodaq_storage_persistence_state persistence) noexcept {
-                stats_.RecordPersistence(persistence);
-                if (!stats_.RecordOperationCompleted()) {
-                    RequestFailure(runtime_error(
+                stats_.record_persistence(persistence);
+                if (!stats_.record_operation_completed()) {
+                    request_failure(runtime_error(
                         ErrorCode::InternalError,
                         "Runtime inflight record accounting underflowed"));
                 }
             },
             [this](StorageLatencyKind kind, std::int64_t duration_ns) noexcept {
-                RecordStorageLatency(kind, duration_ns);
+                record_storage_latency(kind, duration_ns);
             },
             [this](
                 const RuntimeRecord& record, rodaq_storage_operation operation,
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
-                const BindingEntry* binding = bindings_.FindStable(record.Binding());
+                const BindingEntry* binding = bindings_.find_stable(record.binding());
                 if (binding == nullptr) {
                     return Result<rodaq_storage_submission>(nonstd::make_unexpected(
                         runtime_error(ErrorCode::InvalidState, "Record Binding is unavailable")));
                 }
                 const StreamDescriptorEntry* descriptor =
-                    descriptors_.FindStable(binding->descriptor);
+                    descriptors_.find_stable(binding->descriptor);
                 if (descriptor == nullptr) {
                     return Result<rodaq_storage_submission>(nonstd::make_unexpected(runtime_error(
                         ErrorCode::InvalidState, "Record Descriptor is unavailable")));
                 }
                 for (std::size_t slot = 0; slot < TimestampState::kMaxSlots; ++slot) {
                     values[slot] = {};
-                    const auto reading = record.Timestamps().Value(slot);
+                    const auto reading = record.timestamps().value(slot);
                     if (reading.has_value()) {
                         values[slot].present = RODAQ_TRUE;
                         values[slot].reading = *reading;
@@ -1093,26 +1094,26 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                 rodaq_storage_submission submission{};
                 submission.struct_size = sizeof(submission);
                 submission.operation = operation;
-                submission.stream = rodaq_stream_handle{binding->stream.Value()};
-                submission.descriptor = rodaq_stream_descriptor_handle{binding->descriptor.Value()};
-                submission.acceptance_sequence = record.AcceptanceSequence();
-                if (record.Source().has_value()) {
+                submission.stream = rodaq_stream_handle{binding->stream.value()};
+                submission.descriptor = rodaq_stream_descriptor_handle{binding->descriptor.value()};
+                submission.acceptance_sequence = record.acceptance_sequence();
+                if (record.source().has_value()) {
                     submission.source_present = RODAQ_TRUE;
-                    submission.source.value = record.Source()->Value();
+                    submission.source.value = record.source()->value();
                 }
-                if (record.SourceSequence().has_value()) {
+                if (record.source_sequence().has_value()) {
                     submission.source_sequence_present = RODAQ_TRUE;
-                    submission.source_sequence = *record.SourceSequence();
+                    submission.source_sequence = *record.source_sequence();
                 }
                 submission.timestamp_values = values.data();
                 submission.timestamp_value_count =
                     static_cast<std::uint32_t>(descriptor->canonical_timestamp_keys.size());
-                const PayloadView payload = record.RecordPayload().View();
-                submission.payload = rodaq_bytes_view{payload.Data(), payload.Size()};
+                const PayloadView payload = record.record_payload().view();
+                submission.payload = rodaq_bytes_view{payload.data(), payload.size()};
                 return Result<rodaq_storage_submission>(submission);
             });
-        payload_pool_.SetCapacityChangedSink([this] { pipeline_->NotifyAdmissionWaiters(); });
-        auto started = pipeline_->Start();
+        payload_pool_.set_capacity_changed_sink([this] { pipeline_->notify_admission_waiters(); });
+        auto started = pipeline_->start();
         if (!started.has_value()) {
             pipeline_.reset();
             return nonstd::make_unexpected(std::move(started.error()));
@@ -1123,43 +1124,45 @@ Result<void> ActiveRuntimeState::InitializePipeline(
     }
 }
 
-Result<void> ActiveRuntimeState::RegisterAcquisitionServices(
+Result<void> ActiveRuntimeState::register_acquisition_services(
     plugin::ServiceRegistry& registry, std::size_t plugin_index) {
     if (plugin_index >= acquisition_contexts_.size()) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidArgument, "Acquisition service index is invalid"));
     }
-    auto result =
-        registry.Register(RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
+    auto result = registry.register_entry(
+        RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(
+    result = registry.register_entry(
         RODAQ_RUNTIME_CANONICAL_SERVICE_ID, rodaq_interface{this, &kCanonicalVtable});
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.AbiInterface());
+    result =
+        registry.register_entry(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.abi_interface());
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(
-        RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, AcquisitionServiceInterface(plugin_index));
+    result = registry.register_entry(
+        RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, acquisition_service_interface(plugin_index));
     return result;
 }
 
-Result<void> ActiveRuntimeState::RegisterStorageServices(plugin::ServiceRegistry& registry) {
-    auto result =
-        registry.Register(RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
+Result<void> ActiveRuntimeState::register_storage_services(plugin::ServiceRegistry& registry) {
+    auto result = registry.register_entry(
+        RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(
+    result = registry.register_entry(
         RODAQ_RUNTIME_CANONICAL_SERVICE_ID, rodaq_interface{this, &kCanonicalVtable});
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.AbiInterface());
+    result =
+        registry.register_entry(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.abi_interface());
     if (!result.has_value()) {
         return result;
     }
@@ -1167,37 +1170,38 @@ Result<void> ActiveRuntimeState::RegisterStorageServices(plugin::ServiceRegistry
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is unavailable"));
     }
-    result = registry.Register(
-        RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, ingress_clock_correlation_->AbiInterface());
+    result = registry.register_entry(
+        RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, ingress_clock_correlation_->abi_interface());
     if (!result.has_value()) {
         return result;
     }
-    result = registry.Register(RODAQ_RUNTIME_STORAGE_SERVICE_ID, StorageServiceInterface());
+    result = registry.register_entry(RODAQ_RUNTIME_STORAGE_SERVICE_ID, storage_service_interface());
     return result;
 }
 
-rodaq_interface ActiveRuntimeState::AcquisitionServiceInterface(std::size_t plugin_index) noexcept {
+rodaq_interface ActiveRuntimeState::acquisition_service_interface(
+    std::size_t plugin_index) noexcept {
     return rodaq_interface{
         acquisition_contexts_[plugin_index].get(),
         &kAcquisitionVtable,
     };
 }
 
-rodaq_interface ActiveRuntimeState::StorageServiceInterface() noexcept {
+rodaq_interface ActiveRuntimeState::storage_service_interface() noexcept {
     return rodaq_interface{
         storage_context_.get(),
         &kStorageVtable,
     };
 }
 
-bool ActiveRuntimeState::MarkRunning() noexcept {
+bool ActiveRuntimeState::mark_running() noexcept {
     std::lock_guard<std::mutex> control_lock(control_mutex_);
     std::lock_guard<std::mutex> admission_lock(admission_mutex_);
     if (state_.load() != RuntimeState::Starting) {
         return false;
     }
     if (pipeline_ != nullptr) {
-        pipeline_->OpenAdmission();
+        pipeline_->open_admission();
     }
     gate_open_ = pipeline_ != nullptr;
     state_.store(RuntimeState::Running);
@@ -1205,7 +1209,7 @@ bool ActiveRuntimeState::MarkRunning() noexcept {
     return true;
 }
 
-void ActiveRuntimeState::MarkStopping() noexcept {
+void ActiveRuntimeState::mark_stopping() noexcept {
     if (!stop_started_valid_) {
         stop_started_ = Clock::now();
         stop_started_valid_ = true;
@@ -1224,13 +1228,13 @@ void ActiveRuntimeState::MarkStopping() noexcept {
         gate_open_ = false;
     }
     if (pipeline_ != nullptr) {
-        pipeline_->CloseAdmission();
+        pipeline_->close_admission();
     }
     admission_condition_.notify_all();
 }
 
-void ActiveRuntimeState::MarkStopped() noexcept {
-    RecordStopLatency();
+void ActiveRuntimeState::mark_stopped() noexcept {
+    record_stop_latency();
     {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         if (state_.load() != RuntimeState::Failed) {
@@ -1241,7 +1245,7 @@ void ActiveRuntimeState::MarkStopped() noexcept {
     admission_condition_.notify_all();
 }
 
-void ActiveRuntimeState::MarkFailed() noexcept {
+void ActiveRuntimeState::mark_failed() noexcept {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         state_.store(RuntimeState::Failed);
@@ -1252,17 +1256,17 @@ void ActiveRuntimeState::MarkFailed() noexcept {
         gate_open_ = false;
     }
     if (pipeline_ != nullptr) {
-        pipeline_->BeginFailureCutoff();
+        pipeline_->begin_failure_cutoff();
     }
     admission_condition_.notify_all();
 }
 
-bool ActiveRuntimeState::GateOpen() const noexcept {
+bool ActiveRuntimeState::gate_open() const noexcept {
     std::lock_guard<std::mutex> lock(admission_mutex_);
     return gate_open_;
 }
 
-bool ActiveRuntimeState::BeginSubmission() noexcept {
+bool ActiveRuntimeState::begin_submission() noexcept {
     {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         ++active_submission_calls_;
@@ -1270,7 +1274,7 @@ bool ActiveRuntimeState::BeginSubmission() noexcept {
     return true;
 }
 
-void ActiveRuntimeState::EndSubmission() noexcept {
+void ActiveRuntimeState::end_submission() noexcept {
     {
         std::lock_guard<std::mutex> lock(admission_mutex_);
         --active_submission_calls_;
@@ -1278,20 +1282,20 @@ void ActiveRuntimeState::EndSubmission() noexcept {
     admission_condition_.notify_all();
 }
 
-bool ActiveRuntimeState::WaitForAdmissionDrain(std::chrono::steady_clock::time_point deadline) {
+bool ActiveRuntimeState::wait_for_admission_drain(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(admission_mutex_);
     return admission_condition_.wait_until(lock, deadline, [this] {
         return active_submission_calls_ == 0 && admission_inflight_ == 0;
     });
 }
 
-bool ActiveRuntimeState::WaitForSubmissions(std::chrono::steady_clock::time_point deadline) {
+bool ActiveRuntimeState::wait_for_submissions(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(admission_mutex_);
     return admission_condition_.wait_until(
         lock, deadline, [this] { return active_submission_calls_ == 0; });
 }
 
-void ActiveRuntimeState::RequestFailure(Error error) noexcept {
+void ActiveRuntimeState::request_failure(Error error) noexcept {
     try {
         {
             std::lock_guard<std::mutex> lock(failure_mutex_);
@@ -1303,15 +1307,15 @@ void ActiveRuntimeState::RequestFailure(Error error) noexcept {
                 ++secondary_overflow_count_;
             }
         }
-        MarkFailed();
+        mark_failed();
         if (failure_signal_ != nullptr) {
-            failure_signal_->Notify();
+            failure_signal_->notify();
         }
     } catch (...) {
     }
 }
 
-void ActiveRuntimeState::RecordSecondaryFailure(Error error) noexcept {
+void ActiveRuntimeState::record_secondary_failure(Error error) noexcept {
     try {
         std::lock_guard<std::mutex> lock(failure_mutex_);
         if (secondary_failures_.size() < kMaxSecondaryFailures) {
@@ -1323,14 +1327,14 @@ void ActiveRuntimeState::RecordSecondaryFailure(Error error) noexcept {
     }
 }
 
-void ActiveRuntimeState::Log(
+void ActiveRuntimeState::log(
     LogLevel level, std::string_view category, std::string_view message) noexcept {
     if (logging_context_ != nullptr) {
-        logging_context_->Log(level, category, message);
+        logging_context_->log(level, category, message);
     }
 }
 
-void ActiveRuntimeState::Diagnostic(
+void ActiveRuntimeState::diagnostic(
     rodaq_diagnostic_severity severity, std::string_view code, std::string_view message) noexcept {
     LogLevel level = RODAQ_LOG_OFF;
     switch (severity) {
@@ -1351,28 +1355,28 @@ void ActiveRuntimeState::Diagnostic(
     }
     try {
         const std::string text = std::string(code) + ": " + std::string(message);
-        Log(level, "rodaq.diagnostic", text);
+        log(level, "rodaq.diagnostic", text);
     } catch (...) {
     }
 }
 
-bool ActiveRuntimeState::ShutdownLogging(std::chrono::steady_clock::time_point deadline) noexcept {
-    return logging_context_ == nullptr || logging_context_->Shutdown(deadline);
+bool ActiveRuntimeState::shutdown_logging(std::chrono::steady_clock::time_point deadline) noexcept {
+    return logging_context_ == nullptr || logging_context_->shutdown(deadline);
 }
 
-void ActiveRuntimeState::QuarantineLogging(std::string reason) noexcept {
+void ActiveRuntimeState::quarantine_logging(std::string reason) noexcept {
     if (logging_context_ != nullptr) {
-        logging_context_->QuarantineWorker(std::move(reason));
+        logging_context_->quarantine_worker(std::move(reason));
     }
 }
 
-LoggingStats ActiveRuntimeState::CurrentLoggingStats() const noexcept {
-    return logging_context_ == nullptr ? LoggingStats{} : logging_context_->Stats();
+LoggingStats ActiveRuntimeState::current_logging_stats() const noexcept {
+    return logging_context_ == nullptr ? LoggingStats{} : logging_context_->stats();
 }
 
-Result<PayloadPoolStats> ActiveRuntimeState::PayloadPoolStatistics() const {
+Result<PayloadPoolStats> ActiveRuntimeState::payload_pool_statistics() const {
     try {
-        return payload_pool_.Stats();
+        return payload_pool_.stats();
     } catch (const std::bad_alloc&) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::ResourceExhausted, "Payload statistics allocation failed"));
@@ -1381,12 +1385,12 @@ Result<PayloadPoolStats> ActiveRuntimeState::PayloadPoolStatistics() const {
     }
 }
 
-bool ActiveRuntimeState::HasPrimaryFailure() const noexcept {
+bool ActiveRuntimeState::has_primary_failure() const noexcept {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     return primary_failure_.has_value();
 }
 
-Result<void> ActiveRuntimeState::StartDescriptorReconciliation() {
+Result<void> ActiveRuntimeState::start_descriptor_reconciliation() {
     std::shared_ptr<ActiveRuntimeState> state;
     try {
         state = shared_from_this();
@@ -1407,7 +1411,7 @@ Result<void> ActiveRuntimeState::StartDescriptorReconciliation() {
     descriptor_worker_failure_.reset();
     descriptor_worker_started_ = true;
     try {
-        descriptor_worker_ = std::thread([state]() { state->RunDescriptorReconciliation(); });
+        descriptor_worker_ = std::thread([state]() { state->run_descriptor_reconciliation(); });
     } catch (const std::exception& error) {
         descriptor_worker_started_ = false;
         return nonstd::make_unexpected(runtime_error(
@@ -1417,7 +1421,7 @@ Result<void> ActiveRuntimeState::StartDescriptorReconciliation() {
     return {};
 }
 
-Result<void> ActiveRuntimeState::RequestDescriptorReconciliation(
+Result<void> ActiveRuntimeState::request_descriptor_reconciliation(
     StreamDescriptorHandle descriptor, bool critical_for_start) {
     std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
     if (!descriptor_worker_started_ || descriptor_worker_closing_) {
@@ -1445,7 +1449,7 @@ Result<void> ActiveRuntimeState::RequestDescriptorReconciliation(
     return {};
 }
 
-Result<void> ActiveRuntimeState::WaitForDescriptorReconciliation(
+Result<void> ActiveRuntimeState::wait_for_descriptor_reconciliation(
     std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
     if (!descriptor_worker_started_ && !descriptor_worker_.joinable()) {
@@ -1464,7 +1468,7 @@ Result<void> ActiveRuntimeState::WaitForDescriptorReconciliation(
     return {};
 }
 
-bool ActiveRuntimeState::CloseAndJoinDescriptorReconciliation(
+bool ActiveRuntimeState::close_and_join_descriptor_reconciliation(
     std::chrono::steady_clock::time_point deadline) {
     {
         std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
@@ -1476,7 +1480,7 @@ bool ActiveRuntimeState::CloseAndJoinDescriptorReconciliation(
         std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
         if (!descriptor_worker_condition_.wait_until(
                 lock, deadline, [this] { return !descriptor_worker_started_; })) {
-            RequestFailure(
+            request_failure(
                 runtime_error(ErrorCode::Timeout, "Descriptor reconciliation shutdown timed out"));
             return false;
         }
@@ -1487,7 +1491,7 @@ bool ActiveRuntimeState::CloseAndJoinDescriptorReconciliation(
     return true;
 }
 
-void ActiveRuntimeState::RunDescriptorReconciliation() noexcept {
+void ActiveRuntimeState::run_descriptor_reconciliation() noexcept {
     for (;;) {
         DescriptorWorkerRequest request;
         {
@@ -1507,7 +1511,7 @@ void ActiveRuntimeState::RunDescriptorReconciliation() noexcept {
 
         std::optional<Error> failure;
         try {
-            auto reconciled = ReconcileDescriptor(request.descriptor);
+            auto reconciled = reconcile_descriptor(request.descriptor);
             if (!reconciled.has_value()) {
                 failure.emplace(reconciled.error());
             }
@@ -1521,14 +1525,14 @@ void ActiveRuntimeState::RunDescriptorReconciliation() noexcept {
         bool fatal_failure = false;
         {
             std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
-            if (failure.has_value() && (request.critical_for_start || RequiresQuarantine() ||
+            if (failure.has_value() && (request.critical_for_start || requires_quarantine() ||
                                         state_.load() == RuntimeState::Failed)) {
                 descriptor_worker_failure_ = failure;
                 descriptor_worker_closing_ = true;
                 descriptor_worker_count_ = 0;
                 fatal_failure = true;
-                if (!HasPrimaryFailure()) {
-                    RequestFailure(failure.value());
+                if (!has_primary_failure()) {
+                    request_failure(failure.value());
                 }
             }
         }
@@ -1549,7 +1553,7 @@ void ActiveRuntimeState::RunDescriptorReconciliation() noexcept {
     }
 }
 
-Result<Error> ActiveRuntimeState::PrimaryFailure() const {
+Result<Error> ActiveRuntimeState::primary_failure() const {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     if (!primary_failure_.has_value()) {
         return nonstd::make_unexpected(
@@ -1558,7 +1562,7 @@ Result<Error> ActiveRuntimeState::PrimaryFailure() const {
     return primary_failure_.value();
 }
 
-Result<std::vector<Error>> ActiveRuntimeState::SecondaryFailures() const {
+Result<std::vector<Error>> ActiveRuntimeState::secondary_failures() const {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     if (primary_failure_.has_value()) {
         return secondary_failures_;
@@ -1567,28 +1571,28 @@ Result<std::vector<Error>> ActiveRuntimeState::SecondaryFailures() const {
         runtime_error(ErrorCode::InvalidState, "Runtime has no primary failure"));
 }
 
-std::uint64_t ActiveRuntimeState::SecondaryFailureOverflowCount() const noexcept {
+std::uint64_t ActiveRuntimeState::secondary_failure_overflow_count() const noexcept {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     return secondary_overflow_count_;
 }
 
-void ActiveRuntimeState::RecordPreRejected(bool gate_closed, bool timeout) noexcept {
+void ActiveRuntimeState::record_pre_rejected(bool gate_closed, bool timeout) noexcept {
     if (gate_closed) {
-        stats_.RecordGateClosed();
+        stats_.record_gate_closed();
     } else if (timeout) {
-        stats_.RecordTimedOut();
+        stats_.record_timed_out();
     } else {
-        stats_.RecordRejected();
+        stats_.record_rejected();
     }
 }
 
-void ActiveRuntimeState::RecordAdmissionWait(std::int64_t duration_ns) noexcept {
+void ActiveRuntimeState::record_admission_wait(std::int64_t duration_ns) noexcept {
     if (duration_ns >= 0 && admission_wait_latency_ != nullptr) {
-        static_cast<void>(admission_wait_latency_->Record(duration_ns));
+        static_cast<void>(admission_wait_latency_->record(duration_ns));
     }
 }
 
-void ActiveRuntimeState::RecordStorageLatency(
+void ActiveRuntimeState::record_storage_latency(
     StorageLatencyKind kind, std::int64_t duration_ns) noexcept {
     LatencyHistogram* histogram = nullptr;
     switch (kind) {
@@ -1603,23 +1607,23 @@ void ActiveRuntimeState::RecordStorageLatency(
             break;
     }
     if (histogram != nullptr && duration_ns >= 0) {
-        static_cast<void>(histogram->Record(duration_ns));
+        static_cast<void>(histogram->record(duration_ns));
     }
 }
 
-void ActiveRuntimeState::RecordStopLatency() noexcept {
+void ActiveRuntimeState::record_stop_latency() noexcept {
     if (!stop_started_valid_ || stop_latency_ == nullptr) {
         return;
     }
     const auto elapsed =
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - stop_started_).count();
     if (elapsed >= 0) {
-        static_cast<void>(stop_latency_->Record(elapsed));
+        static_cast<void>(stop_latency_->record(elapsed));
     }
     stop_started_valid_ = false;
 }
 
-void ActiveRuntimeState::FillLatencyStats(RuntimeStatsSnapshot& snapshot) const noexcept {
+void ActiveRuntimeState::fill_latency_stats(RuntimeStatsSnapshot& snapshot) const noexcept {
     if (admission_wait_latency_ != nullptr) {
         snapshot.latencies.admission_wait = latency_snapshot(*admission_wait_latency_);
     }
@@ -1637,7 +1641,7 @@ void ActiveRuntimeState::FillLatencyStats(RuntimeStatsSnapshot& snapshot) const 
     }
 }
 
-Result<rodaq_runtime_lifecycle_snapshot> ActiveRuntimeState::LifecycleSnapshot() const {
+Result<rodaq_runtime_lifecycle_snapshot> ActiveRuntimeState::lifecycle_snapshot() const {
     rodaq_runtime_lifecycle_snapshot snapshot{};
     const RuntimeState state = state_.load();
     switch (state) {
@@ -1662,12 +1666,12 @@ Result<rodaq_runtime_lifecycle_snapshot> ActiveRuntimeState::LifecycleSnapshot()
             break;
     }
     snapshot.normal_acquisition_allowed =
-        state == RuntimeState::Running && GateOpen() ? RODAQ_TRUE : RODAQ_FALSE;
+        state == RuntimeState::Running && gate_open() ? RODAQ_TRUE : RODAQ_FALSE;
     snapshot.generation = activation_generation_;
     return snapshot;
 }
 
-Result<void> ActiveRuntimeState::RegisterSource(
+Result<void> ActiveRuntimeState::register_source(
     std::size_t plugin_index, const rodaq_source_registration& request, SourceHandle& handle) {
     if (!rodaq::plugin::is_valid_source_registration(request) ||
         plugin_index >= acquisition_health_.size()) {
@@ -1689,7 +1693,7 @@ Result<void> ActiveRuntimeState::RegisterSource(
             ErrorCode::InvalidState, "Source registration requires an available Plugin"));
     }
     for (SourceHandle existing : source_handles_) {
-        const SourceEntry* entry = sources_.Find(existing);
+        const SourceEntry* entry = sources_.find(existing);
         if (entry != nullptr && bytes_equal(entry->source_id, source_id, source_id_size)) {
             if (entry->plugin_index != plugin_index) {
                 return nonstd::make_unexpected(runtime_error(
@@ -1701,8 +1705,8 @@ Result<void> ActiveRuntimeState::RegisterSource(
     }
 
     auto availability = std::make_unique<std::atomic<std::uint32_t>>(RODAQ_AVAILABILITY_AVAILABLE);
-    auto inserted = sources_.Insert(SourceEntry{
-        copy_bytes(arena_->Resource(), source_id, source_id_size), plugin_index,
+    auto inserted = sources_.insert(SourceEntry{
+        copy_bytes(arena_->resource(), source_id, source_id_size), plugin_index,
         std::move(availability)});
     if (!inserted.has_value()) {
         return nonstd::make_unexpected(std::move(inserted.error()));
@@ -1712,7 +1716,7 @@ Result<void> ActiveRuntimeState::RegisterSource(
     return {};
 }
 
-Result<void> ActiveRuntimeState::RegisterClock(
+Result<void> ActiveRuntimeState::register_clock(
     std::size_t plugin_index, const rodaq_clock_registration& request, ClockHandle& handle) {
     if (!rodaq::plugin::is_valid_clock_registration(request) ||
         plugin_index >= options_.acquisitions.size()) {
@@ -1735,7 +1739,7 @@ Result<void> ActiveRuntimeState::RegisterClock(
             ErrorCode::InvalidState, "Clock registration requires an available Plugin"));
     }
     for (ClockHandle existing : clock_handles_) {
-        const ClockEntry* entry = clocks_.Find(existing);
+        const ClockEntry* entry = clocks_.find(existing);
         if (entry == nullptr || entry->plugin_index != plugin_index ||
             !bytes_equal(entry->native_id, request.native_id.data, native_size)) {
             continue;
@@ -1751,12 +1755,12 @@ Result<void> ActiveRuntimeState::RegisterClock(
     }
 
     const std::uint64_t clock_id = next_clock_id_++;
-    auto inserted = clocks_.Insert(ClockEntry{
-        copy_bytes(arena_->Resource(), request.native_id.data, native_size),
+    auto inserted = clocks_.insert(ClockEntry{
+        copy_bytes(arena_->resource(), request.native_id.data, native_size),
         clock_id,
         request.resolution_numerator,
         request.resolution_denominator,
-        copy_string(arena_->Resource(), origin),
+        copy_string(arena_->resource(), origin),
         plugin_index,
     });
     if (!inserted.has_value()) {
@@ -1767,7 +1771,7 @@ Result<void> ActiveRuntimeState::RegisterClock(
     return {};
 }
 
-Result<void> ActiveRuntimeState::RegisterSchema(
+Result<void> ActiveRuntimeState::register_schema(
     std::size_t plugin_index, const rodaq_schema_registration& request, SchemaHandle& handle) {
     if (!rodaq::plugin::is_valid_schema_registration(request) ||
         plugin_index >= acquisition_health_.size()) {
@@ -1794,7 +1798,7 @@ Result<void> ActiveRuntimeState::RegisterSchema(
             ErrorCode::InvalidState, "Schema registration requires an available Plugin"));
     }
     for (SchemaHandle existing : schema_handles_) {
-        const SchemaEntry* entry = schemas_.Find(existing);
+        const SchemaEntry* entry = schemas_.find(existing);
         if (entry == nullptr || !strings_equal(entry->format, format) ||
             entry->type_identifier_present != (request.type_identifier_present == RODAQ_TRUE) ||
             !strings_equal(entry->type_identifier, type_identifier) ||
@@ -1806,12 +1810,12 @@ Result<void> ActiveRuntimeState::RegisterSchema(
     }
 
     const std::uint64_t schema_id = next_schema_id_++;
-    auto inserted = schemas_.Insert(SchemaEntry{
+    auto inserted = schemas_.insert(SchemaEntry{
         schema_id,
-        copy_string(arena_->Resource(), format),
+        copy_string(arena_->resource(), format),
         request.type_identifier_present == RODAQ_TRUE,
-        copy_string(arena_->Resource(), type_identifier),
-        copy_bytes(arena_->Resource(), request.representation.data, representation_size),
+        copy_string(arena_->resource(), type_identifier),
+        copy_bytes(arena_->resource(), request.representation.data, representation_size),
     });
     if (!inserted.has_value()) {
         return nonstd::make_unexpected(std::move(inserted.error()));
@@ -1821,7 +1825,7 @@ Result<void> ActiveRuntimeState::RegisterSchema(
     return {};
 }
 
-Result<void> ActiveRuntimeState::RegisterStream(
+Result<void> ActiveRuntimeState::register_stream(
     std::size_t plugin_index, const rodaq_stream_registration& request, StreamHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_registration(request) ||
         plugin_index >= options_.acquisitions.size()) {
@@ -1842,7 +1846,7 @@ Result<void> ActiveRuntimeState::RegisterStream(
             ErrorCode::InvalidState, "Stream registration requires an available Plugin"));
     }
     for (StreamHandle existing : stream_handles_) {
-        const StreamEntry* entry = streams_.Find(existing);
+        const StreamEntry* entry = streams_.find(existing);
         if (entry != nullptr && entry->plugin_index == plugin_index &&
             bytes_equal(entry->native_id, request.native_id.data, native_size)) {
             handle = existing;
@@ -1855,10 +1859,10 @@ Result<void> ActiveRuntimeState::RegisterStream(
     auto admission_mutex = std::make_unique<std::mutex>();
     auto binding_transition_mutex = std::make_unique<std::mutex>();
     auto binding_transition_condition = std::make_unique<std::condition_variable>();
-    auto inserted = streams_.Insert(StreamEntry{
+    auto inserted = streams_.insert(StreamEntry{
         next_stream_id_++,
         plugin_index,
-        copy_bytes(arena_->Resource(), request.native_id.data, native_size),
+        copy_bytes(arena_->resource(), request.native_id.data, native_size),
         std::move(availability),
         std::move(current_binding),
         std::move(admission_mutex),
@@ -1874,7 +1878,7 @@ Result<void> ActiveRuntimeState::RegisterStream(
     return {};
 }
 
-Result<void> ActiveRuntimeState::PublishStreamDescriptor(
+Result<void> ActiveRuntimeState::publish_stream_descriptor(
     std::size_t plugin_index, const rodaq_stream_descriptor_registration& request,
     StreamDescriptorHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_descriptor_registration(request) ||
@@ -1901,8 +1905,8 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                 ErrorCode::InvalidState, "Descriptor publication requires an available Plugin"));
         }
         critical_for_start = current_state == RuntimeState::Starting;
-        const StreamHandle stream_handle = StreamHandle::FromRaw(request.stream.value);
-        StreamEntry* stream = streams_.Find(stream_handle);
+        const StreamHandle stream_handle = StreamHandle::from_raw(request.stream.value);
+        StreamEntry* stream = streams_.find(stream_handle);
         if (stream == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Descriptor Stream is unknown"));
@@ -1912,15 +1916,15 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                 ErrorCode::InvalidState, "Descriptor Stream belongs to another Plugin"));
         }
 
-        std::pmr::vector<TimestampKeyRecord> keys(arena_->Resource());
-        std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->Resource());
-        std::pmr::vector<rodaq_timestamp_key> transport_abi_keys(arena_->Resource());
+        std::pmr::vector<TimestampKeyRecord> keys(arena_->resource());
+        std::pmr::vector<rodaq_timestamp_key> abi_keys(arena_->resource());
+        std::pmr::vector<rodaq_timestamp_key> transport_abi_keys(arena_->resource());
         const std::size_t key_count = static_cast<std::size_t>(request.timestamp_key_count);
         keys.reserve(key_count + 1U);
         abi_keys.reserve(key_count + 1U);
         transport_abi_keys.reserve(request.timestamp_key_count);
         keys.push_back(TimestampKeyRecord{
-            copy_string(arena_->Resource(), kIngressTimestampRole), ingress_clock_});
+            copy_string(arena_->resource(), kIngressTimestampRole), ingress_clock_});
         for (std::uint32_t index = 0; index < request.timestamp_key_count; ++index) {
             const rodaq_timestamp_key& key = request.timestamp_keys[index];
             std::string_view role;
@@ -1933,8 +1937,8 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                     ErrorCode::InvalidArgument,
                     "Acquisition Plugins must not publish the Runtime ingress timestamp role"));
             }
-            const ClockHandle clock = ClockHandle::FromRaw(key.clock.value);
-            const ClockEntry* clock_entry = clocks_.Find(clock);
+            const ClockHandle clock = ClockHandle::from_raw(key.clock.value);
+            const ClockEntry* clock_entry = clocks_.find(clock);
             if (clock_entry == nullptr) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
@@ -1949,17 +1953,17 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                         ErrorCode::InvalidArgument, "TimestampKeySet contains a duplicate key"));
                 }
             }
-            keys.push_back(TimestampKeyRecord{copy_string(arena_->Resource(), role), clock});
+            keys.push_back(TimestampKeyRecord{copy_string(arena_->resource(), role), clock});
             transport_abi_keys.push_back(rodaq_timestamp_key{
                 rodaq_string_view{keys.back().role.data(), keys.back().role.size()},
-                rodaq_clock_handle{clock.Value()},
+                rodaq_clock_handle{clock.value()},
             });
         }
 
         TimestampKeySetHandle key_set_handle;
         bool found_key_set = false;
         for (TimestampKeySetHandle existing : timestamp_key_set_handles_) {
-            const TimestampKeySetEntry* entry = timestamp_key_sets_.Find(existing);
+            const TimestampKeySetEntry* entry = timestamp_key_sets_.find(existing);
             if (entry == nullptr || entry->keys.size() != keys.size()) {
                 continue;
             }
@@ -1986,14 +1990,14 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                 std::move(keys),
                 std::move(abi_keys),
             };
-            auto inserted = timestamp_key_sets_.Insert(std::move(entry));
+            auto inserted = timestamp_key_sets_.insert(std::move(entry));
             if (!inserted.has_value()) {
                 return nonstd::make_unexpected(std::move(inserted.error()));
             }
             key_set_handle = inserted.value();
             timestamp_key_set_handles_.push_back(key_set_handle);
         }
-        TimestampKeySetEntry* key_set = timestamp_key_sets_.Find(key_set_handle);
+        TimestampKeySetEntry* key_set = timestamp_key_sets_.find(key_set_handle);
         if (key_set == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InternalError, "TimestampKeySet publication failed"));
@@ -2004,7 +2008,7 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
             for (const TimestampKeyRecord& key : key_set->keys) {
                 key_set->abi_keys.push_back(rodaq_timestamp_key{
                     rodaq_string_view{key.role.data(), key.role.size()},
-                    rodaq_clock_handle{key.clock.Value()},
+                    rodaq_clock_handle{key.clock.value()},
                 });
             }
         }
@@ -2013,17 +2017,17 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
             next_descriptor_id_++,
             stream_handle,
             request.schema_present == RODAQ_TRUE,
-            SchemaHandle::FromRaw(request.schema.value),
+            SchemaHandle::from_raw(request.schema.value),
             0,
-            copy_string(arena_->Resource(), name),
-            copy_string(arena_->Resource(), payload_encoding),
+            copy_string(arena_->resource(), name),
+            copy_string(arena_->resource(), payload_encoding),
             key_set_id,
-            std::pmr::vector<rodaq_timestamp_key>(arena_->Resource()),
+            std::pmr::vector<rodaq_timestamp_key>(arena_->resource()),
             std::move(transport_abi_keys),
             plugin_index,
         };
         if (descriptor_entry.schema_present) {
-            const SchemaEntry* schema = schemas_.Find(descriptor_entry.schema);
+            const SchemaEntry* schema = schemas_.find(descriptor_entry.schema);
             if (schema == nullptr) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::NotFound, "Descriptor Schema is unknown"));
@@ -2033,7 +2037,7 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         descriptor_entry.canonical_timestamp_keys.assign(
             key_set->abi_keys.begin(), key_set->abi_keys.end());
 
-        auto descriptor_inserted = descriptors_.Insert(std::move(descriptor_entry));
+        auto descriptor_inserted = descriptors_.insert(std::move(descriptor_entry));
         if (!descriptor_inserted.has_value()) {
             return nonstd::make_unexpected(std::move(descriptor_inserted.error()));
         }
@@ -2041,24 +2045,24 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
         descriptor_handles_.push_back(handle);
     }
 
-    auto requested = RequestDescriptorReconciliation(handle, critical_for_start);
+    auto requested = request_descriptor_reconciliation(handle, critical_for_start);
     if (!requested.has_value()) {
         if (requested.error().code() == ErrorCode::ResourceExhausted) {
-            RequestFailure(requested.error());
+            request_failure(requested.error());
         }
         return nonstd::make_unexpected(std::move(requested.error()));
     }
     return {};
 }
 
-Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle descriptor) {
+Result<bool> ActiveRuntimeState::reconcile_descriptor(StreamDescriptorHandle descriptor) {
     while (true) {
         StreamHandle stream;
         std::size_t plugin_index = 0;
         rodaq_interface control{};
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
             if (entry == nullptr) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::NotFound, "Descriptor is not published"));
@@ -2094,12 +2098,12 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
             control = acquisition_controls_[plugin_index].value();
         }
 
-        auto readiness = EnsureDescriptorReady(descriptor);
+        auto readiness = ensure_descriptor_ready(descriptor);
         bool retry = false;
         if (!readiness.has_value()) {
             {
                 std::lock_guard<std::mutex> lock(control_mutex_);
-                StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+                StreamDescriptorEntry* entry = descriptors_.find(descriptor);
                 if (entry != nullptr) {
                     entry->reconciliation_running = false;
                     entry->lifecycle = DescriptorLifecycle::Failed;
@@ -2107,19 +2111,19 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
                     entry->reconciliation_retry_requested = false;
                 }
             }
-            RequestFailure(readiness.error());
+            request_failure(readiness.error());
             return nonstd::make_unexpected(std::move(readiness.error()));
         }
         if (readiness.value() != DescriptorReadiness::Ready) {
             {
                 std::lock_guard<std::mutex> lock(control_mutex_);
-                StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+                StreamDescriptorEntry* entry = descriptors_.find(descriptor);
                 if (entry != nullptr) {
                     entry->reconciliation_running = false;
                     entry->lifecycle = DescriptorLifecycle::Unsupported;
                     retry = entry->reconciliation_retry_requested;
                     entry->reconciliation_retry_requested = false;
-                    StreamEntry* stream_entry = streams_.Find(entry->stream);
+                    StreamEntry* stream_entry = streams_.find(entry->stream);
                     if (stream_entry != nullptr && stream_entry->current_binding->load() == 0) {
                         stream_entry->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
                     }
@@ -2133,7 +2137,7 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
 
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
             const RuntimeState current_state = state_.load();
             if (entry == nullptr || (current_state != RuntimeState::Starting &&
                                      current_state != RuntimeState::Running)) {
@@ -2144,10 +2148,10 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
             }
             entry->lifecycle = DescriptorLifecycle::Ready;
         }
-        auto activated = ActivateDescriptorBinding(descriptor, stream, plugin_index, control);
+        auto activated = activate_descriptor_binding(descriptor, stream, plugin_index, control);
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
             if (entry != nullptr) {
                 entry->reconciliation_running = false;
                 entry->reconciliation_retry_requested = false;
@@ -2160,13 +2164,13 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
     }
 }
 
-Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
+Result<void> ActiveRuntimeState::activate_descriptor_binding(
     StreamDescriptorHandle descriptor, StreamHandle stream_handle, std::size_t plugin_index,
     rodaq_interface control) {
     StreamEntry* stream = nullptr;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        stream = streams_.Find(stream_handle);
+        stream = streams_.find(stream_handle);
         if (stream == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Descriptor Stream is unavailable"));
@@ -2199,8 +2203,8 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     rodaq_binding_transition transition{};
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
-        StreamEntry* current_stream = streams_.Find(stream_handle);
+        StreamDescriptorEntry* descriptor_entry = descriptors_.find(descriptor);
+        StreamEntry* current_stream = streams_.find(stream_handle);
         const RuntimeState current_state = state_.load();
         if (descriptor_entry == nullptr || current_stream == nullptr ||
             descriptor_entry->lifecycle != DescriptorLifecycle::Ready ||
@@ -2212,23 +2216,23 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         old_binding_value = current_stream->current_binding->load(std::memory_order_acquire);
         if (old_binding_value != 0) {
             BindingEntry* current_binding =
-                bindings_.Find(BindingHandle::FromRaw(old_binding_value));
+                bindings_.find(BindingHandle::from_raw(old_binding_value));
             StreamDescriptorEntry* current_descriptor =
                 current_binding == nullptr ? nullptr
-                                           : descriptors_.Find(current_binding->descriptor);
+                                           : descriptors_.find(current_binding->descriptor);
             if (current_descriptor != nullptr &&
                 current_descriptor->stream_descriptor_id > descriptor_entry->stream_descriptor_id) {
                 descriptor_entry->lifecycle = DescriptorLifecycle::Superseded;
                 descriptor_entry->reconciliation_running = false;
                 return {};
             }
-            old_binding = BindingHandle::FromRaw(old_binding_value);
+            old_binding = BindingHandle::from_raw(old_binding_value);
             if (current_binding != nullptr) {
                 old_descriptor =
-                    rodaq_stream_descriptor_handle{current_binding->descriptor.Value()};
+                    rodaq_stream_descriptor_handle{current_binding->descriptor.value()};
             }
         }
-        auto created = CreateBindingLocked(
+        auto created = create_binding_locked(
             plugin_index, stream_handle, descriptor, BindingLifecycle::Prepared);
         if (!created.has_value()) {
             descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
@@ -2247,24 +2251,24 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     auto control_state = shared_from_this();
     auto prepare_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
     auto prepare_error = std::make_shared<rodaq_error>();
-    auto prepared_control = SuperviseBindingControl(
+    auto prepared_control = supervise_binding_control(
         [control_state, table, control, transition, stream_handle, old_descriptor, descriptor,
          prepare_status, prepare_error]() -> Result<void> {
             static_cast<void>(control_state);
             *prepare_status = table->prepare_binding_switch(
-                control.context, transition, rodaq_stream_handle{stream_handle.Value()},
-                old_descriptor, rodaq_stream_descriptor_handle{descriptor.Value()},
+                control.context, transition, rodaq_stream_handle{stream_handle.value()},
+                old_descriptor, rodaq_stream_descriptor_handle{descriptor.value()},
                 prepare_error.get());
             return {};
         },
         "Acquisition Binding prepare");
     if (!prepared_control.has_value()) {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        BindingEntry* prepared = bindings_.Find(candidate);
+        BindingEntry* prepared = bindings_.find(candidate);
         if (prepared != nullptr) {
             prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
         }
-        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+        StreamDescriptorEntry* descriptor_entry = descriptors_.find(descriptor);
         if (descriptor_entry != nullptr) {
             descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
         }
@@ -2274,9 +2278,9 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         bool resume_old = false;
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamEntry* current_stream = streams_.Find(stream_handle);
+            StreamEntry* current_stream = streams_.find(stream_handle);
             const RuntimeState current_state = state_.load();
-            resume_old = old_binding.Valid() && current_stream != nullptr &&
+            resume_old = old_binding.valid() && current_stream != nullptr &&
                          current_state == RuntimeState::Running &&
                          current_stream->current_binding->load(std::memory_order_acquire) ==
                              old_binding_value &&
@@ -2284,7 +2288,7 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
         }
         auto abort_error = std::make_shared<rodaq_error>();
         auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
-        auto aborted = SuperviseBindingControl(
+        auto aborted = supervise_binding_control(
             [control_state, table, control, transition, resume_old, abort_status, abort_error]() {
                 static_cast<void>(control_state);
                 *abort_status = table->abort_binding_switch(
@@ -2296,23 +2300,23 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
             "Acquisition Binding abort");
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            BindingEntry* prepared = bindings_.Find(candidate);
+            BindingEntry* prepared = bindings_.find(candidate);
             if (prepared != nullptr) {
                 prepared->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
             }
-            StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
+            StreamDescriptorEntry* descriptor_entry = descriptors_.find(descriptor);
             if (descriptor_entry != nullptr) {
                 descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
             }
-            StreamEntry* current_stream = streams_.Find(stream_handle);
+            StreamEntry* current_stream = streams_.find(stream_handle);
             if (!resume_old && current_stream != nullptr) {
                 current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             }
         }
         if (!aborted.has_value()) {
-            RequestFailure(std::move(aborted.error()));
+            request_failure(std::move(aborted.error()));
         } else if (*abort_status != RODAQ_STATUS_OK) {
-            RequestFailure(runtime_error(
+            request_failure(runtime_error(
                 ErrorCode::InternalError, "Binding abort after prepare failure also failed"));
         }
         auto converted = result_from_status(*prepare_status, prepare_error.get(), "acquisition");
@@ -2331,17 +2335,17 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
             transition_token_current = stream->binding_transition_active &&
                                        stream->binding_transition_token == transition.value;
         }
-        StreamDescriptorEntry* descriptor_entry = descriptors_.Find(descriptor);
-        BindingEntry* prepared = bindings_.Find(candidate);
-        StreamEntry* current_stream = streams_.Find(stream_handle);
-        BindingEntry* old = old_binding.Valid() ? bindings_.Find(old_binding) : nullptr;
+        StreamDescriptorEntry* descriptor_entry = descriptors_.find(descriptor);
+        BindingEntry* prepared = bindings_.find(candidate);
+        StreamEntry* current_stream = streams_.find(stream_handle);
+        BindingEntry* old = old_binding.valid() ? bindings_.find(old_binding) : nullptr;
         const RuntimeState current_state = state_.load();
         transition_stale =
             descriptor_entry == nullptr || prepared == nullptr || current_stream == nullptr ||
             descriptor_entry->stream_descriptor_id != descriptor_generation ||
             descriptor_entry->lifecycle != DescriptorLifecycle::BindingPrepared ||
             current_stream->current_binding->load(std::memory_order_acquire) != old_binding_value ||
-            (old_binding.Valid() && old == nullptr) || !transition_token_current ||
+            (old_binding.valid() && old == nullptr) || !transition_token_current ||
             (current_state != RuntimeState::Starting && current_state != RuntimeState::Running);
         if (transition_stale) {
             if (prepared != nullptr) {
@@ -2361,20 +2365,20 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                     static_cast<std::uint32_t>(BindingLifecycle::Draining),
                     std::memory_order_release);
             }
-            current_stream->current_binding->store(candidate.Value(), std::memory_order_release);
+            current_stream->current_binding->store(candidate.value(), std::memory_order_release);
             current_stream->availability->store(RODAQ_AVAILABILITY_AVAILABLE);
             descriptor_entry->lifecycle = DescriptorLifecycle::Active;
         }
     }
-    NotifyAdmissionEligibilityChanged();
+    notify_admission_eligibility_changed();
     if (transition_stale) {
         const rodaq_binding_abort_disposition disposition =
-            old_binding.Valid() && state_.load() == RuntimeState::Running
+            old_binding.valid() && state_.load() == RuntimeState::Running
                 ? RODAQ_BINDING_ABORT_RESUME_OLD
                 : RODAQ_BINDING_ABORT_KEEP_PAUSED;
         auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
         auto abort_error = std::make_shared<rodaq_error>();
-        auto aborted = SuperviseBindingControl(
+        auto aborted = supervise_binding_control(
             [control_state, table, control, transition, disposition, abort_status, abort_error]() {
                 static_cast<void>(control_state);
                 *abort_status = table->abort_binding_switch(
@@ -2383,7 +2387,7 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
             },
             "Acquisition Binding stale-transition abort");
         if (!aborted.has_value() || *abort_status != RODAQ_STATUS_OK) {
-            RequestFailure(
+            request_failure(
                 aborted.has_value()
                     ? runtime_error(ErrorCode::Unavailable, "Binding stale-transition abort failed")
                     : aborted.error());
@@ -2394,7 +2398,7 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
 
     auto commit_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
     auto commit_error = std::make_shared<rodaq_error>();
-    auto committed = SuperviseBindingControl(
+    auto committed = supervise_binding_control(
         [control_state, table, control, transition, commit_status, commit_error]() {
             static_cast<void>(control_state);
             *commit_status =
@@ -2405,12 +2409,12 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     if (!committed.has_value() || *commit_status != RODAQ_STATUS_OK) {
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamEntry* current_stream = streams_.Find(stream_handle);
+            StreamEntry* current_stream = streams_.find(stream_handle);
             if (current_stream != nullptr) {
                 current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             }
         }
-        RequestFailure(
+        request_failure(
             committed.has_value()
                 ? runtime_error(
                       ErrorCode::Unavailable, "Binding commit failed after Runtime publication")
@@ -2422,9 +2426,9 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
                                            ErrorCode::Unavailable, "Binding commit failed"))
                                      : nonstd::make_unexpected(std::move(converted.error()));
     }
-    if (old_binding.Valid()) {
+    if (old_binding.valid()) {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        BindingEntry* old = bindings_.Find(old_binding);
+        BindingEntry* old = bindings_.find(old_binding);
         if (old != nullptr && old->admission_inflight->load() == 0) {
             old->lifecycle->store(static_cast<std::uint32_t>(BindingLifecycle::Retired));
         }
@@ -2432,15 +2436,15 @@ Result<void> ActiveRuntimeState::ActivateDescriptorBinding(
     return {};
 }
 
-void ActiveRuntimeState::OnProjectionRegistered(
+void ActiveRuntimeState::on_projection_registered(
     rodaq_stream_descriptor_handle descriptor_value, std::string_view) noexcept {
     try {
         const StreamDescriptorHandle descriptor =
-            StreamDescriptorHandle::FromRaw(descriptor_value.value);
+            StreamDescriptorHandle::from_raw(descriptor_value.value);
         bool critical_for_start = false;
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.Find(descriptor);
+            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
             if (entry == nullptr) {
                 return;
             }
@@ -2457,20 +2461,21 @@ void ActiveRuntimeState::OnProjectionRegistered(
             }
             critical_for_start = current_state == RuntimeState::Starting;
         }
-        auto result = RequestDescriptorReconciliation(descriptor, critical_for_start);
+        auto result = request_descriptor_reconciliation(descriptor, critical_for_start);
         if (!result.has_value()) {
             if (result.error().code() == ErrorCode::ResourceExhausted) {
-                RequestFailure(result.error());
+                request_failure(result.error());
             }
         }
     } catch (const std::exception& error) {
-        RequestFailure(runtime_error(ErrorCode::InternalError, error.what()));
+        request_failure(runtime_error(ErrorCode::InternalError, error.what()));
     } catch (...) {
-        RequestFailure(runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
+        request_failure(
+            runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
     }
 }
 
-Result<BindingHandle> ActiveRuntimeState::CreateBindingLocked(
+Result<BindingHandle> ActiveRuntimeState::create_binding_locked(
     std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
     BindingLifecycle lifecycle) {
     auto entry = BindingEntry{
@@ -2480,7 +2485,7 @@ Result<BindingHandle> ActiveRuntimeState::CreateBindingLocked(
         std::make_unique<std::atomic<std::uint32_t>>(static_cast<std::uint32_t>(lifecycle)),
         std::make_unique<std::atomic<std::uint64_t>>(0),
     };
-    auto inserted = bindings_.Insert(std::move(entry));
+    auto inserted = bindings_.insert(std::move(entry));
     if (!inserted.has_value()) {
         return nonstd::make_unexpected(std::move(inserted.error()));
     }
@@ -2488,9 +2493,9 @@ Result<BindingHandle> ActiveRuntimeState::CreateBindingLocked(
     return inserted.value();
 }
 
-void ActiveRuntimeState::RetireDrainingBinding(BindingHandle binding) noexcept {
+void ActiveRuntimeState::retire_draining_binding(BindingHandle binding) noexcept {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    BindingEntry* entry = bindings_.Find(binding);
+    BindingEntry* entry = bindings_.find(binding);
     if (entry != nullptr &&
         entry->lifecycle->load() == static_cast<std::uint32_t>(BindingLifecycle::Draining) &&
         entry->admission_inflight->load() == 0) {
@@ -2498,18 +2503,18 @@ void ActiveRuntimeState::RetireDrainingBinding(BindingHandle binding) noexcept {
     }
 }
 
-void ActiveRuntimeState::NotifyAdmissionEligibilityChanged() noexcept {
+void ActiveRuntimeState::notify_admission_eligibility_changed() noexcept {
     admission_eligibility_generation_.fetch_add(1, std::memory_order_acq_rel);
     if (pipeline_ != nullptr) {
-        pipeline_->NotifyAdmissionWaiters();
+        pipeline_->notify_admission_waiters();
     }
 }
 
-Result<void> ActiveRuntimeState::ReportSourceAvailability(
+Result<void> ActiveRuntimeState::report_source_availability(
     std::size_t plugin_index, SourceHandle source, rodaq_availability_state availability) {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        SourceEntry* entry = sources_.Find(source);
+        SourceEntry* entry = sources_.find(source);
         if (entry == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Source handle is unknown"));
@@ -2525,15 +2530,15 @@ Result<void> ActiveRuntimeState::ReportSourceAvailability(
         }
         entry->availability->store(availability);
     }
-    NotifyAdmissionEligibilityChanged();
+    notify_admission_eligibility_changed();
     return {};
 }
 
-Result<void> ActiveRuntimeState::ReportStreamAvailability(
+Result<void> ActiveRuntimeState::report_stream_availability(
     std::size_t plugin_index, StreamHandle stream, rodaq_availability_state availability) {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        StreamEntry* entry = streams_.Find(stream);
+        StreamEntry* entry = streams_.find(stream);
         if (entry == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Stream handle is unknown"));
@@ -2549,11 +2554,11 @@ Result<void> ActiveRuntimeState::ReportStreamAvailability(
         }
         entry->availability->store(availability);
     }
-    NotifyAdmissionEligibilityChanged();
+    notify_admission_eligibility_changed();
     return {};
 }
 
-Result<void> ActiveRuntimeState::ReportPluginState(
+Result<void> ActiveRuntimeState::report_plugin_state(
     std::size_t plugin_index, rodaq_acquisition_plugin_state plugin_state,
     const rodaq_error* diagnostic) {
     if (plugin_index >= acquisition_health_.size() ||
@@ -2578,13 +2583,13 @@ Result<void> ActiveRuntimeState::ReportPluginState(
 
         if (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
             for (SourceHandle handle : source_handles_) {
-                SourceEntry* source = sources_.Find(handle);
+                SourceEntry* source = sources_.find(handle);
                 if (source != nullptr && source->plugin_index == plugin_index) {
                     source->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
                 }
             }
             for (StreamHandle handle : stream_handles_) {
-                StreamEntry* stream = streams_.Find(handle);
+                StreamEntry* stream = streams_.find(handle);
                 if (stream == nullptr || stream->plugin_index != plugin_index) {
                     continue;
                 }
@@ -2592,7 +2597,7 @@ Result<void> ActiveRuntimeState::ReportPluginState(
                 stream->current_binding->store(0, std::memory_order_release);
             }
             for (BindingHandle handle : binding_handles_) {
-                BindingEntry* binding = bindings_.Find(handle);
+                BindingEntry* binding = bindings_.find(handle);
                 if (binding != nullptr && binding->plugin_index == plugin_index) {
                     binding->lifecycle->store(
                         static_cast<std::uint32_t>(BindingLifecycle::Retired),
@@ -2600,7 +2605,7 @@ Result<void> ActiveRuntimeState::ReportPluginState(
                 }
             }
             for (StreamDescriptorHandle handle : descriptor_handles_) {
-                StreamDescriptorEntry* descriptor = descriptors_.Find(handle);
+                StreamDescriptorEntry* descriptor = descriptors_.find(handle);
                 if (descriptor != nullptr && descriptor->plugin_index == plugin_index &&
                     descriptor->lifecycle != DescriptorLifecycle::Failed) {
                     descriptor->lifecycle = DescriptorLifecycle::Superseded;
@@ -2611,10 +2616,10 @@ Result<void> ActiveRuntimeState::ReportPluginState(
     }
 
     if (notify_eligibility) {
-        NotifyAdmissionEligibilityChanged();
+        notify_admission_eligibility_changed();
     }
     if (plugin_state == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE) {
-        RequestFailure(
+        request_failure(
             diagnostic == nullptr
                 ? runtime_error(
                       ErrorCode::Unavailable, "Acquisition Plugin reported terminal failure")
@@ -2623,28 +2628,28 @@ Result<void> ActiveRuntimeState::ReportPluginState(
     return {};
 }
 
-Result<void> ActiveRuntimeState::GetSource(SourceHandle handle, rodaq_source_view& view) const {
+Result<void> ActiveRuntimeState::get_source(SourceHandle handle, rodaq_source_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    const SourceEntry* entry = sources_.Find(handle);
+    const SourceEntry* entry = sources_.find(handle);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "Source handle was not found"));
     }
     view.struct_size = sizeof(view);
-    view.handle = rodaq_source_handle{handle.Value()};
+    view.handle = rodaq_source_handle{handle.value()};
     view.source_id = rodaq_bytes_view{entry->source_id.data(), entry->source_id.size()};
     return {};
 }
 
-Result<void> ActiveRuntimeState::GetClock(ClockHandle handle, rodaq_clock_view& view) const {
+Result<void> ActiveRuntimeState::get_clock(ClockHandle handle, rodaq_clock_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    const ClockEntry* entry = clocks_.Find(handle);
+    const ClockEntry* entry = clocks_.find(handle);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "Clock handle was not found"));
     }
     view.struct_size = sizeof(view);
-    view.handle = rodaq_clock_handle{handle.Value()};
+    view.handle = rodaq_clock_handle{handle.value()};
     view.clock_id = entry->clock_id;
     view.resolution_numerator = entry->resolution_numerator;
     view.resolution_denominator = entry->resolution_denominator;
@@ -2652,16 +2657,16 @@ Result<void> ActiveRuntimeState::GetClock(ClockHandle handle, rodaq_clock_view& 
     return {};
 }
 
-Result<void> ActiveRuntimeState::GetSchema(SchemaHandle handle, rodaq_schema_view& view) const {
+Result<void> ActiveRuntimeState::get_schema(SchemaHandle handle, rodaq_schema_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    const SchemaEntry* entry = schemas_.Find(handle);
+    const SchemaEntry* entry = schemas_.find(handle);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "Schema handle was not found"));
     }
     view.struct_size = sizeof(view);
     view.type_identifier_present = entry->type_identifier_present ? RODAQ_TRUE : RODAQ_FALSE;
-    view.handle = rodaq_schema_handle{handle.Value()};
+    view.handle = rodaq_schema_handle{handle.value()};
     view.schema_id = entry->schema_id;
     view.format = rodaq_string_view{entry->format.data(), entry->format.size()};
     view.type_identifier =
@@ -2671,11 +2676,11 @@ Result<void> ActiveRuntimeState::GetSchema(SchemaHandle handle, rodaq_schema_vie
     return {};
 }
 
-Result<void> ActiveRuntimeState::GetTimestampKeySet(
+Result<void> ActiveRuntimeState::get_timestamp_key_set(
     std::uint64_t id, rodaq_timestamp_key_set_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
     for (TimestampKeySetHandle handle : timestamp_key_set_handles_) {
-        const TimestampKeySetEntry* entry = timestamp_key_sets_.Find(handle);
+        const TimestampKeySetEntry* entry = timestamp_key_sets_.find(handle);
         if (entry == nullptr || entry->timestamp_key_set_id != id) {
             continue;
         }
@@ -2689,34 +2694,34 @@ Result<void> ActiveRuntimeState::GetTimestampKeySet(
         runtime_error(ErrorCode::NotFound, "TimestampKeySet was not found"));
 }
 
-Result<void> ActiveRuntimeState::GetStream(StreamHandle handle, rodaq_stream_view& view) const {
+Result<void> ActiveRuntimeState::get_stream(StreamHandle handle, rodaq_stream_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    const StreamEntry* entry = streams_.Find(handle);
+    const StreamEntry* entry = streams_.find(handle);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "Stream handle was not found"));
     }
     view.struct_size = sizeof(view);
-    view.handle = rodaq_stream_handle{handle.Value()};
+    view.handle = rodaq_stream_handle{handle.value()};
     view.stream_id = entry->stream_id;
     return {};
 }
 
-Result<void> ActiveRuntimeState::GetStreamDescriptor(
+Result<void> ActiveRuntimeState::get_stream_descriptor(
     StreamDescriptorHandle handle, rodaq_stream_descriptor_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
-    const StreamDescriptorEntry* entry = descriptors_.Find(handle);
+    const StreamDescriptorEntry* entry = descriptors_.find(handle);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::NotFound, "StreamDescriptor handle was not found"));
     }
     view.struct_size = sizeof(view);
     view.schema_present = entry->schema_present ? RODAQ_TRUE : RODAQ_FALSE;
-    view.handle = rodaq_stream_descriptor_handle{handle.Value()};
-    view.stream = rodaq_stream_handle{entry->stream.Value()};
-    view.schema = rodaq_schema_handle{entry->schema.Value()};
+    view.handle = rodaq_stream_descriptor_handle{handle.value()};
+    view.stream = rodaq_stream_handle{entry->stream.value()};
+    view.schema = rodaq_schema_handle{entry->schema.value()};
     view.stream_descriptor_id = entry->stream_descriptor_id;
-    const StreamEntry* stream = streams_.Find(entry->stream);
+    const StreamEntry* stream = streams_.find(entry->stream);
     view.stream_id = stream == nullptr ? 0 : stream->stream_id;
     view.name = rodaq_string_view{entry->name.data(), entry->name.size()};
     view.schema_id = entry->schema_id;
@@ -2734,9 +2739,9 @@ namespace {
 struct SubmissionCallGuard {
     explicit SubmissionCallGuard(ActiveRuntimeState& runtime_state) noexcept
     : state_(&runtime_state) {
-        runtime_state.BeginSubmission();
+        runtime_state.begin_submission();
     }
-    ~SubmissionCallGuard() { state_->EndSubmission(); }
+    ~SubmissionCallGuard() { state_->end_submission(); }
 
     ActiveRuntimeState* state_;
 };
@@ -2745,13 +2750,13 @@ rodaq_acquisition_submit_result pre_rejected(
     ActiveRuntimeState& state, rodaq_admission_rejection_reason reason,
     rodaq_payload_disposition disposition, bool gate_closed = false,
     bool timeout = false) noexcept {
-    state.RecordPreRejected(gate_closed, timeout);
+    state.record_pre_rejected(gate_closed, timeout);
     return submit_result(RODAQ_ADMISSION_PRE_REJECTED, reason, disposition);
 }
 
 }  // namespace
 
-Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
+Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
     std::size_t plugin_index, const rodaq_record_submission& submission,
     rodaq_payload_disposition& disposition) {
     SubmissionCallGuard submission_guard(*this);
@@ -2768,7 +2773,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     const rodaq_payload_mode payload_mode = submission.payload.mode;
     disposition = payload_mode == RODAQ_PAYLOAD_COPY ? RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE
                                                      : RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE;
-    if (state_.load() != RuntimeState::Running || !GateOpen() || pipeline_ == nullptr) {
+    if (state_.load() != RuntimeState::Running || !gate_open() || pipeline_ == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_NOT_RUNNING, disposition, true);
     }
     if (plugin_index >= acquisition_health_.size() ||
@@ -2777,13 +2782,13 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
     }
 
-    const StreamHandle stream_handle = StreamHandle::FromRaw(submission.stream.value);
+    const StreamHandle stream_handle = StreamHandle::from_raw(submission.stream.value);
     const StreamDescriptorHandle descriptor_handle =
-        StreamDescriptorHandle::FromRaw(submission.descriptor.value);
+        StreamDescriptorHandle::from_raw(submission.descriptor.value);
     std::optional<SourceHandle> source;
     std::optional<std::uint64_t> source_sequence;
     if (submission.source_present == RODAQ_TRUE) {
-        source = SourceHandle::FromRaw(submission.source.value);
+        source = SourceHandle::from_raw(submission.source.value);
     }
     if (submission.source_sequence_present == RODAQ_TRUE) {
         source_sequence = submission.source_sequence;
@@ -2792,8 +2797,8 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     const StreamDescriptorEntry* descriptor = nullptr;
     const SourceEntry* source_entry = nullptr;
     BindingHandle current_binding;
-    stream = streams_.FindStable(stream_handle);
-    descriptor = descriptors_.FindStable(descriptor_handle);
+    stream = streams_.find_stable(stream_handle);
+    descriptor = descriptors_.find_stable(descriptor_handle);
     if (stream == nullptr || descriptor == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
     }
@@ -2804,15 +2809,15 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
     }
     if (source.has_value()) {
-        source_entry = sources_.FindStable(*source);
+        source_entry = sources_.find_stable(*source);
         if (source_entry == nullptr || source_entry->plugin_index != plugin_index) {
             return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
         }
     }
     current_binding =
-        BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
+        BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
     BindingEntry* binding =
-        current_binding.Valid() ? bindings_.FindStable(current_binding) : nullptr;
+        current_binding.valid() ? bindings_.find_stable(current_binding) : nullptr;
     if (binding == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
     }
@@ -2848,35 +2853,35 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     TimestampState timestamps;
     auto ingress_reading = capture_ingress_reading();
     if (!ingress_reading.has_value()) {
-        RequestFailure(ingress_reading.error());
+        request_failure(ingress_reading.error());
         return nonstd::make_unexpected(std::move(ingress_reading.error()));
     }
-    auto ingress_set = timestamps.Set(0, ingress_reading.value());
+    auto ingress_set = timestamps.set(0, ingress_reading.value());
     if (!ingress_set.has_value()) {
-        RequestFailure(ingress_set.error());
+        request_failure(ingress_set.error());
         return nonstd::make_unexpected(std::move(ingress_set.error()));
     }
     for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
         const rodaq_timestamp_value& value = submission.timestamp_values[slot];
         if (value.present == RODAQ_TRUE) {
-            const auto set = timestamps.Set(slot + 1U, value.reading);
+            const auto set = timestamps.set(slot + 1U, value.reading);
             if (!set.has_value()) {
                 return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
             }
         }
     }
 
-    if (!sequences_.CanAllocate(stream_handle)) {
+    if (!sequences_.can_allocate(stream_handle)) {
         stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
         return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
     }
 
     const auto deadline = Clock::now() + options_.submit_wait_timeout;
     const auto admission_wait_started = Clock::now();
-    auto acquired = pipeline_->AcquirePreGate(
+    auto acquired = pipeline_->acquire_pre_gate(
         payload_size, options_.admission_mode, &payload_pool_, payload_mode == RODAQ_PAYLOAD_COPY,
         deadline, admission_eligibility_generation_);
-    RecordAdmissionWait(
+    record_admission_wait(
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - admission_wait_started)
             .count());
     if (!acquired.has_value()) {
@@ -2890,13 +2895,13 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         case PreGateAcquireOutcome::ResourceUnavailable:
             return pre_rejected(*this, RODAQ_REJECTION_RESOURCE_UNAVAILABLE, disposition);
         case PreGateAcquireOutcome::EligibilityChanged: {
-            if (state_.load() != RuntimeState::Running || !GateOpen()) {
+            if (state_.load() != RuntimeState::Running || !gate_open()) {
                 return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
             }
             const BindingHandle binding_handle =
-                BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
+                BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
             const BindingEntry* binding_entry =
-                binding_handle.Valid() ? bindings_.FindStable(binding_handle) : nullptr;
+                binding_handle.valid() ? bindings_.find_stable(binding_handle) : nullptr;
             if (binding_entry == nullptr || binding_entry->descriptor != descriptor_handle) {
                 return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
             }
@@ -2920,7 +2925,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     Payload payload;
     if (payload_mode == RODAQ_PAYLOAD_COPY) {
         auto copied =
-            payload_pool_.Materialize(reservation.TakePayloadPoolReservation(), payload_view);
+            payload_pool_.materialize(reservation.take_payload_pool_reservation(), payload_view);
         if (!copied.has_value()) {
             return pre_rejected(
                 *this,
@@ -2935,26 +2940,28 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
             !acquisition_instances_[plugin_index].has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
         }
-        auto adopted = Payload::Adopt(
+        auto adopted = Payload::adopt(
             payload_view, submission.payload.owner_context, submission.payload.release);
         if (!adopted.has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(adopted.value());
-        payload.AttachLifetimeGuard(acquisition_instances_[plugin_index]->lease().lifetime_owner());
+        payload.attach_lifetime_guard(
+            acquisition_instances_[plugin_index]->lease().lifetime_owner());
         disposition = RODAQ_PAYLOAD_DISPOSITION_RUNTIME_RESPONSIBLE;
     } else {
         if (plugin_index >= acquisition_instances_.size() ||
             !acquisition_instances_[plugin_index].has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
         }
-        auto retained = Payload::Retain(
+        auto retained = Payload::retain(
             payload_view, submission.payload.owner_context, submission.payload.release);
         if (!retained.has_value()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(retained.value());
-        payload.AttachLifetimeGuard(acquisition_instances_[plugin_index]->lease().lifetime_owner());
+        payload.attach_lifetime_guard(
+            acquisition_instances_[plugin_index]->lease().lifetime_owner());
         disposition = RODAQ_PAYLOAD_DISPOSITION_RUNTIME_RESPONSIBLE;
     }
 
@@ -2973,13 +2980,13 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
                 RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
             return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition);
         }
-        if (!pipeline_->AdmissionOpen()) {
+        if (!pipeline_->admission_open()) {
             admission_failure = true;
         }
         const BindingHandle final_binding =
-            BindingHandle::FromRaw(stream->current_binding->load(std::memory_order_acquire));
+            BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
         BindingEntry* final_binding_entry =
-            final_binding.Valid() ? bindings_.FindStable(final_binding) : nullptr;
+            final_binding.valid() ? bindings_.find_stable(final_binding) : nullptr;
         if (final_binding_entry == nullptr ||
             final_binding_entry->descriptor != descriptor_handle) {
             return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
@@ -2997,7 +3004,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
                 return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);
             }
         }
-        if (!sequences_.CanAllocate(stream_handle)) {
+        if (!sequences_.can_allocate(stream_handle)) {
             stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
         }
@@ -3009,7 +3016,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         } else {
             ++admission_inflight_;
             final_binding_entry->admission_inflight->fetch_add(1);
-            auto sequence = sequences_.Allocate(stream_handle);
+            auto sequence = sequences_.allocate(stream_handle);
             if (!sequence.has_value()) {
                 --admission_inflight_;
                 final_binding_entry->admission_inflight->fetch_sub(1);
@@ -3022,22 +3029,22 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         Clock::now().time_since_epoch())
                         .count();
-                auto record = RuntimeRecord::Create(
+                auto record = RuntimeRecord::create(
                     final_binding, sequence.value(), source, source_sequence, timestamps,
-                    std::move(payload), reservation.TakeRecordReservation(),
+                    std::move(payload), reservation.take_record_reservation(),
                     accepted_steady_time_ns);
                 if (!record.has_value()) {
                     --admission_inflight_;
                     final_binding_entry->admission_inflight->fetch_sub(1);
                     admission_condition_.notify_all();
-                    stats_.RecordRejected();
+                    stats_.record_rejected();
                     deferred_failure.emplace(record.error());
                     deferred_result.emplace(submit_result(
                         RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
                 } else {
-                    stats_.RecordInflightAcquired(static_cast<std::uint64_t>(payload_size));
-                    pipeline_->Publish(std::move(reservation), std::move(record.value()));
-                    stats_.RecordAccepted(payload_size);
+                    stats_.record_inflight_acquired(static_cast<std::uint64_t>(payload_size));
+                    pipeline_->publish(std::move(reservation), std::move(record.value()));
+                    stats_.record_accepted(payload_size);
                     --admission_inflight_;
                     const std::uint64_t binding_inflight =
                         final_binding_entry->admission_inflight->fetch_sub(1) - 1U;
@@ -3050,15 +3057,43 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
         }
     }
     if (deferred_failure.has_value()) {
-        RequestFailure(std::move(deferred_failure.value()));
+        request_failure(std::move(deferred_failure.value()));
     }
     if (retire_binding) {
-        RetireDrainingBinding(current_binding);
+        retire_draining_binding(current_binding);
     }
     if (deferred_result.has_value()) {
         return deferred_result.value();
     }
     return submit_result(RODAQ_ADMISSION_ACCEPTED, RODAQ_REJECTION_NONE, disposition);
+}
+
+RuntimeConfig& ActiveRuntimeState::options() noexcept { return options_; }
+const RuntimeConfig& ActiveRuntimeState::options() const noexcept { return options_; }
+std::uint64_t ActiveRuntimeState::activation_generation() const noexcept {
+    return activation_generation_;
+}
+StoragePipeline* ActiveRuntimeState::pipeline() noexcept { return pipeline_.get(); }
+std::optional<plugin::StoragePluginInstance>& ActiveRuntimeState::storage_instance() noexcept {
+    return storage_instance_;
+}
+std::optional<plugin::AcquisitionPluginInstance>& ActiveRuntimeState::acquisition_instance(
+    std::size_t index) noexcept {
+    return acquisition_instances_[index];
+}
+RuntimeState ActiveRuntimeState::state() const noexcept { return state_.load(); }
+bool ActiveRuntimeState::requires_quarantine() const noexcept {
+    return control_quarantine_required_.load(std::memory_order_acquire) &&
+           active_control_calls_.load(std::memory_order_acquire) != 0;
+}
+void ActiveRuntimeState::set_failure_signal(std::shared_ptr<FailureSignal> signal) noexcept {
+    failure_signal_ = std::move(signal);
+}
+RuntimeStatsSnapshot ActiveRuntimeState::stats() const noexcept {
+    RuntimeStatsSnapshot snapshot = stats_.snapshot();
+    snapshot.logging = current_logging_stats();
+    fill_latency_stats(snapshot);
+    return snapshot;
 }
 
 }  // namespace rodaq::runtime

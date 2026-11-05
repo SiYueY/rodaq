@@ -43,12 +43,12 @@ const rodaq_runtime_projection_v1 InteropProjectionRegistry::kProjectionVtable =
 
 InteropProjectionRegistry::InteropProjectionRegistry(ProjectionLimits limits) : limits_(limits) {}
 
-void InteropProjectionRegistry::SetRegistrationSink(RegistrationSink sink) {
+void InteropProjectionRegistry::set_registration_sink(RegistrationSink sink) {
     std::lock_guard<std::mutex> lock(mutex_);
     registration_sink_ = std::move(sink);
 }
 
-Result<void> InteropProjectionRegistry::Register(
+Result<void> InteropProjectionRegistry::register_entry(
     rodaq_stream_descriptor_handle descriptor, std::string_view projection_id,
     const std::uint8_t* payload, std::size_t payload_size) {
     if (!limits_are_positive(limits_)) {
@@ -147,7 +147,7 @@ Result<void> InteropProjectionRegistry::Register(
     return {};
 }
 
-Result<ProjectionView> InteropProjectionRegistry::Get(
+Result<ProjectionView> InteropProjectionRegistry::get(
     rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) const {
     if (descriptor.value == 0 || projection_id.empty() ||
         !rodaq::is_valid_utf8_without_nul(projection_id) ||
@@ -174,7 +174,7 @@ Result<ProjectionView> InteropProjectionRegistry::Get(
     };
 }
 
-rodaq_interface InteropProjectionRegistry::AbiInterface() noexcept {
+rodaq_interface InteropProjectionRegistry::abi_interface() noexcept {
     return rodaq_interface{this, &kProjectionVtable};
 }
 
@@ -213,7 +213,7 @@ rodaq_status InteropProjectionRegistry::register_projection(
     try {
         auto* registry = static_cast<InteropProjectionRegistry*>(context);
         Result<void> result =
-            registry->Register(request->descriptor, projection_id, payload, payload_size);
+            registry->register_entry(request->descriptor, projection_id, payload, payload_size);
         if (!result.has_value()) {
             assign_rodaq_error(result.error(), out_error);
             return status_from_error_code(result.error().code());
@@ -267,7 +267,7 @@ rodaq_status InteropProjectionRegistry::get_projection(
 
     try {
         const auto* registry = static_cast<const InteropProjectionRegistry*>(context);
-        Result<ProjectionView> result = registry->Get(descriptor, parsed_id);
+        Result<ProjectionView> result = registry->get(descriptor, parsed_id);
         if (!result.has_value()) {
             assign_rodaq_error(result.error(), out_error);
             return status_from_error_code(result.error().code());

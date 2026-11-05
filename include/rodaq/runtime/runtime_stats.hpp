@@ -56,20 +56,20 @@ public:
     RuntimeStats(RuntimeStats&&) = delete;
     RuntimeStats& operator=(RuntimeStats&&) = delete;
 
-    void RecordAccepted(std::uint64_t bytes) noexcept;
-    void RecordRejected() noexcept;
-    void RecordTimedOut() noexcept;
-    void RecordCancelled() noexcept;
-    void RecordGateClosed() noexcept;
+    void record_accepted(std::uint64_t bytes) noexcept;
+    void record_rejected() noexcept;
+    void record_timed_out() noexcept;
+    void record_cancelled() noexcept;
+    void record_gate_closed() noexcept;
 
-    void RecordInflightAcquired(std::uint64_t bytes) noexcept;
-    bool RecordInflightReleased(std::uint64_t bytes) noexcept;
-    bool RecordPayloadReleased(std::uint64_t bytes) noexcept;
-    bool RecordOperationCompleted() noexcept;
+    void record_inflight_acquired(std::uint64_t bytes) noexcept;
+    bool record_inflight_released(std::uint64_t bytes) noexcept;
+    bool record_payload_released(std::uint64_t bytes) noexcept;
+    bool record_operation_completed() noexcept;
 
-    void RecordPersistence(std::uint32_t state) noexcept;
+    void record_persistence(std::uint32_t state) noexcept;
 
-    RuntimeStatsSnapshot Snapshot() const noexcept;
+    RuntimeStatsSnapshot snapshot() const noexcept;
 
 private:
     std::atomic<std::uint64_t> persistence_succeeded_{0};

@@ -47,7 +47,7 @@ struct QuarantineManager::CallEntry {
 
 QuarantineManager::QuarantineManager() noexcept = default;
 
-QuarantineManager& QuarantineManager::Process() noexcept {
+QuarantineManager& QuarantineManager::process() noexcept {
     /*
      * Quarantined Plugin code may execute until process teardown. This owner is
      * intentionally process-lifetime; its fixed capacities bound retained
@@ -73,8 +73,8 @@ QuarantineManager& QuarantineManager::Process() noexcept {
                   condition.wait_for(
                       lock, std::chrono::milliseconds(10), [this] { return closed; });
                   lock.unlock();
-                  owner.ReapCompleted();
-                  owner.ReapActivations();
+                  owner.reap_completed();
+                  owner.reap_activations();
                   lock.lock();
               }
               lock.unlock();
@@ -83,10 +83,10 @@ QuarantineManager& QuarantineManager::Process() noexcept {
               // retained; completion never means an implicit detach.
               const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
               do {
-                  owner.ReapCompleted();
-                  owner.ReapActivations();
-                  if (owner.RetainedCallCount() == 0 && owner.RetainedWorkerCount() == 0) {
-                      owner.ReapCompleted();
+                  owner.reap_completed();
+                  owner.reap_activations();
+                  if (owner.retained_call_count() == 0 && owner.retained_worker_count() == 0) {
+                      owner.reap_completed();
                       break;
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -109,7 +109,7 @@ QuarantineManager& QuarantineManager::Process() noexcept {
     return *manager;
 }
 
-std::unique_ptr<QuarantineManager::CallEntry> QuarantineManager::CreateCallEntry(
+std::unique_ptr<QuarantineManager::CallEntry> QuarantineManager::create_call_entry(
     std::shared_ptr<Completion> completion, std::string reason) {
     try {
         auto entry = std::make_unique<CallEntry>();
@@ -121,7 +121,7 @@ std::unique_ptr<QuarantineManager::CallEntry> QuarantineManager::CreateCallEntry
     }
 }
 
-Result<SupervisedCallOutcome> QuarantineManager::Run(
+Result<SupervisedCallOutcome> QuarantineManager::run(
     std::function<Result<void>()> operation, std::chrono::steady_clock::time_point deadline,
     std::string reason, std::shared_ptr<std::atomic<bool>> joined) {
     if (!operation) {
@@ -129,12 +129,12 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
             quarantine_error(ErrorCode::InvalidArgument, "Supervised Plugin call is empty"));
     }
 
-    ReapCompleted();
+    reap_completed();
     std::shared_ptr<Completion> completion;
     std::unique_ptr<CallEntry> entry;
     try {
         completion = std::make_shared<Completion>();
-        entry = CreateCallEntry(completion, std::move(reason));
+        entry = create_call_entry(completion, std::move(reason));
         entry->joined = std::move(joined);
     } catch (const std::exception& error) {
         return nonstd::make_unexpected(
@@ -181,7 +181,7 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
             std::string("Failed to start supervised Plugin call: ") + error.what()));
     }
 
-    SupervisedCallOutcome outcome = WaitForCall(entry, deadline);
+    SupervisedCallOutcome outcome = wait_for_call(entry, deadline);
     if (outcome.status == SupervisedCallStatus::TimedOut) {
         std::lock_guard<std::mutex> lock(mutex_);
         // active_calls_ reserves shared capacity before the worker is started.
@@ -196,7 +196,7 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
     return outcome;
 }
 
-SupervisedCallOutcome QuarantineManager::WaitForCall(
+SupervisedCallOutcome QuarantineManager::wait_for_call(
     std::unique_ptr<CallEntry>& entry, std::chrono::steady_clock::time_point deadline) {
     {
         std::unique_lock<std::mutex> lock(entry->completion->mutex);
@@ -225,13 +225,13 @@ SupervisedCallOutcome QuarantineManager::WaitForCall(
     return SupervisedCallOutcome{SupervisedCallStatus::Completed, std::nullopt};
 }
 
-bool QuarantineManager::RetainWorker(
+bool QuarantineManager::retain_worker(
     std::thread&& worker, std::shared_ptr<void> state, std::shared_ptr<std::atomic<bool>> done,
     std::string reason, std::shared_ptr<std::atomic<bool>> joined) noexcept {
     if (!worker.joinable() || state == nullptr || done == nullptr) {
         return false;
     }
-    ReapCompleted();
+    reap_completed();
     static_assert(std::is_nothrow_move_constructible_v<WorkerEntry>);
     std::lock_guard<std::mutex> lock(mutex_);
     if (active_calls_ >= kMaxRetainedCalls) {
@@ -249,8 +249,8 @@ bool QuarantineManager::RetainWorker(
     return true;
 }
 
-Result<std::uint64_t> QuarantineManager::ReserveActivation(std::string reason) {
-    ReapCompleted();
+Result<std::uint64_t> QuarantineManager::reserve_activation(std::string reason) {
+    reap_completed();
     std::lock_guard<std::mutex> lock(mutex_);
     for (std::size_t index = 0; index < activations_.size(); ++index) {
         ActivationSlot& slot = activations_[index];
@@ -264,7 +264,7 @@ Result<std::uint64_t> QuarantineManager::ReserveActivation(std::string reason) {
         ErrorCode::ResourceExhausted, "Quarantined Activation capacity is exhausted"));
 }
 
-bool QuarantineManager::RetainActivation(
+bool QuarantineManager::retain_activation(
     std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason,
     std::function<bool()> cleanup) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -281,7 +281,7 @@ bool QuarantineManager::RetainActivation(
     return true;
 }
 
-void QuarantineManager::ReleaseActivation(std::uint64_t activation_id) noexcept {
+void QuarantineManager::release_activation(std::uint64_t activation_id) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!activation_id || activation_id > activations_.size()) {
         return;
@@ -292,7 +292,7 @@ void QuarantineManager::ReleaseActivation(std::uint64_t activation_id) noexcept 
     }
 }
 
-void QuarantineManager::ReapCompleted() noexcept {
+void QuarantineManager::reap_completed() noexcept {
     // Claim entries under the manager mutex. Joining and releasing captures may
     // reenter the manager, so neither may happen while that mutex is held.
     std::array<std::unique_ptr<CallEntry>, kMaxRetainedCalls> calls;
@@ -346,7 +346,7 @@ void QuarantineManager::ReapCompleted() noexcept {
     }
 }
 
-void QuarantineManager::ReapActivations() noexcept {
+void QuarantineManager::reap_activations() noexcept {
     for (std::size_t index = 0; index < activations_.size(); ++index) {
         std::shared_ptr<void> root;
         std::function<bool()> cleanup;
@@ -382,14 +382,14 @@ void QuarantineManager::ReapActivations() noexcept {
     }
 }
 
-std::size_t QuarantineManager::RetainedCallCount() const noexcept {
+std::size_t QuarantineManager::retained_call_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<std::size_t>(std::count_if(
                calls_.begin(), calls_.end(), [](const auto& entry) { return entry != nullptr; })) +
            reaping_calls_;
 }
 
-std::size_t QuarantineManager::RetainedWorkerCount() const noexcept {
+std::size_t QuarantineManager::retained_worker_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<std::size_t>(std::count_if(
                retired_workers_.begin(), retired_workers_.end(),
@@ -397,7 +397,7 @@ std::size_t QuarantineManager::RetainedWorkerCount() const noexcept {
            reaping_workers_;
 }
 
-std::size_t QuarantineManager::RetainedActivationCount() const noexcept {
+std::size_t QuarantineManager::retained_activation_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<std::size_t>(std::count_if(
         activations_.begin(), activations_.end(),

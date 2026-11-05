@@ -27,7 +27,7 @@ Reservation::Reservation(Reservation&& other) noexcept
 
 Reservation& Reservation::operator=(Reservation&& other) noexcept {
     if (this != &other) {
-        Release();
+        release();
         budget_ = other.budget_;
         amount_ = other.amount_;
         other.budget_ = nullptr;
@@ -36,23 +36,23 @@ Reservation& Reservation::operator=(Reservation&& other) noexcept {
     return *this;
 }
 
-Reservation::~Reservation() { Release(); }
+Reservation::~Reservation() { release(); }
 
-void Reservation::Release() noexcept {
+void Reservation::release() noexcept {
     if (budget_ != nullptr) {
         ResourceBudget* budget = budget_;
         const ResourceAmount amount = amount_;
         budget_ = nullptr;
         amount_ = {};
-        budget->Release(amount);
+        budget->release(amount);
     }
 }
 
 ResourceBudget::ResourceBudget(ResourceAmount capacity) noexcept : capacity_(capacity) {}
 
-Result<Reservation> ResourceBudget::TryReserve(ResourceAmount requested) {
+Result<Reservation> ResourceBudget::try_reserve(ResourceAmount requested) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const ReserveResult result = TryReserveLocked(requested);
+    const ReserveResult result = try_reserve_locked(requested);
     if (!result.reserved) {
         return nonstd::make_unexpected(
             Error(ErrorCode::ResourceExhausted, "resource budget is exhausted"));
@@ -60,12 +60,12 @@ Result<Reservation> ResourceBudget::TryReserve(ResourceAmount requested) {
     return Reservation(*this, requested);
 }
 
-ResourceAmount ResourceBudget::Used() const {
+ResourceAmount ResourceBudget::used() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return used_;
 }
 
-ResourceAmount ResourceBudget::Available() const {
+ResourceAmount ResourceBudget::available() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return ResourceAmount{
         capacity_.records - used_.records,
@@ -73,17 +73,18 @@ ResourceAmount ResourceBudget::Available() const {
     };
 }
 
-ResourceAmount ResourceBudget::HighWater() const {
+ResourceAmount ResourceBudget::high_water() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return high_water_;
 }
 
-std::uint64_t ResourceBudget::ActiveReservations() const {
+std::uint64_t ResourceBudget::active_reservations() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return active_reservations_;
 }
 
-ResourceBudget::ReserveResult ResourceBudget::TryReserveLocked(ResourceAmount requested) noexcept {
+ResourceBudget::ReserveResult ResourceBudget::try_reserve_locked(
+    ResourceAmount requested) noexcept {
     if (exceeds_capacity(used_, requested, capacity_)) {
         return ReserveResult{false};
     }
@@ -100,7 +101,7 @@ ResourceBudget::ReserveResult ResourceBudget::TryReserveLocked(ResourceAmount re
     return ReserveResult{true};
 }
 
-void ResourceBudget::Release(ResourceAmount amount) noexcept {
+void ResourceBudget::release(ResourceAmount amount) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     used_.records -= amount.records;
     used_.bytes -= amount.bytes;
@@ -108,6 +109,6 @@ void ResourceBudget::Release(ResourceAmount amount) noexcept {
     wait_condition_.notify_all();
 }
 
-void ResourceBudget::NotifyWaiters() noexcept { wait_condition_.notify_all(); }
+void ResourceBudget::notify_waiters() noexcept { wait_condition_.notify_all(); }
 
 }  // namespace rodaq

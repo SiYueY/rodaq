@@ -12,9 +12,9 @@ public:
     SpdlogBackend();
     ~SpdlogBackend() override;
 
-    Result<void> Write(const LogRecord& record) override;
-    Result<void> Flush() override;
-    Result<void> Shutdown() override;
+    Result<void> write(const LogRecord& record) override;
+    Result<void> flush() override;
+    Result<void> shutdown() override;
 
 private:
     struct Impl;

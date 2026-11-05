@@ -104,6 +104,8 @@ void check_shared_library(
 
     SharedLibrary assigned = std::move(moved);
     require(assigned.valid(), "Move assignment lost SharedLibrary ownership");
+    // Verify the specified empty moved-from state.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     require(!moved.valid(), "Move-assigned-from SharedLibrary remains valid");
     Result<void*> moved_from_symbol = moved.find_symbol("rodaq_plugin_abi_version");
     require(!moved_from_symbol.has_value(), "Moved-from SharedLibrary resolved a symbol");

@@ -157,3 +157,41 @@ durable result. CPU frequency and scheduling remain uncontrolled. The visible
 tail/HWM variation, particularly with multiple release workers and unpaced bursts,
 is not evidence of a uniform regression or improvement. One release worker
 remains the default; real ROS2/MCAP/filesystem tails remain M3–M5 qualification.
+
+## C++ coding standards migration — working tree based on be448c8
+
+All eight existing Release benchmark executables passed three repetitions on
+the same GCC 11 / Ubuntu 22.04 host, using the existing resource, acceptance,
+zero-rejection and Stop gates. Function renaming also changes the benchmark
+registration labels; `bm_*` below corresponds to the previous `BM_*` profile.
+No workload, capacity policy or benchmark gate was relaxed. Values are medians.
+
+| Profile | Accepted Records/s | Persistence p99 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|
+| bm_encoded_camera10x720p30 | 310 | 125.18 | 5 | 1,145 |
+| bm_raw_camera10x720p30 | 308 | 159.62 | 3 | 1,168 |
+| bm_per_joint100_streams1k_hz | 99,978 | 174.21 | 101 | 2,142 |
+| bm_aggregated_robot_state1k_hz | 1,000 | 101.25 | 1 | 954 |
+| run_encoded_aggregated | 1,300 | 110.72 | 6 | 1,328 |
+| run_raw_per_joint | 100,136 | 392.96 | 77 | 1,863 |
+| bm_adopt_release_workers/1 | 280,176 | 916.99 | 722 | 997 |
+| bm_adopt_release_workers/2 | 218,059 | 3346.43 | 828 | 1,043 |
+| bm_adopt_release_workers/4 | 150,325 | 81395.71 | 13,366 | 941 |
+| bm_runtime_pipeline_small_record_steady_state | 387,945 | 36438.01 | 15,257 | 1,032 |
+| bm_storage_slot_terminalization100k | 454,423 | 45449.21 | 26,412 | 905 |
+
+PayloadClass and PayloadPool benchmarks also completed without errors. CPU
+frequency and host scheduling were not fixed, so latency/high-water variation
+is comparative evidence rather than a new performance guarantee. Real
+ROS2/MCAP/filesystem qualification remains future milestone work.
+
+
+## 2026-11-05 declaration separation follow-up
+
+After moving SDK and internal Runtime definitions out of headers, all eight
+existing Release benchmark executables passed three repetitions. Selected median
+accepted Records/s compared with the preceding naming-review run: per-joint
+99,975 vs 99,978; raw mixed 100,211 vs 100,136; one release worker 291,931 vs
+280,176; Runtime pipeline 397,750 vs 387,945; storage slots 454,000 vs 454,423.
+The host frequency and scheduling were not controlled; these are capacity-gate
+and comparative observations, not evidence of a guaranteed speed change.

@@ -48,10 +48,10 @@ public:
     PayloadPoolReservation& operator=(PayloadPoolReservation&& other) noexcept;
     ~PayloadPoolReservation();
 
-    bool Active() const noexcept;
-    std::size_t ClassIndex() const noexcept;
-    std::size_t BlockIndex() const noexcept;
-    void Release() noexcept;
+    bool active() const noexcept;
+    std::size_t class_index() const noexcept;
+    std::size_t block_index() const noexcept;
+    void release() noexcept;
 
 private:
     friend class PayloadPool;
@@ -70,8 +70,8 @@ private:
 /// A bounded, activation-lifetime Copy Payload pool with isolated size classes.
 class PayloadPool final {
 public:
-    static Result<PayloadPool> Create(std::size_t block_size_bytes, std::size_t block_count);
-    static Result<PayloadPool> Create(const PayloadPoolConfig& config);
+    static Result<PayloadPool> create(std::size_t block_size_bytes, std::size_t block_count);
+    static Result<PayloadPool> create(const PayloadPoolConfig& config);
 
     PayloadPool(const PayloadPool&) = delete;
     PayloadPool& operator=(const PayloadPool&) = delete;
@@ -79,18 +79,18 @@ public:
     PayloadPool& operator=(PayloadPool&&) noexcept = default;
     ~PayloadPool() = default;
 
-    Result<PayloadPoolReservation> TryReserve(std::size_t bytes);
-    Result<Payload> Materialize(PayloadPoolReservation&& reservation, PayloadView source);
-    Result<Payload> Acquire(std::size_t bytes, PayloadView source);
+    Result<PayloadPoolReservation> try_reserve(std::size_t bytes);
+    Result<Payload> materialize(PayloadPoolReservation&& reservation, PayloadView source);
+    Result<Payload> acquire(std::size_t bytes, PayloadView source);
 
-    PayloadPoolStats Stats() const;
-    std::size_t BlockSizeBytes() const noexcept;
-    std::size_t BlockCount() const noexcept;
-    std::size_t CapacityBytes() const noexcept;
-    std::size_t UsedBytes() const noexcept;
-    std::size_t AvailableBytes() const noexcept;
-    std::size_t HighWaterBytes() const noexcept;
-    void SetCapacityChangedSink(std::function<void()> sink);
+    PayloadPoolStats stats() const;
+    std::size_t block_size_bytes() const noexcept;
+    std::size_t block_count() const noexcept;
+    std::size_t capacity_bytes() const noexcept;
+    std::size_t used_bytes() const noexcept;
+    std::size_t available_bytes() const noexcept;
+    std::size_t high_water_bytes() const noexcept;
+    void set_capacity_changed_sink(std::function<void()> sink);
 
 private:
     explicit PayloadPool(std::shared_ptr<PayloadPoolState> state) noexcept;

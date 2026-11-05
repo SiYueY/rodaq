@@ -27,7 +27,7 @@ namespace rodaq {
 template <typename T, typename HandleType>
 class Registry final {
 public:
-    static Result<Registry> Create(std::size_t capacity, std::uint32_t initial_generation = 1) {
+    static Result<Registry> create(std::size_t capacity, std::uint32_t initial_generation = 1) {
         constexpr std::size_t kMaxCapacity =
             static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max() - 1U);
         if (capacity > kMaxCapacity) {
@@ -54,7 +54,7 @@ public:
     Registry(Registry&&) noexcept = default;
     Registry& operator=(Registry&&) noexcept = default;
 
-    Result<HandleType> Insert(T value) {
+    Result<HandleType> insert(T value) {
         if (free_slots_.empty()) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::ResourceExhausted, "registry capacity is exhausted"));
@@ -82,19 +82,19 @@ public:
         slot.published.store(true, std::memory_order_release);
         free_slots_.pop_back();
         ++size_;
-        return HandleType::FromRaw(encode(index, slot.generation));
+        return HandleType::from_raw(encode(index, slot.generation));
     }
 
-    T* Find(HandleType handle) noexcept {
-        return const_cast<T*>(static_cast<const Registry&>(*this).Find(handle));
+    T* find(HandleType handle) noexcept {
+        return const_cast<T*>(static_cast<const Registry&>(*this).find(handle));
     }
 
-    const T* Find(HandleType handle) const noexcept {
-        if (!handle.Valid()) {
+    const T* find(HandleType handle) const noexcept {
+        if (!handle.valid()) {
             return nullptr;
         }
 
-        const std::uint64_t raw_index = (handle.Value() & kIndexMask) - 1U;
+        const std::uint64_t raw_index = (handle.value() & kIndexMask) - 1U;
         if (raw_index >= slots_.size()) {
             return nullptr;
         }
@@ -102,7 +102,7 @@ public:
         const std::size_t index = static_cast<std::size_t>(raw_index);
         const Slot& slot = slots_[index];
         if (!slot.published.load(std::memory_order_acquire) ||
-            slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
+            slot.generation != static_cast<std::uint32_t>(handle.value() >> kIndexBits)) {
             return nullptr;
         }
         return &slot.value.value();
@@ -116,34 +116,34 @@ public:
     /// concurrently with Erase. Insertion into a different preallocated slot is
     /// safe. Values referenced through this lookup must be immutable or use
     /// their own synchronization for mutable fields.
-    const T* FindStable(HandleType handle) const noexcept {
-        if (!handle.Valid()) {
+    const T* find_stable(HandleType handle) const noexcept {
+        if (!handle.valid()) {
             return nullptr;
         }
-        const std::uint64_t raw_index = (handle.Value() & kIndexMask) - 1U;
+        const std::uint64_t raw_index = (handle.value() & kIndexMask) - 1U;
         if (raw_index >= slots_.size()) {
             return nullptr;
         }
         const std::size_t index = static_cast<std::size_t>(raw_index);
         const Slot& slot = slots_[index];
         if (!slot.published.load(std::memory_order_acquire) ||
-            slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
+            slot.generation != static_cast<std::uint32_t>(handle.value() >> kIndexBits)) {
             return nullptr;
         }
         return &slot.value.value();
     }
 
-    T* FindStable(HandleType handle) noexcept {
-        return const_cast<T*>(static_cast<const Registry&>(*this).FindStable(handle));
+    T* find_stable(HandleType handle) noexcept {
+        return const_cast<T*>(static_cast<const Registry&>(*this).find_stable(handle));
     }
 
-    Result<void> Erase(HandleType handle) {
-        if (!handle.Valid()) {
+    Result<void> erase(HandleType handle) {
+        if (!handle.valid()) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::InvalidArgument, "registry handle is invalid"));
         }
 
-        const std::uint64_t raw_index = (handle.Value() & kIndexMask) - 1U;
+        const std::uint64_t raw_index = (handle.value() & kIndexMask) - 1U;
         if (raw_index >= slots_.size()) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::NotFound, "registry handle was not found"));
@@ -152,7 +152,7 @@ public:
         const std::size_t index = static_cast<std::size_t>(raw_index);
         Slot& slot = slots_[index];
         if (!slot.published.load(std::memory_order_acquire) ||
-            slot.generation != static_cast<std::uint32_t>(handle.Value() >> kIndexBits)) {
+            slot.generation != static_cast<std::uint32_t>(handle.value() >> kIndexBits)) {
             return nonstd::make_unexpected(
                 Error(ErrorCode::NotFound, "registry handle was not found"));
         }
@@ -167,9 +167,9 @@ public:
         return {};
     }
 
-    std::size_t Size() const noexcept { return size_; }
+    std::size_t size() const noexcept { return size_; }
 
-    std::size_t Capacity() const noexcept { return slots_.size(); }
+    std::size_t capacity() const noexcept { return slots_.size(); }
 
 private:
     static constexpr std::uint64_t kIndexBits = 32;

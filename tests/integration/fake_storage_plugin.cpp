@@ -19,27 +19,27 @@ namespace {
 
 std::string config_string(
     const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
-    auto child = view.Find(key);
+    auto child = view.find(key);
     if (!child.has_value()) {
         return default_value;
     }
-    auto value = child.value().AsString();
+    auto value = child.value().as_string();
     return value.has_value() ? std::string(value.value()) : std::move(default_value);
 }
 
 std::int64_t config_int(
     const rodaq::ConfigView& view, std::string_view key, std::int64_t default_value) {
-    auto child = view.Find(key);
+    auto child = view.find(key);
     if (!child.has_value()) {
         return default_value;
     }
-    auto value = child.value().AsInt64();
+    auto value = child.value().as_int64();
     return value.has_value() ? value.value() : default_value;
 }
 
 class FakeStoragePlugin final : public rodaq::StoragePlugin {
 public:
-    rodaq::Result<void> Bind(rodaq::StorageRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::StorageRuntime runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -48,7 +48,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Configure(const rodaq::ConfigView& config) override {
+    rodaq::Result<void> configure(const rodaq::ConfigView& config) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
@@ -66,7 +66,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Open(const rodaq_storage_open_request&) override {
+    rodaq::Result<void> open(const rodaq_storage_open_request&) override {
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
@@ -81,7 +81,7 @@ public:
         return {};
     }
 
-    rodaq::Result<rodaq_storage_capabilities> GetCapabilities() override {
+    rodaq::Result<rodaq_storage_capabilities> get_capabilities() override {
         if (scenario_ == "capabilities_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
@@ -98,21 +98,21 @@ public:
         return value;
     }
 
-    rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
+    rodaq::Result<rodaq_descriptor_readiness_result> ensure_descriptor_ready(
         rodaq_stream_descriptor_handle descriptor) override {
         const std::size_t readiness_call = ++readiness_calls_;
         if (descriptor_scenario_ == "unsupported_dynamic" && readiness_call > 1) {
             rodaq_descriptor_readiness_result value{};
             value.struct_size = sizeof(value);
             value.state = RODAQ_DESCRIPTOR_UNSUPPORTED;
-            LogControl("unsupported");
+            log_control("unsupported");
             return value;
         }
         const bool stalls = descriptor_scenario_ == "stall" &&
                             (descriptor_stall_after_ < 0 ||
                              readiness_call > static_cast<std::size_t>(descriptor_stall_after_));
         if (stalls || descriptor_scenario_ == "publish_order") {
-            LogControl("readiness_started descriptor=" + std::to_string(descriptor.value));
+            log_control("readiness_started descriptor=" + std::to_string(descriptor.value));
         }
         if (descriptor_scenario_ == "publish_order") {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -142,10 +142,10 @@ public:
                     "readiness could not resolve the Canonical Descriptor", &value.failure);
                 return value;
             }
-            LogControl("readiness descriptor=" + std::to_string(descriptor.value));
+            log_control("readiness descriptor=" + std::to_string(descriptor.value));
         }
         if (descriptor_scenario_ == "require_projection") {
-            auto projection = runtime_.projection.Get(descriptor, required_projection_id_);
+            auto projection = runtime_.projection.get(descriptor, required_projection_id_);
             if (!projection.has_value() &&
                 projection.error().code() == rodaq::ErrorCode::NotFound) {
                 value.state = RODAQ_DESCRIPTOR_UNSUPPORTED;
@@ -158,7 +158,7 @@ public:
                     "readiness could not resolve the required Projection", &value.failure);
                 return value;
             }
-            LogControl("readiness projection=" + required_projection_id_);
+            log_control("readiness projection=" + required_projection_id_);
         }
         if (descriptor_scenario_ == "clock_probe") {
             auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
@@ -166,16 +166,16 @@ public:
                 value.state = RODAQ_DESCRIPTOR_FAILED;
                 return value;
             }
-            auto keys =
-                runtime_.canonical.GetTimestampKeySet(descriptor_view.value().timestamp_key_set_id);
+            auto keys = runtime_.canonical.get_timestamp_key_set(
+                descriptor_view.value().timestamp_key_set_id);
             if (!keys.has_value() || keys.value().key_count == 0) {
                 value.state = RODAQ_DESCRIPTOR_FAILED;
                 return value;
             }
             const rodaq_clock_handle ingress_clock = keys.value().keys[0].clock;
-            auto first = runtime_.clock_correlation.Anchor(ingress_clock);
-            auto second = runtime_.clock_correlation.Anchor(ingress_clock);
-            auto unknown = runtime_.clock_correlation.Anchor(
+            auto first = runtime_.clock_correlation.anchor(ingress_clock);
+            auto second = runtime_.clock_correlation.anchor(ingress_clock);
+            auto unknown = runtime_.clock_correlation.anchor(
                 rodaq_clock_handle{ingress_clock.value + 1'000'000U});
             if (!first.has_value() || !second.has_value() ||
                 first.value().clock_reading != second.value().clock_reading ||
@@ -187,19 +187,19 @@ public:
                     &value.failure);
                 return value;
             }
-            LogControl(
+            log_control(
                 "clock_probe ingress=" + std::to_string(ingress_clock.value) +
                 " reading=" + std::to_string(first.value().clock_reading));
         }
         return value;
     }
 
-    rodaq::Result<rodaq_storage_submit_result> Submit(
+    rodaq::Result<rodaq_storage_submit_result> submit(
         const rodaq_storage_submission& submission) override {
         if (stage_ != Stage::Opened) {
             return invalid_state_value();
         }
-        LogControl("submit");
+        log_control("submit");
         if (scenario_ == "submit_error" || scenario_ == "delayed_submit_error") {
             if (scenario_ == "delayed_submit_error") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -207,7 +207,7 @@ public:
             return nonstd::make_unexpected(rodaq::Error(
                 rodaq::ErrorCode::StorageError, "fake_storage", 0, "configured submit failure"));
         }
-        Log(submission);
+        log(submission);
         if (submit_delay_us_ > 0) {
             std::this_thread::sleep_for(std::chrono::microseconds(submit_delay_us_));
         }
@@ -215,11 +215,11 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         if (scenario_ == "background_fatal") {
-            ScheduleFailure();
+            schedule_failure();
         }
 
         if (scenario_ == "same_stack") {
-            runtime_.storage.PayloadConsumed(submission.operation);
+            runtime_.storage.payload_consumed(submission.operation);
         }
 
         rodaq_storage_submit_result result{};
@@ -234,32 +234,33 @@ public:
         }
         if (scenario_ == "sync_payload_async_persistence") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
             return result;
         }
         if (scenario_ == "async_payload_sync_persistence") {
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
-            SchedulePayload(submission.operation);
+            schedule_payload(submission.operation);
             return result;
         }
         if (scenario_ == "async_payload_async_persistence") {
-            ScheduleDualCompletion(submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            schedule_dual_completion(
+                submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
             return result;
         }
         if (scenario_ == "persistence_first") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_PENDING;
-            ScheduleDualCompletion(
+            schedule_dual_completion(
                 submission.operation, false, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
             return result;
         }
         if (scenario_ == "persistence_failed") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_FAILED);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_FAILED);
             return result;
         }
         if (scenario_ == "persistence_unknown") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_UNKNOWN);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_UNKNOWN);
             return result;
         }
         if (scenario_ == "missing_callback") {
@@ -270,31 +271,31 @@ public:
         }
         if (scenario_ == "duplicate_payload") {
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
-            SchedulePayload(submission.operation);
-            SchedulePayload(submission.operation);
+            schedule_payload(submission.operation);
+            schedule_payload(submission.operation);
             return result;
         }
         if (scenario_ == "duplicate_persistence") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
             return result;
         }
         if (scenario_ == "sync_persistence_callback") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
-            SchedulePersistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+            schedule_persistence(submission.operation, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
             return result;
         }
         if (scenario_ == "unknown_operation") {
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
-            SchedulePayload(rodaq_storage_operation{submission.operation.value + 1'000'000U});
+            schedule_payload(rodaq_storage_operation{submission.operation.value + 1'000'000U});
             return result;
         }
         if (scenario_ == "missing_diagnostic") {
             workers_.emplace_back([this, operation = submission.operation] {
                 std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
-                runtime_.storage.PersistenceCompleted(
+                runtime_.storage.persistence_completed(
                     operation, RODAQ_STORAGE_PERSISTENCE_FAILED, nullptr);
             });
             return result;
@@ -306,7 +307,7 @@ public:
                 rodaq::assign_rodaq_error(
                     RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0, "invalid persistence state",
                     &error);
-                runtime_.storage.PersistenceCompleted(
+                runtime_.storage.persistence_completed(
                     operation, static_cast<rodaq_storage_persistence_state>(0), &error);
             });
             return result;
@@ -319,7 +320,7 @@ public:
                     RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
                     "configured malformed persistence failure", &error);
                 error.reserved[0] = 1;
-                runtime_.storage.PersistenceCompleted(
+                runtime_.storage.persistence_completed(
                     operation, RODAQ_STORAGE_PERSISTENCE_FAILED, &error);
             });
             return result;
@@ -327,13 +328,13 @@ public:
         if (scenario_ == "callback_before_error") {
             std::atomic<bool> callback_done{false};
             workers_.emplace_back([this, operation = submission.operation, &callback_done] {
-                runtime_.storage.PayloadConsumed(operation);
+                runtime_.storage.payload_consumed(operation);
                 callback_done.store(true);
             });
             while (!callback_done.load()) {
                 std::this_thread::yield();
             }
-            JoinWorkers();
+            join_workers();
             return nonstd::make_unexpected(rodaq::Error(
                 rodaq::ErrorCode::StorageError, "fake_storage", 0,
                 "callback before configured submit failure"));
@@ -342,21 +343,21 @@ public:
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
             std::atomic<bool> callback_done{false};
             workers_.emplace_back([this, operation = submission.operation, &callback_done] {
-                runtime_.storage.PayloadConsumed(operation);
+                runtime_.storage.payload_consumed(operation);
                 callback_done.store(true);
             });
             while (!callback_done.load()) {
                 std::this_thread::yield();
             }
-            JoinWorkers();
+            join_workers();
             return result;
         }
 
-        ScheduleDualCompletion(submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
+        schedule_dual_completion(submission.operation, true, RODAQ_STORAGE_PERSISTENCE_SUCCEEDED);
         return result;
     }
 
-    rodaq::Result<void> Flush() override {
+    rodaq::Result<void> flush() override {
         if (stage_ != Stage::Opened) {
             return invalid_state();
         }
@@ -370,15 +371,15 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Close(rodaq_storage_close_disposition disposition) override {
-        LogControl("close disposition=" + std::to_string(disposition));
+    rodaq::Result<void> close(rodaq_storage_close_disposition disposition) override {
+        log_control("close disposition=" + std::to_string(disposition));
         if (stage_ != Stage::Opened) {
             return invalid_state();
         }
         if (scenario_ == "close_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
-        JoinWorkers();
+        join_workers();
         stage_ = Stage::Closed;
         if (scenario_ == "close_failure" || scenario_ == "flush_and_close_failure") {
             return nonstd::make_unexpected(rodaq::Error(
@@ -390,15 +391,15 @@ public:
         if (scenario_ == "callback_after_close") {
             workers_.emplace_back([this, operation = last_operation_.value()] {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                runtime_.storage.PayloadConsumed(operation);
+                runtime_.storage.payload_consumed(operation);
             });
         }
         return {};
     }
 
     ~FakeStoragePlugin() override {
-        JoinWorkers();
-        LogControl("destroy");
+        join_workers();
+        log_control("destroy");
     }
 
 private:
@@ -410,7 +411,7 @@ private:
         Closed,
     };
 
-    void Log(const rodaq_storage_submission& submission) {
+    void log(const rodaq_storage_submission& submission) {
         last_operation_ = submission.operation;
         if (event_log_.empty()) {
             return;
@@ -439,7 +440,7 @@ private:
         output << '\n';
     }
 
-    void LogControl(const std::string& event) {
+    void log_control(const std::string& event) {
         if (event_log_.empty()) {
             return;
         }
@@ -448,28 +449,28 @@ private:
         output << "control storage_" << event << '\n';
     }
 
-    void SchedulePayload(rodaq_storage_operation operation) {
+    void schedule_payload(rodaq_storage_operation operation) {
         workers_.emplace_back([this, operation] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
-            runtime_.storage.PayloadConsumed(operation);
+            runtime_.storage.payload_consumed(operation);
         });
     }
 
-    void ScheduleDualCompletion(
+    void schedule_dual_completion(
         rodaq_storage_operation operation, bool payload_first,
         rodaq_storage_persistence_state persistence_state) {
         workers_.emplace_back([this, operation, payload_first, persistence_state] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
-            auto payload = [this, operation] { runtime_.storage.PayloadConsumed(operation); };
+            auto payload = [this, operation] { runtime_.storage.payload_consumed(operation); };
             auto persistence = [this, operation, persistence_state] {
                 rodaq_error error{};
                 if (persistence_state != RODAQ_STORAGE_PERSISTENCE_SUCCEEDED) {
                     rodaq::assign_rodaq_error(
                         RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
                         "configured persistence failure", &error);
-                    runtime_.storage.PersistenceCompleted(operation, persistence_state, &error);
+                    runtime_.storage.persistence_completed(operation, persistence_state, &error);
                 } else {
-                    runtime_.storage.PersistenceCompleted(operation, persistence_state, nullptr);
+                    runtime_.storage.persistence_completed(operation, persistence_state, nullptr);
                 }
             };
             if (payload_first) {
@@ -482,7 +483,7 @@ private:
         });
     }
 
-    void SchedulePersistence(
+    void schedule_persistence(
         rodaq_storage_operation operation, rodaq_storage_persistence_state state) {
         workers_.emplace_back([this, operation, state] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
@@ -491,25 +492,25 @@ private:
                 rodaq::assign_rodaq_error(
                     RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0, "configured persistence failure",
                     &error);
-                runtime_.storage.PersistenceCompleted(operation, state, &error);
+                runtime_.storage.persistence_completed(operation, state, &error);
             } else {
-                runtime_.storage.PersistenceCompleted(operation, state, nullptr);
+                runtime_.storage.persistence_completed(operation, state, nullptr);
             }
         });
     }
 
-    void ScheduleFailure() {
+    void schedule_failure() {
         workers_.emplace_back([this] {
             std::this_thread::sleep_for(std::chrono::microseconds(callback_delay_us_));
             rodaq_error error{};
             rodaq::assign_rodaq_error(
                 RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0, "configured background failure",
                 &error);
-            runtime_.storage.ReportFailure(&error);
+            runtime_.storage.report_failure(&error);
         });
     }
 
-    void JoinWorkers() {
+    void join_workers() {
         for (std::thread& worker : workers_) {
             if (worker.joinable()) {
                 worker.join();

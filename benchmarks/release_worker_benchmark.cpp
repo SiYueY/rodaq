@@ -9,7 +9,7 @@
 namespace rodaq::benchmark_support {
 namespace {
 
-void BM_AdoptReleaseWorkers(benchmark::State& state) {
+void bm_adopt_release_workers(benchmark::State& state) {
     constexpr std::size_t kRecords = 100'000;
     constexpr std::size_t kPayloadBytes = 800;
     const std::size_t capacity = record_capacity(kRecords);
@@ -23,7 +23,7 @@ void BM_AdoptReleaseWorkers(benchmark::State& state) {
 }  // namespace
 }  // namespace rodaq::benchmark_support
 
-BENCHMARK(rodaq::benchmark_support::BM_AdoptReleaseWorkers)
+BENCHMARK(rodaq::benchmark_support::bm_adopt_release_workers)
     ->Arg(1)
     ->Arg(2)
     ->Arg(4)

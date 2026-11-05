@@ -67,28 +67,28 @@ void release_anchor(void* context) noexcept {
 
 std::string config_string(
     const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
-    auto child = view.Find(key);
+    auto child = view.find(key);
     if (!child.has_value()) {
         return default_value;
     }
-    auto value = child.value().AsString();
+    auto value = child.value().as_string();
     return value.has_value() ? std::string(value.value()) : std::move(default_value);
 }
 
 std::int64_t config_int(
     const rodaq::ConfigView& view, std::string_view key, std::int64_t default_value) {
-    auto child = view.Find(key);
+    auto child = view.find(key);
     if (!child.has_value()) {
         return default_value;
     }
-    auto value = child.value().AsInt64();
+    auto value = child.value().as_int64();
     return value.has_value() ? value.value() : default_value;
 }
 
 class FakeAcquisitionPlugin final : public rodaq::AcquisitionPlugin {
 public:
     ~FakeAcquisitionPlugin() override {
-        LogControl("destroy");
+        log_control("destroy");
         if (!destroy_block_file_.empty()) {
             const std::string blocked_file = destroy_block_file_ + ".blocked";
             const std::string continue_file = destroy_block_file_ + ".continue";
@@ -99,7 +99,7 @@ public:
         }
     }
 
-    rodaq::Result<void> Bind(rodaq::AcquisitionRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::AcquisitionRuntime runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -108,7 +108,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Configure(const rodaq::ConfigView& config) override {
+    rodaq::Result<void> configure(const rodaq::ConfigView& config) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
@@ -142,7 +142,7 @@ public:
         payload_release_block_file_ = config_string(config, "payload_release_block_file", "");
         destroy_block_file_ = config_string(config, "destroy_block_file", "");
         event_log_ = config_string(config, "event_log", "");
-        LogControl(
+        log_control(
             "configure streams=" + std::to_string(stream_count_) +
             " records=" + std::to_string(records_per_stream_) +
             " producers=" + std::to_string(producer_threads_) + " payload_mode=" + payload_mode_);
@@ -154,12 +154,12 @@ public:
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
             return invalid_argument();
         }
-        runtime_.common.Log(RODAQ_LOG_INFO, "plugin.fake", "Acquisition configured");
+        runtime_.common.log(RODAQ_LOG_INFO, "plugin.fake", "Acquisition configured");
         stage_ = Stage::Configured;
         return {};
     }
 
-    rodaq::Result<void> Start() override {
+    rodaq::Result<void> start() override {
         if (stage_ != Stage::Configured) {
             return invalid_state();
         }
@@ -172,7 +172,7 @@ public:
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured acquisition start failure"));
         }
-        auto source = runtime_.acquisition.RegisterSource(rodaq_source_registration{
+        auto source = runtime_.acquisition.register_source(rodaq_source_registration{
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE,
             0,
             rodaq_bytes_view{
@@ -182,7 +182,7 @@ public:
             return fail(source.error());
         }
         source_ = source.value();
-        auto clock = runtime_.acquisition.RegisterClock(rodaq_clock_registration{
+        auto clock = runtime_.acquisition.register_clock(rodaq_clock_registration{
             RODAQ_CLOCK_REGISTRATION_MIN_STRUCT_SIZE,
             0,
             rodaq_bytes_view{
@@ -195,7 +195,7 @@ public:
             return fail(clock.error());
         }
         clock_ = clock.value();
-        auto schema = runtime_.acquisition.RegisterSchema(rodaq_schema_registration{
+        auto schema = runtime_.acquisition.register_schema(rodaq_schema_registration{
             RODAQ_SCHEMA_REGISTRATION_MIN_STRUCT_SIZE,
             RODAQ_FALSE,
             0,
@@ -218,7 +218,7 @@ public:
         transitions_.reserve(stream_count_);
         for (std::size_t index = 0; index < stream_count_; ++index) {
             const std::string native = "stream-" + std::to_string(index);
-            auto stream = runtime_.acquisition.RegisterStream(rodaq_stream_registration{
+            auto stream = runtime_.acquisition.register_stream(rodaq_stream_registration{
                 RODAQ_STREAM_REGISTRATION_MIN_STRUCT_SIZE,
                 0,
                 rodaq_bytes_view{
@@ -234,46 +234,46 @@ public:
         }
         for (std::size_t index = 0; index < stream_count_; ++index) {
             std::string descriptor_name = "fake/0";
-            auto descriptor = PublishDescriptor(streams_[index], descriptor_name);
+            auto descriptor = publish_descriptor(streams_[index], descriptor_name);
             if (!descriptor.has_value()) {
                 return fail(descriptor.error());
             }
             if (projection_before_start_) {
-                auto projection = RegisterProjection(descriptor.value());
+                auto projection = register_projection(descriptor.value());
                 if (!projection.has_value()) {
                     return fail(projection.error());
                 }
                 if (projection_registration_mode_ == "same") {
-                    auto duplicate = RegisterProjection(descriptor.value());
+                    auto duplicate = register_projection(descriptor.value());
                     if (!duplicate.has_value()) {
                         return fail(duplicate.error());
                     }
                 } else if (projection_registration_mode_ == "conflict") {
-                    auto conflicting = RegisterProjection(descriptor.value(), "-different");
+                    auto conflicting = register_projection(descriptor.value(), "-different");
                     if (!conflicting.has_value()) {
                         return fail(conflicting.error());
                     }
                 }
             }
             descriptor_name.assign("mutated-after-publication");
-            auto views = ValidatePublishedViews(streams_[index], descriptor.value(), "fake/0");
+            auto views = validate_published_views(streams_[index], descriptor.value(), "fake/0");
             if (!views.has_value()) {
                 return fail(views.error());
             }
             descriptors_.push_back(descriptor.value());
         }
-        auto ownership = ValidateOwnership();
+        auto ownership = validate_ownership();
         if (!ownership.has_value()) {
             return fail(ownership.error());
         }
-        auto stale_handles = ValidateOrRecordStaleHandles();
+        auto stale_handles = validate_or_record_stale_handles();
         if (!stale_handles.has_value()) {
             return fail(stale_handles.error());
         }
 
         stopping_.store(false);
         for (std::size_t producer = 0; producer < producer_threads_; ++producer) {
-            producers_.emplace_back([this, producer]() { Produce(producer); });
+            producers_.emplace_back([this, producer]() { produce(producer); });
         }
         if (lifecycle_scenario_ == "start_partial_failure" ||
             lifecycle_scenario_ == "start_partial_cleanup_failure") {
@@ -285,8 +285,8 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Stop() override {
-        LogControl("stop-enter");
+    rodaq::Result<void> stop() override {
+        log_control("stop-enter");
         if (stage_ == Stage::Stopped) {
             return {};
         }
@@ -298,9 +298,9 @@ public:
         if (lifecycle_scenario_ == "stop_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
-        Quiesce();
+        quiesce();
         stage_ = Stage::Stopped;
-        LogControl("stop");
+        log_control("stop");
         if (lifecycle_scenario_ == "stop_failure") {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0, "configured stop failure"));
@@ -308,7 +308,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> PrepareBindingSwitch(
+    rodaq::Result<void> prepare_binding_switch(
         rodaq_binding_transition transition, rodaq_stream_handle stream,
         rodaq_stream_descriptor_handle old_descriptor,
         rodaq_stream_descriptor_handle new_descriptor) override {
@@ -316,10 +316,10 @@ public:
         if (plugin_local_lock_) {
             plugin_lock.lock();
         }
-        LogControl(
+        log_control(
             "prepare transition=" + std::to_string(transition.value) + " old=" +
             std::to_string(old_descriptor.value) + " new=" + std::to_string(new_descriptor.value));
-        TransitionState* state = FindTransitionByStream(stream);
+        TransitionState* state = find_transition_by_stream(stream);
         if (state == nullptr) {
             return invalid_state();
         }
@@ -344,12 +344,12 @@ public:
         return {};
     }
 
-    rodaq::Result<void> CommitBindingSwitch(rodaq_binding_transition transition) override {
-        LogControl("commit transition=" + std::to_string(transition.value));
-        TransitionState* state = FindTransition(transition.value);
+    rodaq::Result<void> commit_binding_switch(rodaq_binding_transition transition) override {
+        log_control("commit transition=" + std::to_string(transition.value));
+        TransitionState* state = find_transition(transition.value);
         const std::size_t commit_index = commit_count_.fetch_add(1);
         if (binding_scenario_ == "commit_failure_switch" && commit_index != 0) {
-            CompleteTransition(state, transition.value, false, RODAQ_BINDING_ABORT_KEEP_PAUSED);
+            complete_transition(state, transition.value, false, RODAQ_BINDING_ABORT_KEEP_PAUSED);
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured binding commit failure"));
@@ -357,32 +357,33 @@ public:
         if (binding_scenario_ == "commit_stall_switch" && commit_index != 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
-        CompleteTransition(state, transition.value, true, RODAQ_BINDING_ABORT_KEEP_PAUSED);
+        complete_transition(state, transition.value, true, RODAQ_BINDING_ABORT_KEEP_PAUSED);
         return {};
     }
 
-    rodaq::Result<void> AbortBindingSwitch(
+    rodaq::Result<void> abort_binding_switch(
         rodaq_binding_transition transition, rodaq_binding_abort_disposition disposition) override {
-        LogControl(
+        log_control(
             "abort transition=" + std::to_string(transition.value) +
             " disposition=" + std::to_string(disposition));
         if (binding_scenario_ == "prepare_failure_abort_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
-        CompleteTransition(FindTransition(transition.value), transition.value, false, disposition);
+        complete_transition(
+            find_transition(transition.value), transition.value, false, disposition);
         return {};
     }
 
-    rodaq::Result<void> QuiesceStream(rodaq_stream_handle) override { return {}; }
+    rodaq::Result<void> quiesce_stream(rodaq_stream_handle) override { return {}; }
 
-    rodaq::Result<void> QuiescePlugin() override {
-        LogControl("quiesce");
+    rodaq::Result<void> quiesce_plugin() override {
+        log_control("quiesce");
         if (lifecycle_scenario_ == "quiesce_failure" ||
             lifecycle_scenario_ == "start_partial_cleanup_failure") {
             // Inject an operational barrier error after joining the fixture's
             // native workers. Runtime still cannot assume quiescence on error
             // and must quarantine; the fixture owns its completed threads.
-            Quiesce();
+            quiesce();
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured quiesce failure"));
@@ -390,7 +391,7 @@ public:
         if (lifecycle_scenario_ == "quiesce_stall") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
-        Quiesce();
+        quiesce();
         return {};
     }
 
@@ -404,7 +405,7 @@ private:
         Stopped,
     };
 
-    void Quiesce() {
+    void quiesce() {
         stopping_.store(true);
         for (const auto& transition : transitions_) {
             transition->condition.notify_all();
@@ -417,7 +418,7 @@ private:
         producers_.clear();
     }
 
-    TransitionState* FindTransitionByStream(rodaq_stream_handle stream) {
+    TransitionState* find_transition_by_stream(rodaq_stream_handle stream) {
         const auto found = std::find_if(
             transitions_.begin(), transitions_.end(),
             [stream](const std::unique_ptr<TransitionState>& state) {
@@ -426,7 +427,7 @@ private:
         return found == transitions_.end() ? nullptr : found->get();
     }
 
-    TransitionState* FindTransition(std::uint64_t transition) {
+    TransitionState* find_transition(std::uint64_t transition) {
         const auto found = std::find_if(
             transitions_.begin(), transitions_.end(),
             [transition](const std::unique_ptr<TransitionState>& state) {
@@ -436,7 +437,7 @@ private:
         return found == transitions_.end() ? nullptr : found->get();
     }
 
-    void CompleteTransition(
+    void complete_transition(
         TransitionState* state, std::uint64_t transition, bool committed,
         rodaq_binding_abort_disposition disposition) {
         if (state == nullptr) {
@@ -454,9 +455,9 @@ private:
         state->condition.notify_all();
     }
 
-    void Produce(std::size_t producer_index) {
+    void produce(std::size_t producer_index) {
         while (!stopping_.load()) {
-            const auto lifecycle = runtime_.common.LifecycleSnapshot();
+            const auto lifecycle = runtime_.common.lifecycle_snapshot();
             if (lifecycle.has_value() &&
                 lifecycle.value().normal_acquisition_allowed == RODAQ_TRUE) {
                 break;
@@ -474,7 +475,7 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             if (!file_exists(producer_wait_file_)) {
-                LogControl("producer_wait_failed");
+                log_control("producer_wait_failed");
                 return;
             }
         }
@@ -494,14 +495,14 @@ private:
                     next_record_at += std::chrono::microseconds(record_interval_us_);
                     std::this_thread::sleep_until(next_record_at);
                 }
-                if (!SubmitOne(producer_index, stream_index, record_index, source, timestamps)) {
+                if (!submit_one(producer_index, stream_index, record_index, source, timestamps)) {
                     break;
                 }
             }
         }
     }
 
-    bool SubmitOne(
+    bool submit_one(
         std::size_t producer_index, std::size_t stream_index, std::size_t record_index,
         std::vector<std::uint8_t>& source, std::vector<rodaq_timestamp_value>& timestamps) {
         if (projection_delay_after_ >= 0 &&
@@ -523,7 +524,7 @@ private:
                 if (plugin_local_lock_) {
                     plugin_lock.lock();
                 }
-                projection = RegisterProjection(current);
+                projection = register_projection(current);
             }
             if (!projection.has_value()) {
                 return false;
@@ -544,7 +545,7 @@ private:
                 !switched_[stream_index]) {
                 switched_[stream_index] = true;
                 if (pause_before_switch_) {
-                    const auto paused = runtime_.acquisition.ReportStream(
+                    const auto paused = runtime_.acquisition.report_stream(
                         streams_[stream_index], RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
                     if (!paused.has_value()) {
                         return false;
@@ -556,13 +557,13 @@ private:
                     transitions_[stream_index]->committed = false;
                 }
                 auto switched_descriptor =
-                    PublishDescriptor(streams_[stream_index], "fake/switched");
+                    publish_descriptor(streams_[stream_index], "fake/switched");
                 if (!switched_descriptor.has_value()) {
                     return false;
                 }
                 TransitionState& transition = *transitions_[stream_index];
                 if (projection_before_start_) {
-                    auto projection = RegisterProjection(switched_descriptor.value());
+                    auto projection = register_projection(switched_descriptor.value());
                     if (!projection.has_value()) {
                         return false;
                     }
@@ -603,7 +604,7 @@ private:
         for (std::size_t slot = 0; slot < timestamps.size(); ++slot) {
             std::int64_t reading = static_cast<std::int64_t>(record_index + slot + 1U);
             if (timestamp_scenario_ == "monotonic") {
-                const auto monotonic = runtime_.common.MonotonicTimeNs();
+                const auto monotonic = runtime_.common.monotonic_time_ns();
                 if (monotonic.has_value()) {
                     reading = static_cast<std::int64_t>(monotonic.value());
                 }
@@ -626,7 +627,7 @@ private:
 
         if (ownership_scenario_ == "probe") {
             submission.source = foreign_source_;
-            auto rejected = runtime_.acquisition.Submit(submission);
+            auto rejected = runtime_.acquisition.submit(submission);
             const auto expected_disposition = mode == RODAQ_PAYLOAD_COPY
                                                   ? RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE
                                                   : RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE;
@@ -638,44 +639,44 @@ private:
                                                   RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE)) {
                     delete anchor;
                 }
-                LogControl("ownership_submit_failed");
+                log_control("ownership_submit_failed");
                 return false;
             }
-            LogControl("ownership_submit_rejected");
+            log_control("ownership_submit_rejected");
             submission.source = *source_;
         }
-        auto result = runtime_.acquisition.Submit(submission);
+        auto result = runtime_.acquisition.submit(submission);
         if (!result.has_value()) {
             if (anchor != nullptr) {
                 delete anchor;
             }
-            LogSubmitError(result.error());
+            log_submit_error(result.error());
             return !stopping_.load();
         }
         if (anchor != nullptr &&
             result.value().payload_disposition == RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE) {
             delete anchor;
         }
-        LogResult(submission, result.value());
+        log_result(submission, result.value());
         if (plugin_health_scenario_ == "source_recovered" && record_index == 1) {
             if (result.value().rejection_reason != RODAQ_REJECTION_SOURCE_UNAVAILABLE ||
-                !runtime_.acquisition.ReportSource(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+                !runtime_.acquisition.report_source(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
                      .has_value()) {
-                LogControl("source_recovery_failed");
+                log_control("source_recovery_failed");
                 return false;
             }
-            LogControl("source_explicitly_recovered");
+            log_control("source_explicitly_recovered");
         }
         if (plugin_health_after_ >= 0 &&
             record_index == static_cast<std::size_t>(plugin_health_after_)) {
-            if (!TriggerPluginHealth(stream_index)) {
+            if (!trigger_plugin_health(stream_index)) {
                 return false;
             }
         }
         return !stopping_.load();
     }
 
-    bool TriggerPluginHealth(std::size_t stream_index) {
+    bool trigger_plugin_health(std::size_t stream_index) {
         rodaq_error diagnostic{};
         rodaq::assign_rodaq_error(
             RODAQ_STATUS_UNAVAILABLE, "fake_acquisition", 0, "configured Plugin health failure",
@@ -683,20 +684,20 @@ private:
         const rodaq_acquisition_plugin_state state =
             plugin_health_scenario_ == "terminal" ? RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE
                                                   : RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE;
-        if (!runtime_.acquisition.ReportPluginState(state, &diagnostic).has_value()) {
+        if (!runtime_.acquisition.report_plugin_state(state, &diagnostic).has_value()) {
             return false;
         }
-        LogControl("plugin_health state=" + plugin_health_scenario_);
+        log_control("plugin_health state=" + plugin_health_scenario_);
         if (plugin_health_scenario_ != "recovered" &&
             plugin_health_scenario_ != "source_recovered") {
             return true;
         }
-        if (!runtime_.acquisition.ReportPluginState(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
+        if (!runtime_.acquisition.report_plugin_state(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
                  .has_value()) {
             return false;
         }
         if (plugin_health_scenario_ == "recovered" &&
-            !runtime_.acquisition.ReportSource(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+            !runtime_.acquisition.report_source(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
                  .has_value()) {
             return false;
         }
@@ -706,12 +707,12 @@ private:
             transition.terminal = false;
             transition.committed = false;
         }
-        auto descriptor = PublishDescriptor(streams_[stream_index], "fake/recovered");
+        auto descriptor = publish_descriptor(streams_[stream_index], "fake/recovered");
         if (!descriptor.has_value()) {
             return false;
         }
         if (projection_before_start_ || !projection_id_.empty()) {
-            auto projection = RegisterProjection(descriptor.value());
+            auto projection = register_projection(descriptor.value());
             if (!projection.has_value()) {
                 return false;
             }
@@ -731,7 +732,7 @@ private:
         return true;
     }
 
-    void LogResult(const rodaq_record_submission&, const rodaq_acquisition_submit_result& result) {
+    void log_result(const rodaq_record_submission&, const rodaq_acquisition_submit_result& result) {
         if (event_log_.empty()) {
             return;
         }
@@ -741,7 +742,7 @@ private:
                << " disposition=" << result.payload_disposition << '\n';
     }
 
-    void LogSubmitError(const rodaq::Error& error) {
+    void log_submit_error(const rodaq::Error& error) {
         if (event_log_.empty()) {
             return;
         }
@@ -751,7 +752,7 @@ private:
                << " message=" << error.message() << '\n';
     }
 
-    void LogControl(const std::string& event) {
+    void log_control(const std::string& event) {
         if (event_log_.empty()) {
             return;
         }
@@ -760,7 +761,7 @@ private:
         output << "control " << event << '\n';
     }
 
-    rodaq::Result<void> ValidatePublishedViews(
+    rodaq::Result<void> validate_published_views(
         rodaq_stream_handle stream, rodaq_stream_descriptor_handle descriptor,
         std::string_view expected_name) {
         auto stream_view = runtime_.canonical.get_stream(stream);
@@ -781,7 +782,7 @@ private:
                 "published Descriptor view was mutated"));
         }
         auto key_set =
-            runtime_.canonical.GetTimestampKeySet(descriptor_view.value().timestamp_key_set_id);
+            runtime_.canonical.get_timestamp_key_set(descriptor_view.value().timestamp_key_set_id);
         if (!key_set.has_value() || key_set.value().key_count != timestamp_key_count_ + 1U) {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
@@ -798,11 +799,11 @@ private:
         return {};
     }
 
-    rodaq::Result<void> ValidateOwnership() {
+    rodaq::Result<void> validate_ownership() {
         if (ownership_scenario_.empty()) {
             return {};
         }
-        auto duplicate = runtime_.acquisition.RegisterSource(rodaq_source_registration{
+        auto duplicate = runtime_.acquisition.register_source(rodaq_source_registration{
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(source_id_.data()), source_id_.size()}});
@@ -815,7 +816,7 @@ private:
                 return fail(descriptor.error());
             }
             auto keys =
-                runtime_.canonical.GetTimestampKeySet(descriptor.value().timestamp_key_set_id);
+                runtime_.canonical.get_timestamp_key_set(descriptor.value().timestamp_key_set_id);
             if (!keys.has_value() || keys.value().key_count == 0) {
                 return invalid_state();
             }
@@ -833,7 +834,7 @@ private:
         if (!input) {
             return invalid_state();
         }
-        auto conflict = runtime_.acquisition.RegisterSource(rodaq_source_registration{
+        auto conflict = runtime_.acquisition.register_source(rodaq_source_registration{
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(foreign_id.data()), foreign_id.size()}});
@@ -841,16 +842,17 @@ private:
             return invalid_state();
         }
         for (auto availability : {RODAQ_AVAILABILITY_UNAVAILABLE, RODAQ_AVAILABILITY_AVAILABLE}) {
-            auto source = runtime_.acquisition.ReportSource(foreign_source_, availability, nullptr);
-            auto stream = runtime_.acquisition.ReportStream(foreign_stream, availability, nullptr);
+            auto source =
+                runtime_.acquisition.report_source(foreign_source_, availability, nullptr);
+            auto stream = runtime_.acquisition.report_stream(foreign_stream, availability, nullptr);
             if (source.has_value() || source.error().code() != rodaq::ErrorCode::InvalidState ||
                 stream.has_value() || stream.error().code() != rodaq::ErrorCode::InvalidState) {
                 return invalid_state();
             }
         }
-        auto unknown_source = runtime_.acquisition.ReportSource(
+        auto unknown_source = runtime_.acquisition.report_source(
             rodaq_source_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
-        auto unknown_stream = runtime_.acquisition.ReportStream(
+        auto unknown_stream = runtime_.acquisition.report_stream(
             rodaq_stream_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
         if (unknown_source.has_value() ||
             unknown_source.error().code() != rodaq::ErrorCode::NotFound ||
@@ -861,7 +863,7 @@ private:
         const auto own_clock = clock_;
         for (auto clock : {foreign_clock, ingress_clock, rodaq_clock_handle{UINT64_MAX}}) {
             clock_ = clock;
-            auto descriptor = PublishDescriptor(streams_.front(), "fake/foreign-clock");
+            auto descriptor = publish_descriptor(streams_.front(), "fake/foreign-clock");
             const auto expected = clock.value == UINT64_MAX ? rodaq::ErrorCode::NotFound
                                                             : rodaq::ErrorCode::InvalidState;
             if (descriptor.has_value() || descriptor.error().code() != expected) {
@@ -870,11 +872,11 @@ private:
             }
         }
         clock_ = own_clock;
-        LogControl("ownership_control_rejected");
+        log_control("ownership_control_rejected");
         return {};
     }
 
-    rodaq::Result<void> ValidateOrRecordStaleHandles() {
+    rodaq::Result<void> validate_or_record_stale_handles() {
         if (stale_handle_file_.empty()) {
             return {};
         }
@@ -898,7 +900,7 @@ private:
                     rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
                     "stale activation handle resolved"));
             }
-            LogControl("stale_handles_rejected");
+            log_control("stale_handles_rejected");
             return {};
         }
 
@@ -913,7 +915,7 @@ private:
             return fail(descriptor.error());
         }
         auto key_set =
-            runtime_.canonical.GetTimestampKeySet(descriptor.value().timestamp_key_set_id);
+            runtime_.canonical.get_timestamp_key_set(descriptor.value().timestamp_key_set_id);
         if (!key_set.has_value() || key_set.value().key_count == 0) {
             return fail(rodaq::Error(
                 rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
@@ -927,20 +929,20 @@ private:
                             "failed to record stale handle fixture"));
     }
 
-    rodaq::Result<void> RegisterProjection(
+    rodaq::Result<void> register_projection(
         rodaq_stream_descriptor_handle descriptor, std::string_view suffix = {}) {
         if (projection_id_.empty()) {
             return {};
         }
         const std::string bytes =
             "projection:" + std::to_string(descriptor.value) + std::string(suffix);
-        auto result = runtime_.projection.Register(
+        auto result = runtime_.projection.register_entry(
             descriptor, projection_id_, reinterpret_cast<const std::uint8_t*>(bytes.data()),
             bytes.size());
         if (!result.has_value()) {
             return result;
         }
-        LogControl("projection descriptor=" + std::to_string(descriptor.value));
+        log_control("projection descriptor=" + std::to_string(descriptor.value));
         return {};
     }
 
@@ -948,7 +950,7 @@ private:
         return rodaq_string_view{value.data(), value.size()};
     }
 
-    rodaq::Result<rodaq_stream_descriptor_handle> PublishDescriptor(
+    rodaq::Result<rodaq_stream_descriptor_handle> publish_descriptor(
         rodaq_stream_handle stream, std::string_view name) {
         std::vector<std::string> roles;
         roles.reserve(timestamp_key_count_);
@@ -968,7 +970,7 @@ private:
         for (const std::string& role : roles) {
             timestamp_keys.push_back(rodaq_timestamp_key{fixture_string(role), clock_});
         }
-        auto result = runtime_.acquisition.PublishDescriptor(rodaq_stream_descriptor_registration{
+        auto result = runtime_.acquisition.publish_descriptor(rodaq_stream_descriptor_registration{
             RODAQ_STREAM_DESCRIPTOR_REGISTRATION_MIN_STRUCT_SIZE,
             RODAQ_TRUE,
             0,
@@ -981,7 +983,7 @@ private:
             0,
         });
         if (result.has_value()) {
-            LogControl("descriptor_published descriptor=" + std::to_string(result.value().value));
+            log_control("descriptor_published descriptor=" + std::to_string(result.value().value));
         }
         return result;
     }

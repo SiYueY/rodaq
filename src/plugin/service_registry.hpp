@@ -22,11 +22,11 @@ public:
     ServiceRegistry& operator=(ServiceRegistry&&) = delete;
     ~ServiceRegistry() = default;
 
-    Result<void> Register(std::string_view service_id, rodaq_interface service);
-    Result<void> Freeze();
-    Result<rodaq_interface> Query(std::string_view service_id) const;
+    Result<void> register_entry(std::string_view service_id, rodaq_interface service);
+    Result<void> freeze();
+    Result<rodaq_interface> query(std::string_view service_id) const;
 
-    rodaq_service_registry AbiView() noexcept;
+    rodaq_service_registry abi_view() noexcept;
 
 private:
     struct Entry {

@@ -1717,5 +1717,108 @@ the results above are the durable qualification record.
 **Assessment:** ownership/isolation findings closed; retention publication
 hardening closed; Known P0 = 0 and Known P1 = 0 from this closure. M2 generic
 Runtime locally qualified/frozen; M3 NOT STARTED.
-New hosted qualification: **PENDING — await the associated workflow result**.
+At local qualification the new hosted result was pending; the subsequent
+`be448c8` hosted qualification completed successfully at [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291).
 Native arm64: **DEFERRED under D-034**.
+
+
+## C++ coding standards review and snake_case migration — 2026-11-05
+
+### Scope and compatibility
+
+The working tree is based on `develop@be448c81da075a64a4282d2123e321e77c66e13b`.
+The prior commit's hosted qualification completed successfully at [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291).
+This review's code is locally qualified; no new hosted run has yet qualified it.
+
+Project-owned free functions, static/member functions, Runtime Application
+Candidate, SDK authoring interfaces, trampolines, tests, benchmarks and installed
+consumers use snake_case. Representative migrations: `Runtime::Start()` to
+`Runtime::start()`, `AcquisitionPlugin::Bind()` to `bind()`,
+`ConfigTree::Double()` to `float64()` (avoids the C++ `double` keyword), and
+Registry/Projection `Register()` to `register_entry()` (avoids `register`).
+No PascalCase source compatibility aliases were added.
+
+D-056 supersedes D-033 only for C++ SDK source names. Existing C++ Plugin and
+Application source must migrate; existing Runtime C++ binaries must be relinked.
+The Stable C Plugin ABI headers, frozen V1 fixtures, C entry points and table
+layouts are unchanged. C and C++ ABI/header-isolation, symbol, V1 fixture and
+installed SDK/Application consumer tests passed. `nm` confirmed unchanged
+`rodaq_get_acquisition_plugin`, `rodaq_get_storage_plugin`, and
+`rodaq_plugin_abi_version` exports; Runtime C++ exports now use snake_case.
+
+### Audit and handling
+
+Clang-format 14 checked all 182 project-owned C/C++ files. Clang-tidy 14 checked
+110 build translation units, 26 installable C++ headers, all eight C ABI headers
+individually in C and C++ modes, and five installed consumer sources. Two
+intentionally non-compiling negative fixtures are excluded from standalone lint;
+their expected-failure compiler tests passed. Generated code and pinned
+third-party sources are not linted as project code.
+
+The CI style job enforces function/member/virtual-method naming, braces,
+narrowing conversions, use-after-move, override, nullptr and C-style casts.
+C++ constructors/destructors/operators, third-party overrides, GoogleTest,
+generated symbols, frozen C ABI and GNU ld `__real__`/`__wrap__` hooks retain
+their required names. Six narrow `bugprone-use-after-move` suppressions in tests
+explain deliberate moved-from-state checks and the retention contract under
+which a failed RetainWorker leaves its rvalue-reference thread with the caller.
+
+The broader advisory scan also identified 14 moves of trivially-copyable values
+and four potential copies. The moves express relinquishment and are not
+correctness defects. Two copies explicitly test copy semantics; two own YAML
+scalar/tag strings during conversion. No unprofiled optimization was made. Manual
+review sampled Admission cancellation/locking, Quarantine retention/Join,
+Payload release, Runtime lifecycle ownership, Plugin lease/unload, exception
+boundaries and casts against their existing contracts. No new P0/P1 issue was
+confirmed. Static checks and sanitizer tests cannot prove all concurrency or
+lifetime properties; existing dedicated fault/contract tests remain necessary.
+
+### Local qualification
+
+| Configuration | Result |
+|---|---|
+| GCC 11 Debug / warnings as errors | 94/94 CTest PASS |
+| GCC 11 ASan + LSan, detect_leaks=1 | 94/94 PASS |
+| GCC 11 UBSan, no recovery | 94/94 PASS |
+| GCC 11 Release | 94/94 PASS |
+| Ubuntu 24.04 offline, GCC 13 | 94/94 PASS |
+| Clang 14 TSan, race and thread-leak checks enabled | 10/10 PASS |
+| Runtime-only Release without development submodules | build PASS |
+| Release capacity, eight executables, three repetitions | PASS; details in capacity_qualification.md |
+| clang-format 14 / seven clang-tidy checks / git diff --check | PASS |
+| Stable C ABI headers, V1 fixtures and C entry points | unchanged / compatibility PASS |
+| Native arm64 | D-034 DEFERRED |
+
+Local ASan/LSan and TSan used `setarch x86_64 -R`; no new sanitizer suppression
+was introduced. Local Clang 14 uses GCC 11 headers when compiler autodiscovery
+is incomplete. Concurrent local matrices used separate `TMPDIR` directories to
+avoid PID-based fixture collisions. Lint is reproducible with the `cpp-style` CI
+job or `python3 tools/check_cpp_style.py --build-dir <build>`, after configuring
+tests/benchmarks with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`, building and running
+`rodaq.abi.install_smoke` once for generated SDK metadata.
+
+The last post-qualification edits to test C++ source add only clang-tidy
+suppression comments for those six intentional checks; executable statements and
+behavior are unchanged. New hosted qualification is **PENDING** until these changes
+are committed/pushed and the workflow finishes. M2 is locally qualified; M3 is
+NOT STARTED.
+
+
+## 2026-11-05 Declaration / implementation separation follow-up
+
+Moved SDK non-template service wrappers, configuration and validation routines
+into the existing static foundation library, and moved selected internal Runtime
+methods into `.cpp` files. Header-only templates, `constexpr`, Plugin-exported
+trampolines and public Runtime inline accessors required by current symbol
+visibility are retained. The installed SDK links via `rodaq::sdk`; Stable C ABI
+headers and Plugin C exports are unchanged. Consumers must link the SDK target
+when using these moved methods.
+
+After the move: Normal, Release, ASan/LSan, UBSan and Ubuntu 24 each 94/94;
+Clang 14 TSan CI subset 10/10 with thread-leak detection; Runtime-only Release
+build PASS; formatting and clang-tidy PASS (189 C/C++ files, 117 translation
+units, 26 C++ headers, 8 C ABI headers in C/C++ modes, 5 install consumers).
+All eight Release capacity benchmarks passed three repetitions; comparative
+medians are recorded in `capacity_qualification.md`. A full Clang TSan build was separately attempted and encounters an existing
+`-Wunused-const-variable` error for the null-descriptor fixture; it is outside
+the defined TSan subset. New hosted qualification remains PENDING.

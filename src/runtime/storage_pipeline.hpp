@@ -52,13 +52,13 @@ public:
     PipelineReservation& operator=(PipelineReservation&& other) noexcept;
     ~PipelineReservation();
 
-    bool Active() const noexcept { return pipeline_ != nullptr; }
-    std::size_t Index() const noexcept { return index_; }
-    rodaq_storage_operation Operation() const noexcept { return operation_; }
+    bool active() const noexcept;
+    std::size_t index() const noexcept;
+    rodaq_storage_operation operation() const noexcept;
 
-    Reservation TakeRecordReservation() noexcept;
-    Reservation TakePayloadReservation() noexcept;
-    PayloadPoolReservation TakePayloadPoolReservation() noexcept;
+    Reservation take_record_reservation() noexcept;
+    Reservation take_payload_reservation() noexcept;
+    PayloadPoolReservation take_payload_pool_reservation() noexcept;
 
 private:
     friend class StoragePipeline;
@@ -68,7 +68,7 @@ private:
         Reservation record_reservation, Reservation payload_reservation,
         PayloadPoolReservation payload_pool_reservation) noexcept;
 
-    void Cancel() noexcept;
+    void cancel() noexcept;
 
     StoragePipeline* pipeline_ = nullptr;
     std::size_t index_ = 0;
@@ -107,42 +107,42 @@ public:
     StoragePipeline& operator=(StoragePipeline&&) = delete;
     ~StoragePipeline();
 
-    Result<void> Start();
-    void OpenAdmission() noexcept;
-    void CloseAdmission() noexcept;
-    bool AdmissionOpen() const noexcept;
+    Result<void> start();
+    void open_admission() noexcept;
+    void close_admission() noexcept;
+    bool admission_open() const noexcept;
 
-    Result<PreGateAcquireResult> AcquirePreGate(
+    Result<PreGateAcquireResult> acquire_pre_gate(
         std::size_t payload_bytes, AdmissionMode mode, PayloadPool* copy_pool, bool copy_payload,
         std::chrono::steady_clock::time_point deadline,
         const std::atomic<std::uint64_t>& eligibility_generation);
 
-    void Publish(PipelineReservation&& reservation, RuntimeRecord&& record) noexcept;
+    void publish(PipelineReservation&& reservation, RuntimeRecord&& record) noexcept;
 
-    void CloseDispatch() noexcept;
-    void BeginFailureCutoff() noexcept;
-    void ResolveAfterClose() noexcept;
-    void CloseCallbacks() noexcept;
-    void CloseRelease() noexcept;
-    void NotifyAdmissionWaiters() noexcept;
-    void JoinDispatch() noexcept;
-    void JoinCompletion() noexcept;
-    void JoinRelease() noexcept;
-    void ReapCompletedWorkers() noexcept;
-    bool RetainBlockedReleaseWorkers() noexcept;
-    bool WaitDispatchIdle(std::chrono::steady_clock::time_point deadline);
-    bool WaitOperationsIdle(std::chrono::steady_clock::time_point deadline);
-    bool WaitReleaseIdle(std::chrono::steady_clock::time_point deadline);
-    bool WaitStorageQuiescent(std::chrono::steady_clock::time_point deadline);
-    bool HasUnresolvedOperations() const noexcept;
+    void close_dispatch() noexcept;
+    void begin_failure_cutoff() noexcept;
+    void resolve_after_close() noexcept;
+    void close_callbacks() noexcept;
+    void close_release() noexcept;
+    void notify_admission_waiters() noexcept;
+    void join_dispatch() noexcept;
+    void join_completion() noexcept;
+    void join_release() noexcept;
+    void reap_completed_workers() noexcept;
+    bool retain_blocked_release_workers() noexcept;
+    bool wait_dispatch_idle(std::chrono::steady_clock::time_point deadline);
+    bool wait_operations_idle(std::chrono::steady_clock::time_point deadline);
+    bool wait_release_idle(std::chrono::steady_clock::time_point deadline);
+    bool wait_storage_quiescent(std::chrono::steady_clock::time_point deadline);
+    bool has_unresolved_operations() const noexcept;
 
     void payload_consumed(rodaq_storage_operation operation) noexcept;
     void persistence_completed(
         rodaq_storage_operation operation, rodaq_storage_persistence_state state,
         const rodaq_error* error) noexcept;
 
-    std::size_t ActiveOperationCount() const noexcept;
-    std::size_t ReadyDispatchCount() const noexcept;
+    std::size_t active_operation_count() const noexcept;
+    std::size_t ready_dispatch_count() const noexcept;
 
 private:
     friend class PipelineReservation;
@@ -203,31 +203,31 @@ private:
     static constexpr std::size_t kInvalidIndex = std::numeric_limits<std::size_t>::max();
     static constexpr std::size_t kMaxDiagnosticBytes = 512;
 
-    bool TryAcquireLocked(
+    bool try_acquire_locked(
         std::size_t payload_bytes, std::size_t& index, rodaq_storage_operation& operation);
-    void ClassifyNeverHandedOffLocked(std::size_t index) noexcept;
-    void ReturnIndexLocked(std::size_t index) noexcept;
-    bool FindOperationLocked(rodaq_storage_operation operation, std::size_t& index) noexcept;
-    bool ScheduleCompletionLocked(std::size_t index) noexcept;
-    bool ScheduleReleaseLocked(std::size_t index) noexcept;
-    CompletionEffects ProcessCompletion(std::size_t index);
-    void ApplyViolation(CompletionEffects& effects, const char* message) noexcept;
-    void ReleasePayloadLocked(std::size_t index, Slot& slot, CompletionEffects& effects) noexcept;
-    bool CanTerminalizeLocked(const Slot& slot) const noexcept;
-    void TerminalizeOperationLocked(
+    void classify_never_handed_off_locked(std::size_t index) noexcept;
+    void return_index_locked(std::size_t index) noexcept;
+    bool find_operation_locked(rodaq_storage_operation operation, std::size_t& index) noexcept;
+    bool schedule_completion_locked(std::size_t index) noexcept;
+    bool schedule_release_locked(std::size_t index) noexcept;
+    CompletionEffects process_completion(std::size_t index);
+    void apply_violation(CompletionEffects& effects, const char* message) noexcept;
+    void release_payload_locked(std::size_t index, Slot& slot, CompletionEffects& effects) noexcept;
+    bool can_terminalize_locked(const Slot& slot) const noexcept;
+    void terminalize_operation_locked(
         std::size_t index, Slot& slot, CompletionEffects& effects) noexcept;
-    void NotifyPayloadReleased(const CompletionEffects& effects) noexcept;
-    void NotifyOperationCompleted(const CompletionEffects& effects) noexcept;
-    void ObserveLatency(StorageLatencyKind kind, std::int64_t accepted_ns) noexcept;
-    void DispatchLoop();
-    void WatchdogLoop();
-    void ReleaseLoop(const std::shared_ptr<ReleaseWorkerState>& state);
-    void DispatchOne(std::size_t index);
-    void CompletionLoop();
-    void CompleteSubmit(std::size_t index, Result<rodaq_storage_submit_result> result);
-    bool WaitForSubmitReturn(std::size_t index, std::chrono::steady_clock::time_point deadline);
-    void Fail(Error error) noexcept;
-    void CopyDiagnostic(const rodaq_error* error, Slot& slot) noexcept;
+    void notify_payload_released(const CompletionEffects& effects) noexcept;
+    void notify_operation_completed(const CompletionEffects& effects) noexcept;
+    void observe_latency(StorageLatencyKind kind, std::int64_t accepted_ns) noexcept;
+    void dispatch_loop();
+    void watchdog_loop();
+    void release_loop(const std::shared_ptr<ReleaseWorkerState>& state);
+    void dispatch_one(std::size_t index);
+    void completion_loop();
+    void complete_submit(std::size_t index, Result<rodaq_storage_submit_result> result);
+    bool wait_for_submit_return(std::size_t index, std::chrono::steady_clock::time_point deadline);
+    void fail(Error error) noexcept;
+    void copy_diagnostic(const rodaq_error* error, Slot& slot) noexcept;
 
     const std::size_t capacity_;
     const std::size_t completion_capacity_;

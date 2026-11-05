@@ -53,7 +53,7 @@ SpdlogBackend::~SpdlogBackend() {
     }
 }
 
-Result<void> SpdlogBackend::Write(const LogRecord& record) {
+Result<void> SpdlogBackend::write(const LogRecord& record) {
     if (impl_ == nullptr || impl_->logger == nullptr) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidState, "logging backend is shut down"));
@@ -70,7 +70,7 @@ Result<void> SpdlogBackend::Write(const LogRecord& record) {
     }
 }
 
-Result<void> SpdlogBackend::Flush() {
+Result<void> SpdlogBackend::flush() {
     if (impl_ == nullptr || impl_->logger == nullptr) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidState, "logging backend is shut down"));
@@ -86,7 +86,7 @@ Result<void> SpdlogBackend::Flush() {
     }
 }
 
-Result<void> SpdlogBackend::Shutdown() {
+Result<void> SpdlogBackend::shutdown() {
     if (impl_ == nullptr || impl_->logger == nullptr) {
         return {};
     }

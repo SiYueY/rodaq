@@ -24,13 +24,13 @@ public:
     constexpr PayloadView(const std::uint8_t* data, std::size_t size) noexcept
     : data_(data), size_(size) {}
 
-    constexpr const std::uint8_t* Data() const noexcept { return data_; }
+    constexpr const std::uint8_t* data() const noexcept { return data_; }
 
-    constexpr std::size_t Size() const noexcept { return size_; }
+    constexpr std::size_t size() const noexcept { return size_; }
 
-    constexpr bool Empty() const noexcept { return size_ == 0; }
+    constexpr bool empty() const noexcept { return size_ == 0; }
 
-    constexpr bool Valid() const noexcept { return size_ == 0 || data_ != nullptr; }
+    constexpr bool valid() const noexcept { return size_ == 0 || data_ != nullptr; }
 
 private:
     const std::uint8_t* data_ = nullptr;
@@ -43,8 +43,8 @@ private:
 /// once. Move operations transfer ownership and leave the source empty.
 class Payload final {
 public:
-    static Result<Payload> Adopt(PayloadView view, void* owner_context, PayloadRelease release);
-    static Result<Payload> Retain(PayloadView view, void* owner_context, PayloadRelease release);
+    static Result<Payload> adopt(PayloadView view, void* owner_context, PayloadRelease release);
+    static Result<Payload> retain(PayloadView view, void* owner_context, PayloadRelease release);
 
     Payload() noexcept = default;
     Payload(const Payload&) = delete;
@@ -53,13 +53,13 @@ public:
     Payload& operator=(Payload&& other) noexcept;
     ~Payload();
 
-    PayloadView View() const noexcept;
-    std::size_t Size() const noexcept;
-    bool Empty() const noexcept;
-    bool RequiresExternalRelease() const noexcept;
+    PayloadView view() const noexcept;
+    std::size_t size() const noexcept;
+    bool empty() const noexcept;
+    bool requires_external_release() const noexcept;
     /// Attaches non-owning-domain lifetime state that must outlive the release
     /// callback. Runtime uses this for the Acquisition Plugin instance lease.
-    void AttachLifetimeGuard(std::shared_ptr<void> lifetime_guard) noexcept;
+    void attach_lifetime_guard(std::shared_ptr<void> lifetime_guard) noexcept;
 
 private:
     friend class PayloadPool;
@@ -73,7 +73,7 @@ private:
         const std::uint8_t* data, std::size_t size, void* owner_context,
         PayloadRelease release) noexcept;
 
-    void ReleaseCurrent() noexcept;
+    void release_current() noexcept;
     std::shared_ptr<PayloadPoolState> pool_state_;
     std::uint8_t* data_ = nullptr;
     std::size_t size_ = 0;

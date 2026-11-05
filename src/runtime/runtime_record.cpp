@@ -13,7 +13,7 @@ namespace rodaq {
 namespace {
 
 std::size_t hash_stream(StreamHandle stream) noexcept {
-    std::uint64_t value = stream.Value();
+    std::uint64_t value = stream.value();
     value ^= value >> 33U;
     value *= UINT64_C(0xff51afd7ed558ccd);
     value ^= value >> 33U;
@@ -22,7 +22,7 @@ std::size_t hash_stream(StreamHandle stream) noexcept {
 
 }  // namespace
 
-Result<void> TimestampState::Set(std::size_t slot, std::int64_t value) {
+Result<void> TimestampState::set(std::size_t slot, std::int64_t value) {
     if (slot >= kMaxSlots) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "timestamp slot is out of range"));
@@ -34,18 +34,18 @@ Result<void> TimestampState::Set(std::size_t slot, std::int64_t value) {
     return {};
 }
 
-bool TimestampState::Present(std::size_t slot) const noexcept {
+bool TimestampState::present(std::size_t slot) const noexcept {
     return slot < kMaxSlots && (present_mask_ & static_cast<std::uint8_t>(1U << slot)) != 0;
 }
 
-std::optional<std::int64_t> TimestampState::Value(std::size_t slot) const noexcept {
-    if (!Present(slot)) {
+std::optional<std::int64_t> TimestampState::value(std::size_t slot) const noexcept {
+    if (!present(slot)) {
         return std::nullopt;
     }
     return readings_[slot];
 }
 
-Result<AcceptanceSequenceAllocator> AcceptanceSequenceAllocator::Create(
+Result<AcceptanceSequenceAllocator> AcceptanceSequenceAllocator::create(
     std::size_t max_streams, std::uint64_t first_sequence) {
     try {
         return AcceptanceSequenceAllocator(max_streams, first_sequence);
@@ -72,8 +72,8 @@ AcceptanceSequenceAllocator::AcceptanceSequenceAllocator(
     other.entry_count_ = 0;
 }
 
-Result<std::uint64_t> AcceptanceSequenceAllocator::Allocate(StreamHandle stream) {
-    if (!stream.Valid()) {
+Result<std::uint64_t> AcceptanceSequenceAllocator::allocate(StreamHandle stream) {
+    if (!stream.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "stream handle is invalid"));
     }
@@ -84,7 +84,7 @@ Result<std::uint64_t> AcceptanceSequenceAllocator::Allocate(StreamHandle stream)
             Error(ErrorCode::ResourceExhausted, "acceptance sequence capacity is exhausted"));
     }
 
-    Entry* entry = FindOrInsertLocked(stream);
+    Entry* entry = find_or_insert_locked(stream);
     if (entry == nullptr) {
         return nonstd::make_unexpected(
             Error(ErrorCode::ResourceExhausted, "acceptance sequence capacity is exhausted"));
@@ -103,29 +103,29 @@ Result<std::uint64_t> AcceptanceSequenceAllocator::Allocate(StreamHandle stream)
     return sequence;
 }
 
-bool AcceptanceSequenceAllocator::CanAllocate(StreamHandle stream) noexcept {
-    if (!stream.Valid()) {
+bool AcceptanceSequenceAllocator::can_allocate(StreamHandle stream) noexcept {
+    if (!stream.valid()) {
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (entries_.empty()) {
         return false;
     }
-    Entry* entry = FindLocked(stream);
+    Entry* entry = find_locked(stream);
     if (entry == nullptr) {
         return entry_count_ < entries_.size();
     }
     return !entry->exhausted;
 }
 
-std::size_t AcceptanceSequenceAllocator::RegisteredStreamCount() const {
+std::size_t AcceptanceSequenceAllocator::registered_stream_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return entry_count_;
 }
 
-AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindOrInsertLocked(
+AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::find_or_insert_locked(
     StreamHandle stream) {
-    Entry* existing = FindLocked(stream);
+    Entry* existing = find_locked(stream);
     if (existing != nullptr) {
         return existing;
     }
@@ -134,7 +134,7 @@ AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindOrInsertLoc
     }
 
     std::size_t index = hash_stream(stream) % entries_.size();
-    while (entries_[index].stream.Valid()) {
+    while (entries_[index].stream.valid()) {
         index = (index + 1U) % entries_.size();
     }
     entries_[index].stream = stream;
@@ -144,14 +144,14 @@ AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindOrInsertLoc
     return &entries_[index];
 }
 
-AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindLocked(
+AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::find_locked(
     StreamHandle stream) noexcept {
     if (entries_.empty()) {
         return nullptr;
     }
     std::size_t index = hash_stream(stream) % entries_.size();
     for (std::size_t probe = 0; probe < entries_.size(); ++probe) {
-        if (!entries_[index].stream.Valid()) {
+        if (!entries_[index].stream.valid()) {
             return nullptr;
         }
         if (entries_[index].stream == stream) {
@@ -162,11 +162,11 @@ AcceptanceSequenceAllocator::Entry* AcceptanceSequenceAllocator::FindLocked(
     return nullptr;
 }
 
-Result<RuntimeRecord> RuntimeRecord::Create(
+Result<RuntimeRecord> RuntimeRecord::create(
     BindingHandle binding, std::uint64_t acceptance_sequence, std::optional<SourceHandle> source,
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
     Reservation reservation, std::int64_t accepted_steady_time_ns) {
-    if (!binding.Valid()) {
+    if (!binding.valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "runtime record binding handle is invalid"));
     }
@@ -174,11 +174,11 @@ Result<RuntimeRecord> RuntimeRecord::Create(
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "source sequence requires a source handle"));
     }
-    if (source.has_value() && !source->Valid()) {
+    if (source.has_value() && !source->valid()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "runtime record source handle is invalid"));
     }
-    if (!reservation.Active()) {
+    if (!reservation.active()) {
         return nonstd::make_unexpected(
             Error(ErrorCode::InvalidArgument, "runtime record requires a resource reservation"));
     }
@@ -211,6 +211,6 @@ RuntimeRecord::RuntimeRecord(RuntimeRecord&& other) noexcept
   reservation_(std::move(other.reservation_)),
   payload_(std::move(other.payload_)) {}
 
-Payload RuntimeRecord::TakePayload() noexcept { return std::move(payload_); }
+Payload RuntimeRecord::take_payload() noexcept { return std::move(payload_); }
 
 }  // namespace rodaq

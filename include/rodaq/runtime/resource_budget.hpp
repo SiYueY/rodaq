@@ -35,11 +35,11 @@ public:
     Reservation& operator=(Reservation&& other) noexcept;
     ~Reservation();
 
-    bool Active() const noexcept { return budget_ != nullptr; }
+    bool active() const noexcept { return budget_ != nullptr; }
 
-    ResourceAmount Amount() const noexcept { return amount_; }
+    ResourceAmount amount() const noexcept { return amount_; }
 
-    void Release() noexcept;
+    void release() noexcept;
 
 private:
     friend class AdmissionGate;
@@ -61,13 +61,13 @@ public:
     ResourceBudget(ResourceBudget&&) = delete;
     ResourceBudget& operator=(ResourceBudget&&) = delete;
 
-    Result<Reservation> TryReserve(ResourceAmount requested);
+    Result<Reservation> try_reserve(ResourceAmount requested);
 
-    ResourceAmount Capacity() const noexcept { return capacity_; }
-    ResourceAmount Used() const;
-    ResourceAmount Available() const;
-    ResourceAmount HighWater() const;
-    std::uint64_t ActiveReservations() const;
+    ResourceAmount capacity() const noexcept { return capacity_; }
+    ResourceAmount used() const;
+    ResourceAmount available() const;
+    ResourceAmount high_water() const;
+    std::uint64_t active_reservations() const;
 
 private:
     friend class AdmissionCancellation;
@@ -78,9 +78,9 @@ private:
         bool reserved = false;
     };
 
-    ReserveResult TryReserveLocked(ResourceAmount requested) noexcept;
-    void Release(ResourceAmount amount) noexcept;
-    void NotifyWaiters() noexcept;
+    ReserveResult try_reserve_locked(ResourceAmount requested) noexcept;
+    void release(ResourceAmount amount) noexcept;
+    void notify_waiters() noexcept;
 
     ResourceAmount capacity_{};
     mutable std::mutex mutex_;

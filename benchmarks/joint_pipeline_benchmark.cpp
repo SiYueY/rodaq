@@ -33,21 +33,21 @@ void run_joint_profile(
     run_profile(state, config, expected_records, expected_bytes, std::chrono::seconds(30), 1.10);
 }
 
-void BM_PerJoint100Streams1kHz(benchmark::State& state) {
+void bm_per_joint100_streams1k_hz(benchmark::State& state) {
     run_joint_profile(state, kJointCount, kPerJointBytes, "per-joint-100khz", 1024);
 }
 
-void BM_AggregatedRobotState1kHz(benchmark::State& state) {
+void bm_aggregated_robot_state1k_hz(benchmark::State& state) {
     run_joint_profile(state, 1, kAggregatedBytes, "aggregated-joint-1khz", 96U * 1024U);
 }
 
 }  // namespace
 }  // namespace rodaq::benchmark_support
 
-BENCHMARK(rodaq::benchmark_support::BM_PerJoint100Streams1kHz)
+BENCHMARK(rodaq::benchmark_support::bm_per_joint100_streams1k_hz)
     ->Iterations(1)
     ->Unit(benchmark::kSecond);
-BENCHMARK(rodaq::benchmark_support::BM_AggregatedRobotState1kHz)
+BENCHMARK(rodaq::benchmark_support::bm_aggregated_robot_state1k_hz)
     ->Iterations(1)
     ->Unit(benchmark::kSecond);
 

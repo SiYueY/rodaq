@@ -67,7 +67,7 @@ Result<ConfigTree> convert_node(
             config_error(ErrorCode::ResourceExhausted, "YAML config exceeds maximum node count"));
     }
     if (!node || node.IsNull()) {
-        return ConfigTree::Null();
+        return ConfigTree::null();
     }
     if (node.IsSequence()) {
         std::vector<ConfigTree> items;
@@ -79,7 +79,7 @@ Result<ConfigTree> convert_node(
             }
             items.push_back(std::move(converted.value()));
         }
-        return ConfigTree::List(std::move(items));
+        return ConfigTree::list(std::move(items));
     }
     if (node.IsMap()) {
         std::vector<ConfigTree::MapEntry> entries;
@@ -95,7 +95,7 @@ Result<ConfigTree> convert_node(
             }
             entries.emplace_back(item.first.Scalar(), std::move(converted.value()));
         }
-        return ConfigTree::Map(std::move(entries));
+        return ConfigTree::map(std::move(entries));
     }
     if (!node.IsScalar()) {
         return nonstd::make_unexpected(
@@ -110,7 +110,7 @@ Result<ConfigTree> convert_node(
             return nonstd::make_unexpected(
                 config_error(ErrorCode::InvalidArgument, "YAML boolean scalar is invalid"));
         }
-        return ConfigTree::Boolean(bool_value);
+        return ConfigTree::boolean(bool_value);
     }
     if (tag == "tag:yaml.org,2002:int" || (tag == "?" && looks_like_integer(scalar))) {
         try {
@@ -120,7 +120,7 @@ Result<ConfigTree> convert_node(
                 value > std::numeric_limits<std::int64_t>::max()) {
                 throw std::out_of_range("integer");
             }
-            return ConfigTree::Int64(static_cast<std::int64_t>(value));
+            return ConfigTree::int64(static_cast<std::int64_t>(value));
         } catch (const std::exception&) {
             return nonstd::make_unexpected(
                 config_error(ErrorCode::InvalidArgument, "YAML integer scalar is invalid"));
@@ -133,7 +133,7 @@ Result<ConfigTree> convert_node(
             if (consumed != scalar.size()) {
                 throw std::invalid_argument("float");
             }
-            return ConfigTree::Double(value);
+            return ConfigTree::float64(value);
         } catch (const std::exception&) {
             if (tag != "?") {
                 return nonstd::make_unexpected(
@@ -141,12 +141,12 @@ Result<ConfigTree> convert_node(
             }
         }
     }
-    return ConfigTree::String(scalar);
+    return ConfigTree::string(scalar);
 }
 
 }  // namespace
 
-Result<ConfigTree> LoadYamlConfig(std::string_view input, const YamlConfigLimits& limits) {
+Result<ConfigTree> load_yaml_config(std::string_view input, const YamlConfigLimits& limits) {
     if (limits.max_file_bytes == 0 || limits.max_nodes == 0 || limits.max_depth == 0 ||
         input.size() > limits.max_file_bytes) {
         return nonstd::make_unexpected(
@@ -165,7 +165,7 @@ Result<ConfigTree> LoadYamlConfig(std::string_view input, const YamlConfigLimits
     }
 }
 
-Result<ConfigTree> LoadYamlConfigFile(
+Result<ConfigTree> load_yaml_config_file(
     const std::filesystem::path& path, const YamlConfigLimits& limits) {
     if (path.empty()) {
         return nonstd::make_unexpected(
@@ -192,7 +192,7 @@ Result<ConfigTree> LoadYamlConfigFile(
         return nonstd::make_unexpected(
             config_error(ErrorCode::Unavailable, "failed to read YAML config file"));
     }
-    return LoadYamlConfig(contents.str(), limits);
+    return load_yaml_config(contents.str(), limits);
 }
 
 }  // namespace rodaq

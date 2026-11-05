@@ -8,7 +8,7 @@
 namespace rodaq::benchmark_support {
 namespace {
 
-void BM_RuntimePipelineSmallRecordSteadyState(benchmark::State& state) {
+void bm_runtime_pipeline_small_record_steady_state(benchmark::State& state) {
     constexpr std::size_t kRecords = 100'000;
     constexpr std::size_t kPayloadBytes = 1024;
     const std::size_t capacity = record_capacity(kRecords);
@@ -21,7 +21,7 @@ void BM_RuntimePipelineSmallRecordSteadyState(benchmark::State& state) {
 }  // namespace
 }  // namespace rodaq::benchmark_support
 
-BENCHMARK(rodaq::benchmark_support::BM_RuntimePipelineSmallRecordSteadyState)
+BENCHMARK(rodaq::benchmark_support::bm_runtime_pipeline_small_record_steady_state)
     ->Iterations(1)
     ->Unit(benchmark::kSecond);
 

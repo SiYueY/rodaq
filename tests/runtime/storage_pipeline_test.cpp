@@ -16,7 +16,7 @@ using Clock = std::chrono::steady_clock;
 TEST(StoragePipelineTest, EligibilityChangeInterruptsPreGateWait) {
     PayloadPoolConfig pool_config;
     pool_config.classes.push_back(PayloadClassConfig{64, 2});
-    auto payload_pool = PayloadPool::Create(pool_config);
+    auto payload_pool = PayloadPool::create(pool_config);
     ASSERT_TRUE(payload_pool.has_value());
 
     auto* storage = reinterpret_cast<plugin::StoragePluginInstance*>(1);
@@ -29,10 +29,10 @@ TEST(StoragePipelineTest, EligibilityChangeInterruptsPreGateWait) {
             return Result<rodaq_storage_submission>(
                 nonstd::make_unexpected(Error(ErrorCode::InvalidState, "unused")));
         });
-    pipeline.OpenAdmission();
+    pipeline.open_admission();
 
     std::atomic<std::uint64_t> eligibility_generation{0};
-    auto reserved = pipeline.AcquirePreGate(
+    auto reserved = pipeline.acquire_pre_gate(
         16, AdmissionMode::Reject, &payload_pool.value(), true,
         Clock::now() + std::chrono::seconds(1), eligibility_generation);
     ASSERT_TRUE(reserved.has_value());
@@ -43,7 +43,7 @@ TEST(StoragePipelineTest, EligibilityChangeInterruptsPreGateWait) {
     const auto wait_started = Clock::now();
     std::thread waiter([&] {
         waiter_started.store(true, std::memory_order_release);
-        auto result = pipeline.AcquirePreGate(
+        auto result = pipeline.acquire_pre_gate(
             16, AdmissionMode::Wait, &payload_pool.value(), true,
             Clock::now() + std::chrono::seconds(5), eligibility_generation);
         ASSERT_TRUE(result.has_value());
@@ -54,7 +54,7 @@ TEST(StoragePipelineTest, EligibilityChangeInterruptsPreGateWait) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     eligibility_generation.fetch_add(1, std::memory_order_release);
-    pipeline.NotifyAdmissionWaiters();
+    pipeline.notify_admission_waiters();
     waiter.join();
 
     EXPECT_EQ(PreGateAcquireOutcome::EligibilityChanged, waiter_result.outcome);
