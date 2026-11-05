@@ -149,3 +149,11 @@ target_link_libraries(rodaq_runtime_config_test
 rodaq_enable_warnings(rodaq_runtime_config_test)
 rodaq_enable_sanitizers(rodaq_runtime_config_test)
 add_test(NAME rodaq.runtime.runtime_config COMMAND rodaq_runtime_config_test)
+
+# Keep allocation fault injection isolated from all other tests.
+add_executable(rodaq_quarantine_allocation_test quarantine_allocation_test.cpp)
+target_link_libraries(rodaq_quarantine_allocation_test PRIVATE rodaq_runtime_testing)
+target_link_options(rodaq_quarantine_allocation_test PRIVATE "-Wl,--wrap=_Znwm" "-Wl,--wrap=_Znam")
+rodaq_enable_warnings(rodaq_quarantine_allocation_test)
+rodaq_enable_sanitizers(rodaq_quarantine_allocation_test)
+add_test(NAME rodaq.runtime.quarantine_allocation COMMAND rodaq_quarantine_allocation_test)

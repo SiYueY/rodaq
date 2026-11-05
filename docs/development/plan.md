@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **None — M2 PASS, M3 NOT STARTED**
+Current milestone: **None — M2 local PASS; new hosted CI pending; M3 NOT STARTED**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -424,15 +424,17 @@ Do not implement in M1:
 
 ## M2 — Fake End-to-End Runtime
 
-**Status:** PASS
+**Status:** PASS — local required qualification; new hosted CI pending
 
-**Current sub-phase:** **M2 Final Closure Fix — COMPLETE / PASS**.
+**Current sub-phase:** **M2 Ownership Closure — COMPLETE / local PASS**.
+Previous M2 Final Closure Fix remains COMPLETE / PASS.
 
 - [x] FR-01 automatic failure convergence and dispatch cutoff.
 - [x] FR-02 dynamic fatal Descriptor readiness escalation.
 - [x] QF-01 eventual Quarantine Join with TSan thread-leak reporting.
 - [x] Full local qualification matrix on implementation `fe4f938`; native
-  arm64 DEFERRED by D-034. New hosted CI run not triggered.
+  arm64 DEFERRED by D-034. Subsequent hosted qualification on `3adefb28` passed;
+  see the latest Ownership Closure evidence below.
 
 Evidence: final closure appendix in `review_report.md` and the comparison in
 `capacity_qualification.md`. M3 starts only as a separate development task.
@@ -928,3 +930,26 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - Generic DDS implementation.
 - additional Storage formats.
 - runtime hot reload / process sandboxing.
+
+## 2026-11-05 M2 Ownership Closure — COMPLETE / local PASS
+
+- [x] Source owner retention, same-owner interning and cross-owner Conflict.
+- [x] Caller ownership for Source/Stream mutation and optional Source Submit.
+- [x] Owner-scoped failure propagation and explicit Source recovery.
+- [x] Descriptor transport Clock ownership, including ingress Clock exclusion.
+- [x] Fixed-capacity Quarantine publication with shared 64-entry budget and
+  preserved claim/Join/destruction ordering; 32 activation roots unchanged.
+- [x] Stable-ABI double-Plugin regressions, synchronized recovery, shared-budget
+  exhaustion/reuse and isolated allocation-failure regression.
+- [x] Normal/ASan+LSan/UBSan/Release/Ubuntu 24: 94/94 each; Clang 14 TSan:
+  10/10 with thread-leak checks; Runtime-only Release and Release capacity PASS.
+- [x] Design, decisions, review evidence and capacity report updated; public
+  headers/Stable ABI unchanged; formatter and diff checks PASS.
+
+Prior baseline: local `fe4f938` PASS; hosted `3adefb28`
+[RoDAQ Qualification #41968952350](https://github.com/SiYueY/rodaq/actions/runs/41968952350) SUCCESS.
+Local qualification was performed on the working tree based on `3adefb28`
+before commit/push. **New hosted qualification PENDING** until its associated
+workflow completes; native arm64 remains D-034 DEFERRED.
+The generic M2 Runtime is frozen for this milestone. M3 remains NOT STARTED;
+start ROS2 Acquisition + MCAP Storage only as a separate development task.

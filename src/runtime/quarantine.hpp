@@ -13,7 +13,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <vector>
 
 namespace rodaq::runtime {
 
@@ -58,7 +57,14 @@ public:
 private:
     struct Completion;
     struct CallEntry;
-    struct WorkerEntry;
+    struct WorkerEntry {
+        std::thread worker;
+        std::shared_ptr<void> state;
+        std::shared_ptr<std::atomic<bool>> done;
+        std::shared_ptr<std::atomic<bool>> joined;
+        std::string reason;
+    };
+    static constexpr std::size_t kMaxRetainedCalls = 64;
     struct ActivationSlot {
         bool reserved = false;
         std::shared_ptr<void> root;
@@ -81,8 +87,8 @@ private:
     std::size_t active_calls_ = 0;
     std::size_t reaping_calls_ = 0;
     std::size_t reaping_workers_ = 0;
-    std::vector<std::unique_ptr<CallEntry>> calls_;
-    std::vector<WorkerEntry> retired_workers_;
+    std::array<std::unique_ptr<CallEntry>, kMaxRetainedCalls> calls_;
+    std::array<std::optional<WorkerEntry>, kMaxRetainedCalls> retired_workers_{};
     std::array<ActivationSlot, 32> activations_{};
 };
 

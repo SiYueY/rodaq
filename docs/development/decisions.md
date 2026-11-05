@@ -985,7 +985,9 @@ RuntimeRunning
 
 A recoverable failure invalidates current routing and requires new Descriptor
 and Binding activation before normal submission resumes. Availability does not
-reactivate stale Bindings. Terminal failure synthesizes an error when no
+reactivate stale Bindings. Both failure kinds also mark owned Sources Unavailable;
+health recovery leaves that state unchanged until the owner explicitly reports
+Source recovery. Terminal failure synthesizes an error when no
 diagnostic is supplied and ends that Plugin's participation in the activation.
 
 **Reference:** `docs/design/acquisition_plugin.md`,
@@ -1114,3 +1116,24 @@ recorded control-call result, never repeats a timed-out destructive call.
 
 **Reference:** `docs/design/runtime.md §11.6.2–§11.6.3`,
 `docs/design/storage_plugin.md §3.3.3`, D-037, D-039, D-045.
+
+## D-055 — Quarantine publishes retained threads into fixed storage
+
+**Status:** Accepted
+
+Supervised calls and retired workers use fixed 64-slot arrays and share a
+64-entry budget, including calls in progress and entries being Joined. Activation
+roots retain their independent 32-slot budget. Run prepares entry/completion
+storage and reserves capacity before starting external code; timeout publication
+cannot allocate. RetainWorker checks capacity before moving the caller's thread,
+then constructs the entry using non-throwing moves. Failed retention leaves the
+joinable thread with its caller. Join and captured-state destruction remain
+outside the manager mutex, and capacity returns only after both complete.
+
+This is a guarantee about retention publication, not arbitrary global heap
+exhaustion recovery. No new production dependency or public interface is needed.
+The allocation regression executable uses GNU linker wrapping so sanitizer
+new/delete interceptors remain active.
+
+**Reference:** `docs/design/runtime.md §11.6.4`,
+`tests/runtime/quarantine_allocation_test.cpp`, D-054.

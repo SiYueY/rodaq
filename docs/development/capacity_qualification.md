@@ -122,3 +122,38 @@ not a new tail-latency SLA or proof of a uniform performance improvement.
 One release worker remains the default; no benchmark policy or resource bound
 was relaxed. Failure behavior is separately verified by the new lifecycle,
 queued-cutoff, Retain and late-handoff/root-recovery regression tests.
+
+## M2 Ownership Closure qualification — working tree based on 3adefb28
+
+GCC 11.4 Release/warnings-as-errors, same Ubuntu 22.04 host and pinned production
+dependencies. Eight existing benchmark executables each ran three repetitions:
+Joint, Camera, Mixed, StorageSlot, ReleaseWorker, RuntimePipeline, PayloadClass
+and PayloadPool. All completed without benchmark errors; scheduled profiles
+passed their existing accepted-count, zero-rejection/WaitTimeout, bounded-resource
+and Stop gates. No rate, capacity or completion criterion was relaxed.
+
+The mixed Fake Acquisition configuration now explicitly supplies distinct
+`camera-source` and `joint-source` IDs. This corrects the fixture's previous
+cross-owner identity collision without changing its workload or production
+Canonical identity handling. Measurements below are medians.
+
+| Profile | Accepted Records/s | Persistence p99 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|
+| BM_EncodedCamera10x720p30 | 310 | 107.71 | 3 | 599 |
+| BM_RawCamera10x720p30 | 308 | 134.66 | 3 | 407 |
+| BM_PerJoint100Streams1kHz | 99,980 | 24.62 | 27 | 1,628 |
+| BM_AggregatedRobotState1kHz | 1,000 | 54.27 | 1 | 370 |
+| run_encoded_aggregated | 1,300 | 92.86 | 5 | 425 |
+| run_raw_per_joint | 100,039 | 136.06 | 160 | 1,698 |
+| BM_AdoptReleaseWorkers/1 | 275,063 | 413.69 | 410 | 1,042 |
+| BM_AdoptReleaseWorkers/2 | 221,137 | 13991.93 | 3,183 | 1,070 |
+| BM_AdoptReleaseWorkers/4 | 134,066 | 118358.01 | 18,778 | 1,210 |
+| BM_RuntimePipelineSmallRecordSteadyState | 366,714 | 57704.45 | 21,459 | 1,199 |
+| BM_StorageSlotTerminalization100k | 451,775 | 73269.25 | 38,743 | 1,030 |
+
+Raw JSON and stderr were recorded under `/tmp/rodaq-ownership-capacity-*` on the
+qualification host. These files are transient artifacts; this table is the
+durable result. CPU frequency and scheduling remain uncontrolled. The visible
+tail/HWM variation, particularly with multiple release workers and unpaced bursts,
+is not evidence of a uniform regression or improvement. One release worker
+remains the default; real ROS2/MCAP/filesystem tails remain M3–M5 qualification.

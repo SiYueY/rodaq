@@ -42,6 +42,7 @@ using ArenaBytes = std::pmr::vector<std::uint8_t>;
 
 struct SourceEntry {
     ArenaBytes source_id;
+    std::size_t plugin_index = 0;
     std::unique_ptr<std::atomic<std::uint32_t>> availability;
 };
 
@@ -248,8 +249,10 @@ public:
     Result<rodaq_acquisition_submit_result> Submit(
         std::size_t plugin_index, const rodaq_record_submission& submission,
         rodaq_payload_disposition& disposition);
-    Result<void> ReportSourceAvailability(SourceHandle source, rodaq_availability_state state);
-    Result<void> ReportStreamAvailability(StreamHandle stream, rodaq_availability_state state);
+    Result<void> ReportSourceAvailability(
+        std::size_t plugin_index, SourceHandle source, rodaq_availability_state state);
+    Result<void> ReportStreamAvailability(
+        std::size_t plugin_index, StreamHandle stream, rodaq_availability_state state);
     Result<void> ReportPluginState(
         std::size_t plugin_index, rodaq_acquisition_plugin_state state,
         const rodaq_error* diagnostic);

@@ -1435,6 +1435,9 @@ TEST(RuntimePipelineTest, RollsBackPreviouslyStartedAcquisitionsInReverseOrder) 
         PluginConfig acquisition;
         acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
         acquisition.config = map_config({
+            {"source_id",
+             plugin::ConfigTree::String(
+                 "fake-source-" + std::to_string(runtime_options.acquisitions.size()))},
             {"streams", plugin::ConfigTree::Int64(1)},
             {"records_per_stream", plugin::ConfigTree::Int64(1)},
             {"producer_threads", plugin::ConfigTree::Int64(1)},
@@ -1574,6 +1577,9 @@ TEST(RuntimePipelineTest, QualifiesMixedPayloadModesInOneActivation) {
         PluginConfig acquisition;
         acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
         acquisition.config = map_config({
+            {"source_id",
+             plugin::ConfigTree::String(
+                 "fake-source-" + std::to_string(runtime_options.acquisitions.size()))},
             {"streams", plugin::ConfigTree::Int64(1)},
             {"records_per_stream", plugin::ConfigTree::Int64(2)},
             {"producer_threads", plugin::ConfigTree::Int64(1)},
@@ -1600,6 +1606,95 @@ TEST(RuntimePipelineTest, QualifiesMixedPayloadModesInOneActivation) {
     EXPECT_EQ(snapshot->accepted_bytes, 96U);
     EXPECT_EQ(snapshot->inflight_records, 0U);
     EXPECT_EQ(record_count(log), 6U);
+}
+
+TEST(RuntimePipelineTest, IsolatesAcquisitionOwnedObjectsAcrossPlugins) {
+    for (const std::string mode : {"copy", "adopt", "retain"}) {
+        const std::string log = unique_log_path("ownership_" + mode);
+        const std::string handles = log + ".handles";
+        std::error_code removed;
+        fs::remove(log, removed);
+        fs::remove(handles, removed);
+        auto config = options("ownership_" + mode, "sync", mode, 1, 3, 1, log);
+        config.acquisitions.clear();
+        for (const std::string scenario : {"owner", "probe"}) {
+            PluginConfig acquisition;
+            acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
+            acquisition.config = map_config({
+                {"source_id", plugin::ConfigTree::String("source-" + scenario)},
+                {"ownership_scenario", plugin::ConfigTree::String(scenario)},
+                {"ownership_file", plugin::ConfigTree::String(handles)},
+                {"records_per_stream", plugin::ConfigTree::Int64(3)},
+                {"payload_mode", plugin::ConfigTree::String(mode)},
+                {"event_log", plugin::ConfigTree::String(log)},
+            });
+            config.acquisitions.push_back(std::move(acquisition));
+        }
+        Runtime runtime(std::move(config));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value()) << mode;
+        ASSERT_TRUE(wait_for_records(runtime, log, 6)) << mode;
+        ASSERT_TRUE(runtime.Stop().has_value());
+        EXPECT_TRUE(log_contains(log, "ownership_control_rejected"));
+        EXPECT_EQ(log_count(log, "ownership_submit_rejected"), 3U);
+        auto stats = runtime.Stats();
+        ASSERT_TRUE(stats.has_value());
+        EXPECT_EQ(stats->accepted_records, 6U);
+        EXPECT_EQ(stats->rejected_records, 3U);
+        EXPECT_EQ(stats->inflight_records, 0U);
+        fs::remove(handles, removed);
+    }
+}
+
+TEST(RuntimePipelineTest, RejectsCrossPluginSourceIdentityCollisionDuringStart) {
+    const std::string log = unique_log_path("source_collision");
+    std::error_code removed;
+    fs::remove(log, removed);
+    auto config = options("source_collision", "sync", "copy", 1, 1, 1, log);
+    config.acquisitions.push_back(config.acquisitions.front());
+    Runtime runtime(std::move(config));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    ASSERT_TRUE(runtime.PrimaryFailure().has_value());
+    EXPECT_EQ(runtime.PrimaryFailure()->code(), ErrorCode::Conflict);
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+}
+
+TEST(RuntimePipelineTest, PluginRecoveryRequiresExplicitSourceRecoveryAndIsOwnerScoped) {
+    const std::string log = unique_log_path("source_recovery");
+    const std::string recovered_file = log + ".recovered";
+    std::error_code removed;
+    fs::remove(log, removed);
+    fs::remove(recovered_file, removed);
+    auto config = options("source_recovery", "sync", "copy", 1, 3, 1, log);
+    config.acquisitions.clear();
+    for (const std::string scenario : {"source_recovered", ""}) {
+        PluginConfig acquisition;
+        acquisition.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
+        acquisition.config = map_config({
+            {"producer_wait_file",
+             plugin::ConfigTree::String(scenario.empty() ? recovered_file : "")},
+            {"plugin_health_file",
+             plugin::ConfigTree::String(scenario.empty() ? "" : recovered_file)},
+            {"source_id", plugin::ConfigTree::String("source-" + scenario)},
+            {"records_per_stream", plugin::ConfigTree::Int64(3)},
+            {"plugin_health_after", plugin::ConfigTree::Int64(scenario.empty() ? -1 : 0)},
+            {"plugin_health_scenario", plugin::ConfigTree::String(scenario)},
+            {"event_log", plugin::ConfigTree::String(log)},
+        });
+        config.acquisitions.push_back(std::move(acquisition));
+    }
+    Runtime runtime(std::move(config));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(wait_for_records(runtime, log, 5));
+    ASSERT_TRUE(runtime.Stop().has_value());
+    EXPECT_TRUE(log_contains(log, "source_explicitly_recovered"));
+    auto stats = runtime.Stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->accepted_records, 5U);
+    EXPECT_EQ(stats->rejected_records, 1U);
+    fs::remove(recovered_file, removed);
 }
 
 TEST(RuntimePipelineTest, StressConcurrentAdmissionAndDescriptorTransitions) {

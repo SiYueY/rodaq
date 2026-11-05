@@ -1310,6 +1310,22 @@ Unavailable
 
 V1 Canonical Profile 当前不支持 SourceDescriptor，因此不得把 Source availability 误解为新的 Canonical object。
 
+**Source ownership validation**
+
+Each Source has one immutable owning Acquisition Plugin per activation. Byte-exact
+SourceId interning is idempotent only for the same owner; another Plugin claiming
+those bytes receives `Conflict`. Runtime does not synthesize identity-domain tags.
+
+Source/Stream availability reports validate the caller Plugin against the owner
+before mutation: an unknown handle returns `NotFound`, and an existing foreign
+handle returns `InvalidState`. A Submission referencing a foreign Source is
+`PreAdmissionRejected / STALE_HANDLE`, before Payload acquisition, with Copy
+`NotApplicable` and Adopt/Retain `CallerResponsible` disposition.
+
+Plugin-wide recoverable or terminal failure marks only its owned Sources
+Unavailable. Returning Plugin health to Available does not implicitly recover
+Sources; their owner must explicitly report availability after native recovery.
+
 ---
 
 ### 3.7.2 Source Failure 与 Stream Failure 分离
@@ -1471,6 +1487,12 @@ V1 中：
 V1 不支持一个 activation 内多个 Runtime ingress Clock instance。
 
 ---
+
+Acquisition-provided transport TimestampKeys may reference only Clocks registered
+by that Plugin instance. Unknown Clocks return `NotFound`; existing foreign or
+Runtime-owned ingress Clocks return `InvalidState`, even under another role.
+The reserved ingress role remains Runtime-only (`InvalidArgument` on Plugin input).
+The Runtime still inserts its mandatory ingress key in every canonical key set.
 
 ### 3.8.1 Ingress Clock Requirements
 
@@ -4797,6 +4819,22 @@ Joined signal. Completion publication is not equivalent to thread exit.
 The maintenance worker itself is Joined at process teardown, with a bounded
 final grace period for newly completed retained calls. Thread leak and race
 checks remain enabled during qualification.
+
+---
+
+### 11.6.4 Allocation-free retention publication
+
+The process Quarantine manager uses fixed arrays of 64 supervised-call slots and
+64 worker slots, sharing one 64-entry budget including calls still executing and
+entries being Joined. Activation roots retain their separate 32-slot budget.
+Supervised-call entry/completion allocation and capacity reservation precede
+thread creation. Timeout only moves the prepared entry into an empty slot.
+RetainWorker checks capacity before moving the caller's joinable thread; a failed
+retention leaves that thread with the caller. Slot construction uses non-throwing
+moves and does not allocate. Reapers claim under the mutex, then Join and destroy
+captures outside it; budget is released only after destruction finishes.
+This guarantee covers retention publication, not recovery from arbitrary global
+heap exhaustion during setup or unrelated cleanup operations.
 
 ---
 

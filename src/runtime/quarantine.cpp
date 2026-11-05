@@ -8,13 +8,11 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
-#include <vector>
+#include <type_traits>
 
 namespace rodaq::runtime {
 
 namespace {
-
-constexpr std::size_t kMaxRetainedCalls = 64;
 
 Error quarantine_error(ErrorCode code, std::string message) {
     return Error(code, "runtime_quarantine", 0, std::move(message));
@@ -43,14 +41,6 @@ struct QuarantineManager::Completion {
 struct QuarantineManager::CallEntry {
     std::shared_ptr<Completion> completion;
     std::thread worker;
-    std::shared_ptr<std::atomic<bool>> joined;
-    std::string reason;
-};
-
-struct QuarantineManager::WorkerEntry {
-    std::thread worker;
-    std::shared_ptr<void> state;
-    std::shared_ptr<std::atomic<bool>> done;
     std::shared_ptr<std::atomic<bool>> joined;
     std::string reason;
 };
@@ -194,12 +184,11 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
     SupervisedCallOutcome outcome = WaitForCall(entry, deadline);
     if (outcome.status == SupervisedCallStatus::TimedOut) {
         std::lock_guard<std::mutex> lock(mutex_);
-        try {
-            calls_.push_back(std::move(entry));
-        } catch (const std::bad_alloc&) {
-            --active_calls_;
-            std::abort();
-        }
+        // active_calls_ reserves shared capacity before the worker is started.
+        // Consequently an empty retention slot exists even with concurrent reapers.
+        auto slot = std::find_if(
+            calls_.begin(), calls_.end(), [](const auto& value) { return value == nullptr; });
+        *slot = std::move(entry);
     } else {
         std::lock_guard<std::mutex> lock(mutex_);
         --active_calls_;
@@ -243,19 +232,21 @@ bool QuarantineManager::RetainWorker(
         return false;
     }
     ReapCompleted();
-    try {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (active_calls_ >= kMaxRetainedCalls) {
-            return false;
-        }
-        retired_workers_.push_back(WorkerEntry{
-            std::move(worker), std::move(state), std::move(done), std::move(joined),
-            std::move(reason)});
-        ++active_calls_;
-        return true;
-    } catch (...) {
+    static_assert(std::is_nothrow_move_constructible_v<WorkerEntry>);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_calls_ >= kMaxRetainedCalls) {
         return false;
     }
+    auto slot = std::find_if(
+        retired_workers_.begin(), retired_workers_.end(),
+        [](const auto& value) { return !value.has_value(); });
+    // Do not acquire the joinable thread until capacity is guaranteed. Every
+    // field moves without allocation, and construction cannot throw.
+    slot->emplace(WorkerEntry{
+        std::move(worker), std::move(state), std::move(done), std::move(joined),
+        std::move(reason)});
+    ++active_calls_;
+    return true;
 }
 
 Result<std::uint64_t> QuarantineManager::ReserveActivation(std::string reason) {
@@ -310,28 +301,26 @@ void QuarantineManager::ReapCompleted() noexcept {
     std::size_t worker_count = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (auto it = calls_.begin(); it != calls_.end();) {
+        for (auto& entry : calls_) {
+            if (entry == nullptr) {
+                continue;
+            }
             bool done = false;
             {
-                std::lock_guard<std::mutex> completion_lock((*it)->completion->mutex);
-                done = (*it)->completion->done;
+                std::lock_guard<std::mutex> completion_lock(entry->completion->mutex);
+                done = entry->completion->done;
             }
-            if (done && (*it)->worker.get_id() != std::this_thread::get_id()) {
-                calls[call_count++] = std::move(*it);
-                it = calls_.erase(it);
+            if (done && entry->worker.get_id() != std::this_thread::get_id()) {
+                calls[call_count++] = std::move(entry);
                 ++reaping_calls_;
-            } else {
-                ++it;
             }
         }
-        for (auto it = retired_workers_.begin(); it != retired_workers_.end();) {
-            if (it->done->load(std::memory_order_acquire) &&
-                it->worker.get_id() != std::this_thread::get_id()) {
-                workers[worker_count++].emplace(std::move(*it));
-                it = retired_workers_.erase(it);
+        for (auto& entry : retired_workers_) {
+            if (entry.has_value() && entry->done->load(std::memory_order_acquire) &&
+                entry->worker.get_id() != std::this_thread::get_id()) {
+                workers[worker_count++].emplace(std::move(*entry));
+                entry.reset();
                 ++reaping_workers_;
-            } else {
-                ++it;
             }
         }
     }
@@ -395,12 +384,17 @@ void QuarantineManager::ReapActivations() noexcept {
 
 std::size_t QuarantineManager::RetainedCallCount() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    return calls_.size() + reaping_calls_;
+    return static_cast<std::size_t>(std::count_if(
+               calls_.begin(), calls_.end(), [](const auto& entry) { return entry != nullptr; })) +
+           reaping_calls_;
 }
 
 std::size_t QuarantineManager::RetainedWorkerCount() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    return retired_workers_.size() + reaping_workers_;
+    return static_cast<std::size_t>(std::count_if(
+               retired_workers_.begin(), retired_workers_.end(),
+               [](const auto& entry) { return entry.has_value(); })) +
+           reaping_workers_;
 }
 
 std::size_t QuarantineManager::RetainedActivationCount() const noexcept {

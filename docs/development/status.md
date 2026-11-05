@@ -12,7 +12,7 @@ This file records factual current repository state. Keep it concise and update i
 
 **M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **PASS**
+Status: **PASS — local required qualification; new hosted CI pending**
 
 M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
 is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
@@ -897,3 +897,25 @@ Full implementation/test report: `docs/development/review_report.md`, final
 closure appendix. No new hosted CI run was triggered; the evidence above is
 local execution, not an assertion of remote CI status. M0/M1/M2 are PASS;
 M3/M4/M5 NOT STARTED. Native arm64 remains DEFERRED by D-034.
+
+## 2026-11-05 M2 Ownership Closure — COMPLETE / local PASS
+
+All six Acquisition ownership/isolation findings and the Quarantine retention
+allocation finding are closed. Stable C ABI/public headers remain unchanged.
+The generic M2 Runtime is locally qualified and frozen for this milestone;
+M3 remains NOT STARTED and requires a separate task.
+
+Final working-tree validation based on `3adefb28`: GCC 11 Debug, ASan/LSan,
+UBSan, Release and Ubuntu 24/GCC 13 each **94/94 PASS**; Clang 14 TSan
+**10/10 PASS**, with thread-leak detection enabled. Runtime-only Release
+without development dependencies **PASS**. All eight existing Release benchmark
+executables ran three repetitions and passed their existing gates. Formatter,
+whitespace and public-header/ABI diff checks passed.
+
+Historical evidence: local `fe4f938` qualification PASS; subsequent `3adefb28`
+[RoDAQ Qualification #41968952350](https://github.com/SiYueY/rodaq/actions/runs/41968952350) **SUCCESS**, independently verified.
+Local qualification preceded commit/push; **new hosted qualification is
+PENDING** until the associated workflow completes. The previous run does not
+qualify these changes. Native arm64
+remains DEFERRED under D-034. Detailed evidence is in `review_report.md` and
+`capacity_qualification.md`. No remaining P0/P1 finding from this closure.

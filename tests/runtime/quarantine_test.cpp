@@ -207,5 +207,119 @@ TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
     EXPECT_EQ(manager.RetainedActivationCount(), 0U);
 }
 
+TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreReusable) {
+    auto& manager = QuarantineManager::Process();
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    std::vector<std::shared_ptr<std::atomic<bool>>> joined;
+    joined.reserve(64);
+    for (int index = 0; index < 32; ++index) {
+        auto signal = std::make_shared<std::atomic<bool>>(false);
+        joined.push_back(signal);
+        auto result = manager.Run(
+            [release] {
+                while (!release->load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                return Result<void>();
+            },
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "capacity call",
+            signal);
+        EXPECT_TRUE(result.has_value());
+        if (result.has_value()) {
+            EXPECT_EQ(result.value().status, SupervisedCallStatus::TimedOut);
+        }
+    }
+    for (int index = 0; index < 32; ++index) {
+        auto signal = std::make_shared<std::atomic<bool>>(false);
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        joined.push_back(signal);
+        std::thread worker([release, done] {
+            while (!release->load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            done->store(true, std::memory_order_release);
+        });
+        const bool retained =
+            manager.RetainWorker(std::move(worker), release, done, "capacity worker", signal);
+        EXPECT_TRUE(retained);
+        if (!retained) {
+            release->store(true, std::memory_order_release);
+            worker.join();
+        }
+    }
+    EXPECT_EQ(manager.RetainedCallCount(), 32U);
+    EXPECT_EQ(manager.RetainedWorkerCount(), 32U);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread rejected([done] { done->store(true, std::memory_order_release); });
+    const auto worker_id = rejected.get_id();
+    EXPECT_FALSE(manager.RetainWorker(std::move(rejected), release, done, "capacity exhausted"));
+    EXPECT_TRUE(rejected.joinable());
+    EXPECT_EQ(rejected.get_id(), worker_id);
+    if (rejected.joinable()) {
+        rejected.join();
+    }
+    bool invoked = false;
+    auto exhausted = manager.Run(
+        [&invoked] {
+            invoked = true;
+            return Result<void>();
+        },
+        std::chrono::steady_clock::now() + std::chrono::seconds(1), "capacity exhausted");
+    EXPECT_FALSE(exhausted.has_value());
+    EXPECT_FALSE(invoked);
+    release->store(true, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((manager.RetainedCallCount() != 0 || manager.RetainedWorkerCount() != 0) &&
+           std::chrono::steady_clock::now() < deadline) {
+        manager.ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    for (const auto& signal : joined) {
+        EXPECT_TRUE(signal->load(std::memory_order_acquire));
+    }
+    EXPECT_EQ(manager.RetainedCallCount(), 0U);
+    EXPECT_EQ(manager.RetainedWorkerCount(), 0U);
+    release->store(false, std::memory_order_release);
+    auto reused_joined = std::make_shared<std::atomic<bool>>(false);
+    auto reused = manager.Run(
+        [release] {
+            while (!release->load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            return Result<void>();
+        },
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "reused call slot",
+        reused_joined);
+    EXPECT_TRUE(reused.has_value());
+    if (reused.has_value()) {
+        EXPECT_EQ(reused.value().status, SupervisedCallStatus::TimedOut);
+    }
+    auto worker_joined = std::make_shared<std::atomic<bool>>(false);
+    done->store(false, std::memory_order_release);
+    std::thread worker([release, done] {
+        while (!release->load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        done->store(true, std::memory_order_release);
+    });
+    const bool retained =
+        manager.RetainWorker(std::move(worker), release, done, "reused worker slot", worker_joined);
+    EXPECT_TRUE(retained);
+    release->store(true, std::memory_order_release);
+    if (worker.joinable()) {
+        worker.join();
+    }
+    const auto reuse_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while ((manager.RetainedCallCount() != 0 || manager.RetainedWorkerCount() != 0) &&
+           std::chrono::steady_clock::now() < reuse_deadline) {
+        manager.ReapCompleted();
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(reused_joined->load());
+    EXPECT_TRUE(worker_joined->load());
+    EXPECT_EQ(manager.RetainedCallCount(), 0U);
+    EXPECT_EQ(manager.RetainedWorkerCount(), 0U);
+}
+
 }  // namespace
 }  // namespace rodaq::runtime

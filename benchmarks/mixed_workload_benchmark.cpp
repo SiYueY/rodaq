@@ -37,10 +37,10 @@ void run_encoded_aggregated(benchmark::State& state) {
         operation_capacity, 128U * 1024U * 1024U, kCameraCount + 1,
         {acquisition(
              kCameraCount, kCameraFps * kMeasurementSeconds, kEncodedFrameBytes,
-             1'000'000'000U / kCameraFps),
+             1'000'000'000U / kCameraFps, "copy", "camera-source"),
          acquisition(
              1, kJointRateHz * kMeasurementSeconds, kAggregatedJointBytes,
-             1'000'000'000U / kJointRateHz)});
+             1'000'000'000U / kJointRateHz, "copy", "joint-source")});
     run_profile(state, config, expected_records, expected_bytes, std::chrono::seconds(30), 1.10);
 }
 
@@ -64,10 +64,10 @@ void run_raw_per_joint(benchmark::State& state) {
         kCameraCount + kJointCount,
         {acquisition(
              kCameraCount, kCameraFps * kMeasurementSeconds, kRawRgb8FrameBytes,
-             1'000'000'000U / kCameraFps),
+             1'000'000'000U / kCameraFps, "copy", "camera-source"),
          acquisition(
              kJointCount, kJointRateHz * kMeasurementSeconds, kPerJointBytes,
-             1'000'000'000U / kJointRateHz)});
+             1'000'000'000U / kJointRateHz, "copy", "joint-source")});
     run_profile(state, config, expected_records, expected_bytes, std::chrono::seconds(45), 1.10);
 }
 

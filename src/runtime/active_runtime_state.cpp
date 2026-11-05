@@ -486,9 +486,10 @@ rodaq_status acquisition_report_source(
             ErrorCode::InvalidArgument, "source report context is null", out_error);
     }
     try {
-        const auto result =
-            state_from(acquisition_context_from(context)->state)
-                ->ReportSourceAvailability(SourceHandle::FromRaw(source.value), availability);
+        const auto result = state_from(acquisition_context_from(context)->state)
+                                ->ReportSourceAvailability(
+                                    acquisition_context_from(context)->plugin_index,
+                                    SourceHandle::FromRaw(source.value), availability);
         return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -505,9 +506,10 @@ rodaq_status acquisition_report_stream(
             ErrorCode::InvalidArgument, "stream report context is null", out_error);
     }
     try {
-        const auto result =
-            state_from(acquisition_context_from(context)->state)
-                ->ReportStreamAvailability(StreamHandle::FromRaw(stream.value), availability);
+        const auto result = state_from(acquisition_context_from(context)->state)
+                                ->ReportStreamAvailability(
+                                    acquisition_context_from(context)->plugin_index,
+                                    StreamHandle::FromRaw(stream.value), availability);
         return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
     } catch (const std::exception& error) {
         return assign_message(ErrorCode::InternalError, error.what(), out_error);
@@ -1689,6 +1691,10 @@ Result<void> ActiveRuntimeState::RegisterSource(
     for (SourceHandle existing : source_handles_) {
         const SourceEntry* entry = sources_.Find(existing);
         if (entry != nullptr && bytes_equal(entry->source_id, source_id, source_id_size)) {
+            if (entry->plugin_index != plugin_index) {
+                return nonstd::make_unexpected(runtime_error(
+                    ErrorCode::Conflict, "Source identity belongs to another Plugin"));
+            }
             handle = existing;
             return {};
         }
@@ -1696,7 +1702,8 @@ Result<void> ActiveRuntimeState::RegisterSource(
 
     auto availability = std::make_unique<std::atomic<std::uint32_t>>(RODAQ_AVAILABILITY_AVAILABLE);
     auto inserted = sources_.Insert(SourceEntry{
-        copy_bytes(arena_->Resource(), source_id, source_id_size), std::move(availability)});
+        copy_bytes(arena_->Resource(), source_id, source_id_size), plugin_index,
+        std::move(availability)});
     if (!inserted.has_value()) {
         return nonstd::make_unexpected(std::move(inserted.error()));
     }
@@ -1927,9 +1934,14 @@ Result<void> ActiveRuntimeState::PublishStreamDescriptor(
                     "Acquisition Plugins must not publish the Runtime ingress timestamp role"));
             }
             const ClockHandle clock = ClockHandle::FromRaw(key.clock.value);
-            if (clocks_.Find(clock) == nullptr) {
+            const ClockEntry* clock_entry = clocks_.Find(clock);
+            if (clock_entry == nullptr) {
                 return nonstd::make_unexpected(
                     runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
+            }
+            if (clock_entry->plugin_index != plugin_index) {
+                return nonstd::make_unexpected(runtime_error(
+                    ErrorCode::InvalidState, "Timestamp Clock belongs to another owner"));
             }
             for (std::size_t existing = 1; existing < keys.size(); ++existing) {
                 if (keys[existing].clock == clock && strings_equal(keys[existing].role, role)) {
@@ -2494,13 +2506,17 @@ void ActiveRuntimeState::NotifyAdmissionEligibilityChanged() noexcept {
 }
 
 Result<void> ActiveRuntimeState::ReportSourceAvailability(
-    SourceHandle source, rodaq_availability_state availability) {
+    std::size_t plugin_index, SourceHandle source, rodaq_availability_state availability) {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         SourceEntry* entry = sources_.Find(source);
         if (entry == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Source handle is unknown"));
+        }
+        if (entry->plugin_index != plugin_index) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Source belongs to another Plugin"));
         }
         if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
             availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
@@ -2514,13 +2530,17 @@ Result<void> ActiveRuntimeState::ReportSourceAvailability(
 }
 
 Result<void> ActiveRuntimeState::ReportStreamAvailability(
-    StreamHandle stream, rodaq_availability_state availability) {
+    std::size_t plugin_index, StreamHandle stream, rodaq_availability_state availability) {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         StreamEntry* entry = streams_.Find(stream);
         if (entry == nullptr) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::NotFound, "Stream handle is unknown"));
+        }
+        if (entry->plugin_index != plugin_index) {
+            return nonstd::make_unexpected(
+                runtime_error(ErrorCode::InvalidState, "Stream belongs to another Plugin"));
         }
         if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
             availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
@@ -2557,6 +2577,12 @@ Result<void> ActiveRuntimeState::ReportPluginState(
         acquisition_health_[plugin_index]->store(plugin_state, std::memory_order_release);
 
         if (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
+            for (SourceHandle handle : source_handles_) {
+                SourceEntry* source = sources_.Find(handle);
+                if (source != nullptr && source->plugin_index == plugin_index) {
+                    source->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
+                }
+            }
             for (StreamHandle handle : stream_handles_) {
                 StreamEntry* stream = streams_.Find(handle);
                 if (stream == nullptr || stream->plugin_index != plugin_index) {
@@ -2779,7 +2805,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::Submit(
     }
     if (source.has_value()) {
         source_entry = sources_.FindStable(*source);
-        if (source_entry == nullptr) {
+        if (source_entry == nullptr || source_entry->plugin_index != plugin_index) {
             return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
         }
     }

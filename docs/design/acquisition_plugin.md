@@ -1868,6 +1868,11 @@ same key + conflicting immutable clock facts
     → CONFLICT
 ```
 
+Plugin-provided transport TimestampKeys may reference only Clocks registered by
+the same Plugin instance. Foreign and Runtime-owned ingress Clock handles return
+`InvalidState`; unknown Clock handles return `NotFound`. The ingress role itself
+remains reserved (`InvalidArgument`).
+
 不同 Plugin instance 的相同 `native_id` 不自动合并。Clock reset/restart/continuity loss 后必须生成新的 native-id generation evidence，不能用旧 key 注册成新的 ClockId；相同 resolution/origin 也不能作为跨 concrete Clock instance 的 identity merge 依据。
 
 ---
@@ -3618,6 +3623,12 @@ Terminal
 > 不使用 Plugin-wide Failed 表达，除非影响已经扩展到 shared Plugin state。
 
 ---
+
+Plugin-wide failure applies to Sources by immutable owning Plugin identity.
+A return to Available health does not automatically restore Source availability;
+the Plugin explicitly reports recovered Sources after native recovery. Source and
+Stream availability reports reject unknown handles with `NotFound` and foreign
+owners with `InvalidState`, without changing the target operational state.
 
 ## 6.6 Recovery with Same Semantics
 

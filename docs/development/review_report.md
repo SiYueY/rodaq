@@ -1616,3 +1616,106 @@ qualification PASS. Native arm64 remains explicitly deferred.
 
 Final closure counters: **Known P0 = 0; Known P1 = 0; Qualification = PASS
 (local required matrix); M2 Final Closure Fix = COMPLETE**.
+
+
+## M2 Ownership Closure and Quarantine publication hardening — 2026-11-05
+
+### Baseline and previous hosted evidence
+
+Local qualification was performed on the working tree based on
+`develop@3adefb28cee14014d19fccf1fb98f1afc737cd85` before commit/push.
+Qualification below describes that implementation; new hosted qualification
+remains pending until its associated workflow completes and must not be
+attributed to the previous hosted run.
+
+The prior local implementation qualification on `fe4f938` remains historical
+PASS. The subsequent [RoDAQ Qualification run 41968952350](https://github.com/SiYueY/rodaq/actions/runs/41968952350)
+was independently checked through GitHub: push event, branch develop, HEAD
+`3adefb28`, completed/success. Its seven non-arm64 jobs succeeded; native arm64
+was skipped under D-034. Earlier statements that no hosted run was triggered
+refer to the earlier implementation task, before that push.
+
+### Closed findings
+
+Source entries now retain immutable owner identity. Same-owner SourceId
+registration is idempotent; a different Plugin claiming identical Canonical
+bytes receives Conflict. Runtime does not rewrite SourceId bytes. ABI report
+wrappers preserve the caller Plugin identity; Source/Stream mutations reject
+unknown handles with NotFound and foreign handles with InvalidState before
+mutation. Optional Source Submit ownership is checked before Payload acquisition,
+returning PreAdmissionRejected/STALE_HANDLE with the existing independent
+Payload disposition. Recoverable and terminal Plugin failure mark only that
+Plugin's Sources Unavailable; health recovery requires explicit Source recovery.
+Descriptor transport keys reject foreign and Runtime-owned ingress Clocks with
+InvalidState; unknown Clocks remain NotFound, and the reserved ingress role
+remains InvalidArgument.
+
+Quarantine call and worker vectors were replaced with fixed 64-slot arrays and
+the original shared 64-entry budget; activation roots remain bounded at 32.
+Run reserves its budget and prepares state before thread creation, then moves
+into a slot on timeout without allocation. RetainWorker checks capacity before
+taking the caller's joinable thread and uses non-throwing moves. Completed entries
+are still claimed under the mutex and Joined/destroyed outside it, with capacity
+retained through destruction. This closes the retention allocation/temporary
+joinable-thread destruction risk without claiming arbitrary global OOM recovery.
+
+Stable C ABI and public/installable headers are unchanged. Failure supervisor,
+Descriptor FAILED escalation, independent Storage completion axes and actual
+Joined-before-root-reclamation contracts remain intact. No new dependency or
+real backend implementation was introduced.
+
+### Regression coverage
+
+The integration executable contains 71 tests (previously 68). New double-Plugin
+coverage checks Source registration idempotence/collision, foreign Source/Stream
+reports, foreign/unknown/ingress Clock publication, and foreign Source Submit
+under Copy, Adopt and Retain. Successful own-Source submissions verify both
+Plugins remain usable. The recovery test synchronizes the healthy Plugin's
+submission after the other Plugin's failure/rebinding, verifies Source remains
+Unavailable after health recovery, then explicitly restores that Source.
+Existing rollback and mixed-Payload tests now use distinct SourceIds. Mixed
+capacity fixtures likewise declare distinct camera/joint SourceIds.
+
+Quarantine coverage fills the shared budget with 32 calls and 32 workers,
+checks rejected retention preserves the caller's thread, drains and reuses
+both slot kinds, and retains existing concurrent/reentrant/exactly-once Join
+coverage. An isolated new executable uses thread-local allocation failure
+injection with linker wrapping, calibrated before the test; timeout publication
+and worker retention perform zero guarded allocations. Sanitizer new/delete
+interceptors remain active. The new executable is included in hosted TSan's
+build target list and existing test selection.
+
+### Working-tree qualification
+
+| Environment / configuration | Final result |
+|---|---|
+| Ubuntu 22.04 / GCC 11.4 Debug / warnings as errors | 94/94 CTest PASS |
+| GCC 11.4 ASan + LSan | 94/94 PASS; detect_leaks=1, halt_on_error=1 |
+| GCC 11.4 UBSan | 94/94 PASS; no recovery from undefined behavior |
+| GCC 11.4 Release / warnings as errors | 94/94 PASS |
+| Ubuntu 24.04.4 offline container / GCC 13.3 | 94/94 PASS; tests and benchmarks built |
+| Clang 14 TSan required subset, including new allocation test | 10/10 PASS; race and thread-leak checks enabled |
+| Runtime-only Release / development dependencies absent | Full Runtime build PASS |
+| All eight existing Release benchmark executables, three repetitions each | PASS; see capacity_qualification.md |
+| clang-format 14 dry-run / git diff --check / public-header and Stable ABI diff | PASS / PASS / unchanged |
+
+ASan/LSan and TSan used `setarch x86_64 -R`; no new suppressions or disabled
+checks were introduced. UBSan builds retain `-fno-sanitize-recover=undefined`.
+The local Clang cache uses explicit GCC 11 include/library paths as in the
+previous qualification. Concurrent local matrix processes use isolated temporary
+directories: separate PID namespaces can otherwise collide on PID-based fixture
+filenames in the shared `/tmp`. The final UBSan/Release runs used separate
+`TMPDIR` directories, with all original assertions intact.
+
+Final local execution logs are `/tmp/rodaq-ownership-debug-tests.log`,
+`/tmp/rodaq-ownership-asan.log`, `/tmp/rodaq-ownership-ubsan-tests.log`,
+`/tmp/rodaq-ownership-closure-release-tests.log`,
+`/tmp/rodaq-ownership-tsan.log`, `build/ownership-ubuntu24-tests.log`, and
+`/tmp/rodaq-ownership-runtime-only.log`. These are transient host artifacts;
+the results above are the durable qualification record.
+
+**Assessment:** ownership/isolation findings closed; retention publication
+hardening closed; Known P0 = 0 and Known P1 = 0 from this closure. M2 generic
+Runtime locally qualified/frozen; M3 NOT STARTED.
+New hosted qualification: **PENDING — await the associated workflow result**.
+Native arm64: **DEFERRED under D-034**.

@@ -54,10 +54,12 @@ inline ConfigTree config(std::vector<ConfigTree::MapEntry> entries) {
 
 inline runtime::PluginConfig acquisition(
     std::size_t streams, std::size_t records_per_stream, std::size_t payload_bytes,
-    std::uint64_t record_interval_ns, std::string payload_mode = "copy") {
+    std::uint64_t record_interval_ns, std::string payload_mode = "copy",
+    std::string source_id = "benchmark-source") {
     runtime::PluginConfig value;
     value.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
     value.config = config({
+        {"source_id", ConfigTree::String(std::move(source_id))},
         {"streams", ConfigTree::Int64(static_cast<std::int64_t>(streams))},
         {"records_per_stream", ConfigTree::Int64(static_cast<std::int64_t>(records_per_stream))},
         {"producer_threads", ConfigTree::Int64(static_cast<std::int64_t>(streams))},

@@ -112,6 +112,11 @@ public:
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
+        source_id_ = config_string(config, "source_id", "fake-source");
+        ownership_scenario_ = config_string(config, "ownership_scenario", "");
+        ownership_file_ = config_string(config, "ownership_file", "");
+        producer_wait_file_ = config_string(config, "producer_wait_file", "");
+        plugin_health_file_ = config_string(config, "plugin_health_file", "");
         stream_count_ = static_cast<std::size_t>(config_int(config, "streams", 1));
         records_per_stream_ = static_cast<std::size_t>(config_int(config, "records_per_stream", 1));
         producer_threads_ = static_cast<std::size_t>(config_int(config, "producer_threads", 1));
@@ -171,7 +176,7 @@ public:
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE,
             0,
             rodaq_bytes_view{
-                reinterpret_cast<const std::uint8_t*>("fake-source"), sizeof("fake-source") - 1U},
+                reinterpret_cast<const std::uint8_t*>(source_id_.data()), source_id_.size()},
         });
         if (!source.has_value()) {
             return fail(source.error());
@@ -256,6 +261,10 @@ public:
                 return fail(views.error());
             }
             descriptors_.push_back(descriptor.value());
+        }
+        auto ownership = ValidateOwnership();
+        if (!ownership.has_value()) {
+            return fail(ownership.error());
         }
         auto stale_handles = ValidateOrRecordStaleHandles();
         if (!stale_handles.has_value()) {
@@ -458,6 +467,18 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
+        if (!producer_wait_file_.empty()) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!stopping_.load() && !file_exists(producer_wait_file_) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (!file_exists(producer_wait_file_)) {
+                LogControl("producer_wait_failed");
+                return;
+            }
+        }
+
         const std::size_t first_stream = producer_stream_mode_ == "exclusive" ? producer_index : 0;
         const std::size_t stream_limit = producer_stream_mode_ == "exclusive"
                                              ? std::min(first_stream + 1U, streams_.size())
@@ -603,6 +624,26 @@ private:
         submission.payload.owner_context = owner_context;
         submission.payload.release = release;
 
+        if (ownership_scenario_ == "probe") {
+            submission.source = foreign_source_;
+            auto rejected = runtime_.acquisition.Submit(submission);
+            const auto expected_disposition = mode == RODAQ_PAYLOAD_COPY
+                                                  ? RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE
+                                                  : RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE;
+            if (!rejected.has_value() || rejected.value().outcome != RODAQ_ADMISSION_PRE_REJECTED ||
+                rejected.value().rejection_reason != RODAQ_REJECTION_STALE_HANDLE ||
+                rejected.value().payload_disposition != expected_disposition) {
+                if (anchor != nullptr &&
+                    (!rejected.has_value() || rejected.value().payload_disposition ==
+                                                  RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE)) {
+                    delete anchor;
+                }
+                LogControl("ownership_submit_failed");
+                return false;
+            }
+            LogControl("ownership_submit_rejected");
+            submission.source = *source_;
+        }
         auto result = runtime_.acquisition.Submit(submission);
         if (!result.has_value()) {
             if (anchor != nullptr) {
@@ -616,6 +657,15 @@ private:
             delete anchor;
         }
         LogResult(submission, result.value());
+        if (plugin_health_scenario_ == "source_recovered" && record_index == 1) {
+            if (result.value().rejection_reason != RODAQ_REJECTION_SOURCE_UNAVAILABLE ||
+                !runtime_.acquisition.ReportSource(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
+                     .has_value()) {
+                LogControl("source_recovery_failed");
+                return false;
+            }
+            LogControl("source_explicitly_recovered");
+        }
         if (plugin_health_after_ >= 0 &&
             record_index == static_cast<std::size_t>(plugin_health_after_)) {
             if (!TriggerPluginHealth(stream_index)) {
@@ -637,10 +687,16 @@ private:
             return false;
         }
         LogControl("plugin_health state=" + plugin_health_scenario_);
-        if (plugin_health_scenario_ != "recovered") {
+        if (plugin_health_scenario_ != "recovered" &&
+            plugin_health_scenario_ != "source_recovered") {
             return true;
         }
         if (!runtime_.acquisition.ReportPluginState(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
+                 .has_value()) {
+            return false;
+        }
+        if (plugin_health_scenario_ == "recovered" &&
+            !runtime_.acquisition.ReportSource(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
                  .has_value()) {
             return false;
         }
@@ -669,6 +725,9 @@ private:
         }
         std::lock_guard<std::mutex> lock(switch_mutex_);
         descriptors_[stream_index] = descriptor.value();
+        if (!plugin_health_file_.empty()) {
+            create_marker(plugin_health_file_);
+        }
         return true;
     }
 
@@ -736,6 +795,82 @@ private:
                 rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
                 "canonical/transport timestamp separation is invalid"));
         }
+        return {};
+    }
+
+    rodaq::Result<void> ValidateOwnership() {
+        if (ownership_scenario_.empty()) {
+            return {};
+        }
+        auto duplicate = runtime_.acquisition.RegisterSource(rodaq_source_registration{
+            RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
+            rodaq_bytes_view{
+                reinterpret_cast<const std::uint8_t*>(source_id_.data()), source_id_.size()}});
+        if (!duplicate.has_value() || duplicate.value().value != source_->value) {
+            return invalid_state();
+        }
+        if (ownership_scenario_ == "owner") {
+            auto descriptor = runtime_.canonical.get_stream_descriptor(descriptors_.front());
+            if (!descriptor.has_value()) {
+                return fail(descriptor.error());
+            }
+            auto keys =
+                runtime_.canonical.GetTimestampKeySet(descriptor.value().timestamp_key_set_id);
+            if (!keys.has_value() || keys.value().key_count == 0) {
+                return invalid_state();
+            }
+            std::ofstream output(ownership_file_);
+            output << source_->value << ' ' << streams_.front().value << ' ' << clock_.value << ' '
+                   << keys.value().keys[0].clock.value << ' ' << source_id_ << '\n';
+            return output ? rodaq::Result<void>() : invalid_state();
+        }
+        std::ifstream input(ownership_file_);
+        rodaq_stream_handle foreign_stream{};
+        rodaq_clock_handle foreign_clock{}, ingress_clock{};
+        std::string foreign_id;
+        input >> foreign_source_.value >> foreign_stream.value >> foreign_clock.value >>
+            ingress_clock.value >> foreign_id;
+        if (!input) {
+            return invalid_state();
+        }
+        auto conflict = runtime_.acquisition.RegisterSource(rodaq_source_registration{
+            RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
+            rodaq_bytes_view{
+                reinterpret_cast<const std::uint8_t*>(foreign_id.data()), foreign_id.size()}});
+        if (conflict.has_value() || conflict.error().code() != rodaq::ErrorCode::Conflict) {
+            return invalid_state();
+        }
+        for (auto availability : {RODAQ_AVAILABILITY_UNAVAILABLE, RODAQ_AVAILABILITY_AVAILABLE}) {
+            auto source = runtime_.acquisition.ReportSource(foreign_source_, availability, nullptr);
+            auto stream = runtime_.acquisition.ReportStream(foreign_stream, availability, nullptr);
+            if (source.has_value() || source.error().code() != rodaq::ErrorCode::InvalidState ||
+                stream.has_value() || stream.error().code() != rodaq::ErrorCode::InvalidState) {
+                return invalid_state();
+            }
+        }
+        auto unknown_source = runtime_.acquisition.ReportSource(
+            rodaq_source_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
+        auto unknown_stream = runtime_.acquisition.ReportStream(
+            rodaq_stream_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
+        if (unknown_source.has_value() ||
+            unknown_source.error().code() != rodaq::ErrorCode::NotFound ||
+            unknown_stream.has_value() ||
+            unknown_stream.error().code() != rodaq::ErrorCode::NotFound) {
+            return invalid_state();
+        }
+        const auto own_clock = clock_;
+        for (auto clock : {foreign_clock, ingress_clock, rodaq_clock_handle{UINT64_MAX}}) {
+            clock_ = clock;
+            auto descriptor = PublishDescriptor(streams_.front(), "fake/foreign-clock");
+            const auto expected = clock.value == UINT64_MAX ? rodaq::ErrorCode::NotFound
+                                                            : rodaq::ErrorCode::InvalidState;
+            if (descriptor.has_value() || descriptor.error().code() != expected) {
+                clock_ = own_clock;
+                return invalid_state();
+            }
+        }
+        clock_ = own_clock;
+        LogControl("ownership_control_rejected");
         return {};
     }
 
@@ -871,6 +1006,12 @@ private:
     std::size_t records_per_stream_ = 1;
     std::size_t producer_threads_ = 1;
     std::size_t payload_size_ = 16;
+    std::string source_id_ = "fake-source";
+    std::string ownership_scenario_;
+    std::string ownership_file_;
+    std::string producer_wait_file_;
+    std::string plugin_health_file_;
+    rodaq_source_handle foreign_source_{};
     std::string payload_mode_ = "copy";
     std::string producer_stream_mode_ = "all";
     std::int64_t record_interval_us_ = 0;
