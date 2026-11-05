@@ -4787,8 +4787,13 @@ quiescence or permanently blocked call remains quarantined with its DSO leases;
 recovery never guesses safety and never restarts recording.
 
 Completed workers are claimed once, Joined outside the manager mutex, and only
-then release their retained state and capacity. Concurrent reapers cannot Join
-the same thread. Completion publication is not equivalent to thread exit.
+then release their retained state and capacity. A transferred Pipeline release
+worker publishes a separate Joined signal after the actual Join; empty release
+queues or operation counters alone cannot authorize reclaiming its Pipeline or
+activation root. Concurrent reapers cannot Join
+the same thread. Supervised calls destroy their operation captures before
+publishing completion, and cleanup continuations require the separate actual
+Joined signal. Completion publication is not equivalent to thread exit.
 The maintenance worker itself is Joined at process teardown, with a bounded
 final grace period for newly completed retained calls. Thread leak and race
 checks remain enabled during qualification.

@@ -179,10 +179,11 @@ enum class StorageActivationState {
 
 template <typename Callable>
 BoundedCallOutcome supervise_call(
-    Callable callable, std::chrono::steady_clock::time_point deadline) noexcept {
+    Callable callable, std::chrono::steady_clock::time_point deadline,
+    std::shared_ptr<std::atomic<bool>> joined = {}) noexcept {
     auto managed = QuarantineManager::Process().Run(
-        std::function<Result<void>()>(std::move(callable)), deadline,
-        "Runtime Plugin control call");
+        std::function<Result<void>()>(std::move(callable)), deadline, "Runtime Plugin control call",
+        std::move(joined));
     if (!managed.has_value()) {
         return BoundedCallOutcome{BoundedCallOutcome::Status::Failed, managed.error()};
     }
@@ -734,6 +735,7 @@ private:
 
     struct PendingCall final {
         std::atomic<bool> done{false};
+        std::shared_ptr<std::atomic<bool>> joined = std::make_shared<std::atomic<bool>>(false);
         std::optional<Result<void>> result;
         std::string site;
     };
@@ -743,7 +745,7 @@ private:
         const char* site, Callable callable, Clock::time_point deadline) noexcept {
         if (pending_call_ != nullptr) {
             if (pending_call_->site != site ||
-                !pending_call_->done.load(std::memory_order_acquire)) {
+                !pending_call_->joined->load(std::memory_order_acquire)) {
                 return {BoundedCallOutcome::Status::TimedOut, std::nullopt};
             }
             auto pending = std::move(pending_call_);
@@ -767,7 +769,7 @@ private:
                     pending->done.store(true, std::memory_order_release);
                     return *pending->result;
                 },
-                deadline);
+                deadline, pending->joined);
         });
         if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
             pending_call_ = std::move(pending);
@@ -1226,7 +1228,7 @@ private:
         if (recovery_abandoned_) {
             return false;
         }
-        if (pending_call_ != nullptr && !pending_call_->done.load(std::memory_order_acquire)) {
+        if (pending_call_ != nullptr && !pending_call_->joined->load(std::memory_order_acquire)) {
             return false;
         }
         if (active_->RequiresQuarantine()) {

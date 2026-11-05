@@ -39,10 +39,10 @@ public:
 
     Result<SupervisedCallOutcome> Run(
         std::function<Result<void>()> operation, std::chrono::steady_clock::time_point deadline,
-        std::string reason);
+        std::string reason, std::shared_ptr<std::atomic<bool>> joined = {});
     bool RetainWorker(
         std::thread&& worker, std::shared_ptr<void> state, std::shared_ptr<std::atomic<bool>> done,
-        std::string reason) noexcept;
+        std::string reason, std::shared_ptr<std::atomic<bool>> joined = {}) noexcept;
 
     Result<std::uint64_t> ReserveActivation(std::string reason);
     bool RetainActivation(

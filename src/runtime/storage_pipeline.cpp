@@ -496,9 +496,10 @@ void StoragePipeline::JoinCompletion() noexcept {
 }
 
 void StoragePipeline::JoinRelease() noexcept {
-    for (std::thread& worker : release_threads_) {
-        if (worker.joinable()) {
-            worker.join();
+    for (std::size_t index = 0; index < release_threads_.size(); ++index) {
+        if (release_threads_[index].joinable()) {
+            release_threads_[index].join();
+            release_worker_states_[index]->joined->store(true, std::memory_order_release);
         }
     }
 }
@@ -517,6 +518,7 @@ void StoragePipeline::ReapCompletedWorkers() noexcept {
         if (release_worker_states_[index]->done->load(std::memory_order_acquire) &&
             release_threads_[index].joinable()) {
             release_threads_[index].join();
+            release_worker_states_[index]->joined->store(true, std::memory_order_release);
         }
     }
 }
@@ -531,11 +533,12 @@ bool StoragePipeline::RetainBlockedReleaseWorkers() noexcept {
         const std::shared_ptr<ReleaseWorkerState>& state = release_worker_states_[index];
         if (state != nullptr && state->done->load(std::memory_order_acquire)) {
             worker.join();
+            state->joined->store(true, std::memory_order_release);
             continue;
         }
-        if (state == nullptr ||
-            !QuarantineManager::Process().RetainWorker(
-                std::move(worker), state, state->done, "Storage Payload release worker")) {
+        if (state == nullptr || !QuarantineManager::Process().RetainWorker(
+                                    std::move(worker), state, state->done,
+                                    "Storage Payload release worker", state->joined)) {
             retained = false;
         }
     }
@@ -559,8 +562,20 @@ bool StoragePipeline::WaitOperationsIdle(std::chrono::steady_clock::time_point d
 
 bool StoragePipeline::WaitReleaseIdle(std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return release_condition_.wait_until(
-        lock, deadline, [this] { return release_count_ == 0 && release_active_count_ == 0; });
+    // A transferred worker still executes against this Pipeline. Empty queues
+    // alone do not establish its lifetime barrier; require the manager's Join.
+    return release_condition_.wait_until(lock, deadline, [this] {
+        if (release_count_ != 0 || release_active_count_ != 0) {
+            return false;
+        }
+        for (std::size_t index = 0; index < release_threads_.size(); ++index) {
+            if (!release_threads_[index].joinable() &&
+                !release_worker_states_[index]->joined->load(std::memory_order_acquire)) {
+                return false;
+            }
+        }
+        return true;
+    });
 }
 
 bool StoragePipeline::WaitStorageQuiescent(std::chrono::steady_clock::time_point deadline) {

@@ -124,6 +124,54 @@ TEST(QuarantineManagerTest, CompletedWorkerMayReenterReapingWithoutJoiningItself
     EXPECT_TRUE(returned->load(std::memory_order_acquire));
 }
 
+TEST(QuarantineManagerTest, CaptureDestructionCompletesBeforeJoinPublication) {
+    auto& manager = QuarantineManager::Process();
+    const auto before = manager.RetainedCallCount();
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto entered = std::make_shared<std::atomic<bool>>(false);
+    auto joined = std::make_shared<std::atomic<bool>>(false);
+    struct Capture {
+        std::shared_ptr<std::atomic<bool>> release;
+        std::shared_ptr<std::atomic<bool>> entered;
+        ~Capture() {
+            entered->store(true, std::memory_order_release);
+            while (!release->load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        }
+    };
+    struct ReleaseGuard {
+        std::shared_ptr<std::atomic<bool>> release;
+        ~ReleaseGuard() { release->store(true, std::memory_order_release); }
+    } guard{release};
+    auto capture = std::make_shared<Capture>();
+    capture->release = release;
+    capture->entered = entered;
+    std::function<Result<void>()> operation = [capture] { return Result<void>(); };
+    capture.reset();
+    auto outcome = manager.Run(
+        std::move(operation), std::chrono::steady_clock::now() + std::chrono::milliseconds(10),
+        "blocking capture destruction", joined);
+    ASSERT_TRUE(outcome.has_value());
+    EXPECT_EQ(outcome->status, SupervisedCallStatus::TimedOut);
+    const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!entered->load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < entered_deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(entered->load(std::memory_order_acquire));
+    EXPECT_FALSE(joined->load(std::memory_order_acquire));
+    release->store(true, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while ((!joined->load(std::memory_order_acquire) || manager.RetainedCallCount() != before) &&
+           std::chrono::steady_clock::now() < deadline) {
+        manager.ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(joined->load(std::memory_order_acquire));
+    EXPECT_EQ(manager.RetainedCallCount(), before);
+}
+
 TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
     auto& manager = QuarantineManager::Process();
     EXPECT_EQ(manager.RetainedActivationCount(), 0U);

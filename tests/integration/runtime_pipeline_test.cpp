@@ -1748,6 +1748,54 @@ TEST(RuntimePipelineTest, RetainsBlockedPayloadReleaseWorkerDuringStop) {
     EXPECT_EQ(QuarantineManager::Process().RetainedWorkerCount(), retained_before);
 }
 
+TEST(RuntimePipelineTest, QuarantinedReleaseOutlivesRuntimeAndJoinsBeforeRootRecovery) {
+    const std::string log = unique_log_path("release_after_runtime_destroy");
+    const std::string marker = unique_log_path("release_after_runtime_destroy_fixture");
+    std::error_code removed;
+    fs::remove(log, removed);
+    fs::remove(marker + ".blocked", removed);
+    fs::remove(marker + ".continue", removed);
+    struct UnblockRelease {
+        std::string marker;
+        ~UnblockRelease() { std::ofstream(marker + ".continue").put('1'); }
+    } unblock{marker};
+    auto& manager = QuarantineManager::Process();
+    const auto workers_before = manager.RetainedWorkerCount();
+    const auto roots_before = manager.RetainedActivationCount();
+    auto config = options(
+        "release_after_destroy", "sync", "adopt", 1, 1, 1, log, std::chrono::milliseconds(60));
+    config.acquisitions[0].config = map_config({
+        {"streams", plugin::ConfigTree::Int64(1)},
+        {"records_per_stream", plugin::ConfigTree::Int64(1)},
+        {"producer_threads", plugin::ConfigTree::Int64(1)},
+        {"payload_size", plugin::ConfigTree::Int64(16)},
+        {"payload_mode", plugin::ConfigTree::String("adopt")},
+        {"payload_release_block_file", plugin::ConfigTree::String(marker)},
+        {"event_log", plugin::ConfigTree::String(log)},
+    });
+    auto runtime = std::make_unique<Runtime>(std::move(config));
+    ASSERT_TRUE(runtime->Configure().has_value());
+    ASSERT_TRUE(runtime->Start().has_value());
+    ASSERT_TRUE(wait_for_file(marker + ".blocked"));
+    EXPECT_FALSE(runtime->Stop().has_value());
+    EXPECT_GT(manager.RetainedWorkerCount(), workers_before);
+    runtime.reset();  // No application observer keeps the Pipeline alive now.
+    std::ofstream(marker + ".continue").put('1');
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
+    while ((manager.RetainedWorkerCount() != workers_before ||
+            manager.RetainedActivationCount() > roots_before ||
+            !log_contains(log, "control storage_destroy") ||
+            !log_contains(log, "control destroy")) &&
+           Clock::now() < deadline) {
+        manager.ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(manager.RetainedWorkerCount(), workers_before);
+    EXPECT_LE(manager.RetainedActivationCount(), roots_before);
+    EXPECT_TRUE(log_contains(log, "control storage_destroy"));
+    EXPECT_TRUE(log_contains(log, "control destroy"));
+}
+
 TEST(RuntimePipelineTest, QuarantinesBlockedPluginDestroyDuringStop) {
     const std::string log = unique_log_path("blocked_destroy");
     const std::string destroy_file = unique_log_path("blocked_destroy_fixture");

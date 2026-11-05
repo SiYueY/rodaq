@@ -897,11 +897,12 @@ void ActiveRuntimeState::SetBindingProgressTimeout(std::chrono::nanoseconds time
 
 std::shared_ptr<void> ActiveRuntimeState::TrackControlCall() {
     auto state = shared_from_this();
-    auto guard = std::shared_ptr<void>(state.get(), [state](void*) {
+    // shared_ptr invokes its deleter if control-block allocation fails too.
+    // Establish the count first so that path also has a matching decrement.
+    active_control_calls_.fetch_add(1, std::memory_order_acq_rel);
+    return std::shared_ptr<void>(state.get(), [state](void*) {
         state->active_control_calls_.fetch_sub(1, std::memory_order_acq_rel);
     });
-    active_control_calls_.fetch_add(1, std::memory_order_acq_rel);
-    return guard;
 }
 
 void ActiveRuntimeState::ReapQuarantinedWorkers() noexcept {

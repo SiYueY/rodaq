@@ -43,6 +43,7 @@ struct QuarantineManager::Completion {
 struct QuarantineManager::CallEntry {
     std::shared_ptr<Completion> completion;
     std::thread worker;
+    std::shared_ptr<std::atomic<bool>> joined;
     std::string reason;
 };
 
@@ -50,6 +51,7 @@ struct QuarantineManager::WorkerEntry {
     std::thread worker;
     std::shared_ptr<void> state;
     std::shared_ptr<std::atomic<bool>> done;
+    std::shared_ptr<std::atomic<bool>> joined;
     std::string reason;
 };
 
@@ -131,7 +133,7 @@ std::unique_ptr<QuarantineManager::CallEntry> QuarantineManager::CreateCallEntry
 
 Result<SupervisedCallOutcome> QuarantineManager::Run(
     std::function<Result<void>()> operation, std::chrono::steady_clock::time_point deadline,
-    std::string reason) {
+    std::string reason, std::shared_ptr<std::atomic<bool>> joined) {
     if (!operation) {
         return nonstd::make_unexpected(
             quarantine_error(ErrorCode::InvalidArgument, "Supervised Plugin call is empty"));
@@ -143,6 +145,7 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
     try {
         completion = std::make_shared<Completion>();
         entry = CreateCallEntry(completion, std::move(reason));
+        entry->joined = std::move(joined);
     } catch (const std::exception& error) {
         return nonstd::make_unexpected(
             quarantine_error(ErrorCode::ResourceExhausted, error.what()));
@@ -170,6 +173,10 @@ Result<SupervisedCallOutcome> QuarantineManager::Run(
                 std::lock_guard<std::mutex> lock(completion->mutex);
                 completion->threw = true;
             }
+            // Captured leases/destructors may execute Plugin code too. Dispose
+            // them before publishing completion, so a reaper never joins a
+            // thread blocked in an ostensibly "completed" capture destructor.
+            operation = {};
             {
                 std::lock_guard<std::mutex> lock(completion->mutex);
                 completion->done = true;
@@ -212,6 +219,9 @@ SupervisedCallOutcome QuarantineManager::WaitForCall(
     if (entry->worker.joinable()) {
         entry->worker.join();
     }
+    if (entry->joined != nullptr) {
+        entry->joined->store(true, std::memory_order_release);
+    }
 
     std::lock_guard<std::mutex> lock(entry->completion->mutex);
     if (entry->completion->threw) {
@@ -228,7 +238,7 @@ SupervisedCallOutcome QuarantineManager::WaitForCall(
 
 bool QuarantineManager::RetainWorker(
     std::thread&& worker, std::shared_ptr<void> state, std::shared_ptr<std::atomic<bool>> done,
-    std::string reason) noexcept {
+    std::string reason, std::shared_ptr<std::atomic<bool>> joined) noexcept {
     if (!worker.joinable() || state == nullptr || done == nullptr) {
         return false;
     }
@@ -238,8 +248,9 @@ bool QuarantineManager::RetainWorker(
         if (active_calls_ >= kMaxRetainedCalls) {
             return false;
         }
-        retired_workers_.push_back(
-            WorkerEntry{std::move(worker), std::move(state), std::move(done), std::move(reason)});
+        retired_workers_.push_back(WorkerEntry{
+            std::move(worker), std::move(state), std::move(done), std::move(joined),
+            std::move(reason)});
         ++active_calls_;
         return true;
     } catch (...) {
@@ -326,6 +337,9 @@ void QuarantineManager::ReapCompleted() noexcept {
     }
     for (std::size_t index = 0; index < call_count; ++index) {
         calls[index]->worker.join();
+        if (calls[index]->joined != nullptr) {
+            calls[index]->joined->store(true, std::memory_order_release);
+        }
         calls[index].reset();
         std::lock_guard<std::mutex> lock(mutex_);
         --reaping_calls_;
@@ -333,6 +347,9 @@ void QuarantineManager::ReapCompleted() noexcept {
     }
     for (std::size_t index = 0; index < worker_count; ++index) {
         workers[index]->worker.join();
+        if (workers[index]->joined != nullptr) {
+            workers[index]->joined->store(true, std::memory_order_release);
+        }
         workers[index].reset();
         std::lock_guard<std::mutex> lock(mutex_);
         --reaping_workers_;

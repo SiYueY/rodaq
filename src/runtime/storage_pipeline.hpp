@@ -150,6 +150,7 @@ private:
     struct Slot;
     struct ReleaseWorkerState {
         std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+        std::shared_ptr<std::atomic<bool>> joined = std::make_shared<std::atomic<bool>>(false);
     };
 
     enum class DispatchState : std::uint8_t {
