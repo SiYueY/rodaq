@@ -88,6 +88,7 @@ std::int64_t config_int(
 class FakeAcquisitionPlugin final : public rodaq::AcquisitionPlugin {
 public:
     ~FakeAcquisitionPlugin() override {
+        LogControl("destroy");
         if (!destroy_block_file_.empty()) {
             const std::string blocked_file = destroy_block_file_ + ".blocked";
             const std::string continue_file = destroy_block_file_ + ".continue";
@@ -369,6 +370,10 @@ public:
         LogControl("quiesce");
         if (lifecycle_scenario_ == "quiesce_failure" ||
             lifecycle_scenario_ == "start_partial_cleanup_failure") {
+            // Inject an operational barrier error after joining the fixture's
+            // native workers. Runtime still cannot assume quiescence on error
+            // and must quarantine; the fixture owns its completed threads.
+            Quiesce();
             return fail(rodaq::Error(
                 rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
                 "configured quiesce failure"));

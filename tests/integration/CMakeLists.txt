@@ -39,5 +39,5 @@ set_tests_properties(
     rodaq.integration.runtime_pipeline
     PROPERTIES
         ENVIRONMENT
-            "RODAQ_FAKE_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_fake_acquisition_plugin>;RODAQ_FAKE_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_fake_storage_plugin>;TSAN_OPTIONS=report_thread_leaks=0"
+            "RODAQ_FAKE_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_fake_acquisition_plugin>;RODAQ_FAKE_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_fake_storage_plugin>"
 )

@@ -71,6 +71,49 @@ QuarantineManager& QuarantineManager::Process() noexcept {
 #if defined(RODAQ_QUARANTINE_HAS_LSAN_IGNORE)
     __lsan_ignore_object(manager);
 #endif
+    // A single bounded maintenance worker joins eventually completed calls even
+    // when no subsequent Runtime API call arrives. Its own lifetime is joined.
+    struct Reaper final {
+        explicit Reaper(QuarantineManager& owner)
+        : worker([this, &owner] {
+              std::unique_lock<std::mutex> lock(mutex);
+              while (!closed) {
+                  condition.wait_for(
+                      lock, std::chrono::milliseconds(10), [this] { return closed; });
+                  lock.unlock();
+                  owner.ReapCompleted();
+                  owner.ReapActivations();
+                  lock.lock();
+              }
+              lock.unlock();
+              // Process teardown still joins operations that finish during the
+              // bounded final grace period. Truly blocked Plugin code remains
+              // retained; completion never means an implicit detach.
+              const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+              do {
+                  owner.ReapCompleted();
+                  owner.ReapActivations();
+                  if (owner.RetainedCallCount() == 0 && owner.RetainedWorkerCount() == 0) {
+                      owner.ReapCompleted();
+                      break;
+                  }
+                  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              } while (std::chrono::steady_clock::now() < deadline);
+          }) {}
+        ~Reaper() {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                closed = true;
+                condition.notify_all();
+            }
+            worker.join();
+        }
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool closed = false;
+        std::thread worker;
+    };
+    static Reaper reaper(*manager);
     return *manager;
 }
 
@@ -189,9 +232,9 @@ bool QuarantineManager::RetainWorker(
     if (!worker.joinable() || state == nullptr || done == nullptr) {
         return false;
     }
+    ReapCompleted();
     try {
         std::lock_guard<std::mutex> lock(mutex_);
-        ReapCompletedLocked();
         if (active_calls_ >= kMaxRetainedCalls) {
             return false;
         }
@@ -220,7 +263,8 @@ Result<std::uint64_t> QuarantineManager::ReserveActivation(std::string reason) {
 }
 
 bool QuarantineManager::RetainActivation(
-    std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason) noexcept {
+    std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason,
+    std::function<bool()> cleanup) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!activation_id || activation_id > activations_.size() || root == nullptr) {
         return false;
@@ -229,6 +273,7 @@ bool QuarantineManager::RetainActivation(
     if (!slot.reserved) {
         return false;
     }
+    slot.cleanup = std::move(cleanup);
     slot.root = std::move(root);
     slot.reason = std::move(reason);
     return true;
@@ -246,47 +291,99 @@ void QuarantineManager::ReleaseActivation(std::uint64_t activation_id) noexcept 
 }
 
 void QuarantineManager::ReapCompleted() noexcept {
-    std::lock_guard<std::mutex> manager_lock(mutex_);
-    ReapCompletedLocked();
-}
-
-void QuarantineManager::ReapCompletedLocked() noexcept {
-    for (auto iterator = calls_.begin(); iterator != calls_.end();) {
-        const bool complete = [&iterator] {
-            std::lock_guard<std::mutex> completion_lock((*iterator)->completion->mutex);
-            return (*iterator)->completion->done;
-        }();
-        if (!complete) {
-            ++iterator;
-            continue;
+    // Claim entries under the manager mutex. Joining and releasing captures may
+    // reenter the manager, so neither may happen while that mutex is held.
+    std::array<std::unique_ptr<CallEntry>, kMaxRetainedCalls> calls;
+    std::array<std::optional<WorkerEntry>, kMaxRetainedCalls> workers;
+    std::size_t call_count = 0;
+    std::size_t worker_count = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = calls_.begin(); it != calls_.end();) {
+            bool done = false;
+            {
+                std::lock_guard<std::mutex> completion_lock((*it)->completion->mutex);
+                done = (*it)->completion->done;
+            }
+            if (done && (*it)->worker.get_id() != std::this_thread::get_id()) {
+                calls[call_count++] = std::move(*it);
+                it = calls_.erase(it);
+                ++reaping_calls_;
+            } else {
+                ++it;
+            }
         }
-        if ((*iterator)->worker.joinable()) {
-            (*iterator)->worker.join();
+        for (auto it = retired_workers_.begin(); it != retired_workers_.end();) {
+            if (it->done->load(std::memory_order_acquire) &&
+                it->worker.get_id() != std::this_thread::get_id()) {
+                workers[worker_count++].emplace(std::move(*it));
+                it = retired_workers_.erase(it);
+                ++reaping_workers_;
+            } else {
+                ++it;
+            }
         }
-        iterator = calls_.erase(iterator);
+    }
+    for (std::size_t index = 0; index < call_count; ++index) {
+        calls[index]->worker.join();
+        calls[index].reset();
+        std::lock_guard<std::mutex> lock(mutex_);
+        --reaping_calls_;
         --active_calls_;
     }
-    for (auto iterator = retired_workers_.begin(); iterator != retired_workers_.end();) {
-        if (!iterator->done->load(std::memory_order_acquire)) {
-            ++iterator;
-            continue;
-        }
-        if (iterator->worker.joinable()) {
-            iterator->worker.join();
-        }
-        iterator = retired_workers_.erase(iterator);
+    for (std::size_t index = 0; index < worker_count; ++index) {
+        workers[index]->worker.join();
+        workers[index].reset();
+        std::lock_guard<std::mutex> lock(mutex_);
+        --reaping_workers_;
         --active_calls_;
+    }
+}
+
+void QuarantineManager::ReapActivations() noexcept {
+    for (std::size_t index = 0; index < activations_.size(); ++index) {
+        std::shared_ptr<void> root;
+        std::function<bool()> cleanup;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ActivationSlot& slot = activations_[index];
+            if (slot.root == nullptr || !slot.cleanup || slot.reaping) {
+                continue;
+            }
+            try {
+                cleanup = slot.cleanup;
+            } catch (...) {
+                continue;
+            }
+            slot.reaping = true;
+            root = slot.root;
+        }
+        bool complete = false;
+        try {
+            complete = cleanup();
+        } catch (...) {
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ActivationSlot& slot = activations_[index];
+            if (complete) {
+                // root keeps destruction outside the manager mutex.
+                slot = ActivationSlot{};
+            } else {
+                slot.reaping = false;
+            }
+        }
     }
 }
 
 std::size_t QuarantineManager::RetainedCallCount() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    return calls_.size();
+    return calls_.size() + reaping_calls_;
 }
 
 std::size_t QuarantineManager::RetainedWorkerCount() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    return retired_workers_.size();
+    return retired_workers_.size() + reaping_workers_;
 }
 
 std::size_t QuarantineManager::RetainedActivationCount() const noexcept {

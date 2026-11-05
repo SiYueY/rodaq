@@ -208,9 +208,18 @@ Result<void> StoragePipeline::Start() {
             Error(ErrorCode::InvalidState, "runtime", 0, "StoragePipeline is already started"));
     }
     try {
-        watchdog_thread_ = std::thread(&StoragePipeline::WatchdogLoop, this);
-        completion_thread_ = std::thread(&StoragePipeline::CompletionLoop, this);
-        dispatch_thread_ = std::thread(&StoragePipeline::DispatchLoop, this);
+        watchdog_thread_ = std::thread([this] {
+            WatchdogLoop();
+            watchdog_done_.store(true, std::memory_order_release);
+        });
+        completion_thread_ = std::thread([this] {
+            CompletionLoop();
+            completion_done_.store(true, std::memory_order_release);
+        });
+        dispatch_thread_ = std::thread([this] {
+            DispatchLoop();
+            dispatch_done_.store(true, std::memory_order_release);
+        });
         release_threads_.reserve(release_worker_count_);
         release_worker_states_.reserve(release_worker_count_);
         for (std::size_t index = 0; index < release_worker_count_; ++index) {
@@ -248,6 +257,9 @@ Result<void> StoragePipeline::Start() {
 
 void StoragePipeline::OpenAdmission() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (failure_cutoff_.load(std::memory_order_acquire)) {
+        return;
+    }
     admission_open_ = true;
     resource_condition_.notify_all();
 }
@@ -385,9 +397,13 @@ void StoragePipeline::Publish(PipelineReservation&& reservation, RuntimeRecord&&
                                      : PayloadReleaseState::NotRequired;
     slot.payload_reservation = std::move(reservation.payload_reservation_);
     slot.dispatch_state = DispatchState::Ready;
-    const std::size_t tail = (dispatch_head_ + dispatch_count_) % capacity_;
-    dispatch_ring_[tail] = index;
-    ++dispatch_count_;
+    if (failure_cutoff_.load(std::memory_order_acquire)) {
+        ClassifyNeverHandedOffLocked(index);
+    } else {
+        const std::size_t tail = (dispatch_head_ + dispatch_count_) % capacity_;
+        dispatch_ring_[tail] = index;
+        ++dispatch_count_;
+    }
     reservation.pipeline_ = nullptr;
     reservation.record_reservation_.Release();
     dispatch_condition_.notify_one();
@@ -397,6 +413,55 @@ void StoragePipeline::CloseDispatch() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     dispatch_closed_ = true;
     dispatch_condition_.notify_all();
+}
+
+void StoragePipeline::ClassifyNeverHandedOffLocked(std::size_t index) noexcept {
+    Slot& slot = slots_[index];
+    // Admission history is immutable. Only the independent Storage axes end.
+    slot.submit_return = SubmitReturn::ReturnedError;
+    slot.payload_axis = PayloadAxis::Consumed;
+    slot.persistence_axis = PersistenceAxis::Failed;
+    slot.dispatch_state = DispatchState::Terminalizing;
+    if (!ScheduleCompletionLocked(index)) {
+        std::terminate();  // Pre-reserved completion capacity covers every slot.
+    }
+    submit_return_condition_.notify_all();
+}
+
+void StoragePipeline::BeginFailureCutoff() noexcept {
+    failure_cutoff_.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(mutex_);
+    admission_open_ = false;
+    dispatch_closed_ = true;
+    while (dispatch_count_ != 0) {
+        const std::size_t index = dispatch_ring_[dispatch_head_];
+        dispatch_head_ = (dispatch_head_ + 1U) % capacity_;
+        --dispatch_count_;
+        ClassifyNeverHandedOffLocked(index);
+    }
+    dispatch_condition_.notify_all();
+    resource_condition_.notify_all();
+}
+
+void StoragePipeline::ResolveAfterClose() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // A returned, successful close is the no-future-access barrier. It proves
+    // Payload safety, never a previously unconfirmed persistence success.
+    for (std::size_t index = 0; index < slots_.size(); ++index) {
+        Slot& slot = slots_[index];
+        if (!slot.operation_active || slot.submit_return == SubmitReturn::NotReturned) {
+            continue;
+        }
+        if (slot.payload_axis == PayloadAxis::Pending && !slot.payload_event_seen) {
+            slot.payload_axis = PayloadAxis::Consumed;
+        }
+        if (slot.persistence_axis == PersistenceAxis::Pending && !slot.persistence_event_seen) {
+            slot.persistence_axis = PersistenceAxis::Unknown;
+        }
+        if (!ScheduleCompletionLocked(index)) {
+            std::terminate();
+        }
+    }
 }
 
 void StoragePipeline::CloseCallbacks() noexcept {
@@ -434,6 +499,24 @@ void StoragePipeline::JoinRelease() noexcept {
     for (std::thread& worker : release_threads_) {
         if (worker.joinable()) {
             worker.join();
+        }
+    }
+}
+
+void StoragePipeline::ReapCompletedWorkers() noexcept {
+    if (dispatch_done_.load(std::memory_order_acquire) && dispatch_thread_.joinable()) {
+        dispatch_thread_.join();
+    }
+    if (completion_done_.load(std::memory_order_acquire) && completion_thread_.joinable()) {
+        completion_thread_.join();
+    }
+    if (watchdog_done_.load(std::memory_order_acquire) && watchdog_thread_.joinable()) {
+        watchdog_thread_.join();
+    }
+    for (std::size_t index = 0; index < release_threads_.size(); ++index) {
+        if (release_worker_states_[index]->done->load(std::memory_order_acquire) &&
+            release_threads_[index].joinable()) {
+            release_threads_[index].join();
         }
     }
 }
@@ -606,6 +689,14 @@ void StoragePipeline::DispatchOne(std::size_t index) {
         return;
     }
 
+    // This acquire is the handoff-entry linearization point. A call authorized
+    // before cutoff retains its original thread/ownership until return. The
+    // failure path alone needs the queue mutex to terminalize a skipped slot.
+    if (failure_cutoff_.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ClassifyNeverHandedOffLocked(index);
+        return;
+    }
     SubmitCallFrame frame{this, operation};
     const SubmitCallFrame* previous = active_submit_frame;
     active_submit_frame = &frame;
@@ -991,6 +1082,11 @@ StoragePipeline::CompletionEffects StoragePipeline::ProcessCompletion(std::size_
         return effects;
     }
 
+    if (slot.payload_axis == PayloadAxis::Consumed &&
+        (slot.payload_release_state == PayloadReleaseState::Required ||
+         slot.payload_release_state == PayloadReleaseState::NotRequired)) {
+        ReleasePayloadLocked(index, slot, effects);
+    }
     if (slot.payload_event_seen) {
         slot.payload_event_seen = false;
         if (slot.payload_axis == PayloadAxis::Consumed) {
@@ -1073,6 +1169,17 @@ void StoragePipeline::TerminalizeOperationLocked(
         slot.record.reset();
     }
     effects.operation_completed = true;
+    switch (slot.persistence_axis) {
+        case PersistenceAxis::Succeeded:
+            effects.persistence = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
+            break;
+        case PersistenceAxis::Failed:
+            effects.persistence = RODAQ_STORAGE_PERSISTENCE_FAILED;
+            break;
+        default:
+            effects.persistence = RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
+            break;
+    }
     slot.payload_size = 0;
     slot.operation_active = false;
     slot.dispatch_state = DispatchState::Terminalizing;
@@ -1098,7 +1205,7 @@ void StoragePipeline::NotifyOperationCompleted(const CompletionEffects& effects)
         return;
     }
     try {
-        operation_complete_sink_();
+        operation_complete_sink_(effects.persistence);
     } catch (...) {
         Fail(Error(
             ErrorCode::InternalError, "storage", 0,

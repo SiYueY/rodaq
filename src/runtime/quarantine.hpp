@@ -46,7 +46,8 @@ public:
 
     Result<std::uint64_t> ReserveActivation(std::string reason);
     bool RetainActivation(
-        std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason) noexcept;
+        std::uint64_t activation_id, std::shared_ptr<void> root, std::string reason,
+        std::function<bool()> cleanup = {}) noexcept;
     void ReleaseActivation(std::uint64_t activation_id) noexcept;
     void ReapCompleted() noexcept;
 
@@ -62,6 +63,8 @@ private:
         bool reserved = false;
         std::shared_ptr<void> root;
         std::string reason;
+        std::function<bool()> cleanup;
+        bool reaping = false;
     };
 
     QuarantineManager() noexcept;
@@ -71,10 +74,13 @@ private:
         std::shared_ptr<Completion> completion, std::string reason);
     SupervisedCallOutcome WaitForCall(
         std::unique_ptr<CallEntry>& entry, std::chrono::steady_clock::time_point deadline);
-    void ReapCompletedLocked() noexcept;
+
+    void ReapActivations() noexcept;
 
     mutable std::mutex mutex_;
     std::size_t active_calls_ = 0;
+    std::size_t reaping_calls_ = 0;
+    std::size_t reaping_workers_ = 0;
     std::vector<std::unique_ptr<CallEntry>> calls_;
     std::vector<WorkerEntry> retired_workers_;
     std::array<ActivationSlot, 32> activations_{};

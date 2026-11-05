@@ -1,5 +1,7 @@
 #include "rodaq/runtime/runtime_stats.hpp"
 
+#include <rodaq/plugin/abi/storage.h>
+
 #include <atomic>
 #include <cstdint>
 #include <limits>
@@ -81,8 +83,21 @@ bool RuntimeStats::RecordOperationCompleted() noexcept {
     return false;
 }
 
+void RuntimeStats::RecordPersistence(std::uint32_t state) noexcept {
+    if (state == RODAQ_STORAGE_PERSISTENCE_SUCCEEDED) {
+        add_saturated(persistence_succeeded_, 1);
+    } else if (state == RODAQ_STORAGE_PERSISTENCE_FAILED) {
+        add_saturated(persistence_failed_, 1);
+    } else {
+        add_saturated(persistence_unknown_, 1);
+    }
+}
+
 RuntimeStatsSnapshot RuntimeStats::Snapshot() const noexcept {
     RuntimeStatsSnapshot snapshot;
+    snapshot.persistence_succeeded_records = persistence_succeeded_.load();
+    snapshot.persistence_failed_records = persistence_failed_.load();
+    snapshot.persistence_unknown_records = persistence_unknown_.load();
     snapshot.accepted_records = accepted_records_.load();
     snapshot.rejected_records = rejected_records_.load();
     snapshot.timed_out_records = timed_out_records_.load();

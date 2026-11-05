@@ -1301,8 +1301,17 @@ Storage：
 Runtime：
 
 ```text
-→ failure shutdown
+→ Runtime-wide fatal failure
+→ automatic Control Plane failure shutdown
 ```
+
+This applies to both initial readiness while Starting and dynamic readiness
+while Running; it is independent of whether the Descriptor is startup-critical.
+Backend failure diagnostics remain the Primary Failure. A readiness deadline
+expiry, malformed ABI output, or unexpected readiness enum also fails closed.
+`UNSUPPORTED` remains Stream-local and retryable after Projection registration;
+it does not imply fatal Storage failure. Runtime lifecycle ownership and worker
+shutdown follow `runtime.md §11.6.2–§11.6.3`.
 
 ---
 
@@ -3774,6 +3783,12 @@ handoff boundary uncertain
 > 属于 Runtime failure contract，而不是 Storage Plugin completion responsibility。
 
 ---
+
+Failure cutoff prohibits new normal submit entry. An already executing submit
+retains its original ownership and reconciles its actual return before cleanup;
+Runtime never calls close/destroy concurrently with an unreconciled submit.
+Queued Accepted Records do not become Storage obligations. See
+`runtime.md §11.6.3` for the shared cleanup/continuation algorithm.
 
 ## 6.14 Outstanding HandoffAccepted Records on Failure
 

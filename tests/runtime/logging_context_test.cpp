@@ -147,19 +147,34 @@ TEST(LoggingContextTest, DetectsDirectReentrantLogging) {
 }
 
 TEST(LoggingContextTest, QuarantinesWorkerWhenShutdownTimesOut) {
+    auto& manager = QuarantineManager::Process();
+    manager.ReapCompleted();
+    const auto before = manager.RetainedWorkerCount();
     auto backend = std::make_shared<BlockingBackend>();
+    struct ReleaseGuard {
+        std::shared_ptr<BlockingBackend> backend;
+        ~ReleaseGuard() { backend->Release(); }
+    } release{backend};
     auto context = LoggingContext::Create(async_config(), backend);
     ASSERT_TRUE(context.has_value());
     context.value()->Log(RODAQ_LOG_INFO, "rodaq.test", "blocked");
-    while (!backend->Entered()) {
+    const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!backend->Entered() && std::chrono::steady_clock::now() < entered_deadline) {
         std::this_thread::yield();
     }
+    ASSERT_TRUE(backend->Entered());
     EXPECT_FALSE(
         context.value()->Shutdown(std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
     context.value()->QuarantineWorker("test logging worker");
-    EXPECT_GE(QuarantineManager::Process().RetainedWorkerCount(), 1U);
+    EXPECT_EQ(manager.RetainedWorkerCount(), before + 1U);
     backend->Release();
     context.value().reset();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (manager.RetainedWorkerCount() != before && std::chrono::steady_clock::now() < deadline) {
+        manager.ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(manager.RetainedWorkerCount(), before);
 }
 
 TEST(LoggingContextTest, ContainsThrowingBackendWithoutTerminating) {

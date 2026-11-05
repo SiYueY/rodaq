@@ -895,10 +895,35 @@ void ActiveRuntimeState::SetBindingProgressTimeout(std::chrono::nanoseconds time
     binding_progress_timeout_ = timeout;
 }
 
+std::shared_ptr<void> ActiveRuntimeState::TrackControlCall() {
+    auto state = shared_from_this();
+    auto guard = std::shared_ptr<void>(state.get(), [state](void*) {
+        state->active_control_calls_.fetch_sub(1, std::memory_order_acq_rel);
+    });
+    active_control_calls_.fetch_add(1, std::memory_order_acq_rel);
+    return guard;
+}
+
+void ActiveRuntimeState::ReapQuarantinedWorkers() noexcept {
+    bool descriptor_done = false;
+    {
+        std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
+        descriptor_done = !descriptor_worker_started_;
+    }
+    if (descriptor_done && descriptor_worker_.joinable()) {
+        descriptor_worker_.join();
+    }
+    if (pipeline_ != nullptr) {
+        pipeline_->ReapCompletedWorkers();
+    }
+}
+
 Result<void> ActiveRuntimeState::SuperviseBindingControl(
     std::function<Result<void>()> operation, const char* reason) {
+    auto guard = TrackControlCall();
     auto outcome = QuarantineManager::Process().Run(
-        std::move(operation), Clock::now() + binding_progress_timeout_, reason);
+        [guard, operation = std::move(operation)]() mutable { return operation(); },
+        Clock::now() + binding_progress_timeout_, reason);
     if (!outcome.has_value()) {
         return nonstd::make_unexpected(std::move(outcome.error()));
     }
@@ -939,8 +964,9 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescri
     auto result = std::make_shared<std::optional<DescriptorReadiness>>();
     auto result_error = std::make_shared<std::optional<Error>>();
     const auto descriptor_value = rodaq_stream_descriptor_handle{descriptor.Value()};
+    auto guard = TrackControlCall();
     auto outcome = QuarantineManager::Process().Run(
-        [control, table, descriptor_value, result, result_error, state]() -> Result<void> {
+        [control, table, descriptor_value, result, result_error, state, guard]() -> Result<void> {
             static_cast<void>(state);
             rodaq_descriptor_readiness_result readiness{};
             readiness.struct_size = sizeof(readiness);
@@ -968,7 +994,11 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::EnsureDescri
                 result->emplace(DescriptorReadiness::Ready);
             } else {
                 result_error->emplace(
-                    runtime_error(ErrorCode::StorageError, "Storage descriptor readiness failed"));
+                    readiness.state == RODAQ_DESCRIPTOR_FAILED
+                        ? from_abi_error(readiness.failure)
+                        : runtime_error(
+                              ErrorCode::InvalidArgument,
+                              "Storage returned invalid descriptor readiness"));
             }
             return {};
         },
@@ -1022,7 +1052,8 @@ Result<void> ActiveRuntimeState::InitializePipeline(
                         ErrorCode::InternalError, "Runtime inflight byte accounting underflowed"));
                 }
             },
-            [this]() noexcept {
+            [this](rodaq_storage_persistence_state persistence) noexcept {
+                stats_.RecordPersistence(persistence);
                 if (!stats_.RecordOperationCompleted()) {
                     RequestFailure(runtime_error(
                         ErrorCode::InternalError,
@@ -1156,16 +1187,19 @@ rodaq_interface ActiveRuntimeState::StorageServiceInterface() noexcept {
     };
 }
 
-void ActiveRuntimeState::MarkRunning() noexcept {
+bool ActiveRuntimeState::MarkRunning() noexcept {
+    std::lock_guard<std::mutex> control_lock(control_mutex_);
+    std::lock_guard<std::mutex> admission_lock(admission_mutex_);
+    if (state_.load() != RuntimeState::Starting) {
+        return false;
+    }
     if (pipeline_ != nullptr) {
         pipeline_->OpenAdmission();
     }
-    {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        gate_open_ = pipeline_ != nullptr;
-        state_.store(RuntimeState::Running);
-    }
+    gate_open_ = pipeline_ != nullptr;
+    state_.store(RuntimeState::Running);
     admission_condition_.notify_all();
+    return true;
 }
 
 void ActiveRuntimeState::MarkStopping() noexcept {
@@ -1215,7 +1249,7 @@ void ActiveRuntimeState::MarkFailed() noexcept {
         gate_open_ = false;
     }
     if (pipeline_ != nullptr) {
-        pipeline_->CloseAdmission();
+        pipeline_->BeginFailureCutoff();
     }
     admission_condition_.notify_all();
 }
@@ -1267,6 +1301,9 @@ void ActiveRuntimeState::RequestFailure(Error error) noexcept {
             }
         }
         MarkFailed();
+        if (failure_signal_ != nullptr) {
+            failure_signal_->Notify();
+        }
     } catch (...) {
     }
 }
@@ -2057,6 +2094,7 @@ Result<bool> ActiveRuntimeState::ReconcileDescriptor(StreamDescriptorHandle desc
                     entry->reconciliation_retry_requested = false;
                 }
             }
+            RequestFailure(readiness.error());
             return nonstd::make_unexpected(std::move(readiness.error()));
         }
         if (readiness.value() != DescriptorReadiness::Ready) {

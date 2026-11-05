@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <thread>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -176,7 +178,7 @@ enum class StorageActivationState {
 };
 
 template <typename Callable>
-BoundedCallOutcome run_bounded_call(
+BoundedCallOutcome supervise_call(
     Callable callable, std::chrono::steady_clock::time_point deadline) noexcept {
     auto managed = QuarantineManager::Process().Run(
         std::function<Result<void>()>(std::move(callable)), deadline,
@@ -201,13 +203,31 @@ BoundedCallOutcome run_bounded_call(
 }  // namespace
 
 class Runtime::Impl final {
+    // Ownership is logical: readers may acquire the mutex while Plugin I/O
+    // runs, but another lifecycle operation must wait for this owner.
+    class LifecycleOwner final {
+    public:
+        explicit LifecycleOwner(Impl& owner) : owner_(owner), lock_(owner.lifecycle_mutex_) {
+            owner_.lifecycle_condition_.wait(lock_, [&] { return !owner_.lifecycle_owned_; });
+            owner_.lifecycle_owned_ = true;
+        }
+        ~LifecycleOwner() {
+            owner_.lifecycle_owned_ = false;
+            owner_.lifecycle_condition_.notify_all();
+        }
+
+    private:
+        Impl& owner_;
+        std::unique_lock<std::mutex> lock_;
+    };
+
 public:
     explicit Impl(RuntimeConfig config)
     : options_(std::move(config)),
       acquisition_states_(options_.acquisitions.size(), AcquisitionActivationState::Empty) {}
 
     Result<void> Configure() {
-        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        LifecycleOwner owner(*this);
         if (state_ != RuntimeState::Constructed) {
             return nonstd::make_unexpected(runtime_error(
                 ErrorCode::InvalidState, "Runtime cannot be configured from its state"));
@@ -221,7 +241,7 @@ public:
     }
 
     Result<void> Start() {
-        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        LifecycleOwner owner(*this);
         if (state_ != RuntimeState::Configured && state_ != RuntimeState::Stopped) {
             return nonstd::make_unexpected(
                 runtime_error(ErrorCode::InvalidState, "Runtime cannot start from its state"));
@@ -244,6 +264,8 @@ public:
             acquisition_states_.begin(), acquisition_states_.end(),
             AcquisitionActivationState::Empty);
         storage_state_ = StorageActivationState::Empty;
+        storage_flushed_ = false;
+        aborting_ = false;
         ++activation_generation_;
         state_ = RuntimeState::Starting;
         auto created = ActiveRuntimeState::Create(options_, activation_generation_);
@@ -253,6 +275,16 @@ public:
             return nonstd::make_unexpected(std::move(created.error()));
         }
         active_ = std::move(created.value());
+        active_->SetFailureSignal(failure_signal_);
+        if (!failure_worker_.joinable()) {
+            try {
+                failure_worker_ = std::thread([this] { failure_loop(); });
+            } catch (const std::exception& error) {
+                active_->RequestFailure(runtime_error(ErrorCode::Unavailable, error.what()));
+                abort_start();
+                return nonstd::make_unexpected(runtime_error(ErrorCode::Unavailable, error.what()));
+            }
+        }
 
         auto descriptor_worker = active_->StartDescriptorReconciliation();
         if (!descriptor_worker.has_value()) {
@@ -270,13 +302,27 @@ public:
             state_ = RuntimeState::Failed;
             return started;
         }
-        active_->MarkRunning();
+        if (active_->HasPrimaryFailure()) {
+            auto error = active_->PrimaryFailure();
+            abort_start();
+            return nonstd::make_unexpected(std::move(error.value()));
+        }
+        if (!active_->MarkRunning()) {
+            auto error = active_->PrimaryFailure();
+            abort_start();
+            return nonstd::make_unexpected(std::move(error.value()));
+        }
         state_ = RuntimeState::Running;
         return {};
     }
 
     Result<void> Stop() {
-        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        LifecycleOwner owner(*this);
+        return stop_internal();
+    }
+
+private:
+    Result<void> stop_internal() {
         if (state_ == RuntimeState::Stopped) {
             return {};
         }
@@ -296,8 +342,13 @@ public:
 
         state_ = RuntimeState::Stopping;
         active_->MarkStopping();
-        if (!active_->CloseAndJoinDescriptorReconciliation(
-                Clock::now() + options_.stop_progress_timeout)) {
+        if (active_->HasPrimaryFailure() && active_->pipeline() != nullptr) {
+            active_->pipeline()->BeginFailureCutoff();
+        }
+        if (!outside_lifecycle([&] {
+                return active_->CloseAndJoinDescriptorReconciliation(
+                    Clock::now() + options_.stop_progress_timeout);
+            })) {
             return quarantine_failure();
         }
         if (active_->RequiresQuarantine()) {
@@ -311,6 +362,7 @@ public:
             }
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto outcome = run_bounded_call(
+                "quiesce",
                 [state, index]() -> Result<void> {
                     auto control = state->acquisition_instance(index)->required_control_interface();
                     if (!control.has_value()) {
@@ -339,12 +391,17 @@ public:
             acquisition_states_[index] = AcquisitionActivationState::Quiesced;
         }
 
-        if (!active_->WaitForSubmissions(Clock::now() + options_.stop_progress_timeout)) {
+        if (!outside_lifecycle([&] {
+                return active_->WaitForSubmissions(Clock::now() + options_.stop_progress_timeout);
+            })) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime submission barrier timed out"));
             return quarantine_failure();
         }
-        if (!active_->WaitForAdmissionDrain(Clock::now() + options_.stop_progress_timeout)) {
+        if (!outside_lifecycle([&] {
+                return active_->WaitForAdmissionDrain(
+                    Clock::now() + options_.stop_progress_timeout);
+            })) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime admission barrier timed out"));
             return quarantine_failure();
@@ -353,30 +410,35 @@ public:
         StoragePipeline* pipeline = active_->pipeline();
         if (pipeline != nullptr) {
             pipeline->CloseDispatch();
-            if (!pipeline->WaitDispatchIdle(Clock::now() + options_.stop_progress_timeout)) {
+            if (!outside_lifecycle([&] {
+                    return pipeline->WaitDispatchIdle(
+                        Clock::now() + options_.stop_progress_timeout);
+                })) {
                 active_->RequestFailure(
                     runtime_error(ErrorCode::Timeout, "Runtime dispatch barrier timed out"));
                 return quarantine_failure();
             }
-            pipeline->JoinDispatch();
+            outside_lifecycle([&] { return pipeline->JoinDispatch(); });
         }
 
-        if (storage_open_ && active_->storage_instance().has_value()) {
+        if (storage_open_ && !storage_flushed_ && active_->storage_instance().has_value()) {
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto flush = run_bounded_call(
-                [state]() { return state->storage_instance()->flush(); },
+                "flush", [state]() { return state->storage_instance()->flush(); },
                 Clock::now() + effective_storage_flush_timeout_);
             if (flush.status == BoundedCallOutcome::Status::TimedOut) {
                 active_->RequestFailure(
                     runtime_error(ErrorCode::Timeout, "Storage flush timed out"));
                 return quarantine_failure();
             }
+            storage_flushed_ = true;
             if (flush.status == BoundedCallOutcome::Status::Failed) {
                 active_->RequestFailure(std::move(flush.error.value()));
             }
         }
-        if (pipeline != nullptr &&
-            !pipeline->WaitOperationsIdle(Clock::now() + options_.stop_progress_timeout)) {
+        if (pipeline != nullptr && !outside_lifecycle([&] {
+                return pipeline->WaitOperationsIdle(Clock::now() + options_.stop_progress_timeout);
+            })) {
             active_->RequestFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime Storage operation barrier timed out"));
         }
@@ -387,6 +449,7 @@ public:
                                                          : RODAQ_STORAGE_CLOSE_NORMAL;
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto close = run_bounded_call(
+                "close",
                 [state, disposition]() {
                     rodaq_storage_close_request request{};
                     request.struct_size = sizeof(request);
@@ -408,12 +471,14 @@ public:
             }
         }
         if (pipeline != nullptr) {
+            pipeline->ResolveAfterClose();
             pipeline->CloseCallbacks();
-            pipeline->JoinCompletion();
+            outside_lifecycle([&] { return pipeline->JoinCompletion(); });
             pipeline->CloseRelease();
             const auto release_deadline = Clock::now() + options_.stop_progress_timeout;
-            if (!pipeline->WaitReleaseIdle(release_deadline) ||
-                !pipeline->WaitOperationsIdle(release_deadline)) {
+            if (!outside_lifecycle([&] { return pipeline->WaitReleaseIdle(release_deadline); }) ||
+                !outside_lifecycle(
+                    [&] { return pipeline->WaitOperationsIdle(release_deadline); })) {
                 if (!pipeline->RetainBlockedReleaseWorkers()) {
                     active_->RecordSecondaryFailure(runtime_error(
                         ErrorCode::ResourceExhausted,
@@ -423,7 +488,7 @@ public:
                     ErrorCode::Timeout, "Runtime callback/release quiescence barrier timed out"));
                 return quarantine_failure();
             }
-            pipeline->JoinRelease();
+            outside_lifecycle([&] { return pipeline->JoinRelease(); });
         }
 
         const bool unresolved = pipeline != nullptr && pipeline->HasUnresolvedOperations();
@@ -438,7 +503,7 @@ public:
             }
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto stopped = run_bounded_call(
-                [state, index]() { return state->acquisition_instance(index)->stop(); },
+                "stop", [state, index]() { return state->acquisition_instance(index)->stop(); },
                 Clock::now() + options_.stop_progress_timeout);
             if (stopped.status == BoundedCallOutcome::Status::TimedOut) {
                 active_->RequestFailure(
@@ -453,11 +518,13 @@ public:
         }
 
         for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-            if (!active_->acquisition_instance(index).has_value()) {
+            if (!active_->acquisition_instance(index).has_value() ||
+                !active_->acquisition_instance(index)->valid()) {
                 continue;
             }
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto destroyed = run_bounded_call(
+                "destroy-acquisition",
                 [state, index]() {
                     state->acquisition_instance(index)->destroy();
                     return Result<void>();
@@ -473,9 +540,10 @@ public:
                 return quarantine_failure();
             }
         }
-        if (active_->storage_instance().has_value()) {
+        if (active_->storage_instance().has_value() && active_->storage_instance()->valid()) {
             std::shared_ptr<ActiveRuntimeState> state = active_;
             auto destroyed = run_bounded_call(
+                "destroy-storage",
                 [state]() {
                     state->storage_instance()->destroy();
                     return Result<void>();
@@ -491,7 +559,9 @@ public:
                 return quarantine_failure();
             }
         }
-        if (!active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout)) {
+        if (!outside_lifecycle([&] {
+                return active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout);
+            })) {
             active_->QuarantineLogging("Runtime logging shutdown timed out");
             active_->RecordSecondaryFailure(
                 runtime_error(ErrorCode::Timeout, "Runtime logging shutdown timed out"));
@@ -531,6 +601,7 @@ public:
                       : Result<void>();
     }
 
+public:
     RuntimeState State() const noexcept {
         std::lock_guard<std::mutex> lock(lifecycle_mutex_);
         if (active_ != nullptr && active_->state() == RuntimeState::Failed) {
@@ -629,24 +700,21 @@ public:
     }
 
     ~Impl() {
+        // Close the lifetime-safe mailbox before joining the sole supervisor.
+        failure_signal_->Close();
+        if (failure_worker_.joinable()) {
+            failure_worker_.join();
+        }
         QuarantineManager::Process().ReapCompleted();
         if (active_ != nullptr) {
             static_cast<void>(Stop());
         }
+        LifecycleOwner owner(*this);
         if (quarantined_ != nullptr) {
-            if (!activation_slot_.has_value()) {
-                std::abort();
-            }
-            try {
-                if (!QuarantineManager::Process().RetainActivation(
-                        *activation_slot_, quarantined_, "Runtime activation quarantine")) {
-                    std::abort();
-                }
-            } catch (...) {
-                std::abort();
+            if (activation_slot_.has_value()) {
+                transfer_quarantine();
             }
             quarantined_.reset();
-            activation_slot_.reset();
         } else {
             release_activation_slot();
         }
@@ -655,9 +723,83 @@ public:
 
 private:
     template <typename Callable>
+    auto outside_lifecycle(Callable callable) -> decltype(callable()) {
+        struct Unlock final {
+            std::mutex& mutex;
+            explicit Unlock(std::mutex& value) : mutex(value) { mutex.unlock(); }
+            ~Unlock() { mutex.lock(); }
+        } unlock(lifecycle_mutex_);
+        return callable();
+    }
+
+    struct PendingCall final {
+        std::atomic<bool> done{false};
+        std::optional<Result<void>> result;
+        std::string site;
+    };
+
+    template <typename Callable>
+    BoundedCallOutcome run_bounded_call(
+        const char* site, Callable callable, Clock::time_point deadline) noexcept {
+        if (pending_call_ != nullptr) {
+            if (pending_call_->site != site ||
+                !pending_call_->done.load(std::memory_order_acquire)) {
+                return {BoundedCallOutcome::Status::TimedOut, std::nullopt};
+            }
+            auto pending = std::move(pending_call_);
+            if (!pending->result->has_value()) {
+                recovery_abandoned_ = true;
+                return {BoundedCallOutcome::Status::Failed, pending->result->error()};
+            }
+            return {BoundedCallOutcome::Status::Completed, std::nullopt};
+        }
+        auto pending = std::make_shared<PendingCall>();
+        pending->site = site;
+        auto outcome = outside_lifecycle([&] {
+            return supervise_call(
+                [pending, callable = std::move(callable)]() mutable {
+                    try {
+                        pending->result.emplace(callable());
+                    } catch (...) {
+                        pending->result.emplace(nonstd::make_unexpected(
+                            runtime_error(ErrorCode::InternalError, "Plugin control call threw")));
+                    }
+                    pending->done.store(true, std::memory_order_release);
+                    return *pending->result;
+                },
+                deadline);
+        });
+        if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
+            pending_call_ = std::move(pending);
+        } else if (outcome.status == BoundedCallOutcome::Status::Failed) {
+            recovery_abandoned_ = true;
+        }
+        return outcome;
+    }
+
+    void failure_loop() noexcept {
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(failure_signal_->mutex);
+                failure_signal_->condition.wait(
+                    lock, [this] { return failure_signal_->requested || failure_signal_->closed; });
+                if (failure_signal_->closed) {
+                    return;
+                }
+                failure_signal_->requested = false;
+            }
+            LifecycleOwner owner(*this);
+            // Start's abort and an already owning Stop finish their own cleanup.
+            if (active_ != nullptr && active_->HasPrimaryFailure()) {
+                static_cast<void>(stop_internal());
+            }
+        }
+    }
+
+    template <typename Callable>
     Result<void> supervise_start_call(Callable callable) {
-        auto outcome =
-            run_bounded_call(std::move(callable), Clock::now() + options_.stop_progress_timeout);
+        auto outcome = run_bounded_call(
+            "activation-call", std::move(callable), Clock::now() + options_.stop_progress_timeout);
         if (outcome.status == BoundedCallOutcome::Status::TimedOut) {
             start_quarantine_required_ = true;
             return nonstd::make_unexpected(
@@ -674,6 +816,7 @@ private:
         auto value = std::make_shared<std::optional<T>>();
         auto error = std::make_shared<std::optional<Error>>();
         auto outcome = run_bounded_call(
+            "activation-value",
             [callable = std::move(callable), value, error]() mutable -> Result<void> {
                 auto result = callable();
                 if (result.has_value()) {
@@ -885,8 +1028,10 @@ private:
             }
             acquisition_states_[index] = AcquisitionActivationState::Started;
         }
-        auto descriptor_wait = active_->WaitForDescriptorReconciliation(
-            Clock::now() + options_.stop_progress_timeout + options_.stop_progress_timeout);
+        auto descriptor_wait = outside_lifecycle([&] {
+            return active_->WaitForDescriptorReconciliation(
+                Clock::now() + options_.stop_progress_timeout + options_.stop_progress_timeout);
+        });
         if (!descriptor_wait.has_value()) {
             return descriptor_wait;
         }
@@ -894,21 +1039,19 @@ private:
     }
 
     void abort_start() noexcept {
+        aborting_ = true;
         if (active_ == nullptr) {
             return;
         }
         active_->MarkStopping();
-        const bool descriptor_worker_closed = active_->CloseAndJoinDescriptorReconciliation(
-            Clock::now() + options_.stop_progress_timeout);
+        const bool descriptor_worker_closed = outside_lifecycle([&] {
+            return active_->CloseAndJoinDescriptorReconciliation(
+                Clock::now() + options_.stop_progress_timeout);
+        });
         if (start_quarantine_required_ || active_->RequiresQuarantine() ||
             !descriptor_worker_closed) {
             capture_activation_outcome();
             quarantined_ = std::move(active_);
-            std::fill(
-                acquisition_states_.begin(), acquisition_states_.end(),
-                AcquisitionActivationState::Quarantined);
-            storage_state_ = StorageActivationState::Quarantined;
-            storage_open_ = false;
             start_quarantine_required_ = false;
             state_ = RuntimeState::Failed;
             return;
@@ -927,39 +1070,46 @@ private:
             const AcquisitionActivationState activation_state = acquisition_states_[index];
             if (!active_->acquisition_instance(index).has_value() ||
                 (activation_state != AcquisitionActivationState::StartAttempted &&
-                 activation_state != AcquisitionActivationState::Started)) {
+                 activation_state != AcquisitionActivationState::Started &&
+                 activation_state != AcquisitionActivationState::Quiesced)) {
                 continue;
             }
 
-            auto quiesced = run_bounded_call(
-                [state, index]() -> Result<void> {
-                    auto control = state->acquisition_instance(index)->required_control_interface();
-                    if (!control.has_value()) {
-                        return nonstd::make_unexpected(std::move(control.error()));
-                    }
-                    const auto* table =
-                        static_cast<const rodaq_acquisition_control_v1*>(control->vtable);
-                    rodaq_error error{};
-                    const rodaq_status status = table->quiesce_plugin(control->context, &error);
-                    return status == RODAQ_STATUS_OK
-                               ? Result<void>()
-                               : nonstd::make_unexpected(abi_error(
-                                     status, error, "Acquisition quiescence failed during abort"));
-                },
-                Clock::now() + options_.stop_progress_timeout);
-            if (quiesced.status != BoundedCallOutcome::Status::Completed) {
-                active_->RequestFailure(
-                    quiesced.status == BoundedCallOutcome::Status::TimedOut
-                        ? runtime_error(
-                              ErrorCode::Timeout,
-                              "Acquisition quiescence timed out during activation abort")
-                        : std::move(quiesced.error.value()));
-                unsafe_to_release = true;
-                break;
+            if (activation_state != AcquisitionActivationState::Quiesced) {
+                auto quiesced = run_bounded_call(
+                    "abort-quiesce",
+                    [state, index]() -> Result<void> {
+                        auto control =
+                            state->acquisition_instance(index)->required_control_interface();
+                        if (!control.has_value()) {
+                            return nonstd::make_unexpected(std::move(control.error()));
+                        }
+                        const auto* table =
+                            static_cast<const rodaq_acquisition_control_v1*>(control->vtable);
+                        rodaq_error error{};
+                        const rodaq_status status = table->quiesce_plugin(control->context, &error);
+                        return status == RODAQ_STATUS_OK
+                                   ? Result<void>()
+                                   : nonstd::make_unexpected(abi_error(
+                                         status, error,
+                                         "Acquisition quiescence failed during abort"));
+                    },
+                    Clock::now() + options_.stop_progress_timeout);
+                if (quiesced.status != BoundedCallOutcome::Status::Completed) {
+                    active_->RequestFailure(
+                        quiesced.status == BoundedCallOutcome::Status::TimedOut
+                            ? runtime_error(
+                                  ErrorCode::Timeout,
+                                  "Acquisition quiescence timed out during activation abort")
+                            : std::move(quiesced.error.value()));
+                    unsafe_to_release = true;
+                    break;
+                }
+                acquisition_states_[index] = AcquisitionActivationState::Quiesced;
             }
-            acquisition_states_[index] = AcquisitionActivationState::Quiesced;
 
             auto stopped = run_bounded_call(
+                "abort-stop",
                 [state, index]() { return state->acquisition_instance(index)->stop(); },
                 Clock::now() + options_.stop_progress_timeout);
             if (stopped.status != BoundedCallOutcome::Status::Completed) {
@@ -981,6 +1131,7 @@ private:
             close_request.struct_size = sizeof(close_request);
             close_request.disposition = RODAQ_STORAGE_CLOSE_ACTIVATION_ABORT;
             auto closed = run_bounded_call(
+                "abort-close",
                 [state, close_request]() {
                     return state->storage_instance()->close(close_request);
                 },
@@ -999,10 +1150,12 @@ private:
         }
         if (!unsafe_to_release) {
             for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
-                if (!active_->acquisition_instance(index).has_value()) {
+                if (!active_->acquisition_instance(index).has_value() ||
+                    !active_->acquisition_instance(index)->valid()) {
                     continue;
                 }
                 auto destroyed = run_bounded_call(
+                    "abort-destroy-acquisition",
                     [state, index]() {
                         state->acquisition_instance(index)->destroy();
                         return Result<void>();
@@ -1020,8 +1173,10 @@ private:
                 }
             }
         }
-        if (!unsafe_to_release && active_->storage_instance().has_value()) {
+        if (!unsafe_to_release && active_->storage_instance().has_value() &&
+            active_->storage_instance()->valid()) {
             auto destroyed = run_bounded_call(
+                "abort-destroy-storage",
                 [state]() {
                     state->storage_instance()->destroy();
                     return Result<void>();
@@ -1037,7 +1192,9 @@ private:
                 unsafe_to_release = true;
             }
         }
-        if (!active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout)) {
+        if (!outside_lifecycle([&] {
+                return active_->ShutdownLogging(Clock::now() + options_.logging.shutdown_timeout);
+            })) {
             active_->QuarantineLogging("Runtime logging shutdown timed out during abort");
             active_->RecordSecondaryFailure(runtime_error(
                 ErrorCode::Timeout, "Runtime logging shutdown timed out during activation abort"));
@@ -1056,9 +1213,72 @@ private:
                 AcquisitionActivationState::Empty);
             storage_state_ = StorageActivationState::Empty;
         }
-        storage_open_ = false;
+        if (!unsafe_to_release) {
+            storage_open_ = false;
+        }
         start_quarantine_required_ = false;
         state_ = RuntimeState::Failed;
+    }
+
+    bool recover_activation() {
+        LifecycleOwner owner(*this);
+        active_->ReapQuarantinedWorkers();
+        if (recovery_abandoned_) {
+            return false;
+        }
+        if (pending_call_ != nullptr && !pending_call_->done.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (active_->RequiresQuarantine()) {
+            return false;
+        }
+        if (pending_call_ != nullptr && pending_call_->site.find("destroy") != std::string::npos &&
+            pending_call_->result->has_value()) {
+            pending_call_.reset();
+        }
+        if (aborting_) {
+            // A timed-out activation call has finished; its original output was
+            // never published, so abort now owns only the published instances.
+            if (pending_call_ != nullptr && (pending_call_->site == "activation-call" ||
+                                             pending_call_->site == "activation-value")) {
+                pending_call_.reset();
+            }
+            start_quarantine_required_ = false;
+            abort_start();
+        } else {
+            static_cast<void>(stop_internal());
+        }
+        if (quarantined_ != nullptr) {
+            active_ = std::move(quarantined_);
+        }
+        return active_ == nullptr;
+    }
+
+    void transfer_quarantine() {
+        auto recovery = std::make_shared<Impl>(options_);
+        recovery->active_ = quarantined_;
+        recovery->state_ = RuntimeState::Failed;
+        recovery->recovering_ = true;
+        recovery->activation_generation_ = activation_generation_;
+        recovery->activation_slot_ = activation_slot_;
+        recovery->acquisition_states_ = acquisition_states_;
+        recovery->storage_state_ = storage_state_;
+        recovery->storage_open_ = storage_open_;
+        recovery->storage_flushed_ = storage_flushed_;
+        recovery->aborting_ = aborting_;
+        recovery->recovery_abandoned_ = recovery_abandoned_;
+        recovery->pending_call_ = std::move(pending_call_);
+        recovery->effective_storage_flush_timeout_ = effective_storage_flush_timeout_;
+        recovery->effective_storage_close_timeout_ = effective_storage_close_timeout_;
+        std::weak_ptr<Impl> weak = recovery;
+        if (!QuarantineManager::Process().RetainActivation(
+                *activation_slot_, recovery, "Runtime activation quarantine", [weak] {
+                    auto owner = weak.lock();
+                    return owner != nullptr && owner->recover_activation();
+                })) {
+            std::abort();
+        }
+        activation_slot_.reset();
     }
 
     Result<void> quarantine_failure() {
@@ -1066,6 +1286,9 @@ private:
             quarantined_ = std::move(active_);
         }
         state_ = RuntimeState::Failed;
+        if (activation_slot_.has_value() && !recovering_) {
+            transfer_quarantine();
+        }
         return nonstd::make_unexpected(
             runtime_error(ErrorCode::Unavailable, "Runtime stop requires quarantine"));
     }
@@ -1103,6 +1326,10 @@ private:
 
     RuntimeConfig options_;
     mutable std::mutex lifecycle_mutex_;
+    std::condition_variable lifecycle_condition_;
+    bool lifecycle_owned_ = false;
+    std::shared_ptr<FailureSignal> failure_signal_ = std::make_shared<FailureSignal>();
+    std::thread failure_worker_;
     RuntimeState state_ = RuntimeState::Constructed;
     std::uint64_t activation_generation_ = 0;
     std::shared_ptr<ActiveRuntimeState> active_;
@@ -1112,6 +1339,11 @@ private:
     StorageActivationState storage_state_ = StorageActivationState::Empty;
     bool storage_open_ = false;
     bool start_quarantine_required_ = false;
+    bool storage_flushed_ = false;
+    bool aborting_ = false;
+    bool recovery_abandoned_ = false;
+    bool recovering_ = false;
+    std::shared_ptr<PendingCall> pending_call_;
     std::optional<RuntimeStatsSnapshot> last_stats_;
     std::optional<PayloadPoolStats> last_payload_stats_;
     std::optional<Error> last_primary_failure_;

@@ -87,7 +87,7 @@ class StoragePipeline final {
 public:
     using FailureSink = std::function<void(Error)>;
     using PayloadReleaseSink = std::function<void(std::size_t)>;
-    using OperationCompleteSink = std::function<void()>;
+    using OperationCompleteSink = std::function<void(rodaq_storage_persistence_state)>;
     using LatencySink = std::function<void(StorageLatencyKind, std::int64_t)>;
     using SubmissionBuilder = std::function<Result<rodaq_storage_submission>(
         const RuntimeRecord&, rodaq_storage_operation,
@@ -120,12 +120,15 @@ public:
     void Publish(PipelineReservation&& reservation, RuntimeRecord&& record) noexcept;
 
     void CloseDispatch() noexcept;
+    void BeginFailureCutoff() noexcept;
+    void ResolveAfterClose() noexcept;
     void CloseCallbacks() noexcept;
     void CloseRelease() noexcept;
     void NotifyAdmissionWaiters() noexcept;
     void JoinDispatch() noexcept;
     void JoinCompletion() noexcept;
     void JoinRelease() noexcept;
+    void ReapCompletedWorkers() noexcept;
     bool RetainBlockedReleaseWorkers() noexcept;
     bool WaitDispatchIdle(std::chrono::steady_clock::time_point deadline);
     bool WaitOperationsIdle(std::chrono::steady_clock::time_point deadline);
@@ -193,6 +196,7 @@ private:
         bool payload_released = false;
         std::size_t released_bytes = 0;
         bool operation_completed = false;
+        rodaq_storage_persistence_state persistence = RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
     };
 
     static constexpr std::size_t kInvalidIndex = std::numeric_limits<std::size_t>::max();
@@ -200,6 +204,7 @@ private:
 
     bool TryAcquireLocked(
         std::size_t payload_bytes, std::size_t& index, rodaq_storage_operation& operation);
+    void ClassifyNeverHandedOffLocked(std::size_t index) noexcept;
     void ReturnIndexLocked(std::size_t index) noexcept;
     bool FindOperationLocked(rodaq_storage_operation operation, std::size_t& index) noexcept;
     bool ScheduleCompletionLocked(std::size_t index) noexcept;
@@ -265,11 +270,15 @@ private:
 
     bool admission_open_ = false;
     bool dispatch_closed_ = false;
+    std::atomic<bool> failure_cutoff_{false};
     bool callbacks_closed_ = false;
     bool release_closed_ = false;
     std::atomic<bool> stopping_{false};
     bool started_ = false;
     std::atomic<bool> failure_reported_{false};
+    std::atomic<bool> dispatch_done_{false};
+    std::atomic<bool> completion_done_{false};
+    std::atomic<bool> watchdog_done_{false};
     std::thread dispatch_thread_;
     std::thread completion_thread_;
     std::vector<std::thread> release_threads_;

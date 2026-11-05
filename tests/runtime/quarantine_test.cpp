@@ -48,6 +48,82 @@ TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
     EXPECT_EQ(manager.RetainedCallCount(), before);
 }
 
+TEST(QuarantineManagerTest, ConcurrentReapersJoinOnceAndReleaseStateOutsideManagerLock) {
+    auto& manager = QuarantineManager::Process();
+    manager.ReapCompleted();
+    const auto before = manager.RetainedWorkerCount();
+    auto released = std::make_shared<std::atomic<bool>>(false);
+    auto destroyed = std::make_shared<std::atomic<int>>(0);
+    struct WorkerState {
+        std::shared_ptr<std::atomic<int>> destroyed;
+        ~WorkerState() {
+            // Capture destruction may call Runtime infrastructure after Join.
+            static_cast<void>(QuarantineManager::Process().RetainedCallCount());
+            destroyed->fetch_add(1);
+        }
+    };
+    constexpr int kWorkers = 16;
+    for (int index = 0; index < kWorkers; ++index) {
+        auto state = std::make_shared<WorkerState>();
+        state->destroyed = destroyed;
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread worker([released, done, state, kWorkers] {
+            while (!released->load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            done->store(true, std::memory_order_release);
+            // A publication of completion precedes thread exit. Join must still
+            // protect this final use of the retained capture.
+            EXPECT_LT(state->destroyed->load(), kWorkers);
+        });
+        ASSERT_TRUE(manager.RetainWorker(std::move(worker), state, done, "reaper race"));
+    }
+    EXPECT_EQ(manager.RetainedWorkerCount(), before + kWorkers);
+    auto reap = [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (manager.RetainedWorkerCount() != before &&
+               std::chrono::steady_clock::now() < deadline) {
+            manager.ReapCompleted();
+            std::this_thread::yield();
+        }
+    };
+    std::thread first(reap);
+    std::thread second(reap);
+    released->store(true, std::memory_order_release);
+    first.join();
+    second.join();
+    manager.ReapCompleted();
+    manager.ReapCompleted();
+    EXPECT_EQ(manager.RetainedWorkerCount(), before);
+    EXPECT_EQ(destroyed->load(), kWorkers);
+}
+
+TEST(QuarantineManagerTest, CompletedWorkerMayReenterReapingWithoutJoiningItself) {
+    auto& manager = QuarantineManager::Process();
+    const auto before = manager.RetainedWorkerCount();
+    auto entered = std::make_shared<std::atomic<bool>>(false);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto returned = std::make_shared<std::atomic<bool>>(false);
+    auto state = std::make_shared<int>(7);
+    std::thread worker([&manager, entered, done, returned] {
+        while (!entered->load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        done->store(true, std::memory_order_release);
+        manager.ReapCompleted();
+        returned->store(true, std::memory_order_release);
+    });
+    ASSERT_TRUE(manager.RetainWorker(std::move(worker), state, done, "self-reap test"));
+    entered->store(true, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (manager.RetainedWorkerCount() != before && std::chrono::steady_clock::now() < deadline) {
+        manager.ReapCompleted();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(manager.RetainedWorkerCount(), before);
+    EXPECT_TRUE(returned->load(std::memory_order_acquire));
+}
+
 TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
     auto& manager = QuarantineManager::Process();
     EXPECT_EQ(manager.RetainedActivationCount(), 0U);

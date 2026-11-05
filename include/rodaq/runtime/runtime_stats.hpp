@@ -37,6 +37,9 @@ struct RuntimeStatsSnapshot {
     std::uint64_t inflight_bytes = 0;
     std::uint64_t high_water_records = 0;
     std::uint64_t high_water_bytes = 0;
+    std::uint64_t persistence_succeeded_records = 0;
+    std::uint64_t persistence_failed_records = 0;
+    std::uint64_t persistence_unknown_records = 0;
     RuntimeLatencySnapshot latencies;
     LoggingStats logging;
 };
@@ -64,9 +67,14 @@ public:
     bool RecordPayloadReleased(std::uint64_t bytes) noexcept;
     bool RecordOperationCompleted() noexcept;
 
+    void RecordPersistence(std::uint32_t state) noexcept;
+
     RuntimeStatsSnapshot Snapshot() const noexcept;
 
 private:
+    std::atomic<std::uint64_t> persistence_succeeded_{0};
+    std::atomic<std::uint64_t> persistence_failed_{0};
+    std::atomic<std::uint64_t> persistence_unknown_{0};
     std::atomic<std::uint64_t> accepted_records_{0};
     std::atomic<std::uint64_t> rejected_records_{0};
     std::atomic<std::uint64_t> timed_out_records_{0};

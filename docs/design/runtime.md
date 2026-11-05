@@ -4612,10 +4612,9 @@ Runtime 必须：
 
 ```text
 receive fatal failure notification
-through Storage Completion Domain
+from any worker / callback
         ↓
-forward lifecycle mutation
-to Control Plane
+latch failure and notify the Control Plane supervisor
         ↓
 establish failure admission cutoff
 close Global Admission Gate
@@ -4725,6 +4724,74 @@ retain / quarantine unsafe-to-release state
 - `HandoffAccepted`：由 Storage Contract 收敛 outcome；
 - handoff boundary uncertain：PersistenceUnknown；
 - 任何分类都不得撤销 Admission Accepted history。
+
+---
+
+### 11.6.2 Automatic convergence and unique ownership
+
+`RequestFailure()` records the first error as Primary Failure, retains subsequent
+errors in bounded Secondary Failure History, closes Admission and failure-cuts
+Dispatch, wakes waiters, and signals a coalesced one-bit mailbox. It performs no
+Plugin I/O or worker Join. A Failed state alone is not completed cleanup.
+
+Each Runtime owns at most one joinable supervisor. Activation callbacks retain
+only the shared mailbox, which owns no activation or Plugin and contains no
+Runtime pointer. Runtime destruction closes notification entry before joining
+its supervisor; late quarantined callbacks safely discard notification.
+
+Start, public Stop and automatic failure convergence compete for one logical
+lifecycle owner. The lifecycle mutex protects ownership and observable state,
+but is released across Plugin I/O, worker barriers and Join. The owner remains
+exclusive while that mutex is released. The supervisor and public Stop share
+the same cleanup implementation and never recursively invoke public Stop.
+
+- Starting failures belong to Start's activation-abort owner, with
+  `ACTIVATION_ABORT` close disposition; no second cleanup starts.
+- Running fatal failures automatically acquire cleanup ownership without an
+  application Stop, perform instance-wide Acquisition quiescence, Submission
+  and Admission drain, Storage reconciliation/close, safe Payload release,
+  destructive Acquisition stop, explicit Plugin destroy and Logging shutdown.
+- A fatal failure racing normal Stop latches Failure on the existing owner;
+  another Stop or supervisor waits for that owner. Cleanup runs exactly once.
+- Final disposition is Failed even after successful cleanup. Repeated Stop
+  observes the completed result and does not repeat lifecycle calls.
+
+### 11.6.3 Dispatch cutoff, ownership and eventual quarantine recovery
+
+Normal Stop closes Dispatch entry and drains every queued Accepted Record.
+Fatal failure atomically closes future handoff entry and classifies queued
+Records as PersistenceFailed, including a healthy Gate-passed attempt published
+after cutoff. Classification does not change AcceptanceSequence or Admission
+history. Their Payload release uses the existing pre-reserved release lane.
+
+A call that already entered the serialized handoff boundary keeps its original
+thread, Payload and activation ownership until submit returns. Watchdog timeout
+proves neither failed handoff nor Payload consumption. No subsequent queued
+Record can enter submit when that call eventually returns. A successful return
+establishes HandoffAccepted and its independent completion axes; an unreturned
+handoff has an uncertain boundary and is conservatively Unknown, with Payload
+and native resources retained.
+
+A successful Storage close establishes the no-future-access/callback barrier.
+Runtime processes previously staged completion events and terminalizes any
+otherwise unconfirmed pending Persistence as Unknown. Close success never
+implies persistence success. No Payload is released on an unreconciled submit.
+
+Unprovable progress transfers the activation and cleanup continuation to the
+existing 32-root process-wide budget. Completed control calls are replayed from
+their recorded result, never reissued. Completed destructive calls are skipped.
+A single process maintenance worker claims roots under the manager mutex, then
+resumes the same cleanup implementation outside it. Once all safety barriers
+are proven, workers are joined and root capacity is released. An actual failed
+quiescence or permanently blocked call remains quarantined with its DSO leases;
+recovery never guesses safety and never restarts recording.
+
+Completed workers are claimed once, Joined outside the manager mutex, and only
+then release their retained state and capacity. Concurrent reapers cannot Join
+the same thread. Completion publication is not equivalent to thread exit.
+The maintenance worker itself is Joined at process teardown, with a bounded
+final grace period for newly completed retained calls. Thread leak and race
+checks remain enabled during qualification.
 
 ---
 
@@ -7297,7 +7364,7 @@ is rejected as a protocol violation.
 | `StoragePipeline::mutex_` | Slot/queue/callback staging state | Executing Storage submit, Payload release or backend callbacks |
 | PayloadPool mutex | Per-class block/free-list state | Copying a large Payload |
 | ResourceBudget mutex | Counter reservation/rollback | Plugin/backend calls |
-| quarantine mutex | Retained calls/workers/activation roots | Joining a worker unless completion was already observed |
+| quarantine mutex | Retained calls/workers/activation roots | Any Join, Plugin I/O, or retained-state destruction |
 
 ### Configuration trust boundary
 

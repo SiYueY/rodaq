@@ -1,6 +1,8 @@
 #ifndef RODAQ_RUNTIME_ACTIVE_RUNTIME_STATE_HPP_
 #define RODAQ_RUNTIME_ACTIVE_RUNTIME_STATE_HPP_
 
+#include "runtime/failure_signal.hpp"
+
 #include "plugin/service_registry.hpp"
 #include "plugin/acquisition_plugin_instance.hpp"
 #include "plugin/storage_plugin_instance.hpp"
@@ -175,21 +177,28 @@ public:
         plugin::ServiceRegistry& registry, std::size_t plugin_index);
     Result<void> RegisterStorageServices(plugin::ServiceRegistry& registry);
 
-    void MarkRunning() noexcept;
+    bool MarkRunning() noexcept;
     void MarkStopping() noexcept;
     void MarkStopped() noexcept;
     void MarkFailed() noexcept;
     RuntimeState state() const noexcept { return state_.load(); }
     bool GateOpen() const noexcept;
     bool RequiresQuarantine() const noexcept {
-        return control_quarantine_required_.load(std::memory_order_acquire);
+        return control_quarantine_required_.load(std::memory_order_acquire) &&
+               active_control_calls_.load(std::memory_order_acquire) != 0;
     }
+
+    void ReapQuarantinedWorkers() noexcept;
+    std::shared_ptr<void> TrackControlCall();
 
     bool BeginSubmission() noexcept;
     void EndSubmission() noexcept;
     bool WaitForAdmissionDrain(std::chrono::steady_clock::time_point deadline);
     bool WaitForSubmissions(std::chrono::steady_clock::time_point deadline);
 
+    void SetFailureSignal(std::shared_ptr<FailureSignal> signal) noexcept {
+        failure_signal_ = std::move(signal);
+    }
     void RequestFailure(Error error) noexcept;
     void RecordSecondaryFailure(Error error) noexcept;
     bool HasPrimaryFailure() const noexcept;
@@ -359,6 +368,8 @@ private:
     std::atomic<std::uint64_t> admission_eligibility_generation_{0};
     std::uint64_t active_submission_calls_ = 0;
     std::uint64_t admission_inflight_ = 0;
+    std::atomic<std::size_t> active_control_calls_{0};
+    std::shared_ptr<FailureSignal> failure_signal_;
     std::atomic<bool> control_quarantine_required_{false};
 
     mutable std::mutex failure_mutex_;

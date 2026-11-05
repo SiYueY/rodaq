@@ -22,7 +22,7 @@ TEST(StoragePipelineTest, EligibilityChangeInterruptsPreGateWait) {
     auto* storage = reinterpret_cast<plugin::StoragePluginInstance*>(1);
     StoragePipeline pipeline(
         1, 1, 64, 64, storage, std::chrono::milliseconds(100), 1, [](Error) {},
-        [](std::size_t) noexcept {}, []() noexcept {},
+        [](std::size_t) noexcept {}, [](rodaq_storage_persistence_state) noexcept {},
         [](StorageLatencyKind, std::int64_t) noexcept {},
         [](const RuntimeRecord&, rodaq_storage_operation,
            std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>&) {

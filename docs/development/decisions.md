@@ -754,10 +754,12 @@ Destroying an activation while Plugin code may still access it is never an
 acceptable timeout response.
 
 ASan/LSan ignores only the process-lifetime quarantine owner and reachable
-roots. The M2 E2E CTest entry
-disables TSan thread-leak reporting because fault tests intentionally retain
-quarantined joinable threads; TSan data-race reporting remains enabled. Normal
-leak detection and normal plugin symbol validation remain active.
+unsafe roots. Thread-leak reporting and race reporting remain enabled. The
+previous M2 thread-leak exception is superseded by Final Closure Fix: one
+process maintenance worker claims completed entries, joins outside its mutex,
+and only then releases captures/capacity. It also resumes safe activation
+cleanup continuations; unsafe barriers remain retained. Its own thread is
+joined during process teardown.
 
 **Reference:** `docs/design/runtime.md`, `docs/design/rodaq_plugin_system.md`,
 `docs/design/acquisition_plugin.md`, `docs/development/status.md`.
@@ -1090,3 +1092,25 @@ transitive static-link closure.
 
 **Reference:** `src/runtime/CMakeLists.txt`, `cmake/install.cmake`,
 `cmake/dependencies.cmake`, `cmake/dependency_inventory.json.in`.
+
+## D-054 — Fatal failure automatically converges through one lifecycle owner
+
+**Status:** Accepted
+
+RequestFailure performs bounded failure recording/cutoff and coalesced shared
+mailbox notification, with no Plugin I/O and no retained Runtime pointer. One
+Runtime supervisor shares Stop's cleanup implementation and logical ownership;
+Starting uses activation abort, Running starts automatic failure cleanup, and
+a failure during Stop belongs to its existing owner. Plugin calls and Join run
+outside the lifecycle mutex. Repeated Stop cannot duplicate cleanup.
+
+Descriptor FAILED, readiness timeout and malformed output are Runtime-wide
+fatal Storage failure in Starting and Running. Unsupported remains local and
+Projection-retryable. Failure cutoff classifies never-handed-off Accepted work
+as PersistenceFailed; uncertain handoff keeps Unknown disposition and Payload
+ownership. A returned successful close proves access quiescence, not success
+of unconfirmed persistence. Retained cleanup uses the same continuation and
+recorded control-call result, never repeats a timed-out destructive call.
+
+**Reference:** `docs/design/runtime.md §11.6.2–§11.6.3`,
+`docs/design/storage_plugin.md §3.3.3`, D-037, D-039, D-045.

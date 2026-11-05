@@ -1797,5 +1797,185 @@ TEST(RuntimePipelineTest, QuarantinesBlockedPluginDestroyDuringStop) {
     EXPECT_EQ(QuarantineManager::Process().RetainedCallCount(), retained_before);
 }
 
+std::size_t event_count(const std::string& log, std::string_view event) {
+    const auto lines = read_lines(log);
+    return static_cast<std::size_t>(std::count(lines.begin(), lines.end(), event));
+}
+
+template <typename Predicate>
+bool eventually(Predicate predicate, std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = Clock::now() + timeout;
+    do {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (Clock::now() < deadline);
+    return predicate();
+}
+
+void expect_single_cleanup(const std::string& log, std::string_view close_event) {
+    EXPECT_EQ(event_count(log, "control quiesce"), 1U);
+    EXPECT_EQ(event_count(log, "control stop"), 1U);
+    EXPECT_EQ(event_count(log, "control destroy"), 1U);
+    EXPECT_EQ(event_count(log, close_event), 1U);
+    EXPECT_EQ(event_count(log, "control storage_destroy"), 1U);
+    const auto lines = read_lines(log);
+    auto position = [&](std::string_view event) {
+        return std::find(lines.begin(), lines.end(), event);
+    };
+    EXPECT_LT(position("control quiesce"), position("control stop"));
+    EXPECT_LT(position("control storage_close disposition=3"), position("control stop"));
+    EXPECT_LT(position("control stop"), position("control destroy"));
+}
+
+TEST(RuntimePipelineTest, FatalStorageFailureAutomaticallyConvergesWithoutStop) {
+    for (const auto* scenario : {"submit_error", "background_fatal"}) {
+        const std::string log = unique_log_path(std::string("auto_") + scenario);
+        std::error_code removed;
+        fs::remove(log, removed);
+        Runtime runtime(options("automatic_failure", scenario, "copy", 1, 1, 1, log));
+        ASSERT_TRUE(runtime.Configure().has_value());
+        ASSERT_TRUE(runtime.Start().has_value());
+        ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_destroy") == 1; }));
+        EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+        auto primary = runtime.PrimaryFailure();
+        ASSERT_TRUE(primary.has_value());
+        const auto message = std::string(primary->message());
+        EXPECT_FALSE(runtime.Stop().has_value());
+        expect_single_cleanup(log, "control storage_close disposition=3");
+        EXPECT_EQ(runtime.PrimaryFailure()->message(), message);
+        auto stats = runtime.Stats();
+        ASSERT_TRUE(stats.has_value());
+        EXPECT_EQ(stats->accepted_records, 1U);
+        EXPECT_EQ(stats->inflight_records, 0U);
+        EXPECT_EQ(stats->inflight_bytes, 0U);
+    }
+}
+
+TEST(RuntimePipelineTest, FailureCutoffDoesNotDispatchQueuedRecords) {
+    const std::string log = unique_log_path("queued_failure_cutoff");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options("queued_failure", "delayed_submit_error", "retain", 1, 3, 1, log));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(eventually([&] {
+        auto stats = runtime.Stats();
+        return stats.has_value() && stats->accepted_records == 3;
+    }));
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_destroy") == 1; }));
+    EXPECT_EQ(event_count(log, "control storage_submit"), 1U);
+    auto stats = runtime.Stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->accepted_records, 3U);
+    EXPECT_EQ(stats->rejected_records, 0U);
+    EXPECT_EQ(stats->persistence_failed_records, 3U);
+    EXPECT_EQ(stats->persistence_unknown_records, 0U);
+    EXPECT_EQ(stats->inflight_records, 0U);
+    EXPECT_EQ(stats->inflight_bytes, 0U);
+    expect_single_cleanup(log, "control storage_close disposition=3");
+}
+
+TEST(RuntimePipelineTest, HandoffWatchdogAutomaticallyStartsFailureConvergence) {
+    const std::string log = unique_log_path("automatic_watchdog");
+    std::error_code removed;
+    fs::remove(log, removed);
+    const auto before = QuarantineManager::Process().RetainedActivationCount();
+    Runtime runtime(options(
+        "automatic_watchdog", "stall_then_sync", "copy", 1, 3, 1, log,
+        std::chrono::milliseconds(60)));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control quiesce") == 1; }));
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    const auto lifecycle = runtime.LifecycleSnapshot();
+    ASSERT_TRUE(lifecycle.has_value());
+    EXPECT_EQ(lifecycle->normal_acquisition_allowed, RODAQ_FALSE);
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_destroy") == 1; }));
+    ASSERT_TRUE(eventually(
+        [&] { return QuarantineManager::Process().RetainedActivationCount() <= before; }));
+    EXPECT_EQ(event_count(log, "control storage_submit"), 1U);
+    auto stats = runtime.Stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->accepted_records, 3U);
+    EXPECT_EQ(stats->persistence_succeeded_records, 1U);
+    EXPECT_EQ(stats->persistence_failed_records, 2U);
+    EXPECT_EQ(stats->inflight_records, 0U);
+    EXPECT_EQ(stats->inflight_bytes, 0U);
+    EXPECT_FALSE(runtime.Stop().has_value());
+    expect_single_cleanup(log, "control storage_close disposition=3");
+}
+
+TEST(RuntimePipelineTest, ConcurrentFailureAndStopHaveSingleCleanupOwner) {
+    const std::string log = unique_log_path("concurrent_failure_stop");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(
+        options("concurrent_failure_stop", "delayed_submit_error", "copy", 1, 3, 1, log));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_submit") == 1; }));
+    std::thread stopper([&] { EXPECT_FALSE(runtime.Stop().has_value()); });
+    EXPECT_TRUE(eventually([&] { return event_count(log, "control storage_destroy") == 1; }));
+    stopper.join();
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    EXPECT_FALSE(runtime.Stop().has_value());
+    expect_single_cleanup(log, "control storage_close disposition=3");
+    EXPECT_EQ(event_count(log, "control storage_submit"), 1U);
+}
+
+TEST(RuntimePipelineTest, FailureDuringStartingUsesActivationAbortOnly) {
+    const std::string log = unique_log_path("starting_failure_abort_only");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "starting_failure", "sync", "copy", 1, 1, 1, log, std::chrono::milliseconds(500), -1, 16,
+        64U * 1024U, 8, AdmissionMode::Wait, 0, "failed"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    EXPECT_FALSE(runtime.Start().has_value());
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    EXPECT_FALSE(runtime.Stop().has_value());
+    EXPECT_EQ(event_count(log, "control quiesce"), 1U);
+    EXPECT_EQ(event_count(log, "control destroy"), 1U);
+    EXPECT_EQ(event_count(log, "control storage_destroy"), 1U);
+    EXPECT_EQ(event_count(log, "control storage_close disposition=2"), 1U);
+    EXPECT_EQ(event_count(log, "control storage_close disposition=3"), 0U);
+}
+
+TEST(RuntimePipelineTest, DescriptorWorkerFailureDoesNotSelfJoin) {
+    const std::string log = unique_log_path("dynamic_descriptor_failed");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "dynamic_descriptor_failed", "sync", "copy", 1, 3, 1, log, std::chrono::milliseconds(500),
+        1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0, "failed_dynamic"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_destroy") == 1; }));
+    EXPECT_EQ(runtime.State(), RuntimeState::Failed);
+    auto primary = runtime.PrimaryFailure();
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->code(), ErrorCode::StorageError);
+    EXPECT_NE(primary->message().find("descriptor readiness failure"), std::string_view::npos);
+    expect_single_cleanup(log, "control storage_close disposition=3");
+}
+
+TEST(RuntimePipelineTest, DynamicUnsupportedDescriptorRemainsStreamLocal) {
+    const std::string log = unique_log_path("dynamic_descriptor_unsupported");
+    std::error_code removed;
+    fs::remove(log, removed);
+    Runtime runtime(options(
+        "dynamic_descriptor_unsupported", "sync", "copy", 2, 3, 1, log,
+        std::chrono::milliseconds(500), 1, 16, 64U * 1024U, 8, AdmissionMode::Wait, 0,
+        "unsupported_dynamic"));
+    ASSERT_TRUE(runtime.Configure().has_value());
+    ASSERT_TRUE(runtime.Start().has_value());
+    ASSERT_TRUE(eventually([&] { return event_count(log, "control storage_unsupported") >= 1; }));
+    EXPECT_EQ(runtime.State(), RuntimeState::Running);
+    EXPECT_FALSE(runtime.PrimaryFailure().has_value());
+    EXPECT_TRUE(runtime.Stop().has_value());
+}
+
 }  // namespace
 }  // namespace rodaq::runtime

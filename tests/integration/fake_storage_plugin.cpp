@@ -101,6 +101,13 @@ public:
     rodaq::Result<rodaq_descriptor_readiness_result> EnsureDescriptorReady(
         rodaq_stream_descriptor_handle descriptor) override {
         const std::size_t readiness_call = ++readiness_calls_;
+        if (descriptor_scenario_ == "unsupported_dynamic" && readiness_call > 1) {
+            rodaq_descriptor_readiness_result value{};
+            value.struct_size = sizeof(value);
+            value.state = RODAQ_DESCRIPTOR_UNSUPPORTED;
+            LogControl("unsupported");
+            return value;
+        }
         const bool stalls = descriptor_scenario_ == "stall" &&
                             (descriptor_stall_after_ < 0 ||
                              readiness_call > static_cast<std::size_t>(descriptor_stall_after_));
@@ -117,7 +124,8 @@ public:
         value.struct_size = sizeof(value);
         value.state = descriptor_scenario_ == "unsupported" ? RODAQ_DESCRIPTOR_UNSUPPORTED
                                                             : RODAQ_DESCRIPTOR_READY;
-        if (descriptor_scenario_ == "failed") {
+        if (descriptor_scenario_ == "failed" ||
+            (descriptor_scenario_ == "failed_dynamic" && readiness_call > 1)) {
             value.state = RODAQ_DESCRIPTOR_FAILED;
             rodaq::assign_rodaq_error(
                 RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0,
@@ -191,7 +199,11 @@ public:
         if (stage_ != Stage::Opened) {
             return invalid_state_value();
         }
-        if (scenario_ == "submit_error") {
+        LogControl("submit");
+        if (scenario_ == "submit_error" || scenario_ == "delayed_submit_error") {
+            if (scenario_ == "delayed_submit_error") {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
             return nonstd::make_unexpected(rodaq::Error(
                 rodaq::ErrorCode::StorageError, "fake_storage", 0, "configured submit failure"));
         }
@@ -199,7 +211,7 @@ public:
         if (submit_delay_us_ > 0) {
             std::this_thread::sleep_for(std::chrono::microseconds(submit_delay_us_));
         }
-        if (scenario_ == "storage_stall") {
+        if (scenario_ == "storage_stall" || scenario_ == "stall_then_sync") {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         if (scenario_ == "background_fatal") {
@@ -215,7 +227,7 @@ public:
         result.payload_state = RODAQ_STORAGE_PAYLOAD_PENDING;
         result.persistence_state = RODAQ_STORAGE_PERSISTENCE_PENDING;
 
-        if (scenario_ == "sync") {
+        if (scenario_ == "sync" || scenario_ == "stall_then_sync") {
             result.payload_state = RODAQ_STORAGE_PAYLOAD_CONSUMED;
             result.persistence_state = RODAQ_STORAGE_PERSISTENCE_SUCCEEDED;
             return result;
@@ -358,7 +370,8 @@ public:
         return {};
     }
 
-    rodaq::Result<void> Close(rodaq_storage_close_disposition) override {
+    rodaq::Result<void> Close(rodaq_storage_close_disposition disposition) override {
+        LogControl("close disposition=" + std::to_string(disposition));
         if (stage_ != Stage::Opened) {
             return invalid_state();
         }
@@ -383,7 +396,10 @@ public:
         return {};
     }
 
-    ~FakeStoragePlugin() override { JoinWorkers(); }
+    ~FakeStoragePlugin() override {
+        JoinWorkers();
+        LogControl("destroy");
+    }
 
 private:
     enum class Stage {
