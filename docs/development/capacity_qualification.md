@@ -83,3 +83,42 @@ are used for correctness/sanitizer qualification, not capacity claims.
 M5 must re-establish storage production capacity with real MCAP serialization,
 compression/chunking, filesystem behavior, durable writes, crash recovery and
 long-duration soak.
+
+## M2 Final Closure Fix comparison — fe4f938
+
+Baseline: `413ba65`; final implementation: `fe4f938adef1680021201334dae0c434f67d4011`.
+Both were built with GCC 11.4 Release/warnings-as-errors from the same pinned
+dependencies on this Ubuntu 22.04 x86_64 host. Every existing benchmark ran
+three repetitions; the table uses medians. The benchmark definitions and offered
+schedules were unchanged. Single-producer Pipeline, multi-producer/multi-Stream
+Joint and Camera, both Mixed profiles, slot terminalization and 1/2/4 release
+workers all passed their existing admission/completion/Stop/resource gates.
+
+| Profile | Baseline → final accepted Records/s | CPU core-equivalents | Persistence p99 us | HWM Records | Max RSS KiB |
+|---|---:|---:|---:|---:|---:|
+| BM_EncodedCamera10x720p30 | 310 → 310 | 0.32 → 0.33 | 134.01 → 225.41 | 5 → 7 | 38,976 → 38,920 |
+| BM_RawCamera10x720p30 | 308 → 308 | 1.56 → 1.58 | 132.99 → 140.80 | 3 → 3 | 472,212 → 472,064 |
+| BM_PerJoint100Streams1kHz | 99,944 → 99,977 | 1.94 → 1.87 | 65.86 → 48.13 | 22 → 26 | 94,000 → 94,292 |
+| BM_AggregatedRobotState1kHz | 1,000 → 1,000 | 0.34 → 0.35 | 73.60 → 104.70 | 1 → 1 | 94,000 → 94,292 |
+| run_encoded_aggregated | 1,300 → 1,300 | 0.49 → 0.48 | 106.75 → 99.71 | 5 → 7 | 78,580 → 78,320 |
+| run_raw_per_joint | 100,270 → 100,272 | 3.28 → 3.39 | 232.70 → 483.84 | 45 → 118 | 583,816 → 583,460 |
+| BM_AdoptReleaseWorkers/1 | 275,761 → 275,019 | 2.83 → 2.86 | 326.40 → 91.90 | 288 → 431 | 42,844 → 43,264 |
+| BM_AdoptReleaseWorkers/2 | 222,663 → 237,258 | 3.28 → 3.29 | 1624.06 → 7704.57 | 437 → 2,067 | 44,148 → 47,976 |
+| BM_AdoptReleaseWorkers/4 | 158,853 → 153,930 | 3.83 → 3.77 | 80347.13 → 52396.03 | 13,488 → 8,854 | 62,012 → 64,620 |
+| BM_RuntimePipelineSmallRecordSteadyState | 392,114 → 373,124 | 2.27 → 2.26 | 37257.21 → 25018.37 | 15,984 → 11,688 | 92,656 → 92,996 |
+| BM_StorageSlotTerminalization100k | 446,981 → 456,085 | 2.24 → 2.22 | 53346.30 → 46071.81 | 25,621 → 26,068 | 45,680 → 45,848 |
+
+All declared rate profiles sustained their schedules with zero ordinary
+rejections/WaitTimeouts and convergent Stop. Unpaced small-Record and slot
+throughput, CPU, tails and high-water are shown in the table. An initial
+comparison identified an unnecessary extra handoff mutex
+introduced by the fix; the final implementation uses an atomic cutoff
+authorization at the same boundary, avoiding that additional normal-path lock.
+
+Tail latency and high-water variation remain visible in the table, especially
+unpaced bursts and multiple release workers. CPU frequency scaling and host
+scheduling were uncontrolled, so these are comparative Fake Runtime results,
+not a new tail-latency SLA or proof of a uniform performance improvement.
+One release worker remains the default; no benchmark policy or resource bound
+was relaxed. Failure behavior is separately verified by the new lifecycle,
+queued-cutoff, Retain and late-handoff/root-recovery regression tests.

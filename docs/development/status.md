@@ -836,7 +836,7 @@ M2 final review answers:
     exceeding multiple per-Submit timeout periods.
 35. No. No known P0/P1 issue remains.
 
-## Final convergence qualification
+## Historical convergence qualification (413ba65; superseded for current closure)
 
 - GCC 11.4.0 Debug normal, ASan+LSan and UBSan: **93/93 CTest passed** in each
   build. ASan ran with `detect_leaks=1` and `halt_on_error=1`.
@@ -844,7 +844,8 @@ M2 final review answers:
   passed**.
 - Ubuntu 24.04 container with GCC 13.3.0: full build and **93/93 CTest passed**,
   including installed Runtime/Plugin consumers and Runtime DSO closure checks.
-- Clang 14 TSan under `setarch x86_64 -R`: admission, PayloadPool,
+- Previously recorded Clang 14 TSan under `setarch x86_64 -R` (not accepted
+  as final evidence: pipeline disabled thread-leak reporting): admission, PayloadPool,
   observability, logging, Registry, quarantine, StoragePipeline, M1 integration
   and complete Runtime pipeline: **9/9 CTest passed**.
 - Normal Runtime build with tests/benchmarks, oneTBB, mimalloc, GoogleTest and
@@ -864,3 +865,35 @@ M2 final review answers:
 Native arm64 remains deferred by D-034. Stable C ABI layout/protocol/vtable/
 service IDs remain unchanged. M0, M1 and M2 are PASS. M3, M4 and M5 are
 **NOT STARTED**; no milestone is currently ACTIVE.
+
+## M2 Final Closure Fix — COMPLETE
+
+Implementation: `fe4f938adef1680021201334dae0c434f67d4011` (`fix(runtime): retain quarantine roots until worker join`).
+Baseline: `413ba65`. FR-01 automatic failure convergence, FR-02 dynamic fatal
+Descriptor readiness and QF-01 final Quarantine Join are closed.
+
+- One joinable Runtime supervisor shares logical lifecycle ownership and cleanup
+  with Stop; Starting keeps activation abort. No Plugin I/O or Join in
+  RequestFailure, no asynchronous Runtime raw pointer, no duplicate cleanup.
+- Fatal cutoff prevents future Storage handoff authorization, classifies queued
+  Accepted Records as PersistenceFailed and retains uncertain in-flight Payload.
+  A returned successful close proves access safety, not persistence success.
+- Completed retained workers Join outside the Quarantine mutex, return capacity,
+  and safe activation cleanup resumes from its recorded control-call result.
+- Eight new integration tests bring the suite to 68 scenarios, including actual
+  lifecycle counts, late handoff reconciliation and root-capacity recovery.
+- Final GCC 11.4 Debug / ASan+LSan / UBSan / Release: **93/93 CTest PASS each**.
+  Release and Debug use warnings as errors. ASan retains leak detection.
+- Final Clang 14 TSan required subset: **9/9 PASS** with thread-leak and race
+  detection enabled. The previous pipeline thread-leak exemption is removed.
+- Final offline Ubuntu 24.04.4 / GCC 13.3: **93/93 CTest PASS**.
+- Runtime-only Release with development dependency directories absent: configure
+  and build PASS. Formatting, diff and unchanged Stable C ABI checks PASS.
+- All existing Release capacity profiles PASS in three-repeat baseline/current
+  comparisons; CPU, latency and resource evidence is in
+  `docs/development/capacity_qualification.md`.
+
+Full implementation/test report: `docs/development/review_report.md`, final
+closure appendix. No new hosted CI run was triggered; the evidence above is
+local execution, not an assertion of remote CI status. M0/M1/M2 are PASS;
+M3/M4/M5 NOT STARTED. Native arm64 remains DEFERRED by D-034.

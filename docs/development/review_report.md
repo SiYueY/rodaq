@@ -1467,3 +1467,152 @@ this table alone.
 | D-06 | P1 | runtime design | lock domains and callback-under-lock prohibition documented; reentry tests | projection-under-Plugin-lock and concurrency tests | Implemented |
 | D-07 | P1 | decisions/D-047 | primary/secondary history, terminal health, invariant failure paths made explicit | failure history and contract-violation tests | Implemented |
 | D-08 | P2 | reference audit | pinned source-level review recorded for all required mechanism families | `reference_audit.md` | Implemented |
+
+## M2 Final Closure Fix — implementation and qualification report
+
+**Date:** 2026-11-05
+**Baseline:** `413ba651f7d9fb1611ec294d4cc8e9799d4363b4`
+**Implementation:** `fe4f938adef1680021201334dae0c434f67d4011` — `fix(runtime): retain quarantine roots until worker join`
+**Outcome:** FR-01 / FR-02 / QF-01 COMPLETE; M2 PASS; M3 NOT STARTED.
+
+Implementation commits:
+
+- `9467e0a`: automatic failure supervisor/ownership, Dispatch cutoff,
+  Descriptor escalation, quarantine reaping and initial regression coverage.
+- `fe4f938`: actual Join barriers for cleanup continuations and transferred
+  release workers, capture destruction before completion publication, and the
+  Runtime-destruction/captured-resource regressions.
+- The following evidence commit updates development state and measured results;
+  it changes no executable code.
+
+The preceding historical review remains intact. The previous claim of 9/9 TSan
+closure at 413ba65 is superseded: the pipeline previously disabled thread-leak
+reporting. This qualification keeps thread-leak and data-race checks enabled.
+No Stable C ABI layout, field, vtable, Service ID, Result v5 contract, Canonical
+identity/sequence rule, or dependency pin changed.
+
+### FR-01 — automatic failure convergence
+
+The original failure path only recorded Failed and closed Admission, leaving
+cleanup dependent on application Stop. `src/runtime/failure_signal.hpp` now
+provides a shared one-bit mailbox with no Runtime pointer or activation owner.
+`Runtime::Impl::failure_loop()` owns one joinable supervisor per Runtime.
+`RequestFailure()` records/cuts off/notifies and performs no Plugin I/O or Join.
+Runtime destruction closes the mailbox before joining its supervisor; a late
+quarantined callback cannot access a destroyed Runtime.
+
+`LifecycleOwner` serializes Start, public Stop and automatic cleanup logically,
+releasing the lifecycle mutex across Plugin I/O and worker barriers. Both Stop
+and the supervisor call `stop_internal()`. Starting failures retain the existing
+activation-abort path and ACTIVATION_ABORT disposition. A failure during Stop
+belongs to that owner. Completed cleanup stays Failed and repeated Stop cannot
+repeat quiesce/stop/close/destroy.
+
+`StoragePipeline::BeginFailureCutoff()` stops future handoff authorization and
+classifies never-handed-off queued work as PersistenceFailed. Gate-passed work
+published after cutoff still becomes Accepted and receives the same independent
+persistence classification. The acquire load immediately before submit is the
+handoff-entry authorization point; only the failure path takes the extra queue
+lock. A previously authorized call retains its original thread and Payload until
+its actual return. Timeout alone proves neither failed handoff nor consumption.
+HandoffAccepted completions retain their independent axes. After a successful
+close proves no future access/callback, `ResolveAfterClose()` drains staged
+completions and marks unconfirmed persistence Unknown, never Succeeded.
+Runtime statistics expose terminal persistence counts for this qualification.
+
+Timed-out calls retain their recorded result and cleanup continuation under the
+existing activation root budget. The same cleanup implementation resumes after
+progress is proven, without reissuing a timed-out destructive call. Failed
+quiescence or permanently blocked code remains retained with native resources
+and DSO leases; a safe late return allows Join and root-capacity recovery.
+
+### FR-02 — dynamic Descriptor FAILED escalation
+
+`ActiveRuntimeState::ReconcileDescriptor()` reports readiness errors through
+RequestFailure after releasing structural locks, regardless of startup-critical
+status. The original Storage diagnostic is preserved. FAILED, timeout and
+malformed responses fail closed during Starting and Running; UNSUPPORTED stays
+local, and existing Projection-dependent retry remains covered. A Descriptor
+worker never performs its own cleanup or joins itself.
+
+### QF-01 — eventual quarantine Join
+
+Completed entries are claimed once under the manager mutex, then Joined and
+released outside it. Capacity includes claimed entries until Join finishes.
+Concurrent reapers cannot double-join; a worker reentering Reap skips itself.
+One process maintenance thread reaps late Logging/control/release workers and
+safe activation continuations without requiring another application API call.
+That maintenance thread is itself joined, with a bounded final completion grace
+period during process teardown.
+
+Cleanup continuations and transferred Pipeline release workers now wait for a
+separate actual Joined signal before root recovery. Supervised operations dispose
+of their captured resources before publishing completion, so captured Plugin
+destructors remain within the supervised deadline.
+
+The Logging timeout test now releases its backend through RAII, uses deadlines,
+reaps to its baseline count and proves final worker ownership is gone. Fake
+Acquisition's injected quiescence-error path joins its own native fixture workers
+before returning an operational error; Runtime still quarantines on that error.
+No expectation was weakened and no sanitizer exception was added.
+
+### Added regression coverage
+
+The integration executable now has 68 tests (previously 60), including:
+
+- FatalStorageFailureAutomaticallyConvergesWithoutStop (submit and background fatal).
+- FailureCutoffDoesNotDispatchQueuedRecords (Accepted history, Failed counts,
+  Retain release and zero final record/byte occupancy).
+- HandoffWatchdogAutomaticallyStartsFailureConvergence (late successful handoff,
+  queued cutoff, automatic cleanup and activation-root recovery without Stop).
+- ConcurrentFailureAndStopHaveSingleCleanupOwner (exact lifecycle call counts).
+- FailureDuringStartingUsesActivationAbortOnly (no duplicate cleanup).
+- DescriptorWorkerFailureDoesNotSelfJoin (dynamic FAILED and preserved diagnostic).
+- DynamicUnsupportedDescriptorRemainsStreamLocal.
+- QuarantinedReleaseOutlivesRuntimeAndJoinsBeforeRootRecovery (no application
+  observer retains the Pipeline; late release must Join before root reclamation).
+
+Quarantine tests additionally cover concurrent Join/state destruction outside
+manager locks, completion-publication reentry without self-Join, and a blocking
+capture destructor that must finish before completion/Joined publication. Existing
+Admission, Payload, Binding, Projection, Clock, ABI, install, DSO, failure-history
+and completion-violation tests were retained.
+
+### Qualification on implementation fe4f938
+
+| Environment / configuration | Result |
+|---|---|
+| Ubuntu 22.04, GCC 11.4 Debug, warnings as errors | 93/93 CTest PASS |
+| Ubuntu 22.04, GCC 11.4 ASan + LSan | 93/93 PASS; detect_leaks=1, halt_on_error=1 |
+| Ubuntu 22.04, GCC 11.4 UBSan | 93/93 PASS; halt_on_error=1 |
+| Ubuntu 22.04, GCC 11.4 Release, warnings as errors | 93/93 CTest PASS |
+| Clang 14 TSan, existing required nine-target set | 9/9 PASS; thread-leak and race checks enabled |
+| Ubuntu 24.04.4 offline container, GCC 13.3 | 93/93 CTest PASS, tests and benchmarks built |
+| Release capacity, all existing Pipeline/Joint/Camera/Mixed/Slot/Release profiles | PASS; three repetitions for each baseline/current case |
+| Runtime-only Release, tests/benchmarks and development dependency directories absent | Configure + full Runtime build PASS |
+| clang-format 14 dry-run, git diff --check, Stable C ABI diff | PASS / PASS / unchanged |
+| Native arm64 | DEFERRED under D-034 |
+
+ASan/LSan and TSan used `setarch x86_64 -R`. LSan needed execution outside the
+sandbox because its thread inspection is restricted there. The local Clang 14
+installation selected an incomplete GCC installation; explicit GCC 11 standard
+include/library paths were supplied only in the local CMake cache. No compiler
+checks or sanitizer detections were disabled. The mandated TSan subset matches
+`.github/workflows/m0-qualification.yml`; this is not a claim that all unrelated
+Clang fixture targets were qualified.
+
+Capacity CPU/latency/RSS/high-water comparisons and scheduling limits are in
+`docs/development/capacity_qualification.md`. This is Fake Pipeline qualification;
+MCAP/filesystem production throughput and long soak remain M3–M5 work.
+
+No remote push or hosted workflow was performed, so this task has no new CI Run
+URL. These results are actual local builds/tests on the stated environments,
+not a claim about remote CI state. The subsequent documentation commit records
+this implementation's evidence without changing executable code.
+
+**Final assessment:** M0 PASS; M1 PASS; M2 PASS; M3 NOT STARTED. M2 Final Closure
+Fix COMPLETE. No known remaining P0/P1 finding from this review; local required
+qualification PASS. Native arm64 remains explicitly deferred.
+
+Final closure counters: **Known P0 = 0; Known P1 = 0; Qualification = PASS
+(local required matrix); M2 Final Closure Fix = COMPLETE**.

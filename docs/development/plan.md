@@ -426,7 +426,16 @@ Do not implement in M1:
 
 **Status:** PASS
 
-**Current sub-phase:** **M2 V1 Runtime Foundation Closure — PASS**.
+**Current sub-phase:** **M2 Final Closure Fix — COMPLETE / PASS**.
+
+- [x] FR-01 automatic failure convergence and dispatch cutoff.
+- [x] FR-02 dynamic fatal Descriptor readiness escalation.
+- [x] QF-01 eventual Quarantine Join with TSan thread-leak reporting.
+- [x] Full local qualification matrix on implementation `fe4f938`; native
+  arm64 DEFERRED by D-034. New hosted CI run not triggered.
+
+Evidence: final closure appendix in `review_report.md` and the comparison in
+`capacity_qualification.md`. M3 starts only as a separate development task.
 
 ### Goal
 

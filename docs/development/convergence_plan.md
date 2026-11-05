@@ -1,6 +1,6 @@
 # RoDAQ V1 Design & M0-M2 Implementation Convergence Plan
 
-**Status:** Implemented; M2 Exit Gate qualified on 2026-11-05
+**Status:** Implemented; M2 Final Closure Fix locally qualified on 2026-11-05
 
 **Plan revision:** R1 (executed)
 
@@ -1218,3 +1218,22 @@ change only when implementation dependencies require a different boundary.
 **Self-review result:** R1 is ready for independent approval as the convergence
 implementation baseline. Implementation must not start until that approval and
 the Phase 0 baseline commit are complete.
+
+## M2 Final Closure Fix — 413ba65 follow-up
+
+Baseline: `413ba651f7d9fb1611ec294d4cc8e9799d4363b4`. Historical review and
+qualification above are retained; they do not qualify the final closure.
+
+- FR-01: automatic supervisor, unique Stop/Failure ownership, failure Dispatch
+  cutoff, queued Failed classification and safe cleanup continuation implemented.
+- FR-02: dynamic Descriptor FAILED escalates outside structural locks;
+  Unsupported stays local and Projection retry is retained.
+- QF-01: completed workers Join outside the Quarantine mutex, return capacity,
+  and are reaped by process maintenance. TSan thread-leak exemption removed.
+- Final implementation: `fe4f938adef1680021201334dae0c434f67d4011`. Full local matrix PASS: GCC 11
+  Debug/ASan+LSan/UBSan/Release and Ubuntu 24 GCC 13 each 93/93 CTest;
+  Clang 14 TSan 9/9 without thread-leak exemption; capacity and Runtime-only
+  PASS. See `review_report.md` final closure appendix. No new hosted CI Run.
+
+M2 Final Closure Fix COMPLETE; M2 PASS; M3 NOT STARTED. Native arm64 remains
+DEFERRED by D-034.
