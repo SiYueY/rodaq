@@ -4,16 +4,16 @@
 #include <rodaq/plugin/abi/acquisition.h>
 #include <rodaq/plugin/config_view.hpp>
 #include <rodaq/plugin/plugin.hpp>
-#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/services.hpp>
 
 #include <string_view>
 
-namespace rodaq {
+namespace rodaq::plugin {
 
 class AcquisitionPlugin {
 public:
     virtual ~AcquisitionPlugin() = default;
-    virtual Result<void> bind(AcquisitionRuntime runtime) = 0;
+    virtual Result<void> bind(AcquisitionContext context) = 0;
     virtual Result<void> configure(const ConfigView& config) = 0;
     virtual Result<void> start() = 0;
     virtual Result<void> stop() = 0;
@@ -29,7 +29,7 @@ public:
     virtual Result<InterfaceView> query_interface(std::string_view interface_id);
 };
 
-}  // namespace rodaq
+}  // namespace rodaq::plugin
 
 #define RODAQ_EXPORT_ACQUISITION_PLUGIN(PluginType, Descriptor)                                  \
     namespace {                                                                                  \
@@ -72,15 +72,15 @@ public:
         }                                                                                        \
         return rodaq::plugin::invoke_void(                                                       \
             [instance, services]() -> rodaq::Result<void> {                                      \
-                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                 \
+                auto registry = rodaq::plugin::ServiceRegistryView::from_abi(*services);         \
                 if (!registry.ok()) {                                                            \
                     return registry.status();                                                    \
                 }                                                                                \
-                auto runtime = rodaq::AcquisitionRuntime::bind(registry.value());                \
-                if (!runtime.ok()) {                                                             \
-                    return runtime.status();                                                     \
+                auto context = rodaq::plugin::AcquisitionContext::bind(registry.value());        \
+                if (!context.ok()) {                                                             \
+                    return context.status();                                                     \
                 }                                                                                \
-                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));     \
+                return static_cast<PluginType*>(instance)->bind(std::move(context.value()));     \
             },                                                                                   \
             out_status);                                                                         \
     }                                                                                            \
@@ -91,7 +91,7 @@ public:
         }                                                                                        \
         return rodaq::plugin::invoke_void(                                                       \
             [instance, config]() -> rodaq::Result<void> {                                        \
-                auto view = rodaq::ConfigView::from_abi(config);                                 \
+                auto view = rodaq::plugin::ConfigView::from_abi(config);                         \
                 if (!view.ok()) {                                                                \
                     return view.status();                                                        \
                 }                                                                                \
@@ -180,9 +180,9 @@ public:
             [context] { return static_cast<PluginType*>(context)->quiesce_plugin(); },           \
             out_status);                                                                         \
     }                                                                                            \
-    const rodaq_acquisition_control_v1 rodaq_sdk_acquisition_control = {                         \
+    const rodaq_acquisition_control rodaq_sdk_acquisition_control = {                            \
         RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,                                              \
-        RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE,                                            \
+        RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE,                                               \
         &rodaq_sdk_acquisition_prepare,                                                          \
         &rodaq_sdk_acquisition_commit,                                                           \
         &rodaq_sdk_acquisition_abort,                                                            \
@@ -203,8 +203,9 @@ public:
         if (parsed_id == required) {                                                             \
             return rodaq::plugin::invoke_interface(                                              \
                 [instance] {                                                                     \
-                    return rodaq::Result<rodaq::InterfaceView>(rodaq::InterfaceView(             \
-                        rodaq_interface{instance, &rodaq_sdk_acquisition_control}));             \
+                    return rodaq::Result<rodaq::plugin::InterfaceView>(                          \
+                        rodaq::plugin::InterfaceView(                                            \
+                            rodaq_interface{instance, &rodaq_sdk_acquisition_control}));         \
                 },                                                                               \
                 out_interface, out_status);                                                      \
         }                                                                                        \

@@ -18,7 +18,7 @@
 namespace {
 
 std::string config_string(
-    const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
+    const rodaq::plugin::ConfigView& view, std::string_view key, std::string default_value) {
     auto child = view.find(key);
     if (!child.ok()) {
         return default_value;
@@ -28,7 +28,7 @@ std::string config_string(
 }
 
 std::int64_t config_int(
-    const rodaq::ConfigView& view, std::string_view key, std::int64_t default_value) {
+    const rodaq::plugin::ConfigView& view, std::string_view key, std::int64_t default_value) {
     auto child = view.find(key);
     if (!child.ok()) {
         return default_value;
@@ -37,9 +37,9 @@ std::int64_t config_int(
     return value.ok() ? value.value() : default_value;
 }
 
-class FakeStoragePlugin final : public rodaq::StoragePlugin {
+class FakeStoragePlugin final : public rodaq::plugin::StoragePlugin {
 public:
-    rodaq::Result<void> bind(rodaq::StorageRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::plugin::StorageContext runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -48,7 +48,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> configure(const rodaq::ConfigView& config) override {
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView& config) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
@@ -527,7 +527,7 @@ private:
         return rodaq::Status(rodaq::StatusCode::InvalidState, "fake_storage", 0, "invalid state");
     }
 
-    rodaq::StorageRuntime runtime_;
+    rodaq::plugin::StorageContext runtime_;
     Stage stage_ = Stage::Created;
     std::string scenario_ = "sync";
     std::string descriptor_scenario_ = "ready";

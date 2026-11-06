@@ -17,18 +17,18 @@ void report_failure(void*, const rodaq_status*) noexcept {}
 }  // namespace
 
 TEST(ScalarContractTest, ServiceAndInterfaceIdsMatchFrozenStrings) {
-    EXPECT_STREQ(RODAQ_RUNTIME_COMMON_SERVICE_ID, "rodaq.runtime.common.v1");
-    EXPECT_STREQ(RODAQ_RUNTIME_CANONICAL_SERVICE_ID, "rodaq.runtime.canonical.v1");
-    EXPECT_STREQ(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, "rodaq.runtime.projection.v1");
-    EXPECT_STREQ(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, "rodaq.runtime.clock_correlation.v1");
-    EXPECT_STREQ(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, "rodaq.runtime.acquisition.v1");
-    EXPECT_STREQ(RODAQ_RUNTIME_STORAGE_SERVICE_ID, "rodaq.runtime.storage.v1");
-    EXPECT_STREQ(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID, "rodaq.acquisition.control.v1");
-    EXPECT_STREQ(RODAQ_STORAGE_CONTROL_INTERFACE_ID, "rodaq.storage.control.v1");
+    EXPECT_STREQ(RODAQ_RUNTIME_COMMON_SERVICE_ID, "rodaq.runtime.common");
+    EXPECT_STREQ(RODAQ_RUNTIME_CANONICAL_SERVICE_ID, "rodaq.runtime.canonical");
+    EXPECT_STREQ(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, "rodaq.runtime.projection");
+    EXPECT_STREQ(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, "rodaq.runtime.clock_correlation");
+    EXPECT_STREQ(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, "rodaq.runtime.acquisition");
+    EXPECT_STREQ(RODAQ_RUNTIME_STORAGE_SERVICE_ID, "rodaq.runtime.storage");
+    EXPECT_STREQ(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID, "rodaq.acquisition.control");
+    EXPECT_STREQ(RODAQ_STORAGE_CONTROL_INTERFACE_ID, "rodaq.storage.control");
 }
 
-TEST(ScalarContractTest, StorageRuntimeCallbacksUseFullDiagnostics) {
-    rodaq_runtime_storage_v1 storage_service = {};
+TEST(ScalarContractTest, StorageServiceCallbacksUseFullDiagnostics) {
+    rodaq_runtime_storage storage_service = {};
     storage_service.persistence_completed = persistence_completed;
     storage_service.report_failure = report_failure;
 

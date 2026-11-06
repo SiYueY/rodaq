@@ -4,16 +4,16 @@
 #include <rodaq/plugin/abi/storage.h>
 #include <rodaq/plugin/config_view.hpp>
 #include <rodaq/plugin/plugin.hpp>
-#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/services.hpp>
 
 #include <string_view>
 
-namespace rodaq {
+namespace rodaq::plugin {
 
 class StoragePlugin {
 public:
     virtual ~StoragePlugin() = default;
-    virtual Result<void> bind(StorageRuntime runtime) = 0;
+    virtual Result<void> bind(StorageContext context) = 0;
     virtual Result<void> configure(const ConfigView& config) = 0;
     virtual Result<void> open(const rodaq_storage_open_request& request) = 0;
     virtual Result<rodaq_storage_capabilities> get_capabilities() = 0;
@@ -26,7 +26,7 @@ public:
     virtual Result<InterfaceView> query_interface(std::string_view interface_id);
 };
 
-}  // namespace rodaq
+}  // namespace rodaq::plugin
 
 namespace rodaq::plugin {
 
@@ -91,15 +91,15 @@ void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services]() -> rodaq::Result<void> {                                        \
-                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                   \
+                auto registry = rodaq::plugin::ServiceRegistryView::from_abi(*services);           \
                 if (!registry.ok()) {                                                              \
                     return registry.status();                                                      \
                 }                                                                                  \
-                auto runtime = rodaq::StorageRuntime::bind(registry.value());                      \
-                if (!runtime.ok()) {                                                               \
-                    return runtime.status();                                                       \
+                auto context = rodaq::plugin::StorageContext::bind(registry.value());              \
+                if (!context.ok()) {                                                               \
+                    return context.status();                                                       \
                 }                                                                                  \
-                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));       \
+                return static_cast<PluginType*>(instance)->bind(std::move(context.value()));       \
             },                                                                                     \
             out_status);                                                                           \
     }                                                                                              \
@@ -110,7 +110,7 @@ void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, config]() -> rodaq::Result<void> {                                          \
-                auto view = rodaq::ConfigView::from_abi(config);                                   \
+                auto view = rodaq::plugin::ConfigView::from_abi(config);                           \
                 if (!view.ok()) {                                                                  \
                     return view.status();                                                          \
                 }                                                                                  \
@@ -207,9 +207,9 @@ void write_descriptor_readiness_result(
             },                                                                                     \
             out_status);                                                                           \
     }                                                                                              \
-    const rodaq_storage_control_v1 rodaq_sdk_storage_control = {                                   \
+    const rodaq_storage_control rodaq_sdk_storage_control = {                                      \
         RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION,                                                    \
-        RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE,                                                  \
+        RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE,                                                     \
         &rodaq_sdk_storage_capabilities,                                                           \
         &rodaq_sdk_storage_ready,                                                                  \
     };                                                                                             \
@@ -227,8 +227,9 @@ void write_descriptor_readiness_result(
         if (parsed_id == required) {                                                               \
             return rodaq::plugin::invoke_interface(                                                \
                 [instance] {                                                                       \
-                    return rodaq::Result<rodaq::InterfaceView>(rodaq::InterfaceView(               \
-                        rodaq_interface{instance, &rodaq_sdk_storage_control}));                   \
+                    return rodaq::Result<rodaq::plugin::InterfaceView>(                            \
+                        rodaq::plugin::InterfaceView(                                              \
+                            rodaq_interface{instance, &rodaq_sdk_storage_control}));               \
                 },                                                                                 \
                 out_interface, out_status);                                                        \
         }                                                                                          \

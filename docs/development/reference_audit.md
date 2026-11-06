@@ -62,7 +62,7 @@ it on a production or development path.
 - **RoDAQ differences:** dispatch, operation, completion, Payload class,
   release-work, quarantine, and activation-root capacities are independently
   owned.
-- **Evidence:** `RuntimeConfig` validation, `ResourceBudget`, Payload class
+- **Evidence:** `DAQConfig` validation, `ResourceBudget`, Payload class
   exhaustion tests, and capacity benchmarks.
 
 ### R-003 - Fixed-size Payload pools with size classes

@@ -1,4 +1,5 @@
 #include "plugin/config_view.hpp"
+#include "config/config_internal.hpp"
 
 #include <gtest/gtest.h>
 
@@ -47,7 +48,7 @@ ConfigTree make_nested_tree() {
 }  // namespace
 
 TEST(ConfigViewTest, SupportsNullScalarsAndEmptyContainers) {
-    EXPECT_EQ(RODAQ_CONFIG_NULL, ConfigTree::null().view().kind());
+    EXPECT_EQ(rodaq::ConfigKind::Null, ConfigTree::null().view().kind());
 
     EXPECT_EQ(true, take(ConfigTree::boolean(true).view().as_bool()));
     EXPECT_EQ(false, take(ConfigTree::boolean(false).view().as_bool()));
@@ -69,8 +70,8 @@ TEST(ConfigViewTest, SupportsNullScalarsAndEmptyContainers) {
 
     const ConfigTree empty_map = take(ConfigTree::map({}));
     const ConfigTree empty_list = take(ConfigTree::list({}));
-    EXPECT_EQ(RODAQ_CONFIG_MAP, empty_map.view().kind());
-    EXPECT_EQ(RODAQ_CONFIG_LIST, empty_list.view().kind());
+    EXPECT_EQ(rodaq::ConfigKind::Map, empty_map.view().kind());
+    EXPECT_EQ(rodaq::ConfigKind::List, empty_list.view().kind());
     EXPECT_EQ(0U, empty_map.view().size());
     EXPECT_EQ(0U, empty_list.view().size());
 }
@@ -78,11 +79,11 @@ TEST(ConfigViewTest, SupportsNullScalarsAndEmptyContainers) {
 TEST(ConfigViewTest, SupportsNestedMapListMapAndStableOrdering) {
     ConfigTree tree = make_nested_tree();
     const ConfigNodeView root = tree.view();
-    EXPECT_EQ(RODAQ_CONFIG_MAP, root.kind());
+    EXPECT_EQ(rodaq::ConfigKind::Map, root.kind());
     EXPECT_EQ(7U, root.size());
 
     const ConfigNodeView items = take(root.find("items"));
-    EXPECT_EQ(RODAQ_CONFIG_LIST, items.kind());
+    EXPECT_EQ(rodaq::ConfigKind::List, items.kind());
     ASSERT_EQ(3U, items.size());
     EXPECT_EQ(1, take(take(items.at(0)).as_int64()));
     EXPECT_EQ(2, take(take(items.at(1)).as_int64()));
@@ -161,7 +162,7 @@ TEST(ConfigViewTest, BorrowedViewsOutliveTreeOwner) {
 
 TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
     ConfigTree tree = make_nested_tree();
-    const rodaq_config_view root = tree.view().abi_view();
+    const rodaq_config_view root = rodaq::config_abi_view(tree.view());
     ASSERT_NE(nullptr, root.context);
     ASSERT_NE(nullptr, root.vtable);
     EXPECT_EQ(RODAQ_CONFIG_PROTOCOL_VERSION, root.vtable->protocol_version);
@@ -196,7 +197,7 @@ TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
 
 TEST(ConfigViewTest, AbiAdapterRejectsNullOutputsAndClearsFailedOutputs) {
     ConfigTree tree = make_nested_tree();
-    const rodaq_config_view root = tree.view().abi_view();
+    const rodaq_config_view root = rodaq::config_abi_view(tree.view());
     rodaq_status error{};
 
     EXPECT_EQ(
@@ -204,7 +205,7 @@ TEST(ConfigViewTest, AbiAdapterRejectsNullOutputsAndClearsFailedOutputs) {
         root.vtable->find(root.context, rodaq_string_view{"items", 5}, nullptr, &error));
     EXPECT_NE(0U, error.message_size);
 
-    rodaq_config_view child = take(tree.view().find("items")).abi_view();
+    rodaq_config_view child = rodaq::config_abi_view(take(tree.view().find("items")));
     EXPECT_EQ(RODAQ_STATUS_NOT_FOUND, root.vtable->at(root.context, 99, &child, &error));
     EXPECT_EQ(nullptr, child.context);
     EXPECT_EQ(nullptr, child.vtable);

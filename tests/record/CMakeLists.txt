@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_accepted_record_test record.accepted accepted_record_test.cpp)

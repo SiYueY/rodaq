@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control.v1"
+#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control"
 
 typedef uint32_t rodaq_storage_close_disposition;
 
@@ -71,7 +71,7 @@ typedef struct rodaq_descriptor_readiness_result {
 #define RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
 /* ABI-APPENDABLE: required Storage control interface table. */
-typedef struct rodaq_storage_control_v1 {
+typedef struct rodaq_storage_control {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -82,7 +82,7 @@ typedef struct rodaq_storage_control_v1 {
     rodaq_status_code (*ensure_descriptor_ready)(
         void* context, rodaq_stream_descriptor_handle descriptor,
         rodaq_descriptor_readiness_result* out_result, rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_storage_control_v1;
+} rodaq_storage_control;
 
 /* ABI-APPENDABLE: Storage open request. */
 typedef struct rodaq_storage_open_request {
@@ -183,9 +183,9 @@ struct rodaq_storage_plugin {
     (offsetof(rodaq_descriptor_readiness_result, failure) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_descriptor_readiness_result, failure))
 
-#define RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE                   \
-    (offsetof(rodaq_storage_control_v1, ensure_descriptor_ready) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_storage_control_v1, ensure_descriptor_ready))
+#define RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE                   \
+    (offsetof(rodaq_storage_control, ensure_descriptor_ready) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_storage_control, ensure_descriptor_ready))
 
 #define RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE      \
     (offsetof(rodaq_storage_open_request, target_uri) + \

@@ -59,7 +59,7 @@ Implementation sequence:
 - M4: FastDDS Acquisition + the same MCAP interoperability path.
 - M5: production hardening + release qualification.
 
-FastDDS is implemented directly on Fast DDS / Fast CDR, uses DDS-Pipe and DDS Record & Replay as source-level references, and must not require a ROS2 runtime on the recording host. ROS2 and FastDDS Acquisition must produce the same versioned `rodaq.projection.ros2.v1` contract for MCAP Storage.
+FastDDS is implemented directly on Fast DDS / Fast CDR, uses DDS-Pipe and DDS Record & Replay as source-level references, and must not require a ROS2 runtime on the recording host. ROS2 and FastDDS Acquisition must produce the same versioned `rodaq.projection.ros2` contract for MCAP Storage.
 
 ROS2 Acquisition and FastDDS Acquisition are required V1 alternatives, not a requirement for same-process co-activation. Unless Fast DDS/Fast CDR dependency coexistence is explicitly qualified, treat simultaneous activation as unsupported because both plugins may bring incompatible Fast DDS/Fast CDR DSOs into one process namespace.
 
@@ -107,6 +107,10 @@ Generic DDS, SocketCAN, SQLite3 and other backends remain architecture/design ta
 - Keep implementation in `src/`; public/installable contracts belong in `include/rodaq/`.
 - Stable C Plugin ABI headers live under `include/rodaq/plugin/abi/`; the C++17 Plugin SDK belongs under `include/rodaq/plugin/`.
 - Avoid implementation-heavy headers unless templates or compile-time requirements make them necessary.
+- Default project C++ namespace is `rodaq`; use `rodaq::plugin` only for the
+  Plugin subsystem. Do not introduce generalized `detail`, `internal` or `impl`
+  namespaces. Public/private boundaries are enforced by installed headers, CMake
+  ownership and symbol visibility.
 - Optimize only after a representative benchmark or profile identifies a bottleneck.
 - Do not weaken correctness, boundedness, shutdown, or ABI contracts for a local performance optimization.
 - This project is pre-release: do not preserve obsolete implementation compatibility unless a frozen V1 contract explicitly requires it.

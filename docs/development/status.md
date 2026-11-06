@@ -32,6 +32,64 @@ claim real MCAP/filesystem/NVMe production capacity; that remains M5 work.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
 
+## 2026-11-06 Core implementation structure and naming closure
+
+Status: **PASS — local Debug, Release, ASan/LSan, UBSan, Ubuntu 24.04, ABI,
+installation and capacity qualification complete. Hosted qualification is
+PENDING. M2 functional PASS remains valid. M3 is NOT STARTED.**
+
+The pre-M3 source-layout migration is implemented:
+
+- Public application API is `rodaq::DAQ` with `DAQConfig`, `DAQState`,
+  `DAQStats`, `DAQLatencyStats` and `DAQLifecycleSnapshot`.
+- Public C++ lifecycle/config surfaces do not return Stable C ABI types.
+- C++ and logical configuration use `acquisition_id`; Storage ABI field
+  `session_id` remains unchanged for ABI compatibility.
+- Internal implementation defaults to namespace `rodaq`; Plugin subsystem
+  implementation uses `rodaq::plugin`; no generalized `detail`, `internal` or
+  `impl` namespace exists.
+- `DAQ::Impl` is one private Pimpl type implemented by `daq.cpp`,
+  `lifecycle.cpp` and `recovery.cpp`.
+- `ActivationState` is the approximately 460-line activation aggregate root;
+  Canonical registration/descriptor/availability, Binding, Admission submission,
+  Plugin service adaptation, Logging and Metrics implementations are in their
+  owning domain files.
+- `AcceptedRecord`, `TimestampState` and `AcceptanceSequenceAllocator` have
+  Record, Canonical and Admission ownership respectively.
+- `src/runtime`, `include/rodaq/runtime`, `tests/runtime`, `src/sdk`, `failure`,
+  `resource` and `observability` source-layout paths are removed.
+- Shared DAQ target is `rodaq::daq` / `librodaq.so`. `rodaq::sdk` is a real
+  static implementation target. `rodaq_plugin`, `rodaq_objects` and
+  `rodaq_testing` remain internal and are not installed.
+- ABI type, macro and protocol source names no longer contain version suffixes;
+  numeric protocol-version negotiation remains.
+
+Local evidence:
+
+- GCC 11.4.0 Debug with warnings-as-errors: full build PASS; **96/96 CTest
+  PASS**, including ABI layout/minimum-prefix/scalar/symbol, installed DAQ and
+  Plugin SDK consumers, Fake end-to-end pipeline, quarantine and stress coverage.
+- GCC 11.4.0 Release with tests and benchmarks enabled: full build PASS and
+  **96/96 CTest PASS**.
+- GCC 11.4.0 ASan+LSan and UBSan: **96/96 CTest PASS** in each build.
+- Clang 14 TSan selected concurrency suites: **10/10 CTest PASS**.
+- Ubuntu 24.04.4 / GCC 13.3 Release with warnings-as-errors: **96/96 CTest
+  PASS**, including installed consumers and DSO symbol closure.
+- Release camera, joint and mixed capacity profiles passed three repetitions.
+  Median per-joint acceptance is 99,970 Records/s, raw-camera bandwidth
+  854.9 MB/s, and raw mixed bandwidth 908.4 MB/s, with no resource or shutdown
+  gate regression. Details are recorded in `capacity_qualification.md`.
+- The project clang-format and clang-tidy check covers 211 files, 131
+  translation units, all public headers and installed consumers: PASS.
+- `nm -D -C` audit and a linker export map show only `rodaq::DAQ` application
+  methods exported; `DAQ::Impl`, Activation, Registry, PayloadPool,
+  StoragePipeline, fmt/spdlog/yaml/HdrHistogram symbols remain hidden.
+- Dependency inventory has seven pinned submodules, no unselected oneTBB or
+  mimalloc checkout, and no third-party include in installed headers.
+
+The pre-M3 structural closure is locally complete. Hosted CI must rerun before
+it is cited as externally qualified. M3 remains NOT STARTED.
+
 ## Current repository state
 
 M0-A Review Closure, M0-B Stable C Plugin ABI, M0-C Plugin Loading + Lifetime,
@@ -41,7 +99,7 @@ contains:
 
 - a C++17 CMake project foundation,
 - warning, sanitizer, CTest, dependency and install support,
-- Public `rodaq::Error` and `rodaq::Result<T>` primitives,
+- Public `rodaq::Status` and `rodaq::Result<T>` primitives,
 - eight Stable C ABI headers under `include/rodaq/plugin/abi/`, with
   `common.h` as the shared primitive header,
 - C11/C++17 ABI compilation, layout, minimum-prefix and symbol qualification,
@@ -49,7 +107,7 @@ contains:
 - private DSO and instance lease ownership with bounded normal unload behavior,
 - catalog/manager orchestration and explicit quarantine retention,
 - pinned dependency submodules with no normal-build network access,
-- installed-header validation for `rodaq::Error`, `rodaq::Result<T>` and the
+- installed-header validation for `rodaq::Status`, `rodaq::Result<T>` and the
   C++17 Plugin SDK,
 - a complete C++17 Acquisition / Storage Plugin SDK,
 - Runtime Service wrappers with invalid-state protection,
@@ -60,8 +118,8 @@ contains:
   readiness,
 - bounded Runtime handles, generation-protected Registry, PMR Structural Arena,
   Payload/PayloadView/PayloadPool with Copy/Adopt/Retain lifetime anchors,
-  ResourceBudget/Reservation, AdmissionGate, RuntimeRecord,
-  AcceptanceSequenceAllocator, RuntimeStats, HdrHistogram latency wrapper and a
+  ResourceBudget/Reservation, AdmissionGate, AcceptedRecord,
+  AcceptanceSequenceAllocator, StatsAccumulator, HdrHistogram latency wrapper and a
   no-throw Logger facade.
 
 `third_party/` contains seven tracked pinned submodules: the five required
@@ -107,7 +165,7 @@ The reviewed convergence baseline is implemented:
 - Multi-size isolated Payload classes with exhaustion/physical/HWM statistics.
 - Runtime-owned byte/record bounded asynchronous logging with Plugin routing,
   backend exception containment and quarantine.
-- Public `RuntimeConfig/ResourceConfig/PluginConfig/StorageConfig`, installed
+- Public `DAQConfig/ResourceConfig/AcquisitionPluginConfig/StoragePluginConfig`, installed
   shared Runtime and external consumer smoke.
 - YAML ConfigLoader with pre-read file limit and post-parse depth/node/duplicate
   validation.
@@ -344,7 +402,7 @@ Structural convergence validation:
 - Quarantine now has a bounded process-lifetime owner with joinable worker
   reaping and fixed call/activation capacities. The 32 process-wide activation
   roots include healthy and quarantined activations; exhaustion makes
-  `Runtime::Start()` return `ResourceExhausted`. No `detach()` or lost
+  `DAQ::start()` return `ResourceExhausted`. No `detach()` or lost
   `std::thread::release()` path remains.
 
 ## Not started
@@ -694,7 +752,7 @@ M1 Runtime Core Primitives closure validation:
 
 M1 closure review answers:
 
-1. Yes. RuntimeRecord uses `BindingHandle` as its sole Binding/Descriptor anchor.
+1. Yes. AcceptedRecord uses `BindingHandle` as its sole Binding/Descriptor anchor.
 2. No. Timestamp slots contain only presence and signed values.
 3. No. AdmissionGate reports pre-commit `Granted`, never final Accepted.
 4. No. UINT64_MAX is terminal; Gate reopening is refused after exhaustion.
@@ -844,7 +902,7 @@ M2 final review answers:
 - GCC 11.4.0 Release with warnings-as-errors: full build and **93/93 CTest
   passed**.
 - Ubuntu 24.04 container with GCC 13.3.0: full build and **93/93 CTest passed**,
-  including installed Runtime/Plugin consumers and Runtime DSO closure checks.
+  including installed DAQ/Plugin consumers and DAQ DSO closure checks.
 - Previously recorded Clang 14 TSan under `setarch x86_64 -R` (not accepted
   as final evidence: pipeline disabled thread-leak reporting): admission, PayloadPool,
   observability, logging, Registry, quarantine, StoragePipeline, M1 integration
@@ -854,7 +912,7 @@ M2 final review answers:
 - `clang-format 14 --dry-run --Werror` passed for changed/new C/C++ files;
   `git diff --check` passed; source search found no `detach`,
   `recursive_mutex`, or Runtime thread `.release()`.
-- Runtime DSO dynamic exports are limited to `rodaq::runtime::Runtime`; private
+- DAQ DSO dynamic exports are limited to `rodaq::DAQ`; private
   fmt/spdlog/yaml/HdrHistogram symbols and `DT_NEEDED` entries are absent.
 - Capacity evidence is recorded in
   `docs/development/capacity_qualification.md`. Key Release results:
@@ -923,7 +981,7 @@ remains DEFERRED under D-034. Detailed evidence is in `review_report.md` and
 
 ## 2026-11-05 C++ coding standards review — COMPLETE / local PASS
 
-Project-owned C++ functions, including the Runtime Application Candidate and
+Project-owned C++ functions, including the DAQ Application Candidate and
 Plugin SDK authoring hooks, use snake_case. D-056 deliberately supersedes the
 SDK source-name freeze in D-033: existing C++ applications and Plugin sources
 must migrate and rebuild; C++ Runtime symbols changed. Stable C Plugin ABI
@@ -951,8 +1009,8 @@ qualification is PENDING**. Native arm64 remains DEFERRED under D-034.
 ## 2026-11-05 Declaration / implementation separation
 
 After the C++ naming review, non-template SDK service, configuration and
-validation implementations were moved to `src/sdk/` and linked through the
-existing static `rodaq_foundation` dependency of `rodaq::sdk`. Selected internal
+validation implementations were moved to `src/plugin/` and linked through the
+existing static `rodaq_api_support` dependency of `rodaq::sdk`. Selected internal
 Runtime definitions were moved to their corresponding `.cpp` files. Templates,
 `constexpr`, Plugin entrypoint/trampoline definitions and public Runtime inline
 accessors needed for the existing hidden-visibility linking contract remain in
@@ -1077,7 +1135,7 @@ aliases are retained; callers must migrate and rebuild.
 Debug warnings-as-errors, ASan/LSan and UBSan full suites: 96/96 each. Clang 14
 TSan subset with thread-leak detection: 10/10. Clang-format/clang-tidy 14:
 191 files, 117 TUs, 26 C++ headers, 8 C ABI headers in both languages and
-5 install consumers PASS. The updated installed Runtime consumer also passes.
+5 install consumers PASS. The updated installed DAQ consumer also passes.
 New assertions cover no primary failure across a healthy lifecycle and exact
 Quarantine failure diagnostics. The initial sandbox ASan run encountered LSan's
 ptrace restriction and was stopped; the complete run outside the sandbox passed

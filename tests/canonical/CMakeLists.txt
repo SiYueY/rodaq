@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_handle_registry_test canonical.registry registry_test.cpp)

@@ -22,7 +22,7 @@ void run_camera_profile(benchmark::State& state, std::size_t frame_bytes, std::s
     const std::size_t capacity = record_capacity(kCameraCount * kCameraFps);
     const std::uint64_t expected_records = kCameraCount * kRecordsPerStream;
     const std::uint64_t expected_bytes = expected_records * frame_bytes;
-    auto config = runtime_config(
+    auto config = daq_config(
         std::move(name), {PayloadClassConfig{frame_bytes, capacity}}, capacity,
         capacity * frame_bytes, kCameraCount,
         {acquisition(kCameraCount, kRecordsPerStream, frame_bytes, 1'000'000'000U / kCameraFps)});

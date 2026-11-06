@@ -141,7 +141,7 @@ lock model
 queue implementation
 queue capacity
 
-RuntimeRecord physical layout
+AcceptedRecord physical layout
 SourceHandle physical type
 DescriptorHandle physical type
 RoleHandle physical type
@@ -366,7 +366,7 @@ Storage Descriptor Readiness
 V1 required projection：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 它只服务外部 interoperability：
@@ -1426,7 +1426,7 @@ V1 必须存在一个唯一的 logical Activation Commit boundary。
 该 boundary 保证：
 
 ```text
-normal Plugin callback may call Runtime::submit
+normal Plugin callback may call DAQ::submit
     ⇒
 Runtime is logically Running
 AND
@@ -1655,7 +1655,7 @@ future Records
 
 ```text
 active submission call
-    = 已进入 Runtime::submit、但可能尚未 Gate-pass 的 API execution lifetime
+    = 已进入 DAQ::submit、但可能尚未 Gate-pass 的 API execution lifetime
 
 admission in-flight attempt
     = 已 Gate-pass、尚未达到 terminal admission outcome 的 Canonical attempt lifetime
@@ -1701,7 +1701,7 @@ PreAdmissionRejected / lifecycle termination
 no AcceptanceSequence
 ```
 
-已经进入 `Runtime::submit` 的 pre-gate call 仍必须安全返回；因此仅等待 `admission_in_flight == 0` 不足以允许 teardown。
+已经进入 `DAQ::submit` 的 pre-gate call 仍必须安全返回；因此仅等待 `admission_in_flight == 0` 不足以允许 teardown。
 
 ### Pre-cutoff Gate-passed Attempt
 
@@ -1735,7 +1735,7 @@ Runtime failure disposition
 
 ### Acquisition Plugin Stop
 
-Plugin quiescence 与 Plugin Stop 是两个不同阶段。V1 Stable Plugin Contract 中，前者具体对应 required `rodaq.acquisition.control.v1::quiesce_plugin()`：
+Plugin quiescence 与 Plugin Stop 是两个不同阶段。V1 Stable Plugin Contract 中，前者具体对应 required `rodaq.acquisition.control::quiesce_plugin()`：
 
 ```text
 quiesce_plugin()
@@ -2960,7 +2960,7 @@ ID allocation
 runtime handles
 Stream runtime state
 Runtime Binding
-RuntimeRecord
+AcceptedRecord
 Descriptor handoff
 Control/Data synchronization
 thread-safety contract
@@ -3166,11 +3166,11 @@ Canonical Data Model
 System Architecture 不冻结：
 
 ```text
-exact RuntimeState enum
+exact DAQState enum
 C++ public API
 Result type
 Error code
-RuntimeRecord physical layout
+AcceptedRecord physical layout
 
 SourceHandle width
 DescriptorHandle width

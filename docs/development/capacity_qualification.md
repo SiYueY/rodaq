@@ -257,3 +257,26 @@ was 99,979 vs 99,979 Records/s, raw mixed
 100,275 vs 100,249, and the small-record
 pipeline 406,610 vs 418,186. These are
 uncontrolled host observations with unchanged pass thresholds.
+
+## 2026-11-06 Core structure and naming migration qualification
+
+The Release benchmark suite was run for three repetitions after the DAQ SLO
+naming and domain source split. All profiles retained their accepted-count,
+zero-rejection/WaitTimeout, bounded high-water and Stop-convergence gates.
+Median observations on the same GCC 11 / amd64 class of host:
+
+| Profile | Accepted Records/s | Accepted MB/s | Persistence p99 / p99.9 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|---:|
+| bm_encoded_camera10x720p30 | 310 | 63.5 | 185.5 / 198.3 | 10 | 926.2 |
+| bm_raw_camera10x720p30 | 309 | 854.9 | 161.4 / 261.4 | 4 | 716.8 |
+| bm_per_joint100_streams1k_hz | 99,970 | 80.0 | 177.0 / 885.2 | 105 | 2,073.6 |
+| bm_aggregated_robot_state1k_hz | 1,000 | 80.0 | 109.4 / 132.4 | 1 | 409.6 |
+| run_encoded_aggregated | 1,300 | 141.4 | 129.3 / 163.2 | 4 | 641.5 |
+| run_raw_per_joint | 100,182 | 908.4 | 39.7 / 465.9 | 98 | 2,034.7 |
+
+Compared with the preceding Result<void> qualification medians, per-joint
+acceptance is 99,970 vs 99,979 Records/s, raw-camera bandwidth 854.9 vs
+851.8 MB/s, and raw mixed bandwidth 908.4 vs 905.7 MB/s. The migration therefore
+shows no unexplained throughput regression. Host CPU frequency and scheduling
+remain uncontrolled; these results are comparative capacity evidence, not a
+real backend/filesystem performance guarantee. M3 remains NOT STARTED.

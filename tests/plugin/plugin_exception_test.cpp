@@ -1,5 +1,5 @@
 #include <rodaq/plugin/plugin.hpp>
-#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/services.hpp>
 
 #include <gtest/gtest.h>
 
@@ -50,21 +50,23 @@ TEST(PluginExceptionTest, InterfaceTrampolineNeverReturnsOkWithNullInterface) {
     rodaq_interface interface {};
     rodaq_status error{};
     const rodaq_status_code status = rodaq::plugin::invoke_interface(
-        []() -> rodaq::Result<rodaq::InterfaceView> { return rodaq::InterfaceView{}; }, &interface,
-        &error);
+        []() -> rodaq::Result<rodaq::plugin::InterfaceView> {
+            return rodaq::plugin::InterfaceView{};
+        },
+        &interface, &error);
 
     EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, status);
     EXPECT_EQ(nullptr, interface.context);
     EXPECT_EQ(nullptr, interface.vtable);
 }
 
-TEST(PluginExceptionTest, DefaultRuntimeWrappersFailWithoutDereferencingNull) {
-    rodaq::CommonRuntimeService common;
-    rodaq::CanonicalRuntimeService canonical;
-    rodaq::ProjectionRuntimeService projection;
-    rodaq::ClockCorrelationRuntimeService clock;
-    rodaq::AcquisitionRuntimeService acquisition;
-    rodaq::StorageRuntimeService storage;
+TEST(PluginExceptionTest, DefaultServiceWrappersFailWithoutDereferencingNull) {
+    rodaq::plugin::CommonService common;
+    rodaq::plugin::CanonicalService canonical;
+    rodaq::plugin::ProjectionService projection;
+    rodaq::plugin::ClockCorrelationService clock;
+    rodaq::plugin::AcquisitionService acquisition;
+    rodaq::plugin::StorageService storage;
 
     EXPECT_FALSE(common.valid());
     EXPECT_FALSE(canonical.valid());

@@ -815,7 +815,7 @@ V1 数据路径：
 
 ```text
 ROS2 Acquisition ─────┐
-                      ├─ Canonical Descriptor + rodaq.projection.ros2.v1
+                      ├─ Canonical Descriptor + rodaq.projection.ros2
 FastDDS Acquisition ──┘
                                    ↓
                          Runtime Projection Registry
@@ -831,7 +831,7 @@ FastDDS Acquisition ──┘
 - Runtime 只管理 projection identifier/version、ownership、immutability、bounds 与 descriptor association，不解释 ROS2 QoS 业务语义；
 - projection 只在 Control Plane 注册，不进入每条 Record 的 hot path；
 - projection 与 Canonical Descriptor 冲突时必须拒绝，不能静默选一个；
-- V1 required `rodaq.projection.ros2.v1` 由 ROS2/FastDDS 两个 Acquisition 产生同一逻辑 contract，MCAP Storage 只消费统一 projection；
+- V1 required `rodaq.projection.ros2` 由 ROS2/FastDDS 两个 Acquisition 产生同一逻辑 contract，MCAP Storage 只消费统一 projection；
 - future Generic DDS、SocketCAN、MDF 等可以定义其它 typed projection，而不修改 Canonical State，也不引入 Generic PropertyBag。
 
 这使 V1 能同时满足：
@@ -1041,7 +1041,7 @@ rodaq/
 │   ├── admission_benchmark.cpp
 │   ├── payload_benchmark.cpp
 │   ├── registry_benchmark.cpp
-│   ├── runtime_pipeline_benchmark.cpp
+│   ├── daq_pipeline_benchmark.cpp
 │   └── joint_pipeline_benchmark.cpp
 │
 ├── packaging/
@@ -1127,10 +1127,10 @@ Runtime internals
 推荐：
 
 ```text
-include/rodaq/runtime/runtime.hpp
-src/runtime/runtime.cpp
-src/runtime/runtime_state.hpp
-src/runtime/admission.hpp
+include/rodaq/daq.hpp
+src/daq/daq.cpp
+src/activation/activation_state.*
+src/admission.hpp
 ```
 
 而不是为了 `include/` / `src/` 机械对称，把所有 private header 都放进 `include/`。
@@ -1590,7 +1590,7 @@ Activation / Session lifetime
 
 Record lifetime
     AdmissionReservation
-    RuntimeRecord
+    AcceptedRecord
     Payload
     Dispatch ownership
     Completion ownership
@@ -1605,7 +1605,7 @@ Record
     可以引用 immutable StreamDescriptor
 
 StreamDescriptor
-    不能引用某个 transient RuntimeRecord
+    不能引用某个 transient AcceptedRecord
 ```
 
 Stop 时必须：
@@ -1813,7 +1813,7 @@ StreamHandle
       ↓
 dense table lookup
       ↓
-StreamRuntimeState
+StreamDAQState
 ```
 
 核心 Handle：
@@ -1914,7 +1914,7 @@ Record 进入 Accepted 前，必须已经获得后续正常路径需要的资源
 ```text
 Payload bytes
 Payload object
-RuntimeRecord
+AcceptedRecord
 Dispatch permit
 Completion bookkeeping
 Storage inflight permit（如果 Storage contract 需要）
@@ -2143,7 +2143,7 @@ Runtime 对 Record 的最终收敛负责
 ```text
 1. payload object
 2. payload bytes
-3. RuntimeRecord
+3. AcceptedRecord
 4. dispatch slot
 5. completion slot
 6. storage inflight
@@ -2587,7 +2587,7 @@ class CompletionQueue;
 Admission Accepted 后：
 
 ```text
-RuntimeRecord
+AcceptedRecord
 +
 Payload
 +
@@ -2743,7 +2743,7 @@ operation state transition
 payload release
 storage inflight release
 completion permit release
-RuntimeRecord release
+AcceptedRecord release
 metrics
 failure propagation
 ```
@@ -3372,7 +3372,7 @@ no Plugin worker 使用 Acquisition Runtime service
 V1 还要求 Acquisition Plugin 暴露 required control interface：
 
 ```text
-rodaq.acquisition.control.v1
+rodaq.acquisition.control
 ```
 
 用于跨 DSO 表达：
@@ -3496,7 +3496,7 @@ callback after close/quiescence
 Storage V1 还要求 required control interface：
 
 ```text
-rodaq.storage.control.v1
+rodaq.storage.control
 ```
 
 用于：
@@ -3548,12 +3548,12 @@ Plugin → Runtime
 稳定 Service ID：
 
 ```text
-rodaq.runtime.common.v1
-rodaq.runtime.canonical.v1
-rodaq.runtime.projection.v1
-rodaq.runtime.clock_correlation.v1
-rodaq.runtime.acquisition.v1
-rodaq.runtime.storage.v1
+rodaq.runtime.common
+rodaq.runtime.canonical
+rodaq.runtime.projection
+rodaq.runtime.clock_correlation
+rodaq.runtime.acquisition
+rodaq.runtime.storage
 ```
 
 命名规则：
@@ -3596,7 +3596,7 @@ immutable activation-lifetime projection ownership
 bounded projection storage
 ```
 
-V1 required projection 为 `rodaq.projection.ros2.v1`。Acquisition 在 Control Plane 注册，Storage 只读查询。
+V1 required projection 为 `rodaq.projection.ros2`。Acquisition 在 Control Plane 注册，Storage 只读查询。
 
 ### Clock Correlation Runtime Service
 
@@ -3620,8 +3620,8 @@ asynchronous Storage failure reporting
 未来增加：
 
 ```text
-rodaq.runtime.metrics.v1
-rodaq.runtime.memory.v1
+rodaq.runtime.metrics
+rodaq.runtime.memory
 ```
 
 原则上不需要修改 Acquisition / Storage core protocol。
@@ -3646,8 +3646,8 @@ V1 分为 required control interface 与 optional feature extension。
 Required：
 
 ```text
-rodaq.acquisition.control.v1
-rodaq.storage.control.v1
+rodaq.acquisition.control
+rodaq.storage.control
 ```
 
 它们是 V1 correctness contract 的组成部分；family Plugin 缺失 required control interface 属于 protocol incompatibility。
@@ -3655,11 +3655,11 @@ rodaq.storage.control.v1
 Optional：
 
 ```text
-rodaq.acquisition.discovery.v1
-rodaq.acquisition.pause.v1
+rodaq.acquisition.discovery
+rodaq.acquisition.pause
 
-rodaq.storage.rotation.v1
-rodaq.storage.durability.v1
+rodaq.storage.rotation
+rodaq.storage.durability
 ```
 
 Plugin interface set（包括 optional extension interfaces）在 bind 后冻结，
@@ -5731,8 +5731,8 @@ NOT_FOUND
 invalid-type access
 ConfigView lifetime
 
-required rodaq.acquisition.control.v1 present / protocol / minimum-prefix / required-slot validation
-required rodaq.storage.control.v1 present / protocol / minimum-prefix / required-slot validation
+required rodaq.acquisition.control present / protocol / minimum-prefix / required-slot validation
+required rodaq.storage.control present / protocol / minimum-prefix / required-slot validation
 
 Runtime lifecycle snapshot:
     bounded query
@@ -5930,15 +5930,15 @@ Payload
 PayloadView
 PayloadPool
 
-RuntimeRecord
+AcceptedRecord
 
-RuntimeStats
+StatsAccumulator
 LatencyHistogram
 
 Logger facade
 ```
 
-M1 ResourceBudget 覆盖 RuntimeRecord slots 与 logical Payload bytes；
+M1 ResourceBudget 覆盖 AcceptedRecord slots 与 logical Payload bytes；
 PayloadPool 独立约束 physical block count / bytes。Dispatch slots、
 completion bookkeeping 与 Storage inflight 维度随其对应的 M2 机制一起引入，
 并在引入时遵守同一 all-or-nothing reservation / reverse rollback 规则。
@@ -6005,7 +6005,7 @@ Payload ownership implementation
 
 PayloadPool
 
-RuntimeRecord representation
+AcceptedRecord representation
 
 metrics counters / high-water marks
 

@@ -1,5 +1,6 @@
 #include <rodaq/config/config.hpp>
 
+#include <rodaq/plugin/abi/config.h>
 #include <rodaq/plugin/abi_support.hpp>
 
 #include <rodaq/status.hpp>
@@ -328,8 +329,27 @@ rodaq_config_view make_abi_view(const ConfigNode* node) noexcept {
 
 ConfigNodeView::ConfigNodeView(std::shared_ptr<const ConfigNode> node) : node_(std::move(node)) {}
 
-rodaq_config_kind ConfigNodeView::kind() const noexcept {
-    return node_ == nullptr ? RODAQ_CONFIG_NULL : abi_kind(*node_);
+ConfigKind ConfigNodeView::kind() const noexcept {
+    if (node_ == nullptr) {
+        return ConfigKind::Null;
+    }
+    switch (abi_kind(*node_)) {
+        case RODAQ_CONFIG_NULL:
+            return ConfigKind::Null;
+        case RODAQ_CONFIG_BOOL:
+            return ConfigKind::Boolean;
+        case RODAQ_CONFIG_INT64:
+            return ConfigKind::Int64;
+        case RODAQ_CONFIG_DOUBLE:
+            return ConfigKind::Float64;
+        case RODAQ_CONFIG_STRING:
+            return ConfigKind::String;
+        case RODAQ_CONFIG_MAP:
+            return ConfigKind::Map;
+        case RODAQ_CONFIG_LIST:
+            return ConfigKind::List;
+    }
+    return ConfigKind::Null;
 }
 
 std::size_t ConfigNodeView::size() const noexcept {
@@ -422,7 +442,14 @@ Result<std::string_view> ConfigNodeView::as_string() const {
     return std::string_view(*value);
 }
 
-rodaq_config_view ConfigNodeView::abi_view() const noexcept { return make_abi_view(node_.get()); }
+class ConfigNodeAccess final {
+public:
+    static const ConfigNode* get(const ConfigNodeView& view) noexcept { return view.node_.get(); }
+};
+
+rodaq_config_view config_abi_view(const ConfigNodeView& view) noexcept {
+    return make_abi_view(ConfigNodeAccess::get(view));
+}
 
 ConfigTree::ConfigTree(std::shared_ptr<const ConfigNode> root) : root_(std::move(root)) {}
 

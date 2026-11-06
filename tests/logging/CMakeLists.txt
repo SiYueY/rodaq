@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_logging_context_test logging.context logging_context_test.cpp)

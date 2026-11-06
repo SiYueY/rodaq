@@ -1,6 +1,0 @@
-#ifndef RODAQ_RUNTIME_RUNTIME_FORWARD_HPP_
-#define RODAQ_RUNTIME_RUNTIME_FORWARD_HPP_
-
-#include <rodaq/runtime/runtime.hpp>
-
-#endif  // RODAQ_RUNTIME_RUNTIME_FORWARD_HPP_

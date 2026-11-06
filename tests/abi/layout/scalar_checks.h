@@ -16,14 +16,14 @@ RODAQ_TEST_STATIC_ASSERT(RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION == UINT32_C(1), "
 RODAQ_TEST_STATIC_ASSERT(
     RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION == UINT32_C(1), "Canonical version");
 RODAQ_TEST_STATIC_ASSERT(
-    RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION == UINT32_C(1), "Projection Runtime version");
+    RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION == UINT32_C(1), "Projection DAQ version");
 RODAQ_TEST_STATIC_ASSERT(
     RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION == UINT32_C(1),
-    "Clock correlation Runtime version");
+    "Clock correlation DAQ version");
 RODAQ_TEST_STATIC_ASSERT(
-    RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION == UINT32_C(1), "Acquisition Runtime version");
+    RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION == UINT32_C(1), "Acquisition DAQ version");
 RODAQ_TEST_STATIC_ASSERT(
-    RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION == UINT32_C(1), "Storage Runtime version");
+    RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION == UINT32_C(1), "Storage DAQ version");
 RODAQ_TEST_STATIC_ASSERT(RODAQ_CONFIG_PROTOCOL_VERSION == UINT32_C(1), "Config version");
 RODAQ_TEST_STATIC_ASSERT(RODAQ_ACQUISITION_PROTOCOL_VERSION == UINT32_C(1), "Acquisition version");
 RODAQ_TEST_STATIC_ASSERT(
@@ -134,29 +134,27 @@ RODAQ_TEST_STATIC_ASSERT(RODAQ_DESCRIPTOR_UNSUPPORTED == UINT32_C(2), "descripto
 RODAQ_TEST_STATIC_ASSERT(RODAQ_DESCRIPTOR_FAILED == UINT32_C(3), "descriptor failed");
 
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_COMMON_SERVICE_ID) == sizeof("rodaq.runtime.common.v1"),
-    "common service ID");
+    sizeof(RODAQ_RUNTIME_COMMON_SERVICE_ID) == sizeof("rodaq.runtime.common"), "common service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_CANONICAL_SERVICE_ID) == sizeof("rodaq.runtime.canonical.v1"),
+    sizeof(RODAQ_RUNTIME_CANONICAL_SERVICE_ID) == sizeof("rodaq.runtime.canonical"),
     "canonical service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_PROJECTION_SERVICE_ID) == sizeof("rodaq.runtime.projection.v1"),
+    sizeof(RODAQ_RUNTIME_PROJECTION_SERVICE_ID) == sizeof("rodaq.runtime.projection"),
     "projection service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID) ==
-        sizeof("rodaq.runtime.clock_correlation.v1"),
+    sizeof(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID) == sizeof("rodaq.runtime.clock_correlation"),
     "clock correlation service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID) == sizeof("rodaq.runtime.acquisition.v1"),
+    sizeof(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID) == sizeof("rodaq.runtime.acquisition"),
     "acquisition service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_RUNTIME_STORAGE_SERVICE_ID) == sizeof("rodaq.runtime.storage.v1"),
+    sizeof(RODAQ_RUNTIME_STORAGE_SERVICE_ID) == sizeof("rodaq.runtime.storage"),
     "storage service ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID) == sizeof("rodaq.acquisition.control.v1"),
+    sizeof(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID) == sizeof("rodaq.acquisition.control"),
     "acquisition control ID");
 RODAQ_TEST_STATIC_ASSERT(
-    sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) == sizeof("rodaq.storage.control.v1"),
+    sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) == sizeof("rodaq.storage.control"),
     "storage control ID");
 
 #endif /* RODAQ_TESTS_ABI_SCALAR_CHECKS_H */

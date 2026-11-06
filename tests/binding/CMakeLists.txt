@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_binding_state_test binding.binding_state binding_state_test.cpp)

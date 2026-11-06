@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_projection_registry_test projection.registry projection_registry_test.cpp)

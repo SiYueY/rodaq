@@ -71,7 +71,7 @@ TEST(AcquisitionInputValidationTest, ControlMethodsRejectMalformedArguments) {
                                  RODAQ_ACQUISITION_CONTROL_INTERFACE_ID,
                                  sizeof(RODAQ_ACQUISITION_CONTROL_INTERFACE_ID) - 1},
                              &interface, &error));
-    const auto* control = static_cast<const rodaq_acquisition_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_acquisition_control*>(interface.vtable);
     ASSERT_NE(nullptr, control);
 
     EXPECT_EQ(

@@ -12,7 +12,7 @@ void bm_storage_slot_terminalization100k(benchmark::State& state) {
     constexpr std::size_t kRecords = 100'000;
     constexpr std::size_t kPayloadBytes = 16;
     const std::size_t capacity = record_capacity(kRecords);
-    auto config = runtime_config(
+    auto config = daq_config(
         "storage-slot-terminalization", {PayloadClassConfig{64, capacity}}, capacity,
         capacity * 64U, 1, {acquisition(1, kRecords, kPayloadBytes, 0)});
     run_profile(state, config, kRecords, kRecords * kPayloadBytes, std::chrono::seconds(30));

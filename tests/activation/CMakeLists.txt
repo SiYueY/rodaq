@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_structural_arena_test activation.structural_arena structural_arena_test.cpp)

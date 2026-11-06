@@ -2,8 +2,8 @@
 
 #include "rodaq/plugin/storage_plugin.hpp"
 
-#include "runtime/clock_correlation.hpp"
-#include "runtime/interop_projection_registry.hpp"
+#include "clock/clock_correlation.hpp"
+#include "projection/projection_registry.hpp"
 
 #include <gtest/gtest.h>
 
@@ -106,10 +106,10 @@ const rodaq_plugin_descriptor status_descriptor = {
     {"", 0},
 };
 
-class StatusStoragePlugin final : public rodaq::StoragePlugin {
+class StatusStoragePlugin final : public rodaq::plugin::StoragePlugin {
 public:
-    rodaq::Result<void> bind(rodaq::StorageRuntime) override { return {}; }
-    rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> bind(rodaq::plugin::StorageContext) override { return {}; }
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView&) override { return {}; }
     rodaq::Result<void> open(const rodaq_storage_open_request&) override { return {}; }
     rodaq::Result<rodaq_storage_capabilities> get_capabilities() override {
         rodaq_storage_capabilities value{};
@@ -194,15 +194,15 @@ void fill_canary(std::uint8_t* bytes, std::size_t size) { std::memset(bytes, kCa
 
 RODAQ_EXPORT_STORAGE_PLUGIN(StatusStoragePlugin, status_descriptor)
 
-TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
-    rodaq::runtime::InteropProjectionRegistry registry({64, 4, 128, 256});
+TEST(BaselineOutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
+    rodaq::ProjectionRegistry registry({64, 4, 128, 256});
     ASSERT_TRUE(registry
                     .register_entry(
-                        rodaq_stream_descriptor_handle{7}, "rodaq.test.projection.v1",
+                        rodaq_stream_descriptor_handle{7}, "rodaq.test.projection",
                         reinterpret_cast<const std::uint8_t*>("x"), 1)
                     .ok());
     const auto interface = registry.abi_interface();
-    const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(interface.vtable);
+    const auto* projection = static_cast<const rodaq_runtime_projection*>(interface.vtable);
 
     struct ProjectionBuffer {
         baseline_projection_view value;
@@ -216,7 +216,7 @@ TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) 
         RODAQ_STATUS_OK,
         projection->get_projection(
             interface.context, rodaq_stream_descriptor_handle{7},
-            rodaq_string_view{"rodaq.test.projection.v1", 24},
+            rodaq_string_view{"rodaq.test.projection", 21},
             reinterpret_cast<rodaq_projection_view*>(&projection_buffer.value), &error));
     EXPECT_EQ(
         expected_initialized_prefix<rodaq_projection_view>(frozen_projection_capacity),
@@ -236,7 +236,7 @@ TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) 
             RODAQ_STATUS_OK,
             projection->get_projection(
                 interface.context, rodaq_stream_descriptor_handle{7},
-                rodaq_string_view{"rodaq.test.projection.v1", 24}, &current.value, &error));
+                rodaq_string_view{"rodaq.test.projection", 21}, &current.value, &error));
         EXPECT_EQ(
             expected_initialized_prefix<rodaq_projection_view>(current_capacity),
             current.value.struct_size);
@@ -254,7 +254,7 @@ TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) 
             RODAQ_STATUS_INVALID_ARGUMENT,
             projection->get_projection(
                 interface.context, rodaq_stream_descriptor_handle{7},
-                rodaq_string_view{"rodaq.test.projection.v1", 24},
+                rodaq_string_view{"rodaq.test.projection", 21},
                 reinterpret_cast<rodaq_projection_view*>(&too_small), &error));
         expect_canary(too_small.canary, sizeof(too_small.canary));
     }
@@ -271,20 +271,20 @@ TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) 
             RODAQ_STATUS_OK,
             projection->get_projection(
                 interface.context, rodaq_stream_descriptor_handle{7},
-                rodaq_string_view{"rodaq.test.projection.v1", 24}, &larger.value, &error));
+                rodaq_string_view{"rodaq.test.projection", 21}, &larger.value, &error));
         EXPECT_EQ(
             expected_initialized_prefix<rodaq_projection_view>(larger_capacity),
             larger.value.struct_size);
         expect_canary(larger.canary, sizeof(larger.canary));
     }
 
-    auto clock = rodaq::runtime::ClockCorrelation::from_anchor(
-        rodaq::runtime::UnixEpochClockAnchor{rodaq_clock_handle{3}, 10, 1'000});
+    auto clock = rodaq::ClockCorrelation::from_anchor(
+        rodaq::UnixEpochClockAnchor{rodaq_clock_handle{3}, 10, 1'000});
     ASSERT_TRUE(clock.ok());
     auto correlation = std::move(clock.value());
     const auto clock_interface = correlation.abi_interface();
     const auto* clock_table =
-        static_cast<const rodaq_runtime_clock_correlation_v1*>(clock_interface.vtable);
+        static_cast<const rodaq_runtime_clock_correlation*>(clock_interface.vtable);
     struct ClockBuffer {
         baseline_clock_anchor value;
         std::uint8_t canary[32];
@@ -355,7 +355,7 @@ TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) 
     }
 }
 
-TEST(BaselineV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
+TEST(BaselineOutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
     rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);
@@ -367,7 +367,7 @@ TEST(BaselineV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
             rodaq_string_view{
                 RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
             &interface, &error));
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     ASSERT_NE(nullptr, control);
 
     {
@@ -440,7 +440,7 @@ TEST(BaselineV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
     }
 }
 
-TEST(BaselineV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
+TEST(BaselineOutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
     rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);
@@ -452,7 +452,7 @@ TEST(BaselineV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
             rodaq_string_view{
                 RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
             &interface, &error));
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     ASSERT_NE(nullptr, control);
 
     {
@@ -527,7 +527,7 @@ TEST(BaselineV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
     }
 }
 
-TEST(BaselineV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
+TEST(BaselineOutputCompatibility, StorageSubmitRespectsCallerCapacity) {
     rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);

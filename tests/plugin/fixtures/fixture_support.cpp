@@ -13,7 +13,7 @@
 #endif
 
 #ifndef RODAQ_FIXTURE_CONTROL_STRUCT_SIZE
-#define RODAQ_FIXTURE_CONTROL_STRUCT_SIZE RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE
+#define RODAQ_FIXTURE_CONTROL_STRUCT_SIZE RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE
 #endif
 
 #ifndef RODAQ_FIXTURE_CONTROL_APPENDABLE_TAIL
@@ -33,7 +33,7 @@
 #endif
 
 #ifndef RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE
-#define RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE
+#define RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE
 #endif
 
 #ifndef RODAQ_FIXTURE_STORAGE_CONTROL_MISSING_SLOT
@@ -97,34 +97,33 @@ rodaq_status_code validate_table(
     if (service.context == nullptr || table == nullptr ||
         table->protocol_version != protocol_version || table->struct_size < minimum_size) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "required Runtime service ABI is invalid", out_status);
+            RODAQ_STATUS_INVALID_ARGUMENT, "required DAQ service ABI is invalid", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_common_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_common_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_common_v1>(
-        service, RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION, RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE,
+    const auto* table = static_cast<const rodaq_runtime_common*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_common>(
+        service, RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION, RODAQ_RUNTIME_COMMON_MIN_STRUCT_SIZE,
         out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->log == nullptr || table->monotonic_time_ns == nullptr ||
         table->get_lifecycle_snapshot == nullptr || table->report_diagnostic == nullptr) {
-        return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "common Runtime service slot is null", out_status);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "common DAQ service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_canonical_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_canonical_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_canonical_v1>(
-        service, RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE, out_status);
+    const auto* table = static_cast<const rodaq_runtime_canonical*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_canonical>(
+        service, RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION, RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE,
+        out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
@@ -132,33 +131,33 @@ rodaq_status_code validate_canonical_service(
         table->get_schema == nullptr || table->get_timestamp_key_set == nullptr ||
         table->get_stream == nullptr || table->get_stream_descriptor == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "canonical Runtime service slot is null", out_status);
+            RODAQ_STATUS_INVALID_ARGUMENT, "canonical DAQ service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_projection_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_projection_v1>(
+    const auto* table = static_cast<const rodaq_runtime_projection*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_projection>(
         service, RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE, out_status);
+        RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->register_projection == nullptr || table->get_projection == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "projection Runtime service slot is null", out_status);
+            RODAQ_STATUS_INVALID_ARGUMENT, "projection DAQ service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_acquisition_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_acquisition_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_acquisition_v1>(
+    const auto* table = static_cast<const rodaq_runtime_acquisition*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_acquisition>(
         service, RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE, out_status);
+        RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
@@ -169,34 +168,33 @@ rodaq_status_code validate_acquisition_service(
         table->report_stream_availability == nullptr || table->report_plugin_state == nullptr ||
         table->submit == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "Acquisition Runtime service slot is null", out_status);
+            RODAQ_STATUS_INVALID_ARGUMENT, "Acquisition DAQ service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_storage_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_storage_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_storage_v1>(
-        service, RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION, RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE,
+    const auto* table = static_cast<const rodaq_runtime_storage*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_storage>(
+        service, RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION, RODAQ_RUNTIME_STORAGE_MIN_STRUCT_SIZE,
         out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->payload_consumed == nullptr || table->persistence_completed == nullptr ||
         table->report_failure == nullptr) {
-        return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "Storage Runtime service slot is null", out_status);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "Storage DAQ service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
 rodaq_status_code validate_clock_service(
     const rodaq_interface& service, rodaq_status* out_status) noexcept {
-    const auto* table = static_cast<const rodaq_runtime_clock_correlation_v1*>(service.vtable);
-    rodaq_status_code status = validate_table<rodaq_runtime_clock_correlation_v1>(
+    const auto* table = static_cast<const rodaq_runtime_clock_correlation*>(service.vtable);
+    rodaq_status_code status = validate_table<rodaq_runtime_clock_correlation>(
         service, RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE, out_status);
+        RODAQ_RUNTIME_CLOCK_CORRELATION_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
@@ -215,8 +213,7 @@ rodaq_status_code require_service(
         return status;
     }
     if (out_service->context == nullptr || out_service->vtable == nullptr) {
-        return fail(
-            RODAQ_STATUS_UNAVAILABLE, "required Runtime service is unavailable", out_status);
+        return fail(RODAQ_STATUS_UNAVAILABLE, "required DAQ service is unavailable", out_status);
     }
     return RODAQ_STATUS_OK;
 }
@@ -333,7 +330,7 @@ rodaq_status_code quiesce_stream(void*, rodaq_stream_handle, rodaq_status*) noex
 }
 
 struct ExtendedAcquisitionControl {
-    rodaq_acquisition_control_v1 base;
+    rodaq_acquisition_control base;
     std::uint64_t tail;
 };
 
@@ -394,7 +391,7 @@ rodaq_status_code get_capabilities(
     return RODAQ_STATUS_OK;
 }
 
-const rodaq_storage_control_v1 storage_control = {
+const rodaq_storage_control storage_control = {
     RODAQ_FIXTURE_STORAGE_CONTROL_PROTOCOL_VERSION,
     RODAQ_FIXTURE_STORAGE_CONTROL_STRUCT_SIZE,
     &get_capabilities,
@@ -491,12 +488,12 @@ rodaq_status_code fixture_acquisition_bind(
             require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
+        const auto* projection = static_cast<const rodaq_runtime_projection*>(service.vtable);
         const char payload[] = {'f', 'i', 'x', 't', 'u', 'r', 'e'};
         rodaq_projection_registration registration{};
         registration.struct_size = RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE;
         registration.descriptor = rodaq_stream_descriptor_handle{42};
-        const char projection_id[] = "rodaq.test.projection.v1";
+        const char projection_id[] = "rodaq.test.projection";
         registration.projection_id = rodaq_string_view{projection_id, sizeof(projection_id) - 1};
         registration.payload =
             rodaq_bytes_view{reinterpret_cast<const std::uint8_t*>(payload), sizeof(payload)};
@@ -553,10 +550,10 @@ rodaq_status_code fixture_storage_bind(
         status = validate_projection_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
+        const auto* projection = static_cast<const rodaq_runtime_projection*>(service.vtable);
         rodaq_projection_view projection_view{};
         projection_view.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE;
-        const char id[] = "rodaq.test.projection.v1";
+        const char id[] = "rodaq.test.projection";
         status = projection->get_projection(
             service.context, rodaq_stream_descriptor_handle{42},
             rodaq_string_view{id, sizeof(id) - 1}, &projection_view, out_status);
@@ -576,7 +573,7 @@ rodaq_status_code fixture_storage_bind(
     }
     if (status == RODAQ_STATUS_OK) {
         const auto* clock_service =
-            static_cast<const rodaq_runtime_clock_correlation_v1*>(service.vtable);
+            static_cast<const rodaq_runtime_clock_correlation*>(service.vtable);
         rodaq_unix_epoch_clock_anchor anchor{};
         anchor.struct_size = RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE;
         status = clock_service->get_unix_epoch_anchor(

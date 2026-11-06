@@ -61,9 +61,9 @@ rodaq_status_code quiesce_stream(void*, rodaq_stream_handle, rodaq_status*) noex
 
 rodaq_status_code quiesce_plugin(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
-const rodaq_acquisition_control_v1 control = {
+const rodaq_acquisition_control control = {
     RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,
-    sizeof(rodaq_acquisition_control_v1),
+    sizeof(rodaq_acquisition_control),
     prepare_binding_switch,
     commit_binding_switch,
     abort_binding_switch,

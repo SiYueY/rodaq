@@ -264,12 +264,12 @@ Result<rodaq_interface> validate_acquisition_control_interface(rodaq_interface i
     if (interface.context == nullptr || interface.vtable == nullptr) {
         return invalid_argument_status("Acquisition control interface is incomplete");
     }
-    const auto* control = static_cast<const rodaq_acquisition_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_acquisition_control*>(interface.vtable);
     if (control->protocol_version != RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION) {
         return invalid_argument_status(
             "Acquisition control interface protocol version is unsupported");
     }
-    if (control->struct_size < RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE) {
+    if (control->struct_size < RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE) {
         return invalid_argument_status(
             "Acquisition control interface struct_size is below the V1 minimum");
     }
@@ -285,11 +285,11 @@ Result<rodaq_interface> validate_storage_control_interface(rodaq_interface inter
     if (interface.context == nullptr || interface.vtable == nullptr) {
         return invalid_argument_status("Storage control interface is incomplete");
     }
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     if (control->protocol_version != RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION) {
         return invalid_argument_status("Storage control interface protocol version is unsupported");
     }
-    if (control->struct_size < RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE) {
+    if (control->struct_size < RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE) {
         return invalid_argument_status(
             "Storage control interface struct_size is below the V1 minimum");
     }

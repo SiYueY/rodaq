@@ -1,7 +1,6 @@
 #ifndef RODAQ_CONFIG_CONFIG_HPP_
 #define RODAQ_CONFIG_CONFIG_HPP_
 
-#include <rodaq/plugin/abi/config.h>
 #include <rodaq/result.hpp>
 
 #include <cstddef>
@@ -14,14 +13,25 @@
 
 namespace rodaq {
 
+enum class ConfigKind : std::uint32_t {
+    Null = 0,
+    Boolean = 1,
+    Int64 = 2,
+    Float64 = 3,
+    String = 4,
+    Map = 5,
+    List = 6,
+};
+
 class ConfigNode;
 class ConfigTree;
+class ConfigNodeAccess;
 
 class ConfigNodeView final {
 public:
     ConfigNodeView() = default;
 
-    rodaq_config_kind kind() const noexcept;
+    ConfigKind kind() const noexcept;
     std::size_t size() const noexcept;
 
     Result<ConfigNodeView> find(std::string_view key) const;
@@ -33,14 +43,13 @@ public:
     Result<double> as_double() const;
     Result<std::string_view> as_string() const;
 
-    rodaq_config_view abi_view() const noexcept;
-
 private:
     explicit ConfigNodeView(std::shared_ptr<const ConfigNode> node);
 
     std::shared_ptr<const ConfigNode> node_;
 
     friend class ConfigTree;
+    friend class ConfigNodeAccess;
 };
 
 class ConfigTree final {

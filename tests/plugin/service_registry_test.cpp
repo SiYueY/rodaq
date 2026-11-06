@@ -33,15 +33,14 @@ TEST(ServiceRegistryTest, RegistersAndQueriesBorrowedInterfaces) {
     const rodaq_interface first = make_service(&first_context, &first_vtable);
     const rodaq_interface second = make_service(&second_context, &second_vtable);
 
-    ASSERT_TRUE(registry.register_entry("rodaq.test.first.v1", first).ok());
-    ASSERT_TRUE(registry.register_entry("rodaq.test.second.v1", second).ok());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.first", first).ok());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.second", second).ok());
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidState,
-        registry.query("rodaq.test.first.v1").status().status_code());
+        rodaq::StatusCode::InvalidState, registry.query("rodaq.test.first").status().status_code());
     ASSERT_TRUE(registry.freeze().ok());
 
-    const auto queried_first = registry.query("rodaq.test.first.v1");
-    const auto queried_second = registry.query("rodaq.test.second.v1");
+    const auto queried_first = registry.query("rodaq.test.first");
+    const auto queried_second = registry.query("rodaq.test.second");
     ASSERT_TRUE(queried_first.ok());
     ASSERT_TRUE(queried_second.ok());
     EXPECT_EQ(first.context, queried_first.value().context);
@@ -58,7 +57,7 @@ TEST(ServiceRegistryTest, FreezeIsIdempotentAndPreventsRegistration) {
     int context = 0;
     int vtable = 0;
     const auto result =
-        registry.register_entry("rodaq.test.after_freeze.v1", make_service(&context, &vtable));
+        registry.register_entry("rodaq.test.after_freeze", make_service(&context, &vtable));
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(rodaq::StatusCode::InvalidState, result.status().status_code());
 }
@@ -108,7 +107,7 @@ TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
     int context = 0;
     int vtable = 0;
     const rodaq_interface service = make_service(&context, &vtable);
-    ASSERT_TRUE(registry.register_entry("rodaq.test.abi.v1", service).ok());
+    ASSERT_TRUE(registry.register_entry("rodaq.test.abi", service).ok());
     ASSERT_TRUE(registry.freeze().ok());
 
     const rodaq_service_registry abi = registry.abi_view();
@@ -120,7 +119,7 @@ TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
     rodaq_interface out{};
     rodaq_status error{};
     EXPECT_EQ(
-        RODAQ_STATUS_OK, abi.vtable->query(abi.context, view("rodaq.test.abi.v1"), &out, &error));
+        RODAQ_STATUS_OK, abi.vtable->query(abi.context, view("rodaq.test.abi"), &out, &error));
     EXPECT_EQ(service.context, out.context);
     EXPECT_EQ(service.vtable, out.vtable);
 
@@ -135,10 +134,10 @@ TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
 
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,
-        abi.vtable->query(abi.context, view("rodaq.test.abi.v1"), nullptr, &error));
+        abi.vtable->query(abi.context, view("rodaq.test.abi"), nullptr, &error));
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,
-        abi.vtable->query(nullptr, view("rodaq.test.abi.v1"), &out, &error));
+        abi.vtable->query(nullptr, view("rodaq.test.abi"), &out, &error));
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,
         abi.vtable->query(abi.context, view(std::string_view("\xFF", 1)), &out, &error));

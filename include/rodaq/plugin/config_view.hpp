@@ -9,9 +9,9 @@
 #include <cstdint>
 #include <string_view>
 
-namespace rodaq {
+namespace rodaq::plugin {
 
-using ConfigKind = rodaq_config_kind;
+using ConfigKind = rodaq::ConfigKind;
 
 class ConfigView final {
 public:
@@ -52,10 +52,6 @@ private:
 
     rodaq_config_view view_{};
 };
-
-}  // namespace rodaq
-
-namespace rodaq::plugin {
 
 using ConfigTree = rodaq::ConfigTree;
 

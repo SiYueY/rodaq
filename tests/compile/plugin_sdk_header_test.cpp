@@ -1,16 +1,16 @@
 #include <rodaq/plugin/acquisition_plugin.hpp>
 #include <rodaq/plugin/config_view.hpp>
 #include <rodaq/plugin/plugin.hpp>
-#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/services.hpp>
 #include <rodaq/plugin/service_registry.hpp>
 #include <rodaq/plugin/storage_plugin.hpp>
 
 namespace {
 
-class AcquisitionStub final : public rodaq::AcquisitionPlugin {
+class AcquisitionStub final : public rodaq::plugin::AcquisitionPlugin {
 public:
-    rodaq::Result<void> bind(rodaq::AcquisitionRuntime) override { return {}; }
-    rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> bind(rodaq::plugin::AcquisitionContext) override { return {}; }
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView&) override { return {}; }
     rodaq::Result<void> start() override { return {}; }
     rodaq::Result<void> stop() override { return {}; }
     rodaq::Result<void> prepare_binding_switch(
@@ -27,10 +27,10 @@ public:
     rodaq::Result<void> quiesce_plugin() override { return {}; }
 };
 
-class StorageStub final : public rodaq::StoragePlugin {
+class StorageStub final : public rodaq::plugin::StoragePlugin {
 public:
-    rodaq::Result<void> bind(rodaq::StorageRuntime) override { return {}; }
-    rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> bind(rodaq::plugin::StorageContext) override { return {}; }
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView&) override { return {}; }
     rodaq::Result<void> open(const rodaq_storage_open_request&) override { return {}; }
     rodaq::Result<rodaq_storage_capabilities> get_capabilities() override {
         return rodaq_storage_capabilities{};
@@ -49,7 +49,7 @@ public:
 }  // namespace
 
 int main() {
-    rodaq::ConfigView config;
-    rodaq::ServiceRegistryView registry;
+    rodaq::plugin::ConfigView config;
+    rodaq::plugin::ServiceRegistryView registry;
     return config.find("key").ok() || registry.query("service").ok() ? 1 : 0;
 }

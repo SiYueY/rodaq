@@ -2,7 +2,7 @@
 #define RODAQ_BENCHMARKS_BENCHMARK_SUPPORT_HPP_
 
 #include <rodaq/config/config.hpp>
-#include <rodaq/runtime/runtime.hpp>
+#include <rodaq/daq.hpp>
 
 #include <benchmark/benchmark.h>
 
@@ -52,11 +52,11 @@ inline ConfigTree config(std::vector<ConfigTree::MapEntry> entries) {
     return std::move(result.value());
 }
 
-inline runtime::PluginConfig acquisition(
+inline AcquisitionPluginConfig acquisition(
     std::size_t streams, std::size_t records_per_stream, std::size_t payload_bytes,
     std::uint64_t record_interval_ns, std::string payload_mode = "copy",
     std::string source_id = "benchmark-source") {
-    runtime::PluginConfig value;
+    AcquisitionPluginConfig value;
     value.path = required_path("RODAQ_FAKE_ACQUISITION_PLUGIN");
     value.config = config({
         {"source_id", ConfigTree::string(std::move(source_id))},
@@ -78,12 +78,12 @@ inline runtime::PluginConfig acquisition(
     return value;
 }
 
-inline runtime::RuntimeConfig runtime_config(
-    std::string session, std::vector<PayloadClassConfig> payload_classes,
+inline DAQConfig daq_config(
+    std::string acquisition_id, std::vector<PayloadClassConfig> payload_classes,
     std::size_t operation_capacity, std::uint64_t maximum_payload_inflight_bytes,
-    std::size_t maximum_streams, std::vector<runtime::PluginConfig> acquisitions) {
-    runtime::RuntimeConfig value;
-    value.session_id = std::move(session);
+    std::size_t maximum_streams, std::vector<AcquisitionPluginConfig> acquisitions) {
+    DAQConfig value;
+    value.acquisition_id = std::move(acquisition_id);
     value.target_uri = "file://capacity-benchmark";
     value.resources.payload_pool.classes = std::move(payload_classes);
     value.resources.max_single_payload_bytes =
@@ -97,7 +97,7 @@ inline runtime::RuntimeConfig runtime_config(
     value.resources.max_bindings = value.resources.max_streams;
     value.submit_wait_timeout = std::chrono::seconds(30);
     value.stop_progress_timeout = std::chrono::seconds(30);
-    value.logging.level = RODAQ_LOG_WARN;
+    value.logging.level = LogLevel::Warn;
     value.logging.stderr_sink = false;
     value.storage.path = required_path("RODAQ_FAKE_STORAGE_PLUGIN");
     value.storage.config = config({
@@ -118,7 +118,7 @@ inline runtime::RuntimeConfig runtime_config(
 struct RunResult {
     bool passed = false;
     std::string error;
-    RuntimeStatsSnapshot stats;
+    DAQStats stats;
     double elapsed_seconds = 0.0;
     double cpu_seconds = 0.0;
     std::int64_t maximum_rss_kb = 0;
@@ -142,19 +142,19 @@ inline std::int64_t maximum_rss_kb() {
 }
 
 inline RunResult execute(
-    runtime::RuntimeConfig config, std::uint64_t expected_records,
+    DAQConfig config, std::uint64_t expected_records,
     std::chrono::steady_clock::duration deadline_duration) {
     RunResult result;
     double cpu_started = 0.0;
     Clock::time_point started{};
     try {
-        runtime::Runtime runtime(std::move(config));
-        auto configured = runtime.configure();
+        DAQ daq(std::move(config));
+        auto configured = daq.configure();
         if (!configured.ok()) {
             result.error = std::string(configured.status().message());
             return result;
         }
-        auto started_result = runtime.start();
+        auto started_result = daq.start();
         if (!started_result.ok()) {
             result.error = std::string(started_result.status().message());
             return result;
@@ -165,25 +165,25 @@ inline RunResult execute(
         const auto deadline = Clock::now() + deadline_duration;
         bool converged = false;
         while (Clock::now() < deadline) {
-            auto stats = runtime.stats();
+            auto stats = daq.stats();
             if (stats.ok()) {
                 if (stats->accepted_records == expected_records && stats->inflight_records == 0) {
                     converged = true;
                     break;
                 }
             }
-            if (runtime.state() == runtime::RuntimeState::Failed) {
+            if (daq.state() == DAQState::Failed) {
                 break;
             }
             std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
         if (!converged) {
-            result.error = "Runtime workload did not converge before the deadline";
+            result.error = "DAQ workload did not converge before the deadline";
         }
         const auto measurement_ended = Clock::now();
         const double cpu_at_end = process_cpu_seconds();
-        auto stopped = runtime.stop();
-        auto stats = runtime.stats();
+        auto stopped = daq.stop();
+        auto stats = daq.stats();
         if (stats.ok()) {
             result.stats = std::move(stats.value());
             result.passed =
@@ -191,7 +191,7 @@ inline RunResult execute(
                 result.stats.inflight_records == 0 && result.stats.timed_out_records == 0 &&
                 result.stats.rejected_records == 0 && result.stats.gate_closed_records == 0;
         } else if (stopped.ok() && converged) {
-            result.error = "Runtime statistics are unavailable";
+            result.error = "DAQ statistics are unavailable";
         } else if (!stopped.ok() && result.error.empty()) {
             result.error = std::string(stopped.status().message());
         }
@@ -216,7 +216,7 @@ inline void report(
     std::uint64_t expected_bytes) {
     if (!result.passed) {
         state.SkipWithError(
-            result.error.empty() ? "Runtime capacity profile failed" : result.error.c_str());
+            result.error.empty() ? "DAQ capacity profile failed" : result.error.c_str());
         return;
     }
     const double elapsed = std::max(result.elapsed_seconds, 1e-9);
@@ -229,7 +229,7 @@ inline void report(
     state.counters["maximum_rss_kb"] = static_cast<double>(result.maximum_rss_kb);
     state.counters["high_water_records"] = static_cast<double>(result.stats.high_water_records);
     state.counters["high_water_bytes"] = static_cast<double>(result.stats.high_water_bytes);
-    const auto report_latency = [&state](const char* prefix, const LatencySnapshot& latency) {
+    const auto report_latency = [&state](const char* prefix, const LatencyStats& latency) {
         state.counters[std::string(prefix) + "_p50_us"] =
             static_cast<double>(latency.p50_ns) / 1000.0;
         state.counters[std::string(prefix) + "_p95_us"] =
@@ -252,7 +252,7 @@ inline void report(
 }
 
 inline void run_profile(
-    benchmark::State& state, const runtime::RuntimeConfig& config, std::uint64_t expected_records,
+    benchmark::State& state, const DAQConfig& config, std::uint64_t expected_records,
     std::uint64_t expected_bytes,
     std::chrono::steady_clock::duration deadline = std::chrono::seconds(15),
     double maximum_schedule_seconds = 0.0) {
@@ -263,7 +263,7 @@ inline void run_profile(
         if (last.passed && maximum_schedule_seconds > 0.0 &&
             last.elapsed_seconds > maximum_schedule_seconds) {
             last.passed = false;
-            last.error = "Runtime workload missed the offered schedule deadline";
+            last.error = "DAQ workload missed the offered schedule deadline";
         }
         if (!last.passed) {
             break;

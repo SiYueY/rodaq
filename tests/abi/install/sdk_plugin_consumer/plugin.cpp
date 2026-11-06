@@ -4,10 +4,10 @@
 
 namespace {
 
-class ConsumerPlugin final : public rodaq::AcquisitionPlugin {
+class ConsumerPlugin final : public rodaq::plugin::AcquisitionPlugin {
 public:
-    rodaq::Result<void> bind(rodaq::AcquisitionRuntime) override { return {}; }
-    rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
+    rodaq::Result<void> bind(rodaq::plugin::AcquisitionContext) override { return {}; }
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView&) override { return {}; }
     rodaq::Result<void> start() override { return {}; }
     rodaq::Result<void> stop() override { return {}; }
     rodaq::Result<void> prepare_binding_switch(

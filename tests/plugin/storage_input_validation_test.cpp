@@ -1,6 +1,6 @@
 #include "plugin/plugin_manager.hpp"
 
-#include <rodaq/plugin/runtime_services.hpp>
+#include <rodaq/plugin/services.hpp>
 #include <rodaq/plugin/storage_plugin.hpp>
 
 #include <gtest/gtest.h>
@@ -317,7 +317,7 @@ TEST(StorageInputValidationTest, QueryAndReadinessValidateInputs) {
             rodaq_string_view{
                 RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
             &interface, &error));
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     ASSERT_NE(nullptr, control);
     rodaq_descriptor_readiness_result result{};
     result.struct_size = sizeof(result);

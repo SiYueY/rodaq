@@ -7,27 +7,27 @@
 extern "C" {
 #endif
 
-/* ABI-FROZEN: zero is never a valid Runtime handle. */
+/* ABI-FROZEN: zero is never a valid DAQ handle. */
 typedef struct rodaq_source_handle {
     uint64_t value;
 } rodaq_source_handle;
 
-/* ABI-FROZEN: zero is never a valid Runtime handle. */
+/* ABI-FROZEN: zero is never a valid DAQ handle. */
 typedef struct rodaq_clock_handle {
     uint64_t value;
 } rodaq_clock_handle;
 
-/* ABI-FROZEN: zero is never a valid Runtime handle. */
+/* ABI-FROZEN: zero is never a valid DAQ handle. */
 typedef struct rodaq_schema_handle {
     uint64_t value;
 } rodaq_schema_handle;
 
-/* ABI-FROZEN: zero is never a valid Runtime handle. */
+/* ABI-FROZEN: zero is never a valid DAQ handle. */
 typedef struct rodaq_stream_handle {
     uint64_t value;
 } rodaq_stream_handle;
 
-/* ABI-FROZEN: zero is never a valid Runtime handle. */
+/* ABI-FROZEN: zero is never a valid DAQ handle. */
 typedef struct rodaq_stream_descriptor_handle {
     uint64_t value;
 } rodaq_stream_descriptor_handle;

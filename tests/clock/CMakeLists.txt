@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_clock_correlation_test clock.correlation clock_correlation_test.cpp)

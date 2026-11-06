@@ -33,9 +33,9 @@ rodaq_status_code abort(void*, std::uint64_t, std::uint32_t, rodaq_status*) { re
 rodaq_status_code quiesce_stream(void*, std::uint64_t, rodaq_status*) { return 0; }
 rodaq_status_code quiesce_plugin(void*, rodaq_status*) { return 0; }
 
-const rodaq_acquisition_control_v1 control = {
+const rodaq_acquisition_control control = {
     1,
-    sizeof(rodaq_acquisition_control_v1),
+    sizeof(rodaq_acquisition_control),
     &prepare,
     &commit,
     &abort,
@@ -45,7 +45,7 @@ const rodaq_acquisition_control_v1 control = {
 
 rodaq_status_code query(void* instance, rodaq_string_view id, rodaq_interface* out, rodaq_status*) {
     *out = {};
-    const char expected[] = "rodaq.acquisition.control.v1";
+    const char expected[] = "rodaq.acquisition.control";
     if (!equals(id, expected, sizeof(expected) - 1)) {
         return RODAQ_STATUS_NOT_FOUND;
     }

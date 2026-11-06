@@ -66,7 +66,7 @@ void release_anchor(void* context) noexcept {
 }
 
 std::string config_string(
-    const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
+    const rodaq::plugin::ConfigView& view, std::string_view key, std::string default_value) {
     auto child = view.find(key);
     if (!child.ok()) {
         return default_value;
@@ -76,7 +76,7 @@ std::string config_string(
 }
 
 std::int64_t config_int(
-    const rodaq::ConfigView& view, std::string_view key, std::int64_t default_value) {
+    const rodaq::plugin::ConfigView& view, std::string_view key, std::int64_t default_value) {
     auto child = view.find(key);
     if (!child.ok()) {
         return default_value;
@@ -85,7 +85,7 @@ std::int64_t config_int(
     return value.ok() ? value.value() : default_value;
 }
 
-class FakeAcquisitionPlugin final : public rodaq::AcquisitionPlugin {
+class FakeAcquisitionPlugin final : public rodaq::plugin::AcquisitionPlugin {
 public:
     ~FakeAcquisitionPlugin() override {
         log_control("destroy");
@@ -99,7 +99,7 @@ public:
         }
     }
 
-    rodaq::Result<void> bind(rodaq::AcquisitionRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::plugin::AcquisitionContext runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -108,7 +108,7 @@ public:
         return {};
     }
 
-    rodaq::Result<void> configure(const rodaq::ConfigView& config) override {
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView& config) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
@@ -381,7 +381,7 @@ public:
         if (lifecycle_scenario_ == "quiesce_failure" ||
             lifecycle_scenario_ == "start_partial_cleanup_failure") {
             // Inject an operational barrier error after joining the fixture's
-            // native workers. Runtime still cannot assume quiescence on error
+            // native workers. DAQ still cannot assume quiescence on error
             // and must quarantine; the fixture owns its completed threads.
             quiesce();
             return fail(rodaq::Status(
@@ -1004,7 +1004,7 @@ private:
 
     static rodaq::Result<void> fail(const rodaq::Status& error) { return rodaq::Status(error); }
 
-    rodaq::AcquisitionRuntime runtime_;
+    rodaq::plugin::AcquisitionContext runtime_;
     Stage stage_ = Stage::Created;
     std::size_t stream_count_ = 1;
     std::size_t records_per_stream_ = 1;

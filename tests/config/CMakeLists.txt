@@ -1,0 +1,2 @@
+rodaq_add_test(rodaq_config_loader_test config.loader config_loader_test.cpp)
+rodaq_add_test(rodaq_daq_config_test config.daq daq_config_test.cpp)

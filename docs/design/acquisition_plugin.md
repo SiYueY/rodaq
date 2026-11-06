@@ -50,7 +50,7 @@ Submit
     ↓
 Admission
     ↓
-RuntimeRecord
+AcceptedRecord
 ```
 
 Acquisition Plugin 必须：
@@ -166,7 +166,7 @@ not queried on every Record hot path
 V1 冻结的 projection identifier：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 其 logical fields 至少包括：
@@ -181,7 +181,7 @@ optional ROS2 type/hash identity when the selected ROS2 baseline provides it
 
 Schema format / representation **不在 projection 中复制**。它们继续由 Canonical SchemaDescriptor 精确保存；projection 中与 StreamName / TypeIdentifier / PayloadEncoding 重叠的字段只用于 **cross-check**，不能成为另一套 Canonical authority。Storage 必须拒绝 projection 与 Canonical Descriptor 相互矛盾的情况。
 
-Runtime 通过独立的 `rodaq.runtime.projection.v1` Service 注册和查询 projection。Runtime 对 projection payload 的业务语义保持 opaque，只负责：
+Runtime 通过独立的 `rodaq.runtime.projection` Service 注册和查询 projection。Runtime 对 projection payload 的业务语义保持 opaque，只负责：
 
 ```text
 identifier/version validation
@@ -191,11 +191,11 @@ bounds
 (StreamDescriptor, projection-id) association
 ```
 
-V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2.v1`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
+V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
 
 Descriptor publication returns the immutable `DescriptorHandle` before Storage readiness can
 complete. Acquisition may then register its typed InteropProjection through
-`rodaq.runtime.projection.v1`. Projection registration notifications are delivered after the
+`rodaq.runtime.projection`. Projection registration notifications are delivered after the
 Projection Registry lock is released and may trigger another readiness evaluation for the same
 Descriptor. Missing projection is a pending readiness condition, not permission to mutate the
 already published Descriptor.
@@ -257,7 +257,7 @@ mandatory ingress timestamp
 
 bounded admission
 
-RuntimeRecord
+AcceptedRecord
 
 Storage dispatch
 ```
@@ -571,7 +571,7 @@ Canonical registration
 required Bindings ready
         ↓
 Plugin remains unable to start
-normal Runtime::submit
+normal DAQ::submit
         ↓
 Runtime Activation Commit
 publishes Running + Gate Open
@@ -774,7 +774,7 @@ ABI start
     → 封装本文的 Prepare + required discovery/registration + Enable
     → 只有在 Runtime Activation Commit / Gate Open 允许后才能进入 normal Submit
 
-required `rodaq.acquisition.control.v1::quiesce_plugin()`
+required `rodaq.acquisition.control::quiesce_plugin()`
     → Plugin-wide non-destructive quiescence barrier
     → 禁止所有当前/未来 normal Submit routing
     → 保留 Runtime-owned Payload anchor release 所需 native capability
@@ -806,7 +806,7 @@ Report Recovery
 V1 correctness 所必需的 Binding switch / stream-local quiescence 通过 required interface：
 
 ```text
-rodaq.acquisition.control.v1
+rodaq.acquisition.control
 ```
 
 暴露，而不是继续扩张 core lifecycle。
@@ -936,7 +936,7 @@ Plugin Enabled
 
 根据 backend 特性，Runtime 可以允许：
 
-> 在 Plugin Enabled 前提前允许 native reader 进入 normal `Runtime::submit` path。
+> 在 Plugin Enabled 前提前允许 native reader 进入 normal `DAQ::submit` path。
 
 Plugin 可以在 Prepared 阶段建立 native reader / discovery resources，但必须通过 local routing gate / callback barrier 保证 normal Submit permission 直到 Activation Commit 后才发布。
 
@@ -1005,7 +1005,7 @@ BoundedBuffer
 则该 sample 真正进入：
 
 ```text
-Runtime::submit
+DAQ::submit
 ```
 
 时，Runtime 才捕获：
@@ -1107,7 +1107,7 @@ Plugin 在 Quiescing 期间：
 已经进入：
 
 ```text
-Runtime::submit
+DAQ::submit
 ```
 
 的调用：
@@ -1216,7 +1216,7 @@ Plugin 不得通过 recovery：
 Plugin 在一个 recovery attempt 开始前必须通过：
 
 ```text
-rodaq.runtime.common.v1::get_lifecycle_snapshot()
+rodaq.runtime.common::get_lifecycle_snapshot()
 ```
 
 读取一次 Runtime lifecycle/admission snapshot。只有：
@@ -1262,7 +1262,7 @@ one recovery attempt
 continuous Runtime state polling
 ```
 
-该 query 已由 Stable Plugin Contract 冻结在 `rodaq.runtime.common.v1`。V1 不要求额外 terminal notification channel。
+该 query 已由 Stable Plugin Contract 冻结在 `rodaq.runtime.common`。V1 不要求额外 terminal notification channel。
 
 ---
 
@@ -1272,7 +1272,7 @@ Stopped 时 Plugin 必须保证：
 
 ```text
 no new native callback
-can reach Runtime::submit
+can reach DAQ::submit
 
 no Plugin worker
 can begin a new Submit
@@ -1300,7 +1300,7 @@ native event thread
 并允许多个线程同时：
 
 ```text
-Runtime::submit
+DAQ::submit
 ```
 
 Runtime Admission 负责：
@@ -2404,7 +2404,7 @@ native event dispatch task
 已经在 ReadyToCommit 前进入：
 
 ```text
-Runtime::submit(old_binding)
+DAQ::submit(old_binding)
 ```
 
 的 synchronous call：
@@ -2683,7 +2683,7 @@ AcceptanceSequence
 rodaq/acquisition_ingress
 ```
 
-并构造 RuntimeRecord。
+并构造 AcceptedRecord。
 
 ---
 
@@ -2823,7 +2823,7 @@ RODAQ_ADMISSION_ACCEPTED
 ```text
 Gate pass never happened
 AcceptanceSequence not consumed
-RuntimeRecord not Accepted
+AcceptedRecord not Accepted
 ```
 
 这是普通：
@@ -2842,7 +2842,7 @@ invalid operational eligibility
 ```text
 Gate pass happened
 AcceptanceSequence consumed
-RuntimeRecord not Accepted
+AcceptedRecord not Accepted
 Admission/Runtime commit path no longer trustworthy
 ```
 
@@ -3272,7 +3272,7 @@ construct local state
         ↓
 release Plugin routing lock
         ↓
-Runtime::submit
+DAQ::submit
 ```
 
 ---
@@ -3458,7 +3458,7 @@ Plugin 可以：
 ```text
 multiple callback threads
         ↓
-Runtime::submit
+DAQ::submit
 ```
 
 并发提交同一 Stream。
@@ -3865,7 +3865,7 @@ NativeBackpressure
 Stable ABI 对应：
 
 ```text
-rodaq.acquisition.control.v1::quiesce_plugin()
+rodaq.acquisition.control::quiesce_plugin()
 ```
 
 该调用是 instance-wide、non-destructive barrier：必须同时覆盖当前 Stream、并发 discovery 产生的新 Stream、callback/worker/deferred task 的所有 normal Submit routing；成功后仍保留 Runtime-owned Payload anchor release 所需 native capability，直到后续 destructive `stop()`。
@@ -3882,7 +3882,7 @@ Runtime failure cleanup
 目标：
 
 ```text
-no future Runtime::submit
+no future DAQ::submit
 from this Plugin can begin
 ```
 
@@ -3909,7 +3909,7 @@ NativeBackpressure
 Quiescence 只建立：
 
 ```text
-no future normal Runtime::submit can begin
+no future normal DAQ::submit can begin
 ```
 
 它不表示 Runtime 中所有已经进入的 Submit call 已返回；后者由 Runtime `active_submission_calls` barrier 负责。
@@ -3963,7 +3963,7 @@ visible to all submit contexts
 已经进入：
 
 ```text
-Runtime::submit
+DAQ::submit
 ```
 
 的调用：
@@ -3990,7 +3990,7 @@ Plugin-wide Quiesced 后，Runtime 仍可能正在处理：
 
 ```text
 active pre-gate Submit cleanup
-accepted RuntimeRecord
+accepted AcceptedRecord
 retained / adopted Payload lifetime
 Storage drain
 ```
@@ -4075,11 +4075,11 @@ destroy
 Plugin → Runtime 通过 Service Registry 获取：
 
 ```text
-rodaq.runtime.common.v1
-rodaq.runtime.acquisition.v1
+rodaq.runtime.common
+rodaq.runtime.acquisition
 ```
 
-其中 `rodaq.runtime.acquisition.v1` 除 registration/submit 外还正式提供：
+其中 `rodaq.runtime.acquisition` 除 registration/submit 外还正式提供：
 
 ```text
 report_source_availability()
@@ -4092,7 +4092,7 @@ report_plugin_state()
 以及按需获取：
 
 ```text
-rodaq.runtime.canonical.v1
+rodaq.runtime.canonical
 ```
 
 本文中的领域 capability：
@@ -4116,7 +4116,7 @@ configure/start/stop 内部流程
 +
 Runtime Acquisition Service calls
 +
-required rodaq.acquisition.control.v1
+required rodaq.acquisition.control
 +
 optional versioned Extensions
 ```
@@ -4402,7 +4402,7 @@ Backend-specific mapping：
 
 > 应通过 typed mapping contract 表达。
 
-`rodaq.runtime.projection.v1` 是这一规则的显式实现：projection 必须具有已登记的 identifier、version、独立规范和严格 size/lifetime bound；Runtime 不提供任意 key/value 查询，也不允许 Plugin 把未知 native object 塞进 projection 逃避设计审查。
+`rodaq.runtime.projection` 是这一规则的显式实现：projection 必须具有已登记的 identifier、version、独立规范和严格 size/lifetime bound；Runtime 不提供任意 key/value 查询，也不允许 Plugin 把未知 native object 塞进 projection 逃避设计审查。
 
 只有出现明确跨 backend 的共同需求后：
 
@@ -4516,7 +4516,7 @@ submission state
         ↓
 release Plugin lock
         ↓
-Runtime::submit
+DAQ::submit
 ```
 
 ReadyToCommit / Quiescence：
@@ -5043,7 +5043,7 @@ Runtime 不依赖 Plugin type 额外参与 SourceId equality。
 让 Plugin 在 Enable permission 发布后立即产生 callback。验证：
 
 ```text
-callback may call Runtime::submit
+callback may call DAQ::submit
 ⇒
 Runtime Running
 AND Gate Open
@@ -5935,7 +5935,7 @@ Timestamp State
 +
 Payload Input
         ↓
-Runtime::submit
+DAQ::submit
         ↓
 Admission
 ```

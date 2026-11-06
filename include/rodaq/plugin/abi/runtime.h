@@ -10,12 +10,12 @@
 extern "C" {
 #endif
 
-#define RODAQ_RUNTIME_COMMON_SERVICE_ID "rodaq.runtime.common.v1"
-#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID "rodaq.runtime.canonical.v1"
-#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID "rodaq.runtime.projection.v1"
-#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID "rodaq.runtime.clock_correlation.v1"
-#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition.v1"
-#define RODAQ_RUNTIME_STORAGE_SERVICE_ID "rodaq.runtime.storage.v1"
+#define RODAQ_RUNTIME_COMMON_SERVICE_ID "rodaq.runtime.common"
+#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID "rodaq.runtime.canonical"
+#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID "rodaq.runtime.projection"
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID "rodaq.runtime.clock_correlation"
+#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID "rodaq.runtime.acquisition"
+#define RODAQ_RUNTIME_STORAGE_SERVICE_ID "rodaq.runtime.storage"
 
 typedef uint32_t rodaq_log_level;
 
@@ -43,7 +43,7 @@ typedef uint32_t rodaq_runtime_lifecycle_state;
 #define RODAQ_RUNTIME_STOPPED UINT32_C(5)
 #define RODAQ_RUNTIME_FAILED UINT32_C(6)
 
-/* ABI-FROZEN: one Runtime lifecycle observation. */
+/* ABI-FROZEN: one DAQ lifecycle observation. */
 typedef struct rodaq_runtime_lifecycle_snapshot {
     rodaq_runtime_lifecycle_state state;
     rodaq_bool normal_acquisition_allowed;
@@ -52,8 +52,8 @@ typedef struct rodaq_runtime_lifecycle_snapshot {
 
 #define RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: Runtime common service table. */
-typedef struct rodaq_runtime_common_v1 {
+/* ABI-APPENDABLE: DAQ common service table. */
+typedef struct rodaq_runtime_common {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -70,12 +70,12 @@ typedef struct rodaq_runtime_common_v1 {
     void (*report_diagnostic)(
         void* context, rodaq_diagnostic_severity severity, rodaq_string_view code,
         rodaq_string_view message) RODAQ_NOEXCEPT;
-} rodaq_runtime_common_v1;
+} rodaq_runtime_common;
 
 #define RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: read-only Canonical Runtime service table. */
-typedef struct rodaq_runtime_canonical_v1 {
+/* ABI-APPENDABLE: read-only Canonical DAQ service table. */
+typedef struct rodaq_runtime_canonical {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -102,7 +102,7 @@ typedef struct rodaq_runtime_canonical_v1 {
     rodaq_status_code (*get_stream_descriptor)(
         void* context, rodaq_stream_descriptor_handle handle,
         rodaq_stream_descriptor_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_runtime_canonical_v1;
+} rodaq_runtime_canonical;
 
 #define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
 
@@ -126,8 +126,8 @@ typedef struct rodaq_projection_view {
     rodaq_bytes_view payload;
 } rodaq_projection_view;
 
-/* ABI-APPENDABLE: projection Runtime service table. */
-typedef struct rodaq_runtime_projection_v1 {
+/* ABI-APPENDABLE: projection DAQ service table. */
+typedef struct rodaq_runtime_projection {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -138,7 +138,7 @@ typedef struct rodaq_runtime_projection_v1 {
     rodaq_status_code (*get_projection)(
         void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
         rodaq_projection_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_runtime_projection_v1;
+} rodaq_runtime_projection;
 
 /* ABI-APPENDABLE: activation-scoped ingress Clock to Unix epoch correlation. */
 typedef struct rodaq_unix_epoch_clock_anchor {
@@ -152,20 +152,20 @@ typedef struct rodaq_unix_epoch_clock_anchor {
 
 #define RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: read-only clock-correlation Runtime service table. */
-typedef struct rodaq_runtime_clock_correlation_v1 {
+/* ABI-APPENDABLE: read-only clock-correlation DAQ service table. */
+typedef struct rodaq_runtime_clock_correlation {
     uint32_t protocol_version;
     uint32_t struct_size;
 
     rodaq_status_code (*get_unix_epoch_anchor)(
         void* context, rodaq_clock_handle clock, rodaq_unix_epoch_clock_anchor* out_anchor,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_runtime_clock_correlation_v1;
+} rodaq_runtime_clock_correlation;
 
 #define RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: Acquisition Runtime service table. */
-typedef struct rodaq_runtime_acquisition_v1 {
+/* ABI-APPENDABLE: Acquisition DAQ service table. */
+typedef struct rodaq_runtime_acquisition {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -204,12 +204,12 @@ typedef struct rodaq_runtime_acquisition_v1 {
     rodaq_status_code (*submit)(
         void* context, const rodaq_record_submission* submission,
         rodaq_acquisition_submit_result* out_result, rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_runtime_acquisition_v1;
+} rodaq_runtime_acquisition;
 
 #define RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION UINT32_C(1)
 
-/* ABI-APPENDABLE: Storage Runtime completion service table. */
-typedef struct rodaq_runtime_storage_v1 {
+/* ABI-APPENDABLE: Storage DAQ completion service table. */
+typedef struct rodaq_runtime_storage {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -220,15 +220,15 @@ typedef struct rodaq_runtime_storage_v1 {
         rodaq_storage_persistence_state terminal_state, const rodaq_status* error) RODAQ_NOEXCEPT;
 
     void (*report_failure)(void* context, const rodaq_status* error) RODAQ_NOEXCEPT;
-} rodaq_runtime_storage_v1;
+} rodaq_runtime_storage;
 
-#define RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE             \
-    (offsetof(rodaq_runtime_common_v1, report_diagnostic) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_common_v1, report_diagnostic))
+#define RODAQ_RUNTIME_COMMON_MIN_STRUCT_SIZE             \
+    (offsetof(rodaq_runtime_common, report_diagnostic) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_common, report_diagnostic))
 
-#define RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE                 \
-    (offsetof(rodaq_runtime_canonical_v1, get_stream_descriptor) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_canonical_v1, get_stream_descriptor))
+#define RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE                 \
+    (offsetof(rodaq_runtime_canonical, get_stream_descriptor) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_canonical, get_stream_descriptor))
 
 #define RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE   \
     (offsetof(rodaq_projection_registration, payload) + \
@@ -238,25 +238,25 @@ typedef struct rodaq_runtime_storage_v1 {
     (offsetof(rodaq_projection_view, payload) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_projection_view, payload))
 
-#define RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE          \
-    (offsetof(rodaq_runtime_projection_v1, get_projection) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_projection_v1, get_projection))
+#define RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_runtime_projection, get_projection) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_projection, get_projection))
 
 #define RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE          \
     (offsetof(rodaq_unix_epoch_clock_anchor, unix_anchor_ns) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_unix_epoch_clock_anchor, unix_anchor_ns))
 
-#define RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE                 \
-    (offsetof(rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor))
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_MIN_STRUCT_SIZE                 \
+    (offsetof(rodaq_runtime_clock_correlation, get_unix_epoch_anchor) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_clock_correlation, get_unix_epoch_anchor))
 
-#define RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE  \
-    (offsetof(rodaq_runtime_acquisition_v1, submit) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_acquisition_v1, submit))
+#define RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE  \
+    (offsetof(rodaq_runtime_acquisition, submit) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_acquisition, submit))
 
-#define RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE          \
-    (offsetof(rodaq_runtime_storage_v1, report_failure) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_storage_v1, report_failure))
+#define RODAQ_RUNTIME_STORAGE_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_runtime_storage, report_failure) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_runtime_storage, report_failure))
 
 #ifdef __cplusplus
 }

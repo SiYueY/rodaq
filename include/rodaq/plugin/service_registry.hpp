@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <string_view>
 
-namespace rodaq {
+namespace rodaq::plugin {
 
 class InterfaceView final {
 public:
@@ -36,6 +36,6 @@ private:
     rodaq_service_registry registry_{};
 };
 
-}  // namespace rodaq
+}  // namespace rodaq::plugin
 
 #endif  // RODAQ_PLUGIN_SERVICE_REGISTRY_HPP_

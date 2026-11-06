@@ -340,8 +340,8 @@ V1 Acquisition and Storage keep small core family vtables, while
 control protocols are required interfaces:
 
 ```text
-rodaq.acquisition.control.v1
-rodaq.storage.control.v1
+rodaq.acquisition.control
+rodaq.storage.control
 ```
 
 Acquisition control carries Binding-switch and two-level quiescence coordination. `quiesce_stream()` is stream-local; `quiesce_plugin()` is the required instance-wide **non-destructive** barrier used before Runtime drain. Destructive native shutdown remains in core `stop()` and is invoked only after Runtime/Storage drain and Plugin-origin Payload anchors no longer require native release capability. Binding abort carries explicit `KEEP_PAUSED / RESUME_OLD` disposition.
@@ -457,7 +457,7 @@ SourceId remains different: it is already canonicalized by the Acquisition Mappi
 
 **Status:** Accepted
 
-`rodaq.runtime.common.v1::get_lifecycle_snapshot()` is a bounded, thread-safe Runtime-facing query. A recovery attempt may start only from a snapshot reporting `RUNNING` and `normal_acquisition_allowed=true`.
+`rodaq.runtime.common::get_lifecycle_snapshot()` is a bounded, thread-safe Runtime-facing query. A recovery attempt may start only from a snapshot reporting `RUNNING` and `normal_acquisition_allowed=true`.
 
 The snapshot can become stale immediately; subsequent Runtime registration/report/submit calls remain authoritative. Plugins do not continuously poll it.
 
@@ -613,7 +613,7 @@ FastDDS is implemented directly on Fast DDS / Fast CDR, uses DDS-Pipe and DDS Re
 ROS2 Acquisition and FastDDS Acquisition both publish the versioned typed projection:
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 through the Runtime Projection Registry. MCAP Storage consumes that common projection and must not branch on Acquisition implementation type.
@@ -806,7 +806,7 @@ the current bounded Plugin calls to converge, or quarantines the activation.
 
 A process may retain at most 32 activation roots at once. The count includes
 healthy activation slots as well as roots retained for uncertain Plugin
-progress. Every `Runtime::start()` reserves one root slot before activation;
+progress. Every `DAQ::start()` reserves one root slot before activation;
 exhaustion returns `ResourceExhausted` without entering `Running`.
 
 This capacity is reserved in full at Start so every running activation has a
@@ -814,7 +814,7 @@ safe quarantine destination if one of its Plugin calls later fails to make
 progress. It is a safety budget, not a performance target, and does not add a
 Public ABI field or configurable property.
 
-**Reference:** `docs/design/runtime.md`, `src/runtime/quarantine.hpp`,
+**Reference:** `docs/design/runtime.md`, `src/quarantine.hpp`,
 `docs/development/status.md`.
 
 ## D-040 — Storage handoff timeouts are scoped to one Submit generation
@@ -827,7 +827,7 @@ deadline, and may report Timeout only if that same generation is still active
 at the deadline. A completed Submit followed immediately by another Submit
 therefore cannot inherit the previous call's timeout.
 
-**Reference:** `src/runtime/storage_pipeline.cpp`,
+**Reference:** `src/storage_pipeline.cpp`,
 `docs/design/storage_plugin.md`, `docs/development/status.md`.
 
 ## D-041 — Insert-only Registry slots use acquire/release publication
@@ -843,7 +843,7 @@ an unpublished or fabricated handle resolve to null.
 This does not authorize concurrent `Erase()`; erasure and slot reuse retain the
 existing external-serialization and reader-lifetime requirements.
 
-**Reference:** `include/rodaq/runtime/registry.hpp`,
+**Reference:** `src/registry.hpp`,
 `docs/design/runtime.md`, `docs/development/status.md`.
 
 ## D-042 — Joint telemetry has two explicit benchmark record granularities
@@ -927,7 +927,7 @@ Plugin release callbacks run on bounded Release Executor workers.
 
 If a release worker cannot make progress before the Runtime Stop deadline, its
 joinable thread and worker state are transferred to the process-wide
-`QuarantineManager`; the activation root, Plugin instance/Dso leases and
+`PluginQuarantine`; the activation root, Plugin instance/Dso leases and
 Payload anchor remain retained. The worker is never detached and `dlclose` is
 never attempted while it may still execute.
 
@@ -1012,7 +1012,7 @@ Normal slot return uses a state/generation transition and does not scan a
 free list. Duplicate or late terminal callbacks fail closed.
 
 **Reference:** `docs/design/runtime.md`,
-`docs/design/storage_plugin.md`, `src/runtime/storage_pipeline.*`.
+`docs/design/storage_plugin.md`, `src/storage_pipeline.*`.
 
 ## D-049 — Copy Payload uses pre-Gate size-class reservation
 
@@ -1030,23 +1030,23 @@ allocation.
 
 **Reference:** `docs/design/payload.md`,
 `docs/design/admission.md`, `docs/design/runtime.md`,
-`tests/runtime/payload_pool_test.cpp`.
+`tests/payload/payload_pool_test.cpp`.
 
-## D-050 — Runtime Application API is an installable Candidate
+## D-050 — DAQ Application API is an installable Candidate
 
 **Status:** Accepted
 
-`RuntimeConfig`, `ResourceConfig`, `PluginConfig`, `StorageConfig`,
-`Runtime`, Runtime state/failure/stats, Plugin topology and Payload statistics
-form the M2 Runtime Application API Candidate.
+`DAQConfig`, `ResourceConfig`, `AcquisitionPluginConfig`, `StoragePluginConfig`,
+`DAQ`, Runtime state/failure/stats, Plugin topology and Payload statistics
+form the M2 DAQ Application API Candidate.
 
 The Candidate is installed and validated by an external CMake consumer. It is
 not frozen for arbitrary compiler/STL compatibility and may evolve through
 M3/M4 backend validation. The Stable C Plugin ABI remains independently
 frozen.
 
-**Reference:** `include/rodaq/runtime/`, `cmake/install.cmake`,
-`tests/abi/install/runtime_consumer/`.
+**Reference:** `src/`, `cmake/install.cmake`,
+`tests/abi/install/daq_consumer/`.
 
 ## D-051 — Logging is Runtime-owned, bounded and quarantinable
 
@@ -1063,8 +1063,8 @@ deadline is transferred to the process-wide worker quarantine rather than
 detached or destroyed while executing backend code.
 
 **Reference:** `docs/design/logging.md`,
-`include/rodaq/runtime/logging.hpp`, `src/runtime/logging_context.*`,
-`src/runtime/spdlog_backend.*`.
+`src/logging.hpp`, `src/logging_context.*`,
+`src/spdlog_backend.*`.
 
 ## D-052 — Fake Runtime capacity and production storage are separate gates
 
@@ -1087,17 +1087,17 @@ preserved, and Stop converges.
 
 **Status:** Accepted
 
-The production Runtime target is `librodaq_runtime.so` with hidden default
-visibility. Only the Runtime Application API Candidate uses export
+The production DAQ target is `librodaq.so` with hidden default
+visibility. Only the DAQ Application API Candidate uses export
 attributes. Private logging, config parser, Plugin loader, histogram and
-storage-pipeline implementation symbols stay behind the Runtime DSO.
+storage-pipeline implementation symbols stay behind the DAQ DSO.
 
 Normal Runtime builds require only the production dependencies. Test and
 benchmark dependencies remain conditional. Static Runtime delivery is not a
 V1 convergence deliverable because it requires a separate fully merged
 transitive static-link closure.
 
-**Reference:** `src/runtime/CMakeLists.txt`, `cmake/install.cmake`,
+**Reference:** `src/CMakeLists.txt`, `cmake/install.cmake`,
 `cmake/dependencies.cmake`, `cmake/dependency_inventory.json.in`.
 
 ## D-054 — Fatal failure automatically converges through one lifecycle owner
@@ -1141,15 +1141,15 @@ The allocation regression executable uses GNU linker wrapping so sanitizer
 new/delete interceptors remain active.
 
 **Reference:** `docs/design/runtime.md §11.6.4`,
-`tests/runtime/quarantine_allocation_test.cpp`, D-054.
+`tests/plugin/plugin_quarantine_allocation_test.cpp`, D-054.
 
 ## D-056 — C++ authoring interfaces use snake_case
 
 **Status:** Accepted; supersedes the C++ SDK source-name freeze in D-033.
 
-Project-owned C++ functions, including Runtime Application and Plugin SDK
+Project-owned C++ functions, including DAQ Application and Plugin SDK
 interfaces and virtual authoring hooks, use snake_case. The SDK's previous
-PascalCase names and the Runtime Application Candidate's old C++ symbols are
+PascalCase names and the DAQ Application Candidate's old C++ symbols are
 removed rather than aliased; C++ applications and Plugin source must migrate
 and rebuild. This user-approved source-level revision changes neither the Stable
 C Plugin ABI nor its table layouts, exported C entry points, semantics or V1
@@ -1207,3 +1207,66 @@ compatibility-source suite; Git history retains historical fixtures and results.
 
 This changes no Acquisition admission/ownership, Payload/Persistence axes,
 ordering, boundedness, stop/quarantine or backend scope contract. M3 is not started.
+
+## D-059 — Default C++ namespace is `rodaq`
+
+**Status:** Accepted.
+
+Public and internal domain types default to namespace `rodaq`. The Plugin
+subsystem may use `rodaq::plugin` because that sub-namespace is a long-lived
+semantic boundary. RoDAQ does not use generalized `detail`, `internal` or `impl`
+namespaces. `DAQ::Impl` remains valid because it is the Pimpl type bound directly
+to `DAQ`, not a namespace or compatibility alias.
+
+Public/private boundaries are enforced by installed headers, CMake target
+ownership and symbol visibility rather than namespace naming. Callers may not
+include `src/` headers as a substitute for a public API.
+
+**Reference:** `include/rodaq/`, `src/`, `src/daq/daq_impl.hpp`, `src/plugin/`.
+
+## D-060 — ABI source names are version-free
+
+**Status:** Accepted; supersedes the version-suffixed ABI source names in
+D-033/D-045 where they conflict.
+
+C ABI type names, macros, service/interface identifiers and source files do not
+contain `_v1`, `.v1` or equivalent version suffixes. Protocol versions remain
+explicit runtime data through `protocol_version` and minimum-prefix checks.
+
+The source cleanup preserves existing C structure layouts, field offsets,
+alignment, scalar values, enum values, callback signatures and ownership
+semantics. ABI layout, minimum-prefix, scalar and symbol qualification was
+rerun after the rename.
+
+**Reference:** `include/rodaq/plugin/abi/`, `tests/abi/`.
+
+## D-061 — CMake ownership separates DAQ, SDK, and Plugin Host
+
+**Status:** Accepted.
+
+The installed application target is `rodaq::daq` with file name
+`librodaq.so`. The installable Plugin SDK target is the static `rodaq::sdk`,
+which owns SDK wrappers and validation implementations. `rodaq_api_support`
+owns common out-of-line C++ API/ABI support and configuration code.
+
+`rodaq_plugin`, `rodaq_objects` and `rodaq_testing` are internal. Plugin Host
+implementation is not installed as an independent product dependency. DAQ and
+Plugin Host targets never depend back on the application DAQ target.
+
+**Reference:** `src/CMakeLists.txt`, `src/plugin/CMakeLists.txt`,
+`src/daq/CMakeLists.txt`, `cmake/install.cmake`.
+
+## D-062 — DAQ lifecycle and Application config are not ABI DTOs
+
+**Status:** Accepted.
+
+The DAQ application C++ API returns C++ lifecycle, stats and config DTOs. The
+Stable C ABI lifecycle/config views are adapted inside implementation units and
+the Plugin SDK. `ConfigNodeView` exposes RoDAQ `ConfigKind`; conversion to
+`rodaq_config_view` is an internal bridge used by DAQ and Plugin Host.
+
+The frozen Storage ABI continues to use `session_id`; the DAQ application config
+field is `acquisition_id`, mapped explicitly when Storage Open is called.
+
+**Reference:** `include/rodaq/daq.hpp`, `include/rodaq/config/config.hpp`,
+`src/config/config_internal.hpp`, D-060.

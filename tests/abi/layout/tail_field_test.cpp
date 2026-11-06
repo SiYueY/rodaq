@@ -25,7 +25,7 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_service_registry_vtable, query, RODAQ_SERVICE_REGISTRY_VTABLE_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_common_v1, report_diagnostic, RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_common, report_diagnostic, RODAQ_RUNTIME_COMMON_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_source_registration, source_id, RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
@@ -43,7 +43,7 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_acquisition_submit_result, payload_disposition,
         RODAQ_ACQUISITION_SUBMIT_RESULT_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_acquisition_v1, submit, RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_acquisition, submit, RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_source_view, source_id, RODAQ_SOURCE_VIEW_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_clock_view, origin, RODAQ_CLOCK_VIEW_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_schema_view, representation, RODAQ_SCHEMA_VIEW_MIN_STRUCT_SIZE);
@@ -54,22 +54,21 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_stream_descriptor_view, transport_timestamp_key_count,
         RODAQ_STREAM_DESCRIPTOR_VIEW_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_canonical_v1, get_stream_descriptor,
-        RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_canonical, get_stream_descriptor, RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_projection_registration, payload, RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_projection_view, payload, RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_projection_v1, get_projection, RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_projection, get_projection, RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_unix_epoch_clock_anchor, unix_anchor_ns,
         RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor,
-        RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_clock_correlation, get_unix_epoch_anchor,
+        RODAQ_RUNTIME_CLOCK_CORRELATION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(rodaq_config_vtable, as_string, RODAQ_CONFIG_VTABLE_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_acquisition_control_v1, quiesce_plugin, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+        rodaq_acquisition_control, quiesce_plugin, RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_storage_capabilities, close_progress_timeout_ns,
         RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE);
@@ -77,8 +76,7 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_descriptor_readiness_result, failure,
         RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_storage_control_v1, ensure_descriptor_ready,
-        RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
+        rodaq_storage_control, ensure_descriptor_ready, RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_acquisition_plugin, query_interface, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
@@ -93,7 +91,7 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         rodaq_storage_submit_result, persistence_error,
         RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_runtime_storage_v1, report_failure, RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE);
+        rodaq_runtime_storage, report_failure, RODAQ_RUNTIME_STORAGE_MIN_STRUCT_SIZE);
 }
 
 #undef RODAQ_CHECK_TAIL_FIELD

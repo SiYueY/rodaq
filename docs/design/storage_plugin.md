@@ -25,7 +25,7 @@ Storage Plugin 是 RoDAQ Runtime 与具体持久化 backend 之间的适配边�
 
 其职责是：
 
-> **把 Runtime 已经建立的 Canonical State、Descriptor Graph 和 Accepted RuntimeRecord 精确投影到具体 Storage backend，并向 Runtime 明确报告 Payload consumption、Record persistence、Flush、Close 和 failure outcome。**
+> **把 Runtime 已经建立的 Canonical State、Descriptor Graph 和 Accepted AcceptedRecord 精确投影到具体 Storage backend，并向 Runtime 明确报告 Payload consumption、Record persistence、Flush、Close 和 failure outcome。**
 
 基本路径为：
 
@@ -39,7 +39,7 @@ Storage Descriptor Readiness
 Runtime Binding Active
         ↓
 
-Accepted RuntimeRecord
+Accepted AcceptedRecord
         ↓
 Runtime Storage Dispatch
         ↓
@@ -66,7 +66,7 @@ Storage Plugin 必须保证：
 - `PayloadConsumed`、`PersistenceSucceeded` 和 crash durability 明确分离；
 - Storage internal buffering / batching 有界；
 - Handoff / Descriptor readiness / Flush / Close / failure quiescence 都具有 bounded progress；
-- backend failure 不把已经 Accepted 的 RuntimeRecord 改写为 Admission rejection；
+- backend failure 不把已经 Accepted 的 AcceptedRecord 改写为 Admission rejection；
 - full-fidelity 无法保证时必须拒绝，而不是 silent degradation；
 - Artifact 必须能够显式区分 normal complete 与 partial / incomplete 状态；
 - normal Close success 只在输出 Artifact 完整、可解释且满足 full-fidelity contract 时返回。
@@ -129,7 +129,7 @@ streaming archival backend
 Storage Plugin 除了查询 Canonical Descriptor Graph，还可以通过 Runtime 的：
 
 ```text
-rodaq.runtime.projection.v1
+rodaq.runtime.projection
 ```
 
 查询与当前 StreamDescriptor 关联的 versioned typed InteropProjection。
@@ -158,7 +158,7 @@ Storage 不得：
 Storage Descriptor readiness 必须把所需 projection 作为 capability/precondition 检查的一部分。例如 V1 MCAP Storage 对正式 ROS2-compatible Artifact 要求：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 存在且完整；否则该 Descriptor 为 Unsupported。
@@ -218,7 +218,7 @@ Admission
 
 AcceptanceSequence
 
-RuntimeRecord construction
+AcceptedRecord construction
 
 Payload lifetime ownership
 
@@ -298,7 +298,7 @@ Storage Persistence
 
 Record 在进入 Storage Plugin 之前：
 
-> 已经是 Accepted RuntimeRecord。
+> 已经是 Accepted AcceptedRecord。
 
 因此：
 
@@ -528,7 +528,7 @@ Quiesce after Failure
 V1 correctness 所必需的 capability negotiation 与 Descriptor readiness 必须通过 required interface：
 
 ```text
-rodaq.storage.control.v1
+rodaq.storage.control
 ```
 
 暴露。
@@ -703,7 +703,7 @@ maximum accepted Payload size
 
 ```text
 rodaq_storage_capabilities
-rodaq.storage.control.v1
+rodaq.storage.control
 ```
 
 Runtime 必须在 Running / Binding Active 前取得并冻结 effective capability。
@@ -739,7 +739,7 @@ effective_payload_limit
 
 必须在 Gate pass 前处理。
 
-正常 Accepted RuntimeRecord：
+正常 Accepted AcceptedRecord：
 
 > 不允许在 Storage handoff 时第一次因为普通 Payload size limit 被拒绝。
 
@@ -760,7 +760,7 @@ effective_payload_limit
 如果 Storage Plugin 实际收到：
 
 ```text
-Accepted RuntimeRecord
+Accepted AcceptedRecord
 with
 payload_size
 >
@@ -952,7 +952,7 @@ Closing 表示：
 正常情况下 Runtime 在进入 Closing 前保证：
 
 ```text
-no future RuntimeRecord handoff
+no future AcceptedRecord handoff
 ```
 
 Storage Close：
@@ -1189,7 +1189,7 @@ Storage Plugin：
 Runtime 通过 required Storage control interface 调用：
 
 ```text
-rodaq.storage.control.v1::ensure_descriptor_ready(...)
+rodaq.storage.control::ensure_descriptor_ready(...)
 ```
 
 该 API 是 V1 Stable Plugin Contract 的组成部分。
@@ -1585,7 +1585,7 @@ Record == Admission Accepted
 referenced Descriptor
 == Storage Ready
 
-RuntimeRecord fully initialized
+AcceptedRecord fully initialized
 
 payload_size
 <=
@@ -1607,7 +1607,7 @@ AcceptanceSequence order
 
 Storage Plugin 接收：
 
-> RuntimeRecord 的 storage-facing immutable projection。
+> AcceptedRecord 的 storage-facing immutable projection。
 
 逻辑上至少包含：
 
@@ -1735,7 +1735,7 @@ QueueFullReject
 OversizeRejectAndContinue
 ```
 
-作为已经 Accepted RuntimeRecord 的 normal Storage outcome。
+作为已经 Accepted AcceptedRecord 的 normal Storage outcome。
 
 ---
 
@@ -1841,7 +1841,7 @@ continue Ready
 
 Storage internal queue / worker capacity 暂时不足时：
 
-> 不得 drop Accepted RuntimeRecord。
+> 不得 drop Accepted AcceptedRecord。
 
 Storage 可以：
 
@@ -2358,7 +2358,7 @@ submit return:
     RODAQ_STORAGE_PAYLOAD_PENDING
 
 async terminal notification:
-    rodaq.runtime.storage.v1::payload_consumed(operation)
+    rodaq.runtime.storage::payload_consumed(operation)
 ```
 
 如果 submit result 已经返回：
@@ -2399,7 +2399,7 @@ submit return:
     RODAQ_STORAGE_PERSISTENCE_UNKNOWN
 
 async terminal notification:
-    rodaq.runtime.storage.v1::persistence_completed(...)
+    rodaq.runtime.storage::persistence_completed(...)
 ```
 
 如果 submit result 已经同步返回 terminal persistence state：
@@ -3024,7 +3024,7 @@ drop random
 best effort discard
 ```
 
-来处理已经 Accepted 的 RuntimeRecord。
+来处理已经 Accepted 的 AcceptedRecord。
 
 如果 Storage 无法继续：
 
@@ -4650,9 +4650,9 @@ destroy
 Plugin → Runtime 通过 Service Registry 获取：
 
 ```text
-rodaq.runtime.common.v1
-rodaq.runtime.canonical.v1
-rodaq.runtime.storage.v1
+rodaq.runtime.common
+rodaq.runtime.canonical
+rodaq.runtime.storage
 ```
 
 本文中的领域 capability：
@@ -4672,7 +4672,7 @@ Quiesce after Failure
 ```text
 open/submit/flush/close 内部流程
 +
-required rodaq.storage.control.v1
+required rodaq.storage.control
 +
 Runtime Storage Service callbacks
 +
@@ -5029,7 +5029,7 @@ Storage completion responsibility
 ### No Accepted Drop
 
 ```text
-Accepted RuntimeRecord
+Accepted AcceptedRecord
 cannot be dropped
 as ordinary Storage
 backpressure policy
@@ -6453,7 +6453,7 @@ original logical bytes
 
 验证 Storage-facing API：
 
-> 不允许修改 Descriptor / RuntimeRecord Canonical semantics。
+> 不允许修改 Descriptor / AcceptedRecord Canonical semantics。
 
 ---
 
@@ -6470,7 +6470,7 @@ Descriptor Ready
         ↓
 Binding Active
 
-Accepted RuntimeRecord
+Accepted AcceptedRecord
         ↓
 single logical
 Storage Dispatch Lane

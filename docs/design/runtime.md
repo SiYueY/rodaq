@@ -466,7 +466,7 @@ Runtime logically Running
 Global Admission Gate Open
 ```
 
-之后才允许 required Acquisition Plugins 的 normal routing / callbacks 获得 `Runtime::submit` permission。
+之后才允许 required Acquisition Plugins 的 normal routing / callbacks 获得 `DAQ::submit` permission。
 
 因此必须满足：
 
@@ -574,7 +574,7 @@ failure admission cutoff
 ```text
 close / wake pre-gate submission work
 quiesce Acquisition Plugins
-wait active Runtime::submit calls to return
+wait active DAQ::submit calls to return
 resolve Gate-passed admission attempts
 dispatch accepted Runtime Records
 flush / finalize Storage according to Storage Contract
@@ -754,7 +754,7 @@ Binding
 Descriptor lookup state
 Source / Stream tables
 Payload ownership anchors
-ActiveRuntimeState
+ActivationState
 ```
 
 如果某个 broken Plugin 或 backend 无法证明 quiescence：
@@ -838,7 +838,7 @@ caller-thread serialization
 一次 activation 的运行时状态逻辑上组成：
 
 ```text
-ActiveRuntimeState
+ActivationState
 ├── IdentityScope
 ├── CanonicalIdAuthority
 ├── CanonicalRegistry
@@ -857,7 +857,7 @@ ActiveRuntimeState
 └── OperationalState
 ```
 
-`ActiveRuntimeState` 是实现内部生命周期概念。
+`ActivationState` 是实现内部生命周期概念。
 
 它：
 
@@ -888,7 +888,7 @@ active_submission_calls
 
 它表示：
 
-> 已经进入 `Runtime::submit(...)`、但该 synchronous Submit call 尚未返回的 execution 数量。
+> 已经进入 `DAQ::submit(...)`、但该 synchronous Submit call 尚未返回的 execution 数量。
 
 生命周期为：
 
@@ -1197,10 +1197,10 @@ Key：
 V1 required projection：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
-The registry is mutated only on the Control Plane through `rodaq.runtime.projection.v1`. Acquisition publishes projections after the StreamDescriptor exists and before Storage descriptor readiness. Storage reads projections through the same Runtime service; there is no Acquisition → Storage pointer/call path.
+The registry is mutated only on the Control Plane through `rodaq.runtime.projection`. Acquisition publishes projections after the StreamDescriptor exists and before Storage descriptor readiness. Storage reads projections through the same Runtime service; there is no Acquisition → Storage pointer/call path.
 
 Properties：
 
@@ -1562,7 +1562,7 @@ must not be recomputed from current wall clock per Record
 
 V1 MCAP Storage uses this correlation as the default source for `Message.log_time` unless a stronger validated epoch-compatible acquisition timestamp policy is selected. A system-clock jump after activation therefore does not distort relative replay timing.
 
-The anchor is exposed read-only through `rodaq.runtime.clock_correlation.v1`. MCAP Storage queries it during Open/descriptor preparation and caches the immutable activation anchor; it must not call a wall-clock API per Record. The service does not change `rodaq/acquisition_ingress` Canonical origin or equality semantics.
+The anchor is exposed read-only through `rodaq.runtime.clock_correlation`. MCAP Storage queries it during Open/descriptor preparation and caches the immutable activation anchor; it must not call a wall-clock API per Record. The service does not change `rodaq/acquisition_ingress` Canonical origin or equality semantics.
 
 ---
 
@@ -1693,12 +1693,12 @@ ActivationContext
 activation epoch
 activation namespace
 generation/tag
-opaque handle bound to ActiveRuntimeState
+opaque handle bound to ActivationState
 ```
 
 等方式。
 
-如果某个 handle 完全不逃逸当前 `ActiveRuntimeState`，新旧 activation 内部可以产生相同 integer index。
+如果某个 handle 完全不逃逸当前 `ActivationState`，新旧 activation 内部可以产生相同 integer index。
 
 但任何从外部或 Plugin 重新进入 Runtime 的 handle resolution：
 
@@ -2509,7 +2509,7 @@ in-flight admission count == 0
 Retired
 ```
 
-不要求等待所有引用该 Binding 的 accepted RuntimeRecord 完成 Storage persistence，原因是 Retired Binding 仍保持可解析。
+不要求等待所有引用该 Binding 的 accepted AcceptedRecord 完成 Storage persistence，原因是 Retired Binding 仍保持可解析。
 
 ---
 
@@ -2588,12 +2588,12 @@ dynamic Plugin lookup
 
 ---
 
-## 6.3 RuntimeRecord
+## 6.3 AcceptedRecord
 
-V1 RuntimeRecord 的逻辑结构为：
+V1 AcceptedRecord 的逻辑结构为：
 
 ```text
-RuntimeRecord
+AcceptedRecord
 ├── BindingHandle
 ├── AcceptanceSequence
 ├── optional SourceHandle
@@ -2602,7 +2602,7 @@ RuntimeRecord
 └── PayloadRef
 ```
 
-RuntimeRecord 是 accepted Canonical Record 的 Runtime representation。
+AcceptedRecord 是 accepted Canonical Record 的 Runtime representation。
 
 它不是新的 Canonical object。
 
@@ -2621,7 +2621,7 @@ PayloadEncoding
 timestamp slot interpretation
 ```
 
-因此 RuntimeRecord 不需要重复携带：
+因此 AcceptedRecord 不需要重复携带：
 
 ```text
 StreamId
@@ -2682,21 +2682,21 @@ V1 使用固定容量：
 MaxTimestampSlots = 4
 ```
 
-RuntimeRecord 逻辑表示：
+AcceptedRecord 逻辑表示：
 
 ```text
 present_mask
 readings[4]
 ```
 
-RuntimeRecord 的：
+AcceptedRecord 的：
 
 ```text
 present_mask bit i
 readings[i]
 ```
 
-与该 RuntimeRecord 所引用 Runtime Binding 的：
+与该 AcceptedRecord 所引用 Runtime Binding 的：
 
 ```text
 slot i
@@ -2715,14 +2715,14 @@ Canonical TimestampKey
 因此：
 
 ```text
-RuntimeRecord.readings[i]
+AcceptedRecord.readings[i]
 ```
 
 的 Canonical interpretation 完全由 Binding 的 slot mapping 决定。
 
 不同 Binding 可以有不同 slot mapping。
 
-RuntimeRecord 必须始终使用自身 BindingHandle 对应的 mapping 解释。
+AcceptedRecord 必须始终使用自身 BindingHandle 对应的 mapping 解释。
 
 ---
 
@@ -2802,7 +2802,7 @@ Plugin：
 
 ## 6.7 PayloadRef
 
-RuntimeRecord 使用：
+AcceptedRecord 使用：
 
 ```text
 PayloadRef
@@ -2835,9 +2835,9 @@ custom deleter
 
 ---
 
-## 6.8 RuntimeRecord Immutability
+## 6.8 AcceptedRecord Immutability
 
-RuntimeRecord 一旦 accepted：
+AcceptedRecord 一旦 accepted：
 
 > Canonical-relevant Runtime fields 不再修改。
 
@@ -2868,7 +2868,7 @@ V1 Runtime 保证：
 
 `admission.md` 必须保证：
 
-> **同一 Stream 的 accepted RuntimeRecord 进入 bounded dispatch path 的逻辑 enqueue 顺序与 AcceptanceSequence 顺序一致。**
+> **同一 Stream 的 accepted AcceptedRecord 进入 bounded dispatch path 的逻辑 enqueue 顺序与 AcceptanceSequence 顺序一致。**
 
 即：
 
@@ -3044,7 +3044,7 @@ Storage not ready
 attempt exists
 ```
 
-即使 AcceptanceSequence 尚未物理写入 RuntimeRecord。
+即使 AcceptanceSequence 尚未物理写入 AcceptedRecord。
 
 但是：
 
@@ -3091,7 +3091,7 @@ AcceptanceSequence exhausted
 ```text
 do not allocate AcceptanceSequence
 do not increase accepted count
-do not create RuntimeRecord
+do not create AcceptedRecord
 ```
 
 ---
@@ -3165,7 +3165,7 @@ Gate pass 后涉及：
 ```text
 Admission in-flight entry
 AcceptanceSequence assignment
-RuntimeRecord finalization
+AcceptedRecord finalization
 ordered accepted enqueue
 final Accepted / AdmissionRejected terminalization
 ```
@@ -3186,7 +3186,7 @@ Stop 时 Runtime：
 
 1. 原子关闭 Global Admission Gate并建立 final cutoff；
 2. wake/cancel pre-gate resource waiters；
-3. call required `rodaq.acquisition.control.v1::quiesce_plugin()`，建立 instance-wide non-destructive quiescence，阻止当前/未来 routing 开始新的 Submit；
+3. call required `rodaq.acquisition.control::quiesce_plugin()`，建立 instance-wide non-destructive quiescence，阻止当前/未来 routing 开始新的 Submit；
 4. 等待 `active_submission_calls == 0`；
 5. 等待所有已经 Gate-pass 的 admission attempts 达到 terminal outcome；
 6. dispatch accepted Runtime Records；
@@ -3320,7 +3320,7 @@ serialized callback domain
 
 ## 8.3 Bounded Record Dispatch
 
-accepted RuntimeRecord 进入 bounded Runtime-to-Storage dispatch path。
+accepted AcceptedRecord 进入 bounded Runtime-to-Storage dispatch path。
 
 V1 不允许：
 
@@ -3433,7 +3433,7 @@ Storage Descriptor readiness confirmation
 
 ## 8.5 Record Handoff
 
-Storage Plugin 接收到 RuntimeRecord 时：
+Storage Plugin 接收到 AcceptedRecord 时：
 
 > BindingHandle 所引用的所有 required Descriptor 必须已经 Storage-ready。
 
@@ -4247,7 +4247,7 @@ min(runtime_payload_limit, storage_payload_limit)
 
 如果 Storage Contract 声明更严格的可接受 Payload limit，Runtime 不得只使用自身 `max_single_payload_size`。
 
-该 effective limit 必须在 normal Gate open 前冻结到 ActiveRuntimeState / equivalent immutable configuration，并由 Admission 在 Gate pass 前检查。
+该 effective limit 必须在 normal Gate open 前冻结到 ActivationState / equivalent immutable configuration，并由 Admission 在 Gate pass 前检查。
 
 Storage handoff 对 oversize Record 的 fail-closed check 只是 defensive invariant protection，不得成为正常 oversize rejection 路径。
 
@@ -4319,7 +4319,7 @@ handle stability
 
 ## 10.4 Data Plane Allocation
 
-RuntimeRecord metadata 是固定大小逻辑结构。
+AcceptedRecord metadata 是固定大小逻辑结构。
 
 Timestamp storage 固定最多：
 
@@ -4653,7 +4653,7 @@ according to Admission failure semantics
         ↓
 global admission in-flight → 0
         ↓
-classify Accepted RuntimeRecords by:
+classify Accepted AcceptedRecords by:
 Queued / HandoffAccepted / uncertain boundary
         ↓
 resolve Storage state and Payload access
@@ -4965,9 +4965,9 @@ V1 正常停止逻辑顺序为：
    Runtime-owned Payload anchor release
 
 5. confirm no current/newly-discovered Plugin execution context
-   can begin Runtime::submit
+   can begin DAQ::submit
 
-6. wait all active Runtime::submit calls
+6. wait all active DAQ::submit calls
    to return
    active_submission_calls == 0
 
@@ -4976,7 +4976,7 @@ V1 正常停止逻辑顺序为：
 
 8. confirm global admission in-flight == 0
 
-9. hand off every Accepted RuntimeRecord
+9. hand off every Accepted AcceptedRecord
    to Storage Dispatch Lane
 
 10. confirm no more Record handoff will occur
@@ -5045,7 +5045,7 @@ global admission in-flight == 0
 
 > Canonical admission-attempt domain 已收敛。
 
-二者都成立后，Runtime 才可以证明不再有 Data Plane producer 创建新的 Accepted RuntimeRecord。
+二者都成立后，Runtime 才可以证明不再有 Data Plane producer 创建新的 Accepted AcceptedRecord。
 
 ---
 
@@ -5098,7 +5098,7 @@ AcceptanceSequence 不 rollback / reuse。
 Runtime 进入 final flush 之前必须保证：
 
 ```text
-all accepted RuntimeRecords
+all accepted AcceptedRecords
 have been handed off to Storage
 ```
 
@@ -5339,7 +5339,7 @@ Runtime → Failed
 Quiescence 只保证：
 
 ```text
-no future Runtime::submit
+no future DAQ::submit
 ```
 
 它不等于 native resource 已关闭。
@@ -5829,7 +5829,7 @@ pre-cutoff attempt history
 ## 15.7 Record
 
 ```text
-accepted RuntimeRecord immutable
+accepted AcceptedRecord immutable
 
 BindingHandle resolvable
 
@@ -5955,7 +5955,7 @@ Failed is terminal
 
 ### Activation Commit Atomicity
 
-构造 required Plugin 在 Enable permission 发布后立即产生 callback。验证任何 normal `Runtime::submit` 开始时：
+构造 required Plugin 在 Enable permission 发布后立即产生 callback。验证任何 normal `DAQ::submit` 开始时：
 
 ```text
 Runtime == Running
@@ -6212,7 +6212,7 @@ Binding B:
 验证：
 
 ```text
-RuntimeRecord interpretation
+AcceptedRecord interpretation
 follows its own Binding
 
 present_mask aligned
@@ -6387,7 +6387,7 @@ other Streams continue
 
 ```text
 A: Gate-passed before cutoff
-B: entered Runtime::submit but remains pre-gate during resource wait / Copy
+B: entered DAQ::submit but remains pre-gate during resource wait / Copy
 C: races Gate pass with cutoff
 D: begins after cutoff
 ```
@@ -6454,7 +6454,7 @@ effective_payload_limit = storage_payload_limit
 
 ```text
 PreAdmissionRejected before Gate pass
-no RuntimeRecord Accepted
+no AcceptedRecord Accepted
 no Storage Handoff
 ```
 
@@ -6477,7 +6477,7 @@ Storage 不应在 normal path 第一次发现该 oversize。
 构造：
 
 ```text
-accepted RuntimeRecord
+accepted AcceptedRecord
         ↓
 Storage handoff blocks indefinitely
 ```
@@ -6840,7 +6840,7 @@ Storage completion capacity
 Runtime 已冻结：
 
 ```text
-RuntimeRecord carries PayloadRef
+AcceptedRecord carries PayloadRef
 
 Payload immutable
 
@@ -7149,7 +7149,7 @@ Runtime
 │   ├── AcceptanceSequence availability
 │   ├── Admission Attempt
 │   ├── Per-stream ordered accept/enqueue
-│   ├── RuntimeRecord
+│   ├── AcceptedRecord
 │   └── Bounded Dispatch
 │
 └── Storage Coordination
@@ -7171,7 +7171,7 @@ Runtime
 ```text
 Acquisition callback
         ↓
-Runtime::submit entry
+DAQ::submit entry
         ↓
 active_submission_calls +1
         ↓
@@ -7187,7 +7187,7 @@ AcceptanceSequence
         ↓
 per-stream ordered enqueue
         ↓
-RuntimeRecord
+AcceptedRecord
         ↓
 bounded dispatch
         ↓
@@ -7208,10 +7208,10 @@ Descriptor creation
 Storage-format decision
 ```
 
-RuntimeRecord 逻辑结构为：
+AcceptedRecord 逻辑结构为：
 
 ```text
-RuntimeRecord
+AcceptedRecord
 {
     BindingHandle
 
@@ -7371,7 +7371,7 @@ are forbidden.
 
 ### Configuration and metrics
 
-`RuntimeConfig` is split into lifecycle/plugin settings and `ResourceConfig`;
+`DAQConfig` is split into lifecycle/plugin settings and `ResourceConfig`;
 Runtime code does not accept a single ambiguous Payload block size. Current
 occupancy must converge to zero after normal Stop while bounded high-water
 marks remain observable.
@@ -7419,7 +7419,7 @@ RoDAQ-owned ConfigTree schema. `YAML::Node` never crosses the loader boundary.
 
 ## Status-based failure observation
 
-`Runtime::primary_failure()` returns `Status` directly. A default OK status means
+`DAQ::primary_failure()` returns `Status` directly. A default OK status means
 no primary failure; a non-OK status preserves the first failure and its complete
 diagnostics through cleanup. Failure latches and deferred diagnostics also store
 Status directly. Asynchronous call completion is determined by its existing

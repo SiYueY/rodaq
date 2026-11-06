@@ -988,7 +988,7 @@ PascalCase
 例如：
 
 ```cpp
-class Runtime;
+class DAQ;
 class LoggingContext;
 class Connection;
 

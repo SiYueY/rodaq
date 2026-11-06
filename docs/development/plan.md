@@ -27,9 +27,54 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **None — M2 Result<void> local PASS; hosted CI pending; M3 NOT STARTED**
+Current milestone: **None — M2 PASS; pre-M3 structure/naming closure PASS
+locally; hosted CI pending; M3 NOT STARTED**
 
 Only one milestone may be `ACTIVE` at a time.
+
+---
+
+## Core Implementation Structure & Naming Closure (pre-M3)
+
+**Status:** PASS — local Debug, Release, sanitizer, Ubuntu 24.04,
+installation, ABI, package and capacity qualification complete. Hosted CI
+rerun remains pending. M3 is NOT STARTED.
+
+This is a breaking source-layout and naming closure before M3. It does not add
+backend functionality or change Runtime data-path semantics.
+
+- [x] Public API moves to `rodaq::DAQ`, `DAQConfig`, `DAQState`, `DAQStats`,
+  `DAQLatencyStats` and `DAQLifecycleSnapshot`.
+- [x] Public C++ lifecycle and config views no longer expose Stable C ABI types.
+- [x] C++/YAML configuration uses `acquisition_id`; the frozen Storage ABI keeps
+  `rodaq_storage_open_request.session_id`.
+- [x] Internal C++ namespace defaults to `rodaq`; Plugin subsystem implementation
+  uses `rodaq::plugin`; no `detail`, `internal` or `impl` namespace is used.
+- [x] `DAQ::Impl` is one private type split across `daq.cpp`, `lifecycle.cpp` and
+  `recovery.cpp`.
+- [x] `ActivationState` remains the aggregate root while Canonical, Binding,
+  Admission submission, Plugin service adaptation, Logging and Metrics behavior
+  live in their owning domain implementation files.
+- [x] `AcceptedRecord`, `TimestampState` and `AcceptanceSequenceAllocator` have
+  separate Record, Canonical and Admission ownership.
+- [x] Source and test trees no longer contain `runtime/`, `sdk/`, `failure/`,
+  `resource/` or `observability/` implementation directories.
+- [x] ABI source identifiers, macro names and protocol identifiers are
+  version-free; numeric `protocol_version` negotiation remains.
+- [x] Shared DAQ target is `librodaq.so` / `rodaq::daq`; implementation SDK is
+  `rodaq::sdk`; Plugin Host implementation remains private.
+- [x] Installed DAQ and Plugin SDK consumers pass.
+- [x] Default Debug warnings-as-errors: **96/96 CTest PASS**.
+- [x] Release with tests and benchmarks enabled: full build PASS.
+- [x] GCC 11 ASan+LSan and UBSan full CTest: **96/96 PASS** in both builds.
+- [x] Ubuntu 24.04 full CTest: **96/96 PASS**.
+- [x] Clang 14 TSan selected concurrency suites: **10/10 PASS**.
+- [x] Steady-state and capacity benchmarks rerun with recorded comparison.
+- [x] clang-format and clang-tidy project checks PASS.
+- [x] Dependency inventory/SBOM and exported-symbol audits.
+
+Completion restores M2 as the current completed milestone and leaves M3 NOT
+STARTED until a separate M3 task is authorized.
 
 ---
 
@@ -187,8 +232,8 @@ Google Benchmark BUILT + LINKED + USED + QUALIFIED (benchmark only)
 - [x] Implement `PluginInstanceLease`.
 - [x] Reject Acquisition/Storage instance creation through the wrong family lease.
 - [x] Implement Service Registry.
-- [x] Add `rodaq.runtime.projection.v1` service ABI/plumbing for typed descriptor projections.
-- [x] Add `rodaq.runtime.clock_correlation.v1` read-only service ABI/plumbing for activation replay-time anchor.
+- [x] Add `rodaq.runtime.projection` service ABI/plumbing for typed descriptor projections.
+- [x] Add `rodaq.runtime.clock_correlation` read-only service ABI/plumbing for activation replay-time anchor.
 - [x] Implement ConfigView.
 - [x] Implement Plugin Interface Query plumbing.
 - [x] Implement minimal C++17 Plugin SDK.
@@ -255,8 +300,8 @@ Google Benchmark BUILT + LINKED + USED + QUALIFIED (benchmark only)
 
 - [x] required Service success/failure.
 - [x] optional Service absence.
-- [x] required `rodaq.acquisition.control.v1` present/compatible.
-- [x] required `rodaq.storage.control.v1` present/compatible.
+- [x] required `rodaq.acquisition.control` present/compatible.
+- [x] required `rodaq.storage.control` present/compatible.
 - [x] missing/incompatible required control interface prevents activation.
 - [x] M2: `quiesce_plugin()` blocks current/future Submit routing.
 - [x] M2: normal Stop quiesce → drain → destructive stop behavior.
@@ -363,8 +408,8 @@ Implement bounded, independently testable Runtime correctness primitives.
 - [x] Payload.
 - [x] PayloadView.
 - [x] PayloadPool.
-- [x] RuntimeRecord.
-- [x] RuntimeStats.
+- [x] AcceptedRecord.
+- [x] StatsAccumulator.
 - [x] LatencyHistogram.
 - [x] Logger facade.
 
@@ -671,7 +716,7 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] Stream mapping.
 - [ ] StreamDescriptor publication.
 - [ ] QoS / ConfigView.
-- [ ] `rodaq.projection.ros2.v1` generation and registration.
+- [ ] `rodaq.projection.ros2` generation and registration.
 - [ ] serialized payload acquisition.
 - [ ] Copy baseline.
 - [ ] Retain/loan only if concrete lifetime evidence justifies it.
@@ -800,7 +845,7 @@ Implement the second V1 Acquisition path directly on Fast DDS / Fast CDR, withou
 - [ ] Writer GUID SourceId mapping.
 - [ ] publication/reception timestamp mapping.
 - [ ] DataWriter QoS → deterministic `offered_qos_profiles`.
-- [ ] `rodaq.projection.ros2.v1` generation.
+- [ ] `rodaq.projection.ros2` generation.
 - [ ] bounded pending-type/discovery state.
 - [ ] listener/worker quiescence and failure/recovery.
 
@@ -1050,7 +1095,7 @@ migrate and rebuild. M3 remains NOT STARTED; native arm64 remains D-034 DEFERRED
 - [x] Remove optional<Status> and migrate public/internal failure observation,
   deferred diagnostics, tests, install consumer and current contracts.
 - [x] Verify Debug/ASan+LSan/UBSan 96/96 each, Clang 14 TSan 10/10,
-  installed Runtime consumer and full automated C++ style checks.
+  installed DAQ consumer and full automated C++ style checks.
 - [ ] Obtain new hosted qualification after commit/push. Release capacity,
   Runtime-only and Ubuntu 24 were not rerun for this follow-up.
 

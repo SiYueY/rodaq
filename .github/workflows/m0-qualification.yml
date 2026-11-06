@@ -54,7 +54,7 @@ jobs:
       - run: cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
 
-  runtime-only-no-dev-submodules:
+  daq-only-no-dev-submodules:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
         run: |
           rm -rf third_party/googletest third_party/benchmark \
                  third_party/mimalloc third_party/onetbb
-      - name: Configure Runtime only
+      - name: Configure DAQ only
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -72,7 +72,7 @@ jobs:
             -DRODAQ_BUILD_TESTS=OFF \
             -DRODAQ_BUILD_BENCHMARKS=OFF \
             -DRODAQ_WARNINGS_AS_ERRORS=ON
-      - name: Build Runtime only
+      - name: Build DAQ only
         run: cmake --build build -j2
 
   ubuntu-22-capacity:
@@ -125,18 +125,18 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -fno-pie" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -rdynamic -no-pie" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
-      - name: Build runtime tests
+      - name: Build DAQ tests
         run: |
           cmake --build build -j2 \
             --target rodaq_admission_test rodaq_payload_pool_test \
               rodaq_observability_test rodaq_m1_integration_test \
-              rodaq_quarantine_test rodaq_quarantine_allocation_test rodaq_storage_pipeline_test \
-              rodaq_logging_context_test rodaq_handle_registry_test \
-              rodaq_runtime_pipeline_test
+              rodaq_plugin_quarantine_test rodaq_plugin_quarantine_allocation_test \
+              rodaq_storage_pipeline_test rodaq_logging_context_test rodaq_handle_registry_test \
+              rodaq_daq_pipeline_test
       - name: Run TSan tests
         run: |
           setarch "$(uname -m)" -R ctest --test-dir build \
-            -R 'rodaq.runtime.(admission|payload_pool|observability|m1_integration|quarantine|storage_pipeline|logging_context|handle_registry)|rodaq.integration.runtime_pipeline' \
+            -R '^(rodaq\.(admission\.admission|payload\.pool|metrics\.observability|integration\.m1|plugin\.quarantine|plugin\.quarantine_allocation|storage\.pipeline|logging\.context|canonical\.registry)|rodaq\.integration\.daq_pipeline)$' \
             --output-on-failure
 
   ubuntu-22-arm64-native:

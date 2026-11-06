@@ -1155,9 +1155,9 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 |---|---|---|
 | `rodaq_plugin_descriptor` | `description` | `id/name/version` valid; reserved zero |
 | `rodaq_service_registry_vtable` | `query` | `query != NULL` |
-| `rodaq_runtime_common_v1` | `report_diagnostic` | `log`, `monotonic_time_ns`, `get_lifecycle_snapshot`, `report_diagnostic` all non-NULL |
+| `rodaq_runtime_common` | `report_diagnostic` | `log`, `monotonic_time_ns`, `get_lifecycle_snapshot`, `report_diagnostic` all non-NULL |
 | `rodaq_unix_epoch_clock_anchor` | `unix_anchor_ns` | ingress ClockId/reading valid; reserved zero |
-| `rodaq_runtime_clock_correlation_v1` | `get_unix_epoch_anchor` | lookup slot non-NULL |
+| `rodaq_runtime_clock_correlation` | `get_unix_epoch_anchor` | lookup slot non-NULL |
 | `rodaq_source_registration` | `source_id` | source_id non-empty |
 | `rodaq_clock_registration` | `origin` | native_id non-empty; rational resolution valid |
 | `rodaq_schema_registration` | `representation` | presence/format contract valid |
@@ -1165,29 +1165,29 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 | `rodaq_stream_descriptor_registration` | `timestamp_key_count` | pointer/count pair valid; reserved fields zero |
 | `rodaq_record_submission` | `payload` | all presence/count relationships valid |
 | `rodaq_acquisition_submit_result` | `payload_disposition` | reserved tail zero when present |
-| `rodaq_runtime_acquisition_v1` | `submit` | all V1 registration/report/submit slots non-NULL |
+| `rodaq_runtime_acquisition` | `submit` | all V1 registration/report/submit slots non-NULL |
 | `rodaq_source_view` | `source_id` | output prefix fully initialized |
 | `rodaq_clock_view` | `origin` | exact rational/origin fields available |
 | `rodaq_schema_view` | `representation` | exact representation available |
 | `rodaq_timestamp_key_set_view` | `key_count` | pointer/count valid |
 | `rodaq_stream_view` | `stream_id` | exact Canonical id available |
 | `rodaq_stream_descriptor_view` | `transport_timestamp_key_count` | complete descriptor projection available |
-| `rodaq_runtime_canonical_v1` | `get_stream_descriptor` | all V1 lookup slots non-NULL |
+| `rodaq_runtime_canonical` | `get_stream_descriptor` | all V1 lookup slots non-NULL |
 | `rodaq_projection_registration` | `payload` | descriptor/id/payload relationships valid; reserved zero |
 | `rodaq_projection_view` | `payload` | immutable projection bytes available |
-| `rodaq_runtime_projection_v1` | `get_projection` | register/get slots non-NULL for the caller role |
+| `rodaq_runtime_projection` | `get_projection` | register/get slots non-NULL for the caller role |
 | `rodaq_config_vtable` | `as_string` | all V1 ConfigView slots non-NULL |
-| `rodaq_acquisition_control_v1` | `quiesce_plugin` | all V1 control slots non-NULL |
+| `rodaq_acquisition_control` | `quiesce_plugin` | all V1 control slots non-NULL |
 | `rodaq_storage_capabilities` | `close_progress_timeout_ns` | all bounded-capability fields initialized |
 | `rodaq_descriptor_readiness_result` | `failure` | state/failure combination valid |
-| `rodaq_storage_control_v1` | `ensure_descriptor_ready` | both V1 control slots non-NULL |
+| `rodaq_storage_control` | `ensure_descriptor_ready` | both V1 control slots non-NULL |
 | `rodaq_acquisition_plugin` | `query_interface` | all core lifecycle slots non-NULL |
 | `rodaq_storage_plugin` | `query_interface` | all core lifecycle slots non-NULL |
 | `rodaq_storage_open_request` | `target_uri` | flags/reserved validation |
 | `rodaq_storage_close_request` | `disposition` | disposition recognized; reserved tail zero when present |
 | `rodaq_storage_submission` | `payload` | operation/descriptor/count/presence relationships valid |
 | `rodaq_storage_submit_result` | `persistence_error` | payload/persistence state combination valid |
-| `rodaq_runtime_storage_v1` | `report_failure` | all completion/failure slots non-NULL |
+| `rodaq_runtime_storage` | `report_failure` | all completion/failure slots non-NULL |
 
 规则：
 
@@ -1752,23 +1752,23 @@ Runtime 不会在 Instance 生命周期内替换一个已绑定 Service。
 稳定 Service：
 
 ```text
-rodaq.runtime.common.v1
-rodaq.runtime.canonical.v1
-rodaq.runtime.projection.v1
-rodaq.runtime.clock_correlation.v1
-rodaq.runtime.acquisition.v1
-rodaq.runtime.storage.v1
+rodaq.runtime.common
+rodaq.runtime.canonical
+rodaq.runtime.projection
+rodaq.runtime.clock_correlation
+rodaq.runtime.acquisition
+rodaq.runtime.storage
 ```
 
 V1 Stable C ABI 同时提供 exact literal 常量：
 
 ```c
-#define RODAQ_RUNTIME_COMMON_SERVICE_ID             "rodaq.runtime.common.v1"
-#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID          "rodaq.runtime.canonical.v1"
-#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID         "rodaq.runtime.projection.v1"
-#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID  "rodaq.runtime.clock_correlation.v1"
-#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID        "rodaq.runtime.acquisition.v1"
-#define RODAQ_RUNTIME_STORAGE_SERVICE_ID            "rodaq.runtime.storage.v1"
+#define RODAQ_RUNTIME_COMMON_SERVICE_ID             "rodaq.runtime.common"
+#define RODAQ_RUNTIME_CANONICAL_SERVICE_ID          "rodaq.runtime.canonical"
+#define RODAQ_RUNTIME_PROJECTION_SERVICE_ID         "rodaq.runtime.projection"
+#define RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID  "rodaq.runtime.clock_correlation"
+#define RODAQ_RUNTIME_ACQUISITION_SERVICE_ID        "rodaq.runtime.acquisition"
+#define RODAQ_RUNTIME_STORAGE_SERVICE_ID            "rodaq.runtime.storage"
 ```
 
 命名：
@@ -1780,8 +1780,8 @@ rodaq.<domain>.<service>.v<major>
 例如：
 
 ```text
-rodaq.runtime.metrics.v1
-rodaq.runtime.memory.v1
+rodaq.runtime.metrics
+rodaq.runtime.memory
 ```
 
 实验：
@@ -1842,7 +1842,7 @@ typedef struct rodaq_runtime_lifecycle_snapshot {
 Service ID：
 
 ```text
-rodaq.runtime.common.v1
+rodaq.runtime.common
 ```
 
 定义：
@@ -1850,7 +1850,7 @@ rodaq.runtime.common.v1
 ```c
 #define RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_common_v1 {
+typedef struct rodaq_runtime_common {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -1874,7 +1874,7 @@ typedef struct rodaq_runtime_common_v1 {
         rodaq_string_view code,
         rodaq_string_view message) RODAQ_NOEXCEPT;
 
-} rodaq_runtime_common_v1;
+} rodaq_runtime_common;
 ```
 
 用途：
@@ -1905,7 +1905,7 @@ Some Storage formats require an epoch-based replay timestamp, while Canonical `r
 Service ID：
 
 ```text
-rodaq.runtime.clock_correlation.v1
+rodaq.runtime.clock_correlation
 ```
 
 ```c
@@ -1920,7 +1920,7 @@ typedef struct rodaq_unix_epoch_clock_anchor {
 
 #define RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_clock_correlation_v1 {
+typedef struct rodaq_runtime_clock_correlation {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -1929,7 +1929,7 @@ typedef struct rodaq_runtime_clock_correlation_v1 {
         rodaq_clock_handle clock,
         rodaq_unix_epoch_clock_anchor* out_anchor,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
-} rodaq_runtime_clock_correlation_v1;
+} rodaq_runtime_clock_correlation;
 ```
 
 V1 guarantees a correlation for the Runtime-owned `rodaq/acquisition_ingress` Clock. That Clock has：
@@ -1971,7 +1971,7 @@ Storage Plugin 不能依赖 Runtime private C++ Canonical objects。
 因此提供只读：
 
 ```text
-rodaq.runtime.canonical.v1
+rodaq.runtime.canonical
 ```
 
 ### Canonical Handle Lifetime
@@ -2905,7 +2905,7 @@ typedef uint32_t rodaq_admission_outcome;
 PRE_REJECTED
     Gate pass never happened
     AcceptanceSequence not consumed
-    RuntimeRecord not Accepted
+    AcceptedRecord not Accepted
 
 REJECTED
     Gate pass happened
@@ -2916,7 +2916,7 @@ REJECTED
 ACCEPTED
     Gate pass happened
     AcceptanceSequence consumed
-    RuntimeRecord ordered publication completed
+    AcceptedRecord ordered publication completed
 ```
 
 ### Rejection Reason
@@ -3157,7 +3157,7 @@ return RESOURCE_EXHAUSTED / UNAVAILABLE
 ```c
 #define RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_acquisition_v1 {
+typedef struct rodaq_runtime_acquisition {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -3217,7 +3217,7 @@ typedef struct rodaq_runtime_acquisition_v1 {
         rodaq_acquisition_submit_result* out_result,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-} rodaq_runtime_acquisition_v1;
+} rodaq_runtime_acquisition;
 ```
 
 ---
@@ -3301,7 +3301,7 @@ V1 不需要 hazard pointer / epoch reclamation。
 Storage 与其他 read-only consumer 通过：
 
 ```text
-rodaq.runtime.canonical.v1
+rodaq.runtime.canonical
 ```
 
 查询完整 Canonical Descriptor Graph。
@@ -3568,7 +3568,7 @@ query Schema / TimestampKeySet / Clock / Source as needed
 ```c
 #define RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_canonical_v1 {
+typedef struct rodaq_runtime_canonical {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -3608,7 +3608,7 @@ typedef struct rodaq_runtime_canonical_v1 {
         rodaq_stream_descriptor_view* out_view,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-} rodaq_runtime_canonical_v1;
+} rodaq_runtime_canonical;
 ```
 
 Returned View：
@@ -3640,13 +3640,13 @@ Canonical read-only views intentionally do not carry ROS2 QoS、MCAP profile、C
 Service ID：
 
 ```text
-rodaq.runtime.projection.v1
+rodaq.runtime.projection
 ```
 
 A projection is identified by a versioned UTF-8 identifier, for example：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 Projection bytes are **not Canonical State**. They are an immutable, bounded, projection-specific representation whose format is defined by the corresponding mapping specification.
@@ -3672,7 +3672,7 @@ typedef struct rodaq_projection_view {
 
 #define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_projection_v1 {
+typedef struct rodaq_runtime_projection {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -3687,7 +3687,7 @@ typedef struct rodaq_runtime_projection_v1 {
         rodaq_string_view projection_id,
         rodaq_projection_view* out_view,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
-} rodaq_runtime_projection_v1;
+} rodaq_runtime_projection;
 ```
 
 ### Registration ordering
@@ -3784,7 +3784,7 @@ validation rules
 
 Unknown projection identifiers may be ignored by consumers that do not require them. A Storage Backend that declares a projection as required must return Descriptor Unsupported when it is absent or invalid.
 
-For V1 ROS2 interoperability, `rodaq.projection.ros2.v1` is required by the MCAP Storage mapping. Its payload encoding and semantic fields are frozen by `acquisition_plugin/ros2.md` and `acquisition_plugin/fastdds.md`; both producers must generate semantically equivalent projections.
+For V1 ROS2 interoperability, `rodaq.projection.ros2` is required by the MCAP Storage mapping. Its payload encoding and semantic fields are frozen by `acquisition_plugin/ros2.md` and `acquisition_plugin/fastdds.md`; both producers must generate semantically equivalent projections.
 
 ---
 
@@ -4051,13 +4051,13 @@ protocol incompatibility
 V1 Acquisition Plugin 必须暴露：
 
 ```text
-rodaq.acquisition.control.v1
+rodaq.acquisition.control
 ```
 
 ABI constant：
 
 ```c
-#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control.v1"
+#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control"
 ```
 
 该 interface 负责 core lifecycle 之外但 Runtime correctness 所必需的 Binding transition / quiescence coordination。
@@ -4098,7 +4098,7 @@ typedef uint32_t rodaq_binding_abort_disposition;
 ```c
 #define RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_acquisition_control_v1 {
+typedef struct rodaq_acquisition_control {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -4130,7 +4130,7 @@ typedef struct rodaq_acquisition_control_v1 {
         void* context,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-} rodaq_acquisition_control_v1;
+} rodaq_acquisition_control;
 ```
 
 ### prepare_binding_switch()
@@ -4295,13 +4295,13 @@ protocol incompatibility
 V1 Storage Plugin 必须暴露：
 
 ```text
-rodaq.storage.control.v1
+rodaq.storage.control
 ```
 
 ABI constant：
 
 ```c
-#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control.v1"
+#define RODAQ_STORAGE_CONTROL_INTERFACE_ID "rodaq.storage.control"
 ```
 
 它负责：
@@ -4389,7 +4389,7 @@ ABI/control-call failure.
 ```c
 #define RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_storage_control_v1 {
+typedef struct rodaq_storage_control {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -4404,7 +4404,7 @@ typedef struct rodaq_storage_control_v1 {
         rodaq_descriptor_readiness_result* out_result,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-} rodaq_storage_control_v1;
+} rodaq_storage_control;
 ```
 
 `get_capabilities()` 在 Storage `configure()` 成功后、`open()` / Runtime activation commit 前调用。
@@ -4450,11 +4450,11 @@ Runtime 对该 call 应使用 bounded Control Plane supervision；超时无法�
 稳定 optional Extension 示例：
 
 ```text
-rodaq.acquisition.discovery.v1
-rodaq.acquisition.pause.v1
+rodaq.acquisition.discovery
+rodaq.acquisition.pause
 
-rodaq.storage.rotation.v1
-rodaq.storage.durability.v1
+rodaq.storage.rotation
+rodaq.storage.durability
 ```
 
 Experimental：
@@ -4466,8 +4466,8 @@ rodaq.experimental.<name>.draft-<N>
 Required control interface：
 
 ```text
-rodaq.acquisition.control.v1
-rodaq.storage.control.v1
+rodaq.acquisition.control
+rodaq.storage.control
 ```
 
 不得被实现为 optional。
@@ -4754,14 +4754,14 @@ Service validation
 Plugin 可 Require：
 
 ```text
-rodaq.runtime.common.v1
-rodaq.runtime.acquisition.v1
+rodaq.runtime.common
+rodaq.runtime.acquisition
 ```
 
 通常也会 Require：
 
 ```text
-rodaq.runtime.canonical.v1
+rodaq.runtime.canonical
 ```
 
 如果确实需要读取已发布 Canonical descriptors。
@@ -4832,7 +4832,7 @@ Plugin-local routing state
 ```text
 registration / descriptor readiness
         ↓
-rodaq.acquisition.control.v1::prepare_binding_switch()
+rodaq.acquisition.control::prepare_binding_switch()
     with old_descriptor = invalid handle
         ↓
 ReadyToCommit
@@ -5045,7 +5045,7 @@ FAILURE
 
 ## 4.12 Storage Record View
 
-Storage submission 必须携带完整 Canonical Record State 的高频部分；低频 Descriptor Graph 通过 `rodaq.runtime.canonical.v1` 查询。
+Storage submission 必须携带完整 Canonical Record State 的高频部分；低频 Descriptor Graph 通过 `rodaq.runtime.canonical` 查询。
 
 ```c
 typedef struct rodaq_storage_submission {
@@ -5117,7 +5117,7 @@ source_sequence_present MUST be false
 ```text
 source is a valid Runtime SourceHandle
 Storage may query exact Canonical SourceId bytes
-through rodaq.runtime.canonical.v1
+through rodaq.runtime.canonical
 ```
 
 同一 Stream 的不同 Record 可以具有不同 Source。
@@ -5207,7 +5207,7 @@ ClockDescriptor
 Storage 可以通过：
 
 ```text
-rodaq.runtime.canonical.v1
+rodaq.runtime.canonical
 ```
 
 从 submission 中的 Handle 查询：
@@ -5253,7 +5253,7 @@ Timestamp/source scalar values 在 `submit()` return 之后如果 Storage 仍需
 
 ## 4.13 Storage Handoff 与双轴 Completion
 
-Storage 对一个 Accepted RuntimeRecord 必须分别解决两个正交问题：
+Storage 对一个 Accepted AcceptedRecord 必须分别解决两个正交问题：
 
 ```text
 Payload axis
@@ -5566,13 +5566,13 @@ Persistence terminal before PayloadConsumed
 Service ID：
 
 ```text
-rodaq.runtime.storage.v1
+rodaq.runtime.storage
 ```
 
 ```c
 #define RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION UINT32_C(1)
 
-typedef struct rodaq_runtime_storage_v1 {
+typedef struct rodaq_runtime_storage {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -5590,7 +5590,7 @@ typedef struct rodaq_runtime_storage_v1 {
         void* context,
         const rodaq_status* error) RODAQ_NOEXCEPT;
 
-} rodaq_runtime_storage_v1;
+} rodaq_runtime_storage;
 ```
 
 `payload_consumed()`：
@@ -5741,7 +5741,7 @@ crash durability
 强 durability 通过：
 
 ```text
-rodaq.storage.durability.v1
+rodaq.storage.durability
 ```
 
 等 Extension 表达。
@@ -6639,7 +6639,7 @@ include/rodaq/plugin/abi/
 
 直接开发。
 
-SDK 中不依赖模板实例化或常量求值的实现放在 `src/sdk/`，通过
+SDK 中不依赖模板实例化或常量求值的实现放在 `src/plugin/`，通过
 `rodaq::sdk` 所依赖的静态 foundation 库链接到 Plugin；模板、`constexpr`
 和必须在 Plugin 中展开的导出 / trampoline 代码保留在头文件。Plugin 不因此
 依赖 Runtime C++ 共享库，Stable C ABI 的符号与布局不变。
@@ -6653,13 +6653,13 @@ source written against the former PascalCase interface must be migrated and
 rebuilt. The Stable C ABI, its entry points, tables and binary Plugin protocol
 are unchanged; the C++ facade remains local to the Plugin binary.
 
-`AcquisitionRuntime` / common-service façade 至少必须提供 typed wrapper：
+`AcquisitionContext` / common-service façade 至少必须提供 typed wrapper：
 
 ```text
 RegisterSource / RegisterClock / RegisterSchema / RegisterStream / PublishStreamDescriptor
 Submit
 ReportSourceAvailability / ReportStreamAvailability / ReportPluginState
-LifecycleSnapshot   // wraps rodaq.runtime.common.v1::get_lifecycle_snapshot()
+LifecycleSnapshot   // wraps rodaq.runtime.common::get_lifecycle_snapshot()
 Log / Diagnostic / MonotonicTime
 ```
 
@@ -6686,7 +6686,7 @@ public:
     virtual ~AcquisitionPlugin() = default;
 
     virtual Result<void> bind(
-        AcquisitionRuntime runtime) = 0;
+        AcquisitionContext runtime) = 0;
 
     virtual Result<void> configure(
         const ConfigView& config) = 0;
@@ -6725,7 +6725,7 @@ class Ros2Acquisition final
 {
 public:
     Result<void> bind(
-        rodaq::AcquisitionRuntime runtime) override;
+        rodaq::AcquisitionContext runtime) override;
 
     Result<void> configure(
         const rodaq::ConfigView& config) override;
@@ -6774,7 +6774,7 @@ public:
     virtual ~StoragePlugin() = default;
 
     virtual Result<void> bind(
-        StorageRuntime runtime) = 0;
+        StorageContext runtime) = 0;
 
     virtual Result<void> configure(
         const ConfigView& config) = 0;
@@ -7224,7 +7224,7 @@ load / bind / configure / open / submit / close
 例如：
 
 ```text
-rodaq.runtime.metrics.v1
+rodaq.runtime.metrics
 ```
 
 旧 Plugin：
@@ -7305,8 +7305,8 @@ query optional Extension
 对：
 
 ```text
-rodaq.acquisition.control.v1
-rodaq.storage.control.v1
+rodaq.acquisition.control
+rodaq.storage.control
 ```
 
 不存在 optional fallback。
@@ -7397,7 +7397,7 @@ callback after Acquisition stop
 覆盖：
 
 ```text
-missing / incompatible rodaq.acquisition.control.v1
+missing / incompatible rodaq.acquisition.control
 
 initial Binding:
 start → native resources ready
@@ -7469,7 +7469,7 @@ repeated load / create / stop / destroy / unload
 覆盖：
 
 ```text
-missing / incompatible rodaq.storage.control.v1
+missing / incompatible rodaq.storage.control
 
 capability snapshot success
 capability becomes stricter after freeze → failure
@@ -7738,10 +7738,10 @@ Evolution
     [ ] tail-slot gating
 
 Runtime Services
-    [ ] runtime.common.v1
-    [ ] runtime.canonical.v1
-    [ ] runtime.acquisition.v1
-    [ ] runtime.storage.v1
+    [ ] runtime.common
+    [ ] runtime.canonical
+    [ ] runtime.acquisition
+    [ ] runtime.storage
 
 Data Contract
     [ ] Source registration

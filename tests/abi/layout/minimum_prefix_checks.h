@@ -55,28 +55,28 @@ RODAQ_TEST_STATIC_ASSERT(
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_service_registry_vtable, struct_size) == 4, "registry vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_common_v1, struct_size) == 4, "common vtable size slot");
+    offsetof(rodaq_runtime_common, struct_size) == 4, "common vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_acquisition_v1, struct_size) == 4, "acquisition vtable size slot");
+    offsetof(rodaq_runtime_acquisition, struct_size) == 4, "acquisition vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_canonical_v1, struct_size) == 4, "canonical vtable size slot");
+    offsetof(rodaq_runtime_canonical, struct_size) == 4, "canonical vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_projection_v1, struct_size) == 4, "projection vtable size slot");
+    offsetof(rodaq_runtime_projection, struct_size) == 4, "projection vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_clock_correlation_v1, struct_size) == 4,
+    offsetof(rodaq_runtime_clock_correlation, struct_size) == 4,
     "clock correlation vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_config_vtable, struct_size) == 4, "config vtable size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_acquisition_control_v1, struct_size) == 4, "acquisition control size slot");
+    offsetof(rodaq_acquisition_control, struct_size) == 4, "acquisition control size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_storage_control_v1, struct_size) == 4, "storage control size slot");
+    offsetof(rodaq_storage_control, struct_size) == 4, "storage control size slot");
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_acquisition_plugin, struct_size) == 4, "acquisition plugin size slot");
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_storage_plugin, struct_size) == 4, "storage plugin size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_runtime_storage_v1, struct_size) == 4, "storage vtable size slot");
+    offsetof(rodaq_runtime_storage, struct_size) == 4, "storage vtable size slot");
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_plugin_descriptor, description, 56, 72, RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE);
@@ -85,7 +85,7 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_service_registry_vtable, query, 8, 16, RODAQ_SERVICE_REGISTRY_VTABLE_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_common_v1, report_diagnostic, 32, 40, RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_common, report_diagnostic, 32, 40, RODAQ_RUNTIME_COMMON_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_source_registration, source_id, 8, 24, RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE);
@@ -111,7 +111,7 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     RODAQ_ACQUISITION_SUBMIT_RESULT_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_acquisition_v1, submit, 72, 80, RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_acquisition, submit, 72, 80, RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_source_view, source_id, 16, 32, RODAQ_SOURCE_VIEW_MIN_STRUCT_SIZE);
@@ -132,8 +132,8 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     RODAQ_STREAM_DESCRIPTOR_VIEW_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_canonical_v1, get_stream_descriptor, 48, 56,
-    RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_canonical, get_stream_descriptor, 48, 56,
+    RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_projection_registration, payload, 32, 48, RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE);
@@ -142,23 +142,21 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_projection_view, payload, 32, 48, RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_projection_v1, get_projection, 16, 24,
-    RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_projection, get_projection, 16, 24, RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_unix_epoch_clock_anchor, unix_anchor_ns, 24, 32,
     RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_clock_correlation_v1, get_unix_epoch_anchor, 8, 16,
-    RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_clock_correlation, get_unix_epoch_anchor, 8, 16,
+    RODAQ_RUNTIME_CLOCK_CORRELATION_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_config_vtable, as_string, 72, 80, RODAQ_CONFIG_VTABLE_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_acquisition_control_v1, quiesce_plugin, 40, 48,
-    RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+    rodaq_acquisition_control, quiesce_plugin, 40, 48, RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_storage_capabilities, close_progress_timeout_ns, 64, 72,
@@ -169,8 +167,7 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_storage_control_v1, ensure_descriptor_ready, 16, 24,
-    RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
+    rodaq_storage_control, ensure_descriptor_ready, 16, 24, RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_acquisition_plugin, query_interface, 64, 72, RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE);
@@ -192,7 +189,7 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     RODAQ_STORAGE_SUBMIT_RESULT_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_runtime_storage_v1, report_failure, 24, 32, RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE);
+    rodaq_runtime_storage, report_failure, 24, 32, RODAQ_RUNTIME_STORAGE_MIN_STRUCT_SIZE);
 
 #undef RODAQ_EXPECT_MINIMUM_PREFIX
 

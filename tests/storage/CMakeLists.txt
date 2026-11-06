@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_storage_pipeline_test storage.pipeline storage_pipeline_test.cpp)

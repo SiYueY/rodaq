@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control.v1"
+#define RODAQ_ACQUISITION_CONTROL_INTERFACE_ID "rodaq.acquisition.control"
 
 typedef uint32_t rodaq_payload_mode;
 
@@ -117,7 +117,7 @@ typedef uint32_t rodaq_binding_abort_disposition;
 #define RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION UINT32_C(1)
 
 /* ABI-APPENDABLE: required Acquisition control interface table. */
-typedef struct rodaq_acquisition_control_v1 {
+typedef struct rodaq_acquisition_control {
     uint32_t protocol_version;
     uint32_t struct_size;
 
@@ -138,7 +138,7 @@ typedef struct rodaq_acquisition_control_v1 {
         void* context, rodaq_stream_handle stream, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*quiesce_plugin)(void* context, rodaq_status* out_status) RODAQ_NOEXCEPT;
-} rodaq_acquisition_control_v1;
+} rodaq_acquisition_control;
 
 #define RODAQ_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
 
@@ -177,9 +177,9 @@ struct rodaq_acquisition_plugin {
     (offsetof(rodaq_acquisition_submit_result, payload_disposition) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_submit_result, payload_disposition))
 
-#define RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE          \
-    (offsetof(rodaq_acquisition_control_v1, quiesce_plugin) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_control_v1, quiesce_plugin))
+#define RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_acquisition_control, quiesce_plugin) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_acquisition_control, quiesce_plugin))
 
 #define RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE           \
     (offsetof(rodaq_acquisition_plugin, query_interface) + \

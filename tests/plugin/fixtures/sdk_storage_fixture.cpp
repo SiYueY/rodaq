@@ -54,9 +54,9 @@ void maybe_throw(ThrowMethod method) {
     }
 }
 
-class SdkStorageFixture final : public rodaq::StoragePlugin {
+class SdkStorageFixture final : public rodaq::plugin::StoragePlugin {
 public:
-    rodaq::Result<void> bind(rodaq::StorageRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::plugin::StorageContext runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -64,7 +64,7 @@ public:
         stage_ = Stage::Bound;
         return {};
     }
-    rodaq::Result<void> configure(const rodaq::ConfigView&) override {
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView&) override {
         if (stage_ != Stage::Bound) {
             return invalid_state();
         }
@@ -158,7 +158,7 @@ private:
             rodaq::StatusCode::Unavailable, "fixture", 9, "fixture lifecycle failure");
     }
 
-    rodaq::StorageRuntime runtime_;
+    rodaq::plugin::StorageContext runtime_;
     Stage stage_ = Stage::Created;
 };
 

@@ -47,7 +47,7 @@ Canonical Payload 在语义上始终是：
 Payload 设计必须保证：
 
 - logical bytes 不发生静默修改或转换；
-- RuntimeRecord 中的 Payload 在所有合法 consumer 使用期间始终有效；
+- AcceptedRecord 中的 Payload 在所有合法 consumer 使用期间始终有效；
 - ownership 不存在歧义；
 - release exactly once；
 - asynchronous Storage 不产生 use-after-free；
@@ -66,7 +66,7 @@ Payload Ingress
         ↓
 PayloadRef
         ↓
-RuntimeRecord
+AcceptedRecord
         ↓
 Storage Payload Access
         ↓
@@ -96,7 +96,7 @@ Payload 与 Admission 的关系
 
 Payload resource accounting
 
-RuntimeRecord Payload lifetime
+AcceptedRecord Payload lifetime
 
 Runtime → Storage access
 
@@ -418,7 +418,7 @@ V1 Runtime Payload baseline 为：
 [data, data + size)
 ```
 
-V1 不要求 RuntimeRecord 支持 scatter/gather。
+V1 不要求 AcceptedRecord 支持 scatter/gather。
 
 未来如果 profiling 证明 scatter/gather 有必要，可以扩展 physical representation，但不得改变：
 
@@ -616,7 +616,7 @@ retained external owner
 ```text
 reallocation
 buffer compaction
-RuntimeRecord move
+AcceptedRecord move
 ```
 
 使已经暴露的 pointer 失效。
@@ -812,7 +812,7 @@ V1 不支持：
 
 > raw borrowed Payload 跨越 synchronous input lifetime。
 
-accepted RuntimeRecord 不得直接引用 callback-local 或其他短生命周期 raw buffer。
+accepted AcceptedRecord 不得直接引用 callback-local 或其他短生命周期 raw buffer。
 
 如果 Plugin 无法提供 Adopt 或 Retain：
 
@@ -1234,7 +1234,7 @@ zero-copy：
 
 ---
 
-# 4. Payload 与 Admission / RuntimeRecord
+# 4. Payload 与 Admission / AcceptedRecord
 
 ## 4.1 Ownership Transfer 与 Admission
 
@@ -1263,7 +1263,7 @@ pre-admission rejection
 
 ```text
 no AcceptanceSequence
-no RuntimeRecord
+no AcceptedRecord
 
 Runtime releases
 adopted Payload
@@ -1309,7 +1309,7 @@ structurally valid
 
 Payload materialization 表示：
 
-> 建立一个能够安全进入 RuntimeRecord 的 PayloadRef。
+> 建立一个能够安全进入 AcceptedRecord 的 PayloadRef。
 
 不同 mode：
 
@@ -1359,14 +1359,14 @@ later materialize
 
 ## 4.4 Stable Payload Before Accepted Enqueue
 
-accepted RuntimeRecord 进入 Runtime bounded dispatch path 前：
+accepted AcceptedRecord 进入 Runtime bounded dispatch path 前：
 
 > 必须已经存在完整稳定的 PayloadRef。
 
 禁止：
 
 ```text
-enqueue accepted RuntimeRecord
+enqueue accepted AcceptedRecord
         ↓
 later materialize Payload
 ```
@@ -1461,7 +1461,7 @@ Adopt / Retain：
 
 ```text
 AcceptanceSequence consumed
-no accepted RuntimeRecord
+no accepted AcceptedRecord
 ```
 
 Runtime 在 admission logic 不再需要 Payload 后：
@@ -1474,9 +1474,9 @@ Rejected Payload：
 
 ---
 
-## 4.7 Accepted RuntimeRecord
+## 4.7 Accepted AcceptedRecord
 
-accepted RuntimeRecord 携带：
+accepted AcceptedRecord 携带：
 
 ```text
 PayloadRef
@@ -1485,7 +1485,7 @@ PayloadRef
 逻辑结构保持：
 
 ```text
-RuntimeRecord
+AcceptedRecord
 {
     BindingHandle
     AcceptanceSequence
@@ -1499,7 +1499,7 @@ RuntimeRecord
 }
 ```
 
-RuntimeRecord 可以 move。
+AcceptedRecord 可以 move。
 
 move：
 
@@ -1507,29 +1507,29 @@ move：
 
 ---
 
-### 4.7.1 RuntimeRecord Move
+### 4.7.1 AcceptedRecord Move
 
-RuntimeRecord move 后：
+AcceptedRecord move 后：
 
 ```text
-source RuntimeRecord
+source AcceptedRecord
     no longer owns PayloadRef
 
-destination RuntimeRecord
+destination AcceptedRecord
     owns PayloadRef
 ```
 
-moved-from RuntimeRecord：
+moved-from AcceptedRecord：
 
 > 不得在后续 pipeline 中再次参与 Payload release。
 
 ---
 
-### 4.7.2 RuntimeRecord Copy
+### 4.7.2 AcceptedRecord Copy
 
-V1 不要求 RuntimeRecord copyable。
+V1 不要求 AcceptedRecord copyable。
 
-如果实现支持 RuntimeRecord copy：
+如果实现支持 AcceptedRecord copy：
 
 > PayloadRef 必须显式 duplicate lifetime anchor。
 
@@ -3042,7 +3042,7 @@ BorrowedInput
 after submit return
 ```
 
-并且 accepted RuntimeRecord 只引用 Runtime-owned copy。
+并且 accepted AcceptedRecord 只引用 Runtime-owned copy。
 
 ---
 
@@ -3102,7 +3102,7 @@ Retain
 
 验证：
 
-> accepted RuntimeRecord 不引用 callback-local raw storage。
+> accepted AcceptedRecord 不引用 callback-local raw storage。
 
 ---
 
@@ -3160,7 +3160,7 @@ Runtime 已完成 ownership transfer 后使 submission 无法通过 Gate。
 
 ```text
 no AcceptanceSequence
-no RuntimeRecord
+no AcceptedRecord
 
 Runtime releases anchor
 exactly once
@@ -3241,7 +3241,7 @@ production hot path 不要求每 Record checksum。
 
 ```text
 temporary
-RuntimeRecord
+AcceptedRecord
 dispatch node
 ```
 
@@ -3520,9 +3520,9 @@ no lifetime corruption
 
 ---
 
-### RuntimeRecord Move
+### AcceptedRecord Move
 
-RuntimeRecord 在 queue / dispatch path 中多次 move。
+AcceptedRecord 在 queue / dispatch path 中多次 move。
 
 验证：
 
@@ -3623,7 +3623,7 @@ Copy / Adopt / Retain
         ↓
 PayloadRef
         ↓
-RuntimeRecord
+AcceptedRecord
         ↓
 Storage Handoff call-scoped view
         ↓

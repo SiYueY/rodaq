@@ -47,8 +47,8 @@ install(TARGETS
     rodaq_headers
     rodaq_public_api
     rodaq_expected_lite
-    rodaq_foundation
-    rodaq_runtime
+    rodaq_api_support
+    rodaq
     rodaq_sdk
     yaml-cpp
     EXPORT RoDAQTargets

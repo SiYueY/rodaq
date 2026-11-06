@@ -22,9 +22,9 @@
 
 namespace {
 
-class SdkAcquisitionFixture final : public rodaq::AcquisitionPlugin {
+class SdkAcquisitionFixture final : public rodaq::plugin::AcquisitionPlugin {
 public:
-    rodaq::Result<void> bind(rodaq::AcquisitionRuntime runtime) override {
+    rodaq::Result<void> bind(rodaq::plugin::AcquisitionContext runtime) override {
         if (stage_ != Stage::Created) {
             return invalid_state();
         }
@@ -35,7 +35,7 @@ public:
         stage_ = Stage::Bound;
         return {};
     }
-    rodaq::Result<void> configure(const rodaq::ConfigView& view) override {
+    rodaq::Result<void> configure(const rodaq::plugin::ConfigView& view) override {
         static_cast<void>(view);
         if (stage_ != Stage::Bound) {
             return invalid_state();
@@ -95,7 +95,7 @@ private:
             rodaq::StatusCode::Unavailable, "fixture", 9, "fixture lifecycle failure");
     }
 
-    rodaq::AcquisitionRuntime runtime_;
+    rodaq::plugin::AcquisitionContext runtime_;
     Stage stage_ = Stage::Created;
 };
 

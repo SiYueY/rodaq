@@ -24,7 +24,7 @@ void run_joint_profile(
     const std::size_t capacity = record_capacity(peak_records_per_second);
     const std::uint64_t expected_records = peak_records_per_second * kMeasurementSeconds;
     const std::uint64_t expected_bytes = expected_records * payload_bytes;
-    auto config = runtime_config(
+    auto config = daq_config(
         std::move(name), {PayloadClassConfig{block_bytes, capacity}}, capacity,
         capacity * block_bytes, streams,
         {acquisition(

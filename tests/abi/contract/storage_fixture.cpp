@@ -40,7 +40,7 @@ const storage_control control = {1, sizeof(storage_control), &get_capabilities, 
 
 rodaq_status_code query(void* instance, rodaq_string_view id, rodaq_interface* out, rodaq_status*) {
     *out = {};
-    const char expected[] = "rodaq.storage.control.v1";
+    const char expected[] = "rodaq.storage.control";
     if (!equals(id, expected, sizeof(expected) - 1)) {
         return RODAQ_STATUS_NOT_FOUND;
     }

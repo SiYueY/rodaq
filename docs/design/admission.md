@@ -47,7 +47,7 @@ Admission Gate Pass
     ↓
 AcceptanceSequence
     ↓
-RuntimeRecord Construction
+AcceptedRecord Construction
     ↓
 Per-stream Ordered Enqueue
     ↓
@@ -66,7 +66,7 @@ Admission 必须保证：
 - ordinary queue pressure 不在 Gate pass 后才被发现；
 - Payload 在 Gate pass 前已经成为稳定 `PayloadRef`；
 - Gate pass 后正常路径不再等待普通资源；
-- accepted RuntimeRecord 在 publication 前已经完整构造；
+- accepted AcceptedRecord 在 publication 前已经完整构造；
 - 同一 Stream 的 accepted enqueue 顺序与 AcceptanceSequence 顺序一致；
 - Storage backpressure 通过 Runtime bounded resource 向上游传播；
 - Stop / failure cutoff 与 concurrent submission 具有唯一 linearization；
@@ -104,7 +104,7 @@ AcceptanceSequence allocation
 
 Accepted / AdmissionRejected outcome
 
-RuntimeRecord construction
+AcceptedRecord construction
 
 per-stream ordered enqueue
 
@@ -232,7 +232,7 @@ as one logical admission-entry operation
 
 no ordinary blocking after Gate pass
 
-accepted RuntimeRecord fully constructed
+accepted AcceptedRecord fully constructed
 before publication
 
 same-Stream sequence-ordered enqueue
@@ -301,7 +301,7 @@ Accepted
 则在返回前必须已经完成：
 
 ```text
-RuntimeRecord construction
+AcceptedRecord construction
 +
 ordered enqueue publication
 ```
@@ -409,7 +409,7 @@ six state objects
 实际实现可以由一个紧凑的：
 
 ```text
-Runtime::submit(...)
+DAQ::submit(...)
 ```
 
 完成。
@@ -735,7 +735,7 @@ Payload byte budget
 
 Payload object / control-block capacity
 
-RuntimeRecord capacity
+AcceptedRecord capacity
 
 bounded dispatch capacity
 
@@ -747,7 +747,7 @@ Storage completion bookkeeping capacity
 例如：
 
 ```text
-RuntimeRecord slot
+AcceptedRecord slot
 +
 completion tracking state
 ```
@@ -999,7 +999,7 @@ AcceptanceSequence allocation
 ordered enqueue ordering decision
 ```
 
-以及为 RuntimeRecord publication 建立正确顺序。
+以及为 AcceptedRecord publication 建立正确顺序。
 
 ---
 
@@ -1019,7 +1019,7 @@ PayloadRef / control capacity
 ### Record Resource
 
 ```text
-RuntimeRecord capacity
+AcceptedRecord capacity
 ```
 
 ### Dispatch Resource
@@ -1090,7 +1090,7 @@ rollback cannot fail
 
 ```text
 Payload budget
-→ RuntimeRecord slot
+→ AcceptedRecord slot
 → dispatch capacity
 ```
 
@@ -1290,7 +1290,7 @@ released because submission
 did not Gate pass
 
 transferred into
-Accepted RuntimeRecord /
+Accepted AcceptedRecord /
 Storage tracking state
 
 reconciled through
@@ -1313,7 +1313,7 @@ orphan reservation
 
 对应 resource responsibility：
 
-> 转移到 RuntimeRecord、dispatch path 或 Storage tracking state。
+> 转移到 AcceptedRecord、dispatch path 或 Storage tracking state。
 
 ### AdmissionRejected
 
@@ -1770,7 +1770,7 @@ Gate pass
     ↓
 AcceptanceSequence
     ↓
-RuntimeRecord finalize
+AcceptedRecord finalize
     ↓
 ordered enqueue publication
     ↓
@@ -1801,9 +1801,9 @@ wait for Payload budget
 
 ---
 
-## 4.13 RuntimeRecord Construction
+## 4.13 AcceptedRecord Construction
 
-accepted candidate RuntimeRecord 至少包含：
+accepted candidate AcceptedRecord 至少包含：
 
 ```text
 BindingHandle
@@ -1850,11 +1850,11 @@ Plugin 不得覆盖 ingress slot。
 
 V1 定义：
 
-> **RuntimeRecord 成功完成 ordered enqueue publication 的时刻，是该 Admission Attempt 的 Accepted linearization point。**
+> **AcceptedRecord 成功完成 ordered enqueue publication 的时刻，是该 Admission Attempt 的 Accepted linearization point。**
 
 在此之前：
 
-> downstream consumer 不得把该 Record 作为 Accepted RuntimeRecord 观察。
+> downstream consumer 不得把该 Record 作为 Accepted AcceptedRecord 观察。
 
 在此之后：
 
@@ -1883,7 +1883,7 @@ Storage failure、Runtime shutdown 或 persistence failure：
 的 Runtime internal failure，例如：
 
 ```text
-RuntimeRecord invariant failure
+AcceptedRecord invariant failure
 
 ordered enqueue publication
 cannot complete despite
@@ -1944,7 +1944,7 @@ fatal Storage failure：
 
 ```text
 reserved Runtime resources
-RuntimeRecord construction state
+AcceptedRecord construction state
 ordered enqueue path
 ```
 
@@ -2042,7 +2042,7 @@ global in-flight == 0
 
 ```text
 all corresponding
-Accepted RuntimeRecords published
+Accepted AcceptedRecords published
 
 accepted count fully updated
 ```
@@ -2215,7 +2215,7 @@ AcceptanceSequence allocation
 
 > 哪个 submission 先完成上述 successful Admission Commit，哪个获得较小 AcceptanceSequence。
 
-后续 RuntimeRecord publication 必须保持该 sequence order。
+后续 AcceptedRecord publication 必须保持该 sequence order。
 
 ---
 
@@ -2225,7 +2225,7 @@ AcceptanceSequence allocation
 
 ```text
 Payload budget
-RuntimeRecord capacity
+AcceptedRecord capacity
 dispatch capacity
 ```
 
@@ -2390,7 +2390,7 @@ GlobalSequence
 
 ## 5.9 Publication Safety
 
-RuntimeRecord 必须在：
+AcceptedRecord 必须在：
 
 ```text
 fully initialized
@@ -2410,7 +2410,7 @@ acquire consumption
 Storage Dispatch 不得观察：
 
 ```text
-partially constructed RuntimeRecord
+partially constructed AcceptedRecord
 ```
 
 ---
@@ -2960,7 +2960,7 @@ Admission ordering corruption
 
 in-flight accounting corruption
 
-RuntimeRecord invariant failure
+AcceptedRecord invariant failure
 
 ordered enqueue publication failure
 
@@ -3013,7 +3013,7 @@ Failed
 reserved resources valid
 ordering state valid
 in-flight accounting valid
-RuntimeRecord construction valid
+AcceptedRecord construction valid
 queue publication path valid
 ```
 
@@ -3056,7 +3056,7 @@ AdmissionRejected
 
 ## 6.14 Failure After Gate Pass
 
-如果 Gate pass 后出现 Admission-related Runtime correctness failure，且 RuntimeRecord 尚未完成 Accepted publication：
+如果 Gate pass 后出现 Admission-related Runtime correctness failure，且 AcceptedRecord 尚未完成 Accepted publication：
 
 ```text
 AdmissionRejected
@@ -3125,7 +3125,7 @@ Accepted
 ```text
 Gate pass never happened
 AcceptanceSequence not consumed
-RuntimeRecord not Accepted
+AcceptedRecord not Accepted
 ```
 
 ### AdmissionRejected
@@ -3134,7 +3134,7 @@ RuntimeRecord not Accepted
 Gate pass happened
 AcceptanceSequence consumed
 
-RuntimeRecord not Accepted
+AcceptedRecord not Accepted
 
 Admission commit path
 not trustworthy
@@ -3149,7 +3149,7 @@ AdmissionRejected：
 ```text
 Gate pass happened
 AcceptanceSequence consumed
-RuntimeRecord ordered-enqueue published
+AcceptedRecord ordered-enqueue published
 ```
 
 ---
@@ -3261,7 +3261,7 @@ Gate linearization
 
 AcceptanceSequence
 
-RuntimeRecord construction
+AcceptedRecord construction
 
 ordered enqueue
 
@@ -3333,7 +3333,7 @@ Admission 不重新定义 Payload ownership。
 Admission 只保证：
 
 ```text
-Accepted RuntimeRecord
+Accepted AcceptedRecord
 has reserved dispatch capacity
 and completion bookkeeping capacity
 ```
@@ -3425,7 +3425,7 @@ BackpressureManager
 一个合理实现可以只是：
 
 ```text
-Runtime::submit(...)
+DAQ::submit(...)
 ```
 
 配合：
@@ -3629,7 +3629,7 @@ remains consumed
 ```text
 Accepted
 only after
-fully initialized RuntimeRecord
+fully initialized AcceptedRecord
 is ordered-enqueue published
 ```
 
@@ -3774,7 +3774,7 @@ V1 implementation 至少必须覆盖以下测试。
 ```text
 PreAdmissionRejected
 no sequence
-no RuntimeRecord
+no AcceptedRecord
 ```
 
 ---
@@ -3877,7 +3877,7 @@ resource wait
 Accepted
 ```
 
-验证 RuntimeRecord 的 TimestampStateMap 中：
+验证 AcceptedRecord 的 TimestampStateMap 中：
 
 ```text
 rodaq/acquisition_ingress
@@ -3903,7 +3903,7 @@ B commits first
 A later commits
 ```
 
-验证两条 RuntimeRecord 的 TimestampStateMap：
+验证两条 AcceptedRecord 的 TimestampStateMap：
 
 ```text
 A ingress < B ingress
@@ -4091,7 +4091,7 @@ PreAdmissionRejected
 
 ### Active Submission Barrier
 
-构造 submission A 已进入 `Runtime::submit`，仍处于 pre-gate validation / Copy materialization；此时：
+构造 submission A 已进入 `DAQ::submit`，仍处于 pre-gate validation / Copy materialization；此时：
 
 ```text
 global admission in-flight == 0
@@ -4139,7 +4139,7 @@ no sequence
 ```text
 after Payload budget reservation
 
-after RuntimeRecord slot reservation
+after AcceptedRecord slot reservation
 
 after dispatch capacity reservation
 
@@ -4309,7 +4309,7 @@ Identity Scope
 ```text
 ordered enqueue publication failure
 or
-RuntimeRecord invariant failure
+AcceptedRecord invariant failure
 ```
 
 验证：
@@ -4498,13 +4498,13 @@ AcceptanceSequence order
 
 ---
 
-### RuntimeRecord Publication
+### AcceptedRecord Publication
 
 consumer 并发 dequeue。
 
 验证：
 
-> 永远看不到 partial RuntimeRecord。
+> 永远看不到 partial AcceptedRecord。
 
 ---
 
@@ -4622,7 +4622,7 @@ normal Stop：
 Admission Attempt
 already Gate-passed
 
-RuntimeRecord not yet
+AcceptedRecord not yet
 ordered-enqueue published
 ```
 
@@ -4793,7 +4793,7 @@ global in-flight == 0
 
 时：
 
-- RuntimeRecord 已 publish；
+- AcceptedRecord 已 publish；
 - accepted count 已包含该 Record。
 
 对 AdmissionRejected 验证：
@@ -4898,7 +4898,7 @@ no new AcceptanceSequence
 成功 Accepted 后验证：
 
 - dispatch reservation 转为 queued Record capacity；
-- Payload lifetime 由 RuntimeRecord 持有；
+- Payload lifetime 由 AcceptedRecord 持有；
 - completion bookkeeping 保持到 Storage tracking terminal；
 - 不发生重复释放。
 
@@ -4929,7 +4929,7 @@ Per-stream Admission Commit
         ├── In-flight Entry
         └── AcceptanceSequence
         ↓
-RuntimeRecord Finalization
+AcceptedRecord Finalization
         ↓
 Per-stream Ordered Enqueue
         ↓

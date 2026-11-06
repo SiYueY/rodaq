@@ -30,7 +30,7 @@ void run_encoded_aggregated(benchmark::State& state) {
     const std::uint64_t expected_bytes =
         kCameraCount * kCameraFps * kMeasurementSeconds * kEncodedFrameBytes +
         kJointRateHz * kMeasurementSeconds * kAggregatedJointBytes;
-    auto config = runtime_config(
+    auto config = daq_config(
         "mixed-encoded-aggregated",
         {PayloadClassConfig{kAggregatedJointBytes, joint_capacity},
          PayloadClassConfig{kEncodedFrameBytes, camera_capacity}},
@@ -56,7 +56,7 @@ void run_raw_per_joint(benchmark::State& state) {
     const std::uint64_t physical_camera_bytes =
         static_cast<std::uint64_t>(camera_capacity) * kRawRgb8FrameBytes;
     const std::uint64_t physical_joint_bytes = static_cast<std::uint64_t>(joint_capacity) * 1024U;
-    auto config = runtime_config(
+    auto config = daq_config(
         "mixed-raw-per-joint",
         {PayloadClassConfig{1024, joint_capacity},
          PayloadClassConfig{kRawRgb8FrameBytes, camera_capacity}},

@@ -1,5 +1,5 @@
-#ifndef RODAQ_TEST_CURRENT_ABI_V1_BASELINE_ABI_H_
-#define RODAQ_TEST_CURRENT_ABI_V1_BASELINE_ABI_H_
+#ifndef RODAQ_TEST_CURRENT_ABI_BASELINE_ABI_H_
+#define RODAQ_TEST_CURRENT_ABI_BASELINE_ABI_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -36,7 +36,7 @@ typedef struct {
     rodaq_stream_descriptor_handle_frozen descriptor;
     rodaq_string_view projection_id;
     rodaq_bytes_view payload;
-} rodaq_projection_view_v1_frozen;
+} rodaq_projection_view_frozen;
 
 typedef struct {
     uint32_t struct_size;
@@ -44,7 +44,7 @@ typedef struct {
     rodaq_clock_handle_frozen clock;
     int64_t clock_reading;
     uint64_t unix_anchor_ns;
-} rodaq_unix_epoch_clock_anchor_v1_frozen;
+} rodaq_unix_epoch_clock_anchor_frozen;
 
 typedef struct rodaq_status rodaq_status;
 typedef struct rodaq_service_registry rodaq_service_registry;
@@ -70,7 +70,7 @@ typedef struct {
     const rodaq_config_vtable* vtable;
 } rodaq_config_view;
 
-typedef struct rodaq_acquisition_control_v1 {
+typedef struct rodaq_acquisition_control {
     uint32_t protocol_version;
     uint32_t struct_size;
     rodaq_status_code (*prepare_binding_switch)(
@@ -79,7 +79,7 @@ typedef struct rodaq_acquisition_control_v1 {
     rodaq_status_code (*abort_binding_switch)(void*, uint64_t, uint32_t, rodaq_status*);
     rodaq_status_code (*quiesce_stream)(void*, uint64_t, rodaq_status*);
     rodaq_status_code (*quiesce_plugin)(void*, rodaq_status*);
-} rodaq_acquisition_control_v1;
+} rodaq_acquisition_control;
 
 typedef struct rodaq_acquisition_plugin {
     uint32_t protocol_version;

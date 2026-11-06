@@ -82,9 +82,9 @@ rodaq_status_code ensure_descriptor_ready(
     return RODAQ_STATUS_OK;
 }
 
-const rodaq_storage_control_v1 control = {
+const rodaq_storage_control control = {
     RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION,
-    sizeof(rodaq_storage_control_v1),
+    sizeof(rodaq_storage_control),
     get_capabilities,
     ensure_descriptor_ready,
 };

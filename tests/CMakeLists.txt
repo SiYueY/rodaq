@@ -3,6 +3,13 @@ function(rodaq_configure_test target)
     rodaq_enable_sanitizers("${target}")
 endfunction()
 
+function(rodaq_add_test target test_name source)
+    add_executable("${target}" "${source}")
+    target_link_libraries("${target}" PRIVATE GTest::gtest_main rodaq_testing)
+    rodaq_configure_test("${target}")
+    add_test(NAME "rodaq.${test_name}" COMMAND "${target}")
+endfunction()
+
 add_executable(rodaq_status_header_test compile/status_header_test.cpp)
 target_link_libraries(rodaq_status_header_test PRIVATE rodaq_public_api)
 rodaq_configure_test(rodaq_status_header_test)
@@ -27,33 +34,21 @@ add_test(
     COMMAND rodaq_plugin_sdk_header_test
 )
 
-add_executable(rodaq_status_test unit/status_test.cpp)
-target_link_libraries(rodaq_status_test
-    PRIVATE
-        GTest::gtest_main
-        rodaq_foundation
-)
-rodaq_configure_test(rodaq_status_test)
-add_test(
-    NAME rodaq.status
-    COMMAND rodaq_status_test
-)
-
-add_executable(rodaq_result_test unit/result_test.cpp)
-target_link_libraries(rodaq_result_test
-    PRIVATE
-        GTest::gtest_main
-        rodaq_foundation
-)
-rodaq_configure_test(rodaq_result_test)
-add_test(
-    NAME rodaq.result
-    COMMAND rodaq_result_test
-)
-
 add_subdirectory(abi)
 add_subdirectory(plugin)
-add_subdirectory(runtime)
+add_subdirectory(activation)
+add_subdirectory(daq)
+add_subdirectory(admission)
+add_subdirectory(binding)
+add_subdirectory(canonical)
+add_subdirectory(clock)
+add_subdirectory(config)
+add_subdirectory(logging)
+add_subdirectory(metrics)
+add_subdirectory(payload)
+add_subdirectory(projection)
+add_subdirectory(record)
+add_subdirectory(storage)
 add_subdirectory(integration)
 
 add_test(

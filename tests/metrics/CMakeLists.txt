@@ -1,0 +1,1 @@
+rodaq_add_test(rodaq_observability_test metrics.observability observability_test.cpp)

@@ -1,10 +1,11 @@
 #include "plugin/acquisition_plugin_instance.hpp"
+#include "config/config_internal.hpp"
 #include "plugin/config_view.hpp"
 #include "plugin/plugin_manager.hpp"
 #include "plugin/service_registry.hpp"
 #include "plugin/storage_plugin_instance.hpp"
-#include "runtime/clock_correlation.hpp"
-#include "runtime/interop_projection_registry.hpp"
+#include "clock/clock_correlation.hpp"
+#include "projection/projection_registry.hpp"
 
 #include <gtest/gtest.h>
 
@@ -27,15 +28,15 @@ namespace {
 
 namespace fs = std::filesystem;
 
+using rodaq::ClockCorrelation;
+using rodaq::ProjectionLimits;
+using rodaq::ProjectionRegistry;
+using rodaq::UnixEpochClockAnchor;
 using rodaq::plugin::AcquisitionPluginInstance;
 using rodaq::plugin::ConfigTree;
 using rodaq::plugin::PluginManager;
 using rodaq::plugin::ServiceRegistry;
 using rodaq::plugin::StoragePluginInstance;
-using rodaq::runtime::ClockCorrelation;
-using rodaq::runtime::InteropProjectionRegistry;
-using rodaq::runtime::ProjectionLimits;
-using rodaq::runtime::UnixEpochClockAnchor;
 
 int common_context = 0;
 int canonical_context = 0;
@@ -188,18 +189,18 @@ void persistence_completed(
 
 void report_storage_failure(void*, const rodaq_status*) noexcept {}
 
-const rodaq_runtime_common_v1 common_vtable = {
+const rodaq_runtime_common common_vtable = {
     RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION,
-    RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE,
+    RODAQ_RUNTIME_COMMON_MIN_STRUCT_SIZE,
     &log_message,
     &monotonic_time,
     &get_lifecycle_snapshot,
     &report_diagnostic,
 };
 
-const rodaq_runtime_canonical_v1 canonical_vtable = {
+const rodaq_runtime_canonical canonical_vtable = {
     RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION,
-    RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE,
+    RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE,
     &get_source,
     &get_clock,
     &get_schema,
@@ -208,9 +209,9 @@ const rodaq_runtime_canonical_v1 canonical_vtable = {
     &get_stream_descriptor,
 };
 
-const rodaq_runtime_acquisition_v1 acquisition_vtable = {
+const rodaq_runtime_acquisition acquisition_vtable = {
     RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION,
-    RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE,
+    RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE,
     &register_source,
     &register_clock,
     &register_schema,
@@ -222,9 +223,9 @@ const rodaq_runtime_acquisition_v1 acquisition_vtable = {
     &submit_record,
 };
 
-const rodaq_runtime_storage_v1 storage_vtable = {
+const rodaq_runtime_storage storage_vtable = {
     RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION,
-    RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE,
+    RODAQ_RUNTIME_STORAGE_MIN_STRUCT_SIZE,
     &payload_consumed,
     &persistence_completed,
     &report_storage_failure,
@@ -319,7 +320,7 @@ struct RuntimeServices {
         return rodaq_interface{&storage_context, &storage_vtable};
     }
 
-    InteropProjectionRegistry projection;
+    ProjectionRegistry projection;
     ClockCorrelation clock;
 };
 
@@ -376,7 +377,7 @@ std::unique_ptr<ServiceRegistry> make_registry(
 
 void register_fixture_projection(RuntimeServices& services) {
     require_success(services.projection.register_entry(
-        rodaq_stream_descriptor_handle{42}, "rodaq.test.projection.v1",
+        rodaq_stream_descriptor_handle{42}, "rodaq.test.projection",
         reinterpret_cast<const std::uint8_t*>("fixture"), 7));
 }
 
@@ -407,7 +408,7 @@ void expect_storage_control_failure(const char* path_environment) {
 
 }  // namespace
 
-TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeRuntimeData) {
+TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeDAQData) {
     const fs::path events_path = configure_event_log();
     PluginManager manager;
     ConfigTree config = make_config();
@@ -421,9 +422,9 @@ TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeRuntimeDat
             take(manager.load_library(plugin_path("RODAQ_TEST_STORAGE_PLUGIN")))));
 
         ASSERT_TRUE(acquisition.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(acquisition.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(acquisition.configure(rodaq::config_abi_view(config.view())).ok());
         ASSERT_TRUE(storage.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(storage.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(storage.configure(rodaq::config_abi_view(config.view())).ok());
         acquisition.destroy();
         storage.destroy();
     }
@@ -460,7 +461,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
         RuntimeServices services;
         ASSERT_TRUE(services.projection
                         .register_entry(
-                            rodaq_stream_descriptor_handle{42}, "rodaq.test.projection.v1",
+                            rodaq_stream_descriptor_handle{42}, "rodaq.test.projection",
                             reinterpret_cast<const std::uint8_t*>("fixture"), 7)
                         .ok());
         const std::unique_ptr<ServiceRegistry> registry =
@@ -481,8 +482,8 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         RuntimeServices services;
         const auto projection_interface = services.projection.abi_interface();
         const auto* valid_projection =
-            static_cast<const rodaq_runtime_projection_v1*>(projection_interface.vtable);
-        rodaq_runtime_projection_v1 wrong_protocol = *valid_projection;
+            static_cast<const rodaq_runtime_projection*>(projection_interface.vtable);
+        rodaq_runtime_projection wrong_protocol = *valid_projection;
         wrong_protocol.protocol_version = RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION + 1;
         const rodaq_interface override{projection_interface.context, &wrong_protocol};
         const std::unique_ptr<ServiceRegistry> registry =
@@ -499,8 +500,8 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         RuntimeServices services;
         const rodaq_interface projection_interface = services.projection.abi_interface();
         const auto* valid_projection =
-            static_cast<const rodaq_runtime_projection_v1*>(projection_interface.vtable);
-        rodaq_runtime_projection_v1 null_slot = *valid_projection;
+            static_cast<const rodaq_runtime_projection*>(projection_interface.vtable);
+        rodaq_runtime_projection null_slot = *valid_projection;
         null_slot.register_projection = nullptr;
         const rodaq_interface override{projection_interface.context, &null_slot};
         const std::unique_ptr<ServiceRegistry> registry =
@@ -517,9 +518,9 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
         RuntimeServices services;
         const rodaq_interface projection_interface = services.projection.abi_interface();
         const auto* valid_projection =
-            static_cast<const rodaq_runtime_projection_v1*>(projection_interface.vtable);
-        rodaq_runtime_projection_v1 too_small = *valid_projection;
-        too_small.struct_size = RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE - 1;
+            static_cast<const rodaq_runtime_projection*>(projection_interface.vtable);
+        rodaq_runtime_projection too_small = *valid_projection;
+        too_small.struct_size = RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE - 1;
         const rodaq_interface override{projection_interface.context, &too_small};
         const std::unique_ptr<ServiceRegistry> registry =
             make_registry(services, std::nullopt, &override);
@@ -545,19 +546,18 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
         ASSERT_NE(nullptr, control.value().context);
-        const auto* vtable =
-            static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
+        const auto* vtable = static_cast<const rodaq_acquisition_control*>(control.value().vtable);
         ASSERT_NE(nullptr, vtable);
         EXPECT_EQ(RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION, vtable->protocol_version);
-        EXPECT_GE(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+        EXPECT_GE(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE);
         EXPECT_NE(nullptr, vtable->prepare_binding_switch);
         EXPECT_NE(nullptr, vtable->commit_binding_switch);
         EXPECT_NE(nullptr, vtable->abort_binding_switch);
         EXPECT_NE(nullptr, vtable->quiesce_stream);
         EXPECT_NE(nullptr, vtable->quiesce_plugin);
-        EXPECT_TRUE(instance.configure(config.view().abi_view()).ok());
+        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
 
-        const auto unknown = instance.query_interface("rodaq.test.unknown.v1");
+        const auto unknown = instance.query_interface("rodaq.test.unknown");
         ASSERT_FALSE(unknown.ok());
         EXPECT_EQ(rodaq::StatusCode::NotFound, unknown.status().status_code());
         instance.destroy();
@@ -572,13 +572,13 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
-        const auto* vtable = static_cast<const rodaq_storage_control_v1*>(control.value().vtable);
+        const auto* vtable = static_cast<const rodaq_storage_control*>(control.value().vtable);
         ASSERT_NE(nullptr, vtable);
         EXPECT_EQ(RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION, vtable->protocol_version);
-        EXPECT_GE(vtable->struct_size, RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE);
+        EXPECT_GE(vtable->struct_size, RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE);
         EXPECT_NE(nullptr, vtable->get_capabilities);
         EXPECT_NE(nullptr, vtable->ensure_descriptor_ready);
-        EXPECT_TRUE(instance.configure(config.view().abi_view()).ok());
+        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         instance.destroy();
     }
 }
@@ -592,8 +592,8 @@ TEST(PluginServiceIntegrationTest, LargerControlInterfaceIsAccepted) {
     ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
     const auto control = instance.required_control_interface();
     ASSERT_TRUE(control.ok());
-    const auto* vtable = static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
-    EXPECT_GT(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE);
+    const auto* vtable = static_cast<const rodaq_acquisition_control*>(control.value().vtable);
+    EXPECT_GT(vtable->struct_size, RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE);
     instance.destroy();
 }
 
@@ -617,14 +617,13 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_ACQUISITION")))));
         EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         ASSERT_TRUE(instance.start().ok());
         EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
 
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
-        const auto* table =
-            static_cast<const rodaq_acquisition_control_v1*>(control.value().vtable);
+        const auto* table = static_cast<const rodaq_acquisition_control*>(control.value().vtable);
         rodaq_status error{};
         EXPECT_EQ(
             RODAQ_STATUS_OK,
@@ -642,11 +641,11 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_STORAGE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
 
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
-        const auto* table = static_cast<const rodaq_storage_control_v1*>(control.value().vtable);
+        const auto* table = static_cast<const rodaq_storage_control*>(control.value().vtable);
         rodaq_storage_capabilities capabilities{};
         capabilities.struct_size = sizeof(capabilities);
         rodaq_status error{};
@@ -703,7 +702,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_EXCEPTION")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         const auto result = instance.start();
         ASSERT_FALSE(result.ok());
         EXPECT_EQ(rodaq::StatusCode::InternalError, result.status().status_code());
@@ -718,7 +717,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_OPEN_FAILURE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         rodaq_storage_open_request open{};
         open.struct_size = RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE;
         const auto result = instance.open(open);
@@ -738,7 +737,7 @@ TEST(PluginServiceIntegrationTest, IndependentCurrentAbiPluginsLoadInCurrentHost
         AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_CURRENT_ABI_ACQUISITION")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         EXPECT_TRUE(instance.required_control_interface().ok());
         instance.destroy();
     }
@@ -749,7 +748,7 @@ TEST(PluginServiceIntegrationTest, IndependentCurrentAbiPluginsLoadInCurrentHost
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_CURRENT_ABI_STORAGE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(config.view().abi_view()).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
         EXPECT_TRUE(instance.required_control_interface().ok());
         instance.destroy();
     }

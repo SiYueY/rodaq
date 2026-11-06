@@ -39,7 +39,7 @@ Fix. The work covers:
 ```text
 Runtime lifecycle, ownership, and ABI correctness
 Payload size classes and workload-driven capacity
-Logging, configuration, Runtime Application API, and packaging
+Logging, configuration, DAQ Application API, and packaging
 Dependency lifecycle, reference-driven implementation audit, and qualification
 ```
 
@@ -124,14 +124,14 @@ Plan and status describe execution state and cannot override normative design.
 
 | ID | Severity | Classification | Problem |
 |---|---|---|---|
-| A-01 | P0 | Implementation defect | A blocking Plugin Payload release can prevent Completion Worker shutdown and make `Runtime::Stop()` hang |
+| A-01 | P0 | Implementation defect | A blocking Plugin Payload release can prevent Completion Worker shutdown and make `DAQ::Stop()` hang |
 | A-02 | P1 | ABI implementation defect | Timestamp pointer/count validation may iterate before enforcing the V1 limit and has a 32-bit wraparound risk |
 | A-03 | P1 | Design + implementation | Acquisition Plugin health states do not drive submission or recovery behavior |
 | A-04 | P1 | Lifecycle defect | Plugin `destroy()` can block outside Runtime supervision |
 | A-05 | P1 | Hot-path defect | Storage slot return uses an O(N) free-list scan |
 | A-06 | P1 | Design + implementation | One-size PayloadPool cannot represent the standard mixed workload |
 | A-07 | P1 | Missing foundation | Runtime LoggingContext and Plugin log/diagnostic routing are absent |
-| A-08 | P1 | Delivery gap | Runtime Application API and Runtime target are not installable |
+| A-08 | P1 | Delivery gap | DAQ Application API and DAQ target are not installable |
 | A-09 | P2 | Semantics/latency gap | Eligibility invalidation does not promptly interrupt Admission wait |
 | A-10 | P1 | ABI semantic firewall | Storage submit outputs are not fully validated |
 | A-11 | P3 | Generation exhaustion | Handle generation can wrap after very long activation history |
@@ -141,7 +141,7 @@ Plan and status describe execution state and cannot override normative design.
 | D-02 | P1 | Design gap | Capacity sizing is not a complete workload-driven contract |
 | D-03 | P2 | Dependency positioning | oneTBB has no demonstrated V1 Runtime Core use |
 | D-04 | P2 | Dependency positioning | mimalloc build availability is confused with actual allocator use |
-| D-05 | P1 | Public API gap | Runtime Application API and install boundary are not frozen as a Candidate |
+| D-05 | P1 | Public API gap | DAQ Application API and install boundary are not frozen as a Candidate |
 | D-06 | P1 | Concurrency design gap | Lock ownership and ordering are not formally documented |
 | D-07 | P1 | Failure design gap | Error-to-disposition mapping is not frozen |
 | D-08 | P2 | Engineering process gap | RoDAQ-owned modules lack source-level upstream reference evidence |
@@ -161,7 +161,7 @@ Phase 1 must resolve the following durable decisions before implementation.
 - Every Accepted operation has pre-guaranteed release ownership.
 - Plugin release callbacks execute on a bounded Release Executor.
 - A blocked release transfers its worker, anchor, leases, native owner, and
-  activation root to the process-wide QuarantineManager.
+  activation root to the process-wide PluginQuarantine.
 - `destroy()` is explicit and supervised; it is not an implicit destructor
   side effect.
 
@@ -199,7 +199,7 @@ separate state dimensions. Release pending is not a DispatchState.
 
 ### D-050 - Runtime API Candidate
 
-- M2 produces an installable Runtime Application API Candidate.
+- M2 produces an installable DAQ Application API Candidate.
 - M3/M4 validate that Candidate with real backends.
 - V1 source-compatibility is frozen only before V1 release.
 - The Stable C Plugin ABI remains independently frozen.
@@ -221,10 +221,10 @@ separate state dimensions. Release pending is not a DispatchState.
 
 ### D-053 - Runtime application delivery is shared by default
 
-- Build the application-facing Runtime as `librodaq_runtime.so`.
-- Hidden visibility exposes only the Runtime Application API Candidate.
+- Build the application-facing Runtime as `librodaq.so`.
+- Hidden visibility exposes only the DAQ Application API Candidate.
 - Private logging/config/plugin-loader/histogram dependencies remain behind the
-  Runtime DSO.
+  DAQ DSO.
 - The C++ Runtime ABI is not promised across arbitrary compiler or STL
   versions.
 - Static Runtime delivery requires a separate later decision and a fully
@@ -295,7 +295,7 @@ docs/development/decisions.md
 - Failure-to-disposition matrix.
 - Logging lifecycle and shutdown ordering.
 - Config trust boundary and validation limits.
-- Runtime Application API Candidate.
+- DAQ Application API Candidate.
 - Shared-library packaging decision.
 
 ### Reference audit before implementation
@@ -429,7 +429,7 @@ block.
 ### 7.5 Quarantine ownership transfer
 
 On release timeout or invariant failure, move the complete worker dependency
-bundle into the existing QuarantineManager:
+bundle into the existing PluginQuarantine:
 
 ```text
 std::thread
@@ -611,7 +611,7 @@ Apply a pre-read file-size limit. Apply duplicate-key, node-count, depth, scalar
 type, and schema checks after parsing. Do not claim yaml-cpp enforces node/depth
 limits before constructing the YAML node graph.
 
-### Runtime Application API Candidate
+### DAQ Application API Candidate
 
 Expose public Runtime headers and owned configuration types without private
 `src/` includes.
@@ -619,12 +619,12 @@ Expose public Runtime headers and owned configuration types without private
 Separate concepts:
 
 ```text
-RuntimeConfig
+DAQConfig
 ResourceConfig
 PayloadPoolConfig
 LoggingConfig
-PluginConfig
-StorageConfig
+AcquisitionPluginConfig
+StoragePluginConfig
 ```
 
 Include `Start`, `Stop`, state, stats, failure history, and Plugin topology.
@@ -633,7 +633,7 @@ Include `Start`, `Stop`, state, stats, failure history, and Plugin topology.
 
 Build the application-facing Runtime as a shared library with hidden visibility.
 Install and export only the Runtime API Candidate and required transitive
-dependencies. Add an installed Runtime consumer smoke and installed Plugin
+dependencies. Add an installed DAQ consumer smoke and installed Plugin
 loading smoke.
 
 Static Runtime delivery is not implemented in this convergence unless a
@@ -816,7 +816,7 @@ M2 may return to PASS only when all conditions below have linked evidence:
 [x] A-05 normal slot return is O(1)
 [x] A-06 size-class PayloadPool and independent budgets pass
 [x] A-07 bounded LoggingContext and Plugin routing pass
-[x] A-08 installed Runtime Application consumer passes
+[x] A-08 installed DAQ Application consumer passes
 [x] A-09 eligibility invalidation interrupts blocked Admission
 [x] A-10 malformed Storage outputs fail closed
 [x] A-11 generation exhaustion is explicit and non-wrapping
@@ -872,32 +872,32 @@ throughput. That remains an M5 qualification.
 
 | File | Change |
 |---|---|
-| `include/rodaq/runtime/runtime.hpp` | New public Runtime Application API Candidate |
-| `include/rodaq/runtime/runtime_config.hpp` | Public configuration boundaries |
-| `include/rodaq/runtime/logging.hpp` | Logging facade/configuration |
-| `include/rodaq/runtime/payload_pool.hpp` | Size-class API |
-| `include/rodaq/runtime/runtime_stats.hpp` | Extended metrics |
+| `include/rodaq/daq.hpp` | New public DAQ Application API Candidate |
+| `include/rodaq/daq_config.hpp` | Public configuration boundaries |
+| `src/logging.hpp` | Logging facade/configuration |
+| `src/payload_pool.hpp` | Size-class API |
+| `include/rodaq/daq_stats.hpp` | Extended metrics |
 | `include/rodaq/config/config.hpp` | Public RoDAQ-owned config model |
-| `src/runtime/runtime.hpp` | Remove from public boundary |
-| `src/runtime/runtime.cpp` | Explicit lifecycle and public API |
-| `src/runtime/active_runtime_state.hpp` | Health, eligibility, supervised cleanup |
-| `src/runtime/active_runtime_state.cpp` | ABI service bridge and state coordination |
-| `src/runtime/storage_pipeline.hpp` | Orthogonal slot axes and release integration |
-| `src/runtime/storage_pipeline.cpp` | O(1) return and pre-guaranteed release work |
-| `src/runtime/payload.cpp` | Lease-bearing Payload anchors |
-| `src/runtime/payload_pool.cpp` | Size-class allocation |
-| `src/runtime/payload_pool_state.hpp` | Per-class state |
-| `src/runtime/payload_release_executor.hpp` | New release executor policy/state |
-| `src/runtime/payload_release_executor.cpp` | Worker and quarantine handoff |
-| `src/runtime/quarantine.hpp` | Worker bundle ownership |
-| `src/runtime/quarantine.cpp` | Adopt/reap bounded quarantine bundles |
-| `src/runtime/resource_budget.cpp` | Resource integration as required |
-| `src/runtime/logging_context.hpp` | New bounded logging context |
-| `src/runtime/logging_context.cpp` | Queue, drop, metrics, flush/shutdown |
-| `src/runtime/spdlog_backend.hpp` | Private backend |
-| `src/runtime/spdlog_backend.cpp` | spdlog/fmt adaptation |
-| `src/runtime/logger.cpp` | Logger facade delegation |
-| `src/runtime/runtime_stats.cpp` | Class/rejection/queue/health metrics |
+| `src/daq/daq_impl.hpp` | Remove from public boundary |
+| `src/daq/daq.cpp` | Explicit lifecycle and public API |
+| `src/activation/activation_state.hpp` | Health, eligibility, supervised cleanup |
+| `src/activation/activation_state.cpp` | ABI service bridge and state coordination |
+| `src/storage_pipeline.hpp` | Orthogonal slot axes and release integration |
+| `src/storage_pipeline.cpp` | O(1) return and pre-guaranteed release work |
+| `src/payload.cpp` | Lease-bearing Payload anchors |
+| `src/payload_pool.cpp` | Size-class allocation |
+| `src/payload_pool_state.hpp` | Per-class state |
+| `src/payload_release_executor.hpp` | New release executor policy/state |
+| `src/payload_release_executor.cpp` | Worker and quarantine handoff |
+| `src/quarantine.hpp` | Worker bundle ownership |
+| `src/quarantine.cpp` | Adopt/reap bounded quarantine bundles |
+| `src/admission/resource_budget.cpp` | Admission-owned Resource integration |
+| `src/logging_context.hpp` | New bounded logging context |
+| `src/logging_context.cpp` | Queue, drop, metrics, flush/shutdown |
+| `src/spdlog_backend.hpp` | Private backend |
+| `src/spdlog_backend.cpp` | spdlog/fmt adaptation |
+| `src/logger.cpp` | Logger facade delegation |
+| `src/metrics/stats_accumulator.cpp` | Class/rejection/queue/health metrics |
 | `src/config/yaml_config_loader.hpp` | New private parser |
 | `src/config/yaml_config_loader.cpp` | YAML to ConfigTree conversion |
 
@@ -913,7 +913,7 @@ throughput. That remains an M5 qualification.
 | `src/plugin/config_view.cpp` | Config ABI bridge |
 | `src/abi_support.cpp` | Checked ABI helpers |
 | `include/rodaq/plugin/abi_support.hpp` | Bounded validation declarations |
-| `include/rodaq/plugin/runtime_services.hpp` | Semantic firewall |
+| `include/rodaq/plugin/services.hpp` | Semantic firewall |
 | `include/rodaq/plugin/storage_plugin.hpp` | Semantic firewall |
 
 ### Build and packaging
@@ -922,7 +922,7 @@ throughput. That remains an M5 qualification.
 |---|---|
 | `CMakeLists.txt` | Shared Runtime option/default |
 | `src/CMakeLists.txt` | Public/private target boundaries |
-| `src/runtime/CMakeLists.txt` | New sources and shared library |
+| `src/CMakeLists.txt` | New sources and shared library |
 | `src/plugin/CMakeLists.txt` | Hidden private linkage |
 | `cmake/dependencies.cmake` | Conditional dependency groups and states |
 | `cmake/options.cmake` | Explicit mimalloc/static options |
@@ -935,29 +935,29 @@ throughput. That remains an M5 qualification.
 | File | Change |
 |---|---|
 | `benchmarks/joint_pipeline_benchmark.cpp` | Formula-driven capacity and full metrics |
-| `benchmarks/runtime_pipeline_benchmark.cpp` | Capacity-driven profiles |
+| `benchmarks/daq_pipeline_benchmark.cpp` | Capacity-driven profiles |
 | `benchmarks/payload_pool_benchmark.cpp` | Size-class coverage |
 | `benchmarks/camera_pipeline_benchmark.cpp` | New encoded/raw camera benchmark |
 | `benchmarks/mixed_workload_benchmark.cpp` | New mixed Runtime capacity benchmark |
 | `benchmarks/payload_class_benchmark.cpp` | New class selection/allocation benchmark |
 | `benchmarks/storage_slot_benchmark.cpp` | New O(1) slot-return benchmark |
-| `tests/runtime/payload_pool_test.cpp` | Multi-class/budget tests |
-| `tests/runtime/storage_pipeline_test.cpp` | New release/slot state tests |
-| `tests/runtime/logging_context_test.cpp` | New logging tests |
-| `tests/runtime/config_loader_test.cpp` | New YAML tests |
-| `tests/runtime/observability_test.cpp` | Extended metrics tests |
-| `tests/runtime/admission_test.cpp` | Eligibility interruption tests |
-| `tests/runtime/handle_registry_test.cpp` | Generation exhaustion |
+| `tests/payload/payload_pool_test.cpp` | Multi-class/budget tests |
+| `tests/storage/storage_pipeline_test.cpp` | New release/slot state tests |
+| `tests/logging/logging_context_test.cpp` | New logging tests |
+| `tests/config/config_loader_test.cpp` | New YAML tests |
+| `tests/metrics/observability_test.cpp` | Extended metrics tests |
+| `tests/admission/admission_test.cpp` | Eligibility interruption tests |
+| `tests/canonical/registry_test.cpp` | Generation exhaustion |
 | `tests/plugin/plugin_lifecycle_supervision_test.cpp` | New destroy/release tests |
 | `tests/plugin/abi_semantic_firewall_test.cpp` | New ABI matrices |
 | `tests/plugin/runtime_services_test.cpp` | Health and validation tests |
 | `tests/integration/fake_acquisition_plugin.cpp` | Blocking release/health scenarios |
 | `tests/integration/fake_storage_plugin.cpp` | Malformed output scenarios |
 | `tests/integration/runtime_pipeline_test.cpp` | End-to-end convergence cases |
-| `tests/abi/install/runtime_consumer/CMakeLists.txt` | Installed Runtime consumer |
-| `tests/abi/install/runtime_consumer/main.cpp` | Installed Runtime smoke |
+| `tests/abi/install/daq_consumer/CMakeLists.txt` | Installed Runtime consumer |
+| `tests/abi/install/daq_consumer/main.cpp` | Installed Runtime smoke |
 | `tests/CMakeLists.txt` | Test target registration |
-| `tests/runtime/CMakeLists.txt` | Runtime test registration |
+| `tests/CMakeLists.txt` | Runtime test registration |
 | `tests/plugin/CMakeLists.txt` | Plugin test registration |
 | `tests/integration/CMakeLists.txt` | Integration test registration |
 | `tests/abi/CMakeLists.txt` | Install and ABI qualification |
@@ -996,7 +996,7 @@ logging byte exhaustion
 logging recursion
 logging flush/shutdown timeout
 YAML file size, depth, node count, duplicate key, and type errors
-installed Runtime consumer
+installed DAQ consumer
 installed Plugin loader
 ```
 
@@ -1087,8 +1087,8 @@ Stop duration
 
 ## 19. CMake and Packaging Changes
 
-- Build `librodaq_runtime.so` with hidden visibility.
-- Keep private dependencies behind the Runtime DSO.
+- Build `librodaq.so` with hidden visibility.
+- Keep private dependencies behind the DAQ DSO.
 - Export the Runtime API Candidate.
 - Install public headers and configuration model only.
 - Provide a CMake package consumer.

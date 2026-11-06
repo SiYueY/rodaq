@@ -509,7 +509,7 @@ multi-MB camera image
 ### 应整体修改
 
 ```text
-RuntimeOptions
+DAQConfig
     ↓
 PayloadPoolConfig
     ↓
@@ -519,7 +519,7 @@ Admission reservation
     ↓
 Copy materialization
     ↓
-RuntimeStats
+StatsAccumulator
 ```
 
 至少需要观察：
@@ -609,19 +609,19 @@ runtime dependencies
 
 因此：
 
-> 当前安装后的 RoDAQ 可以支持 Plugin authoring，但不能形成完整 Runtime Application consumer。
+> 当前安装后的 RoDAQ 可以支持 Plugin authoring，但不能形成完整 DAQ Application consumer。
 
 该问题已被现有审查确认。
 
 这同时暴露一个设计缺口：
 
-## Runtime Application API 尚未真正冻结
+## DAQ Application API 尚未真正冻结
 
 需要明确：
 
 ```text
 Runtime
-RuntimeOptions / RuntimeConfig
+DAQConfig / DAQConfig
 Configure
 Start
 Stop
@@ -908,7 +908,7 @@ lifecycle
 install/export
 ```
 
-否则 M3 做出来以后最终应用程序仍然依赖 private `src/runtime`。
+否则 M3 做出来以后最终应用程序仍然依赖 private `src/` implementation headers。
 
 ---
 
@@ -1070,9 +1070,9 @@ Admission-related control state
 
 ---
 
-## 23.2 RuntimeOptions 正在演化为 giant configuration object
+## 23.2 DAQConfig 正在演化为 giant configuration object
 
-当前 RuntimeOptions 已经承担：
+当前 DAQConfig 已经承担：
 
 ```text
 capacity
@@ -1100,12 +1100,12 @@ resource policies
 可合理拆分为：
 
 ```text
-RuntimeConfig
+DAQConfig
 ResourceConfig
 PayloadPoolConfig
 LoggingConfig
-PluginConfig
-StorageConfig
+AcquisitionPluginConfig
+StoragePluginConfig
 ```
 
 但应坚持简单，不引入无意义配置框架。
@@ -1444,7 +1444,7 @@ this table alone.
 
 | ID | Severity | Design reference | Implementation evidence | Acceptance evidence | Status |
 |---|---|---|---|---|---|
-| A-01 | P0 | D-045, runtime/payload | bounded Release Executor; each worker has completion state; Stop transfers blocked workers to `QuarantineManager` | Runtime pipeline blocked-release test; quarantine test | Implemented |
+| A-01 | P0 | D-045, runtime/payload | bounded Release Executor; each worker has completion state; Stop transfers blocked workers to `PluginQuarantine` | Runtime pipeline blocked-release test; quarantine test | Implemented |
 | A-02 | P1 | D-046, canonical profile | all timestamp counts bounded before dereference; pointer/size parsing checked; `rodaq_error` buffer validated | `UINT32_MAX` timestamp tests; malformed diagnostic matrix | Implemented |
 | A-03 | P1 | D-047, acquisition/runtime | per-Acquisition health; routing invalidation; Available requires new Descriptor/Binding; terminal failure synthesizes error | recoverable, recovered and terminal health tests | Implemented |
 | A-04 | P1 | D-045, Plugin system | explicit supervised `destroy()`; implicit production destroy removed; timed-out call retained with activation | blocked-destroy bounded Stop test | Implemented |
@@ -1463,7 +1463,7 @@ this table alone.
 | D-02 | P1 | system/runtime | formula-driven record/class capacities and documented stall/safety values | benchmark capacity derivation | Implemented |
 | D-03 | P2 | reference audit | oneTBB evaluated, no V1 Core use, removed from baseline | dependency inventory; runtime-only build | Implemented |
 | D-04 | P2 | reference audit | mimalloc evaluated, no measured DTO bottleneck, removed from baseline | dependency inventory; runtime-only build | Implemented |
-| D-05 | P1 | D-050 | `RuntimeConfig`, `ResourceConfig`, `PluginConfig`, `StorageConfig`, installable Candidate | Runtime config tests; install consumer | Implemented |
+| D-05 | P1 | D-050 | `DAQConfig`, `ResourceConfig`, `AcquisitionPluginConfig`, `StoragePluginConfig`, installable Candidate | Runtime config tests; install consumer | Implemented |
 | D-06 | P1 | runtime design | lock domains and callback-under-lock prohibition documented; reentry tests | projection-under-Plugin-lock and concurrency tests | Implemented |
 | D-07 | P1 | decisions/D-047 | primary/secondary history, terminal health, invariant failure paths made explicit | failure history and contract-violation tests | Implemented |
 | D-08 | P2 | reference audit | pinned source-level review recorded for all required mechanism families | `reference_audit.md` | Implemented |
@@ -1494,9 +1494,9 @@ identity/sequence rule, or dependency pin changed.
 ### FR-01 — automatic failure convergence
 
 The original failure path only recorded Failed and closed Admission, leaving
-cleanup dependent on application Stop. `src/runtime/failure_signal.hpp` now
+cleanup dependent on application Stop. `src/daq/failure_mailbox.hpp` now
 provides a shared one-bit mailbox with no Runtime pointer or activation owner.
-`Runtime::Impl::failure_loop()` owns one joinable supervisor per Runtime.
+`DAQ::Impl::failure_loop()` owns one joinable supervisor per Runtime.
 `RequestFailure()` records/cuts off/notifies and performs no Plugin I/O or Join.
 Runtime destruction closes the mailbox before joining its supervisor; a late
 quarantined callback cannot access a destroyed Runtime.
@@ -1528,7 +1528,7 @@ and DSO leases; a safe late return allows Join and root-capacity recovery.
 
 ### FR-02 — dynamic Descriptor FAILED escalation
 
-`ActiveRuntimeState::ReconcileDescriptor()` reports readiness errors through
+`ActivationState::ReconcileDescriptor()` reports readiness errors through
 RequestFailure after releasing structural locks, regardless of startup-critical
 status. The original Storage diagnostic is preserved. FAILED, timeout and
 malformed responses fail closed during Starting and Running; UNSUPPORTED stays
@@ -1730,10 +1730,10 @@ The working tree is based on `develop@be448c81da075a64a4282d2123e321e77c66e13b`.
 The prior commit's hosted qualification completed successfully at [RoDAQ Qualification #41975605291](https://github.com/SiYueY/rodaq/actions/runs/41975605291).
 This review's code is locally qualified; no new hosted run has yet qualified it.
 
-Project-owned free functions, static/member functions, Runtime Application
+Project-owned free functions, static/member functions, DAQ Application
 Candidate, SDK authoring interfaces, trampolines, tests, benchmarks and installed
-consumers use snake_case. Representative migrations: `Runtime::Start()` to
-`Runtime::start()`, `AcquisitionPlugin::Bind()` to `bind()`,
+consumers use snake_case. Representative migrations: `DAQ::start()` to
+`DAQ::start()`, `AcquisitionPlugin::Bind()` to `bind()`,
 `ConfigTree::Double()` to `float64()` (avoids the C++ `double` keyword), and
 Registry/Projection `Register()` to `register_entry()` (avoids `register`).
 No PascalCase source compatibility aliases were added.
@@ -1876,7 +1876,7 @@ history use OK to mean no failure; Descriptor reconciliation, deferred admission
 failures, Storage completion effects and Quarantine diagnostics use the same
 representation. Async completion remains guarded by the existing completion,
 Join and mutex protocols, independently of Status. Updated all callers and the
-installed Runtime consumer without aliases. Reviewed the final diff and verified
+installed DAQ consumer without aliases. Reviewed the final diff and verified
 no optional<Status> or old optional primary-failure access remains.
 
 Debug warnings-as-errors, ASan/LSan and UBSan: 96/96 each; Clang 14 TSan with

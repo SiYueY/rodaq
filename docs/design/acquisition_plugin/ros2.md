@@ -52,7 +52,7 @@ source-native facts
         ↓
 Runtime registration / Binding
         ↓
-Runtime::submit
+DAQ::submit
 ```
 
 Plugin 不得：
@@ -539,7 +539,7 @@ normal serialized take
 Plugin 可以在 Activation Commit 前创建 subscription/native resource，但不得让正常 callback 进入：
 
 ```text
-Runtime::submit
+DAQ::submit
 ```
 
 Dynamic topic discovery 在 Running 阶段继续支持。
@@ -643,7 +643,7 @@ representation
 
 它不得伪装成 `ros2msg`，也不得让 native tooling 误认为存在完整 message definition。
 
-对于 V1 required `MCAP Storage + ROS2 interoperability` path，type-only descriptor **不能进入 Ready Binding**：MCAP Descriptor readiness 必须要求完整 `rodaq.projection.ros2.v1` 与 `ros2msg/ros2idl` dependency-complete Schema。type-only 只保留为 generic Acquisition / diagnostic capability，不属于 V1 qualified recording output。
+对于 V1 required `MCAP Storage + ROS2 interoperability` path，type-only descriptor **不能进入 Ready Binding**：MCAP Descriptor readiness 必须要求完整 `rodaq.projection.ros2` 与 `ros2msg/ros2idl` dependency-complete Schema。type-only 只保留为 generic Acquisition / diagnostic capability，不属于 V1 qualified recording output。
 
 如果后续获得 exact schema：
 
@@ -674,15 +674,15 @@ Clock interpretation where relevant
 
 Descriptor ID 仍由 Runtime 分配。
 
-### 2.3.1 `rodaq.projection.ros2.v1`
+### 2.3.1 `rodaq.projection.ros2`
 
 ROS2 Acquisition 在发布 StreamDescriptor 后、Storage descriptor readiness 前，必须通过：
 
 ```text
-rodaq.runtime.projection.v1
+rodaq.runtime.projection
 ```
 
-为该 descriptor 注册 `rodaq.projection.ros2.v1`。
+为该 descriptor 注册 `rodaq.projection.ros2`。
 
 该 projection **不是 Canonical State**；其目的只是把生成标准 ROS2 MCAP 所需要、但不属于 Canonical identity/equality 的信息传递给 Storage。Canonical Schema、StreamName 与 PayloadEncoding 仍然是 authority。
 
@@ -719,7 +719,7 @@ PayloadEncoding is compatible with projection.serialization_format
 
 #### Projection payload encoding
 
-`rodaq.projection.ros2.v1` uses a deterministic binary record so no JSON/YAML parser is required for the outer projection envelope：
+`rodaq.projection.ros2` uses a deterministic binary record so no JSON/YAML parser is required for the outer projection envelope：
 
 ```text
 u32_le format_version = 1
@@ -817,7 +817,7 @@ Data Plane
     MessageInfo extraction
     Source lookup
     timestamp slots
-    Runtime::submit
+    DAQ::submit
 ```
 
 但这不要求两个独立 manager hierarchy。
@@ -898,7 +898,7 @@ lookup current Binding / optional SourceHandle
     ↓
 construct timestamp submission slots
     ↓
-Runtime::submit(Copy payload)
+DAQ::submit(Copy payload)
     ↓
 return native serialized buffer
 ```
@@ -973,10 +973,10 @@ create
     → 不创建 subscription / worker
 
 bind
-    → query rodaq.runtime.common.v1
-    → query rodaq.runtime.acquisition.v1
-    → 按需 query rodaq.runtime.canonical.v1
-    → require rodaq.acquisition.control.v1
+    → query rodaq.runtime.common
+    → query rodaq.runtime.acquisition
+    → 按需 query rodaq.runtime.canonical
+    → require rodaq.acquisition.control
 
 configure
     → 通过 Runtime-owned ConfigView 读取 Topic selection / QoS / discovery 配置
@@ -1002,7 +1002,7 @@ destroy
 
 ### Registration
 
-ROS2 Control Plane 通过 `rodaq.runtime.acquisition.v1` 映射：
+ROS2 Control Plane 通过 `rodaq.runtime.acquisition` 映射：
 
 ```text
 register_source
@@ -1029,7 +1029,7 @@ rodaq_record_submission
     explicit timestamp_values[]
     payload.mode = COPY
         ↓
-rodaq.runtime.acquisition.v1::submit()
+rodaq.runtime.acquisition::submit()
         ↓
 rodaq_acquisition_submit_result
 ```
@@ -1125,7 +1125,7 @@ rmw_compare_gids_equal(a, b) == true
 V1 ROS2 SourceId 建议冻结一个简单的 versioned binary layout：
 
 ```text
-ASCII "rodaq.source.ros2.v1\0"
+ASCII "rodaq.source.ros2\0"
 
 u16 source_identity_domain_length
 D   source_identity_domain bytes
@@ -1445,7 +1445,7 @@ V1 这是同一 ROS2 active path 内的语义替换，不是 multi-path failover
 
 ## 4.2 Backpressure
 
-`Runtime::submit` 返回同步 terminal admission result：
+`DAQ::submit` 返回同步 terminal admission result：
 
 ```text
 Accepted
@@ -1531,11 +1531,11 @@ Source identity rules
 
 ## 4.4 Quiescence 与 Stop
 
-ROS2 Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
+ROS2 Plugin-wide quiescence 对应 `rodaq.acquisition.control::quiesce_plugin()`，必须证明：
 
 ```text
 no new ROS callback / take execution
-can begin Runtime::submit
+can begin DAQ::submit
 ```
 
 但这不等于已经进入 Runtime 的 Submit call 全部返回。
@@ -1606,7 +1606,7 @@ type identity always preserved for admitted typed payload
 exact schema unavailable → explicit type-only descriptor or no activation
 type-only → exact schema causes Descriptor evolution
 Storage readiness before Binding Active
-rodaq.projection.ros2.v1 registered before readiness
+rodaq.projection.ros2 registered before readiness
 projection topic/type/serialization cross-checks Canonical Descriptor
 projection change → new descriptor, never in-place mutation
 ```
@@ -1723,7 +1723,7 @@ V1 选择：
 
 ## 5.4 Implementation Readiness
 
-本文已经足以指导 V1 ROS2 Acquisition 实现。实现还必须同时落地 `rodaq.projection.ros2.v1`，因为 V1 MCAP interoperability 已是 required contract，而不是 optional export feature。目标 Humble headers 已确认：
+本文已经足以指导 V1 ROS2 Acquisition 实现。实现还必须同时落地 `rodaq.projection.ros2`，因为 V1 MCAP interoperability 已是 required contract，而不是 optional export feature。目标 Humble headers 已确认：
 
 ```text
 GenericSubscription public callback

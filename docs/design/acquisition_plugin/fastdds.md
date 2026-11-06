@@ -122,11 +122,11 @@ FastDDS Acquisition Plugin
         ├── Control Plane: ROS2 topic/type/schema/QoS reconstruction
         └── Data Plane: serialized CDR + source/timestamp facts
         ↓
-Canonical registration + rodaq.projection.ros2.v1
+Canonical registration + rodaq.projection.ros2
         ↓
 Runtime Binding
         ↓
-Runtime::submit
+DAQ::submit
 ```
 
 V1 scope only admits **ROS2-compatible DDS pub/sub streams** into the qualified recording path. Arbitrary native DDS topics, arbitrary OMG-IDL-only artifacts, ROS2 service/action wire capture and DDS replay/routing are future capabilities.
@@ -304,7 +304,7 @@ pending_type_samples
 
 但绝不能像“直到 TypeObject 到来”为止无限缓存。
 
-即使 raw serialized payload 可以在完整 TypeObject 到达前获得，V1 qualified path 仍不能因此建立 type-only Ready Binding。Plugin 只能 boundedly pending、施加 backpressure，或在 Admission 前 drop/reject；只有 reliable ROS2 TypeIdentifier + dependency-complete `ros2idl/ros2msg` + valid `rodaq.projection.ros2.v1` 都就绪后才能进入 normal Admission。
+即使 raw serialized payload 可以在完整 TypeObject 到达前获得，V1 qualified path 仍不能因此建立 type-only Ready Binding。Plugin 只能 boundedly pending、施加 backpressure，或在 Admission 前 drop/reject；只有 reliable ROS2 TypeIdentifier + dependency-complete `ros2idl/ros2msg` + valid `rodaq.projection.ros2` 都就绪后才能进入 normal Admission。
 
 ### type information 持久化
 
@@ -581,12 +581,12 @@ DynamicTypes 主要属于 Control Plane。具体实现必须优先参考 DDS-Pip
 
 如果冻结的 Fast DDS public path 无法直接暴露满足 RoDAQ lifetime/serialization contract 的 bytes，必须在 implementation review 中明确选择 lower serialized/RTPS path 或受控 reserialization fallback，并用 10-camera workload 量化其 copy/CPU cost；不得把 reserialized bytes 伪称为 exact original wire bytes。
 
-### `rodaq.projection.ros2.v1`
+### `rodaq.projection.ros2`
 
 FastDDS Plugin 必须产生与 `ros2.md` 完全相同版本和编码的：
 
 ```text
-rodaq.projection.ros2.v1
+rodaq.projection.ros2
 ```
 
 logical fields：
@@ -646,7 +646,7 @@ Projection registration order：
 ```text
 publish Canonical StreamDescriptor
         ↓
-register rodaq.projection.ros2.v1
+register rodaq.projection.ros2
         ↓
 MCAP descriptor readiness
         ↓
@@ -790,7 +790,7 @@ create/activate DataReader only when Binding can become usable
 如果实际 Fast DDS API 要求先有 DataReader 才能获得某些 type/data facts，也可以提前创建 Reader，但必须保持：
 
 ```text
-normal Runtime::submit disabled before Binding Active
+normal DAQ::submit disabled before Binding Active
 ```
 
 ### DataReader processing
@@ -818,7 +818,7 @@ extract sequence / timestamps
     ↓
 serialize exact declared PayloadEncoding
     ↓
-Runtime::submit
+DAQ::submit
 ```
 
 ### DynamicTypes 与 serialized data path
@@ -889,11 +889,11 @@ create
     → 构造 Plugin-local state
 
 bind
-    → query rodaq.runtime.common.v1
-    → query rodaq.runtime.acquisition.v1
-    → query rodaq.runtime.projection.v1
-    → 按需 query rodaq.runtime.canonical.v1
-    → require rodaq.acquisition.control.v1
+    → query rodaq.runtime.common
+    → query rodaq.runtime.acquisition
+    → query rodaq.runtime.projection
+    → 按需 query rodaq.runtime.canonical
+    → require rodaq.acquisition.control
 
 configure
     → 通过 Runtime-owned ConfigView 读取 Domain / Participant / discovery / type-resolution 配置
@@ -918,7 +918,7 @@ destroy
 
 ### Registration
 
-DDS native facts与 operational state 通过 `rodaq.runtime.acquisition.v1` 映射为：
+DDS native facts与 operational state 通过 `rodaq.runtime.acquisition` 映射为：
 
 ```text
 Source
@@ -942,7 +942,7 @@ rodaq_record_submission
     explicit timestamp_values[]
     payload
 +
-rodaq.runtime.acquisition.v1::submit()
+rodaq.runtime.acquisition::submit()
 +
 rodaq_acquisition_submit_result
 ```
@@ -1007,7 +1007,7 @@ writer identity scheme
 V1 FastDDS SourceId 使用 versioned、scheme-tagged binary domain：
 
 ```text
-ASCII "rodaq.source.fastdds.v1\0"
+ASCII "rodaq.source.fastdds\0"
 
 u32 dds_domain_id
 
@@ -1042,7 +1042,7 @@ guidPrefix.value[0..11]
 entityId.value[0..3]
 ```
 
-这个 `rodaq.source.fastdds.v1` prefix 保证 DDS identity domain 与 ROS2 SourceId domain disjoint；`dds_domain_id` 防止跨 DDS Domain 的 GUID byte collision；scheme tag 又允许未来其它 DDS adapter 使用不同、但仍 deterministic 的 writer identity representation。
+这个 `rodaq.source.fastdds` prefix 保证 DDS identity domain 与 ROS2 SourceId domain disjoint；`dds_domain_id` 防止跨 DDS Domain 的 GUID byte collision；scheme tag 又允许未来其它 DDS adapter 使用不同、但仍 deterministic 的 writer identity representation。
 
 Fast DDS ordinary Topic sample 的具体 Writer identity 路径为：
 
@@ -1353,7 +1353,7 @@ Plugin 必须采用 bounded pre-enable policy：
 ```text
 drop before Plugin Enable
 or
-bounded native queue without Runtime::submit
+bounded native queue without DAQ::submit
 ```
 
 不得让早到 callback 在 Runtime 仍 `Starting` 时进入 normal Submit。
@@ -1445,7 +1445,7 @@ bounded Plugin-owned queue
     ↓
 Plugin worker
     ↓
-Runtime::submit
+DAQ::submit
 ```
 
 前提是 queue：
@@ -1498,11 +1498,11 @@ ClockId
 
 ## 4.5 Quiescence / Stop
 
-FastDDS Plugin-wide quiescence 对应 `rodaq.acquisition.control.v1::quiesce_plugin()`，必须证明：
+FastDDS Plugin-wide quiescence 对应 `rodaq.acquisition.control::quiesce_plugin()`，必须证明：
 
 ```text
 no new DataReader/listener/worker
-can begin Runtime::submit
+can begin DAQ::submit
 ```
 
 Runtime 再等待：
@@ -1557,7 +1557,7 @@ incompatible ROS2 type not merged
 CompleteTypeObject / dependency discovery
 exact ROS2 type identity preserved for every admitted payload
 complete ros2idl/ros2msg reconstruction
-rodaq.projection.ros2.v1 registered before descriptor readiness
+rodaq.projection.ros2 registered before descriptor readiness
 DataWriter QoS → deterministic offered_qos_profiles projection
 ```
 

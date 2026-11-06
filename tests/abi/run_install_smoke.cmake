@@ -23,8 +23,8 @@ set(plugin_abi_dir "${include_dir}/rodaq/plugin/abi")
 set(legacy_abi_dir "${include_dir}/rodaq/abi")
 set(expected_license
     "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/expected-lite/LICENSE.txt")
-set(runtime_header "${include_dir}/rodaq/runtime/runtime.hpp")
-set(runtime_config_header "${include_dir}/rodaq/runtime/runtime_config.hpp")
+set(runtime_header "${include_dir}/rodaq/daq.hpp")
+set(runtime_config_header "${include_dir}/rodaq/daq_config.hpp")
 set(dependency_inventory
     "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/sbom/rodaq-dependency-inventory.json")
 
@@ -39,7 +39,7 @@ foreach(sdk_header
         abi_support.hpp
         config_view.hpp
         service_registry.hpp
-        runtime_services.hpp
+        services.hpp
         plugin.hpp
         acquisition_plugin.hpp
         storage_plugin.hpp)
@@ -65,14 +65,14 @@ foreach(installed_file
         "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/fmt/LICENSE"
         "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/yaml-cpp/LICENSE")
     if(NOT EXISTS "${installed_file}")
-        message(FATAL_ERROR "Installed Runtime/SBOM file is missing: ${installed_file}")
+        message(FATAL_ERROR "Installed DAQ/SBOM file is missing: ${installed_file}")
     endif()
 endforeach()
 
 find_program(RODAQ_READELF_EXECUTABLE readelf)
 if(RODAQ_READELF_EXECUTABLE)
     set(installed_runtime
-        "${RODAQ_TEST_INSTALL_PREFIX}/lib/librodaq_runtime.so")
+        "${RODAQ_TEST_INSTALL_PREFIX}/lib/librodaq.so")
     execute_process(
         COMMAND "${RODAQ_READELF_EXECUTABLE}" -d "${installed_runtime}"
         RESULT_VARIABLE readelf_result
@@ -80,7 +80,7 @@ if(RODAQ_READELF_EXECUTABLE)
         ERROR_VARIABLE readelf_error
     )
     if(NOT readelf_result EQUAL 0)
-        message(FATAL_ERROR "readelf failed for installed Runtime: ${readelf_error}")
+        message(FATAL_ERROR "readelf failed for installed DAQ library: ${readelf_error}")
     endif()
     foreach(private_dependency
             "libfmt" "libspdlog" "libyaml-cpp" "libhdr_histogram")
@@ -95,17 +95,39 @@ find_program(RODAQ_NM_EXECUTABLE nm)
 if(RODAQ_NM_EXECUTABLE)
     execute_process(
         COMMAND "${RODAQ_NM_EXECUTABLE}" -D -C --defined-only
-                "${RODAQ_TEST_INSTALL_PREFIX}/lib/librodaq_runtime.so"
+                "${RODAQ_TEST_INSTALL_PREFIX}/lib/librodaq.so"
         RESULT_VARIABLE nm_result
         OUTPUT_VARIABLE nm_output
         ERROR_VARIABLE nm_error
     )
     if(NOT nm_result EQUAL 0)
-        message(FATAL_ERROR "nm failed for installed Runtime: ${nm_error}")
+        message(FATAL_ERROR "nm failed for installed DAQ library: ${nm_error}")
     endif()
     if(nm_output MATCHES "fmt::|spdlog::|yaml::|hdr_")
-        message(FATAL_ERROR "Private implementation symbols escaped the Runtime DSO")
+        message(FATAL_ERROR "Private implementation symbols escaped the DAQ DSO")
     endif()
+    foreach(internal_symbol
+            "rodaq::DAQ::Impl"
+            "rodaq::ActivationState"
+            "rodaq::AdmissionGate"
+            "rodaq::PayloadPool"
+            "rodaq::Registry"
+            "rodaq::StoragePipeline")
+        if(nm_output MATCHES "${internal_symbol}")
+            message(FATAL_ERROR
+                "Internal implementation symbol escaped the DAQ DSO: ${internal_symbol}")
+        endif()
+    endforeach()
+    foreach(public_symbol
+            "rodaq::DAQ::start"
+            "rodaq::DAQ::stop"
+            "rodaq::DAQ::lifecycle_snapshot"
+            "rodaq::DAQ::stats")
+        if(NOT nm_output MATCHES "${public_symbol}")
+            message(FATAL_ERROR
+                "Expected DAQ application symbol is missing: ${public_symbol}")
+        endif()
+    endforeach()
 endif()
 
 execute_process(
@@ -217,9 +239,9 @@ execute_process(
     COMMAND
         "${RODAQ_TEST_CMAKE_COMMAND}"
         -S
-        "${RODAQ_TEST_RUNTIME_CONSUMER_SOURCE_DIR}"
+        "${RODAQ_TEST_DAQ_CONSUMER_SOURCE_DIR}"
         -B
-        "${RODAQ_TEST_OBJECT_DIR}/runtime-consumer"
+        "${RODAQ_TEST_OBJECT_DIR}/daq-consumer"
         "-DCMAKE_PREFIX_PATH=${RODAQ_TEST_INSTALL_PREFIX}"
         "-DCMAKE_CXX_FLAGS=${RODAQ_TEST_CONSUMER_SANITIZER_FLAGS}"
     RESULT_VARIABLE runtime_configure_result
@@ -228,7 +250,7 @@ execute_process(
 )
 if(NOT runtime_configure_result EQUAL 0)
     message(FATAL_ERROR
-        "Installed Runtime consumer failed to configure.\n"
+        "Installed DAQ consumer failed to configure.\n"
         "${runtime_configure_stdout}\n${runtime_configure_stderr}")
 endif()
 
@@ -236,25 +258,25 @@ execute_process(
     COMMAND
         "${RODAQ_TEST_CMAKE_COMMAND}"
         --build
-        "${RODAQ_TEST_OBJECT_DIR}/runtime-consumer"
+        "${RODAQ_TEST_OBJECT_DIR}/daq-consumer"
     RESULT_VARIABLE runtime_build_result
     OUTPUT_VARIABLE runtime_build_stdout
     ERROR_VARIABLE runtime_build_stderr
 )
 if(NOT runtime_build_result EQUAL 0)
     message(FATAL_ERROR
-        "Installed Runtime consumer failed to build.\n"
+        "Installed DAQ consumer failed to build.\n"
         "${runtime_build_stdout}\n${runtime_build_stderr}")
 endif()
 
 execute_process(
-    COMMAND "${RODAQ_TEST_OBJECT_DIR}/runtime-consumer/rodaq_runtime_consumer"
+    COMMAND "${RODAQ_TEST_OBJECT_DIR}/daq-consumer/rodaq_consumer"
     RESULT_VARIABLE runtime_run_result
     OUTPUT_VARIABLE runtime_run_stdout
     ERROR_VARIABLE runtime_run_stderr
 )
 if(NOT runtime_run_result EQUAL 0)
     message(FATAL_ERROR
-        "Installed Runtime consumer failed to run.\n"
+        "Installed DAQ consumer failed to run.\n"
         "${runtime_run_stdout}\n${runtime_run_stderr}")
 endif()

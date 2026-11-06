@@ -849,10 +849,10 @@ create
     → 不打开 database
 
 bind
-    → require rodaq.runtime.common.v1
-    → require rodaq.runtime.canonical.v1
-    → require rodaq.runtime.storage.v1
-    → require rodaq.storage.control.v1
+    → require rodaq.runtime.common
+    → require rodaq.runtime.canonical
+    → require rodaq.runtime.storage
+    → require rodaq.storage.control
 
 configure
     → 通过 Runtime-owned ConfigView 读取 target、batching、busy policy、pragma profile、resource bounds
@@ -1008,7 +1008,7 @@ complete TimestampStateMap
 Payload
 ```
 
-低频 Canonical Descriptor Graph 通过 `rodaq.runtime.canonical.v1` 查询，包括：
+低频 Canonical Descriptor Graph 通过 `rodaq.runtime.canonical` 查询，包括：
 
 ```text
 StreamId / StreamDescriptorId
@@ -1058,7 +1058,7 @@ out_result.persistence_state
 事务 COMMIT 成功后，对 batch 中各 Pending operation exactly-once 调用：
 
 ```text
-rodaq.runtime.storage.v1::persistence_completed(
+rodaq.runtime.storage::persistence_completed(
     operation,
     RODAQ_STORAGE_PERSISTENCE_SUCCEEDED,
     NULL)

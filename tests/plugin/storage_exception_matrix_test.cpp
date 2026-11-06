@@ -101,7 +101,7 @@ void run_capabilities_case(
                 RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
             &interface, &query_error))
         << environment;
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     ASSERT_NE(nullptr, control) << environment;
 
     struct {
@@ -136,7 +136,7 @@ void run_ready_case(
                 RODAQ_STORAGE_CONTROL_INTERFACE_ID, sizeof(RODAQ_STORAGE_CONTROL_INTERFACE_ID) - 1},
             &interface, &query_error))
         << environment;
-    const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
+    const auto* control = static_cast<const rodaq_storage_control*>(interface.vtable);
     ASSERT_NE(nullptr, control) << environment;
 
     struct {

@@ -468,15 +468,15 @@ rodaq_enable_warnings(rodaq_plugin_exception_test)
 rodaq_enable_sanitizers(rodaq_plugin_exception_test)
 add_test(NAME rodaq.plugin.exception_firewall COMMAND rodaq_plugin_exception_test)
 
-add_executable(rodaq_runtime_services_test runtime_services_test.cpp)
-target_link_libraries(rodaq_runtime_services_test
+add_executable(rodaq_services_test services_test.cpp)
+target_link_libraries(rodaq_services_test
     PRIVATE
         GTest::gtest_main
         rodaq::sdk
 )
-rodaq_enable_warnings(rodaq_runtime_services_test)
-rodaq_enable_sanitizers(rodaq_runtime_services_test)
-add_test(NAME rodaq.plugin.runtime_services COMMAND rodaq_runtime_services_test)
+rodaq_enable_warnings(rodaq_services_test)
+rodaq_enable_sanitizers(rodaq_services_test)
+add_test(NAME rodaq.plugin.services COMMAND rodaq_services_test)
 
 add_executable(
     rodaq_storage_input_validation_test
@@ -502,6 +502,34 @@ set_tests_properties(
     PROPERTIES
         ENVIRONMENT
             "RODAQ_TEST_SDK_STORAGE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage_inputs>"
+)
+
+add_executable(rodaq_plugin_quarantine_test plugin_quarantine_test.cpp)
+target_link_libraries(rodaq_plugin_quarantine_test
+    PRIVATE
+        GTest::gtest_main
+        rodaq_testing
+)
+rodaq_enable_warnings(rodaq_plugin_quarantine_test)
+rodaq_enable_sanitizers(rodaq_plugin_quarantine_test)
+add_test(NAME rodaq.plugin.quarantine COMMAND rodaq_plugin_quarantine_test)
+
+add_executable(
+    rodaq_plugin_quarantine_allocation_test
+    plugin_quarantine_allocation_test.cpp
+)
+target_link_libraries(rodaq_plugin_quarantine_allocation_test PRIVATE rodaq_testing)
+target_link_options(
+    rodaq_plugin_quarantine_allocation_test
+    PRIVATE
+        "-Wl,--wrap=_Znwm"
+        "-Wl,--wrap=_Znam"
+)
+rodaq_enable_warnings(rodaq_plugin_quarantine_allocation_test)
+rodaq_enable_sanitizers(rodaq_plugin_quarantine_allocation_test)
+add_test(
+    NAME rodaq.plugin.quarantine_allocation
+    COMMAND rodaq_plugin_quarantine_allocation_test
 )
 
 add_executable(
@@ -584,7 +612,7 @@ target_link_libraries(rodaq_plugin_service_integration_test
     PRIVATE
         GTest::gtest_main
         rodaq_plugin
-        rodaq_runtime_testing
+        rodaq_testing
 )
 rodaq_enable_warnings(rodaq_plugin_service_integration_test)
 rodaq_enable_sanitizers(rodaq_plugin_service_integration_test)
@@ -830,7 +858,7 @@ rodaq_add_plugin_probe_test(
 )
 
 rodaq_add_plugin_probe_test(
-    quarantine
+    quarantine_probe
     quarantine
     "$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>"
     "${RODAQ_PLUGIN_EVENT_DIR}/quarantine.log"

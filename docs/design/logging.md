@@ -62,7 +62,7 @@ Plugin：
 ~~~text
 Plugin
     ↓
-rodaq.runtime.common.v1::log()
+rodaq.runtime.common::log()
     ↓
 Runtime LoggingContext
 ~~~
@@ -173,7 +173,7 @@ no spdlog/fmt public dependency
 
 ## 2.5 Plugin Logging ABI
 
-Plugin 通过 rodaq.runtime.common.v1::log() 记录日志。
+Plugin 通过 rodaq.runtime.common::log() 记录日志。
 
 V1 Stable ABI 数值域已经冻结为：
 
@@ -528,7 +528,7 @@ Timeout：
 
 Plugin integration：
 
-- Plugin logs through rodaq.runtime.common.v1；
+- Plugin logs through rodaq.runtime.common；
 - Plugin does not require spdlog linkage；
 - logging callable from acquisition callback threads；
 - log overflow does not consume Canonical Record admission capacity。
