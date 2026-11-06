@@ -2,7 +2,7 @@
 
 #include <rodaq/plugin/abi_support.hpp>
 #include <rodaq/plugin/storage_plugin.hpp>
-#include "plugin/plugin_error.hpp"
+#include "plugin/plugin_status.hpp"
 #include "plugin/plugin_library.hpp"
 
 #include <atomic>
@@ -76,22 +76,24 @@ public:
             return invalid_lifecycle("Plugin bind requires Created state");
         }
         if (instance_ == nullptr || bind_ == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidState, "plugin", 0,
-                "Plugin instance cannot bind in its current state"));
+            return rodaq::Status(
+                StatusCode::InvalidState, "plugin", 0,
+                "Plugin instance cannot bind in its current state");
         }
         if (services.context == nullptr || services.vtable == nullptr) {
-            return nonstd::make_unexpected(
-                invalid_argument_error("Plugin bind requires a valid Service Registry"));
+            return invalid_argument_status("Plugin bind requires a valid Service Registry");
         }
 
-        rodaq_error status_error{};
-        const rodaq_status status = bind_(instance_, &services, &status_error);
-        Result<void> converted = result_from_status(status, &status_error, "plugin");
-        if (converted.has_value()) {
+        rodaq_status status_error{};
+        const rodaq_status_code status = bind_(instance_, &services, &status_error);
+        Status converted = status_from_abi(status, &status_error, "plugin");
+        if (converted.ok()) {
             stage_ = LifecycleStage::Bound;
         }
-        return converted;
+        if (!converted.ok()) {
+            return converted;
+        }
+        return {};
     }
 
     Result<void> configure(rodaq_config_view config) {
@@ -99,48 +101,50 @@ public:
             return invalid_lifecycle("Plugin configure requires Bound state");
         }
         if (instance_ == nullptr || configure_ == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidState, "plugin", 0,
-                "Plugin instance cannot configure in its current state"));
+            return rodaq::Status(
+                StatusCode::InvalidState, "plugin", 0,
+                "Plugin instance cannot configure in its current state");
         }
         if (config.context == nullptr || config.vtable == nullptr) {
-            return nonstd::make_unexpected(
-                invalid_argument_error("Plugin configure requires a valid ConfigView"));
+            return invalid_argument_status("Plugin configure requires a valid ConfigView");
         }
 
-        rodaq_error status_error{};
-        const rodaq_status status = configure_(instance_, config, &status_error);
-        Result<void> converted = result_from_status(status, &status_error, "plugin");
-        if (converted.has_value()) {
+        rodaq_status status_error{};
+        const rodaq_status_code status = configure_(instance_, config, &status_error);
+        Status converted = status_from_abi(status, &status_error, "plugin");
+        if (converted.ok()) {
             stage_ = LifecycleStage::Configured;
         }
-        return converted;
+        if (!converted.ok()) {
+            return converted;
+        }
+        return {};
     }
 
     Result<rodaq_interface> query_interface(std::string_view interface_id) {
         if (instance_ == nullptr || query_interface_ == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidState, "plugin", 0,
-                "Plugin instance cannot query interfaces in its current state"));
+            return rodaq::Status(
+                StatusCode::InvalidState, "plugin", 0,
+                "Plugin instance cannot query interfaces in its current state");
         }
         if (interface_id.empty() || !rodaq::is_valid_utf8_without_nul(interface_id)) {
-            return nonstd::make_unexpected(
-                invalid_argument_error("Plugin interface ID must be non-empty UTF-8 without NUL"));
+            return invalid_argument_status(
+                "Plugin interface ID must be non-empty UTF-8 without NUL");
         }
 
         rodaq_interface interface {};
-        rodaq_error status_error{};
-        const rodaq_status status = query_interface_(
+        rodaq_status status_error{};
+        const rodaq_status_code status = query_interface_(
             instance_, rodaq_string_view{interface_id.data(), interface_id.size()}, &interface,
             &status_error);
-        Result<void> converted = result_from_status(status, &status_error, "plugin");
-        if (!converted.has_value()) {
-            return nonstd::make_unexpected(std::move(converted.error()));
+        Status converted = status_from_abi(status, &status_error, "plugin");
+        if (!converted.ok()) {
+            return converted;
         }
         if (interface.context == nullptr || interface.vtable == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidArgument, "plugin", 0,
-                "Plugin query_interface returned OK with an incomplete interface"));
+            return rodaq::Status(
+                StatusCode::InvalidArgument, "plugin", 0,
+                "Plugin query_interface returned OK with an incomplete interface");
         }
         return interface;
     }
@@ -152,9 +156,9 @@ public:
     Result<rodaq_interface> required_control_interface() const {
         if (required_control_interface_.context == nullptr ||
             required_control_interface_.vtable == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidState, "plugin", 0,
-                "Required Plugin control interface is not available"));
+            return rodaq::Status(
+                StatusCode::InvalidState, "plugin", 0,
+                "Required Plugin control interface is not available");
         }
         return required_control_interface_;
     }
@@ -164,12 +168,15 @@ public:
             return invalid_lifecycle("Plugin start requires Configured state");
         }
         stage_ = LifecycleStage::StartAttempted;
-        rodaq_error error{};
-        Result<void> result = result_from_status(start_(instance_, &error), &error, "plugin");
-        if (result.has_value()) {
+        rodaq_status error{};
+        Status result = status_from_abi(start_(instance_, &error), &error, "plugin");
+        if (result.ok()) {
             stage_ = LifecycleStage::Started;
         }
-        return result;
+        if (!result.ok()) {
+            return result;
+        }
+        return {};
     }
 
     Result<void> stop() {
@@ -177,43 +184,48 @@ public:
             stop_ == nullptr) {
             return invalid_lifecycle("Plugin stop requires Started or StartAttempted state");
         }
-        rodaq_error error{};
-        Result<void> result = result_from_status(stop_(instance_, &error), &error, "plugin");
-        if (result.has_value()) {
+        rodaq_status error{};
+        Status result = status_from_abi(stop_(instance_, &error), &error, "plugin");
+        if (result.ok()) {
             stage_ = LifecycleStage::Stopped;
         }
-        return result;
+        if (!result.ok()) {
+            return result;
+        }
+        return {};
     }
 
     Result<void> open(const rodaq_storage_open_request& request) {
         if (stage_ != LifecycleStage::Configured || open_ == nullptr) {
             return invalid_lifecycle("Storage open requires Configured state");
         }
-        rodaq_error error{};
-        Result<void> result =
-            result_from_status(open_(instance_, &request, &error), &error, "plugin");
-        if (result.has_value()) {
+        rodaq_status error{};
+        Status result = status_from_abi(open_(instance_, &request, &error), &error, "plugin");
+        if (result.ok()) {
             stage_ = LifecycleStage::Opened;
         }
-        return result;
+        if (!result.ok()) {
+            return result;
+        }
+        return {};
     }
 
     Result<rodaq_storage_submit_result> submit(const rodaq_storage_submission& submission) {
         if (stage_ != LifecycleStage::Opened || submit_ == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidState, "plugin", 0, "Storage submit requires Opened state"));
+            return rodaq::Status(
+                StatusCode::InvalidState, "plugin", 0, "Storage submit requires Opened state");
         }
         rodaq_storage_submit_result output{};
         output.struct_size = sizeof(output);
-        rodaq_error error{};
-        const rodaq_status status = submit_(instance_, &submission, &output, &error);
+        rodaq_status error{};
+        const rodaq_status_code status = submit_(instance_, &submission, &output, &error);
         if (status != RODAQ_STATUS_OK) {
-            return nonstd::make_unexpected(result_from_status(status, &error, "plugin").error());
+            return status_from_abi(status, &error, "plugin");
         }
         if (!is_valid_storage_submit_result(output)) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InternalError, "plugin", 0,
-                "Storage submit returned an invalid result"));
+            return rodaq::Status(
+                StatusCode::InternalError, "plugin", 0,
+                "Storage submit returned an invalid result");
         }
         return output;
     }
@@ -222,21 +234,27 @@ public:
         if (stage_ != LifecycleStage::Opened || flush_ == nullptr) {
             return invalid_lifecycle("Storage flush requires Opened state");
         }
-        rodaq_error error{};
-        return result_from_status(flush_(instance_, &error), &error, "plugin");
+        rodaq_status error{};
+        const auto status_code = flush_(instance_, &error);
+        if (status_code != RODAQ_STATUS_OK) {
+            return status_from_abi(status_code, &error, "plugin");
+        }
+        return {};
     }
 
     Result<void> close(const rodaq_storage_close_request& request) {
         if (stage_ != LifecycleStage::Opened || close_ == nullptr) {
             return invalid_lifecycle("Storage close requires Opened state");
         }
-        rodaq_error error{};
-        Result<void> result =
-            result_from_status(close_(instance_, &request, &error), &error, "plugin");
-        if (result.has_value()) {
+        rodaq_status error{};
+        Status result = status_from_abi(close_(instance_, &request, &error), &error, "plugin");
+        if (result.ok()) {
             stage_ = LifecycleStage::Closed;
         }
-        return result;
+        if (!result.ok()) {
+            return result;
+        }
+        return {};
     }
 
 private:
@@ -252,8 +270,8 @@ private:
         Destroyed,
     };
 
-    static Result<void> invalid_lifecycle(const char* message) {
-        return nonstd::make_unexpected(Error(ErrorCode::InvalidState, "plugin", 0, message));
+    static Status invalid_lifecycle(const char* message) {
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, message);
     }
 
     PluginLibraryLease library_lease_;
@@ -290,8 +308,7 @@ std::shared_ptr<PluginInstanceState> PluginInstanceStateAccess::create(
 Result<void> PluginInstanceStateAccess::bind(
     const std::shared_ptr<PluginInstanceState>& state, const rodaq_service_registry& services) {
     if (state == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "plugin", 0, "Plugin instance is empty"));
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, "Plugin instance is empty");
     }
     return state->bind(services);
 }
@@ -299,8 +316,7 @@ Result<void> PluginInstanceStateAccess::bind(
 Result<void> PluginInstanceStateAccess::configure(
     const std::shared_ptr<PluginInstanceState>& state, rodaq_config_view config) {
     if (state == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "plugin", 0, "Plugin instance is empty"));
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, "Plugin instance is empty");
     }
     return state->configure(config);
 }
@@ -308,8 +324,7 @@ Result<void> PluginInstanceStateAccess::configure(
 Result<rodaq_interface> PluginInstanceStateAccess::query_interface(
     const std::shared_ptr<PluginInstanceState>& state, std::string_view interface_id) {
     if (state == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "plugin", 0, "Plugin instance is empty"));
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, "Plugin instance is empty");
     }
     return state->query_interface(interface_id);
 }
@@ -346,8 +361,7 @@ Result<void> PluginInstanceStateAccess::open(
 Result<rodaq_storage_submit_result> PluginInstanceStateAccess::submit(
     const std::shared_ptr<PluginInstanceState>& state, const rodaq_storage_submission& submission) {
     if (state == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "plugin", 0, "Plugin instance is empty"));
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, "Plugin instance is empty");
     }
     return state->submit(submission);
 }
@@ -377,8 +391,7 @@ void PluginInstanceStateAccess::set_required_control_interface(
 Result<rodaq_interface> PluginInstanceStateAccess::required_control_interface(
     const std::shared_ptr<PluginInstanceState>& state) {
     if (state == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "plugin", 0, "Plugin instance is empty"));
+        return rodaq::Status(StatusCode::InvalidState, "plugin", 0, "Plugin instance is empty");
     }
     return state->required_control_interface();
 }

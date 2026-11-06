@@ -1,5 +1,5 @@
 add_library(rodaq_plugin STATIC
-    plugin_error.cpp
+    plugin_status.cpp
     acquisition_plugin_instance.cpp
     plugin_catalog.cpp
     plugin_instance.cpp

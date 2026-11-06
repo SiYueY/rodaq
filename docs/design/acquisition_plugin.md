@@ -3014,7 +3014,7 @@ retention / quarantine
 Stable ABI 中：
 
 ```text
-rodaq_status
+rodaq_status_code
 ```
 
 表示 ABI/API call 本身是否可靠完成。
@@ -3022,7 +3022,7 @@ rodaq_status
 普通 Admission 结果必须通过：
 
 ```text
-rodaq_status == OK
+rodaq_status_code == OK
 +
 rodaq_acquisition_submit_result
 ```

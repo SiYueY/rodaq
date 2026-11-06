@@ -73,17 +73,15 @@ std::size_t AdmissionGate::waiting_count() const noexcept {
 Result<AdmissionGateDecision> AdmissionGate::admit_with_cancellation(
     const AdmissionRequest& request, const AdmissionCancellation* cancellation) {
     if (request.mode != AdmissionMode::Reject && request.mode != AdmissionMode::Wait) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "admission mode is invalid"));
+        return rodaq::Status(StatusCode::InvalidArgument, "admission mode is invalid");
     }
     if (request.mode == AdmissionMode::Wait && !request.deadline.has_value()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "waiting admission requires a deadline"));
+        return rodaq::Status(StatusCode::InvalidArgument, "waiting admission requires a deadline");
     }
     if (cancellation != nullptr && cancellation->budget_ != &budget_) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument,
-            "admission cancellation belongs to a different resource budget"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument,
+            "admission cancellation belongs to a different resource budget");
     }
 
     std::unique_lock<std::mutex> lock(budget_.mutex_);

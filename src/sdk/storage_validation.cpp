@@ -49,16 +49,16 @@ bool is_valid_storage_submit_result(const rodaq_storage_submit_result& result) n
     if (!pending && !succeeded && !failed && !unknown) {
         return false;
     }
-    if (!rodaq::is_valid_abi_error(result.persistence_error)) {
+    if (!rodaq::is_valid_abi_status(result.persistence_error)) {
         return false;
     }
     if (pending || succeeded) {
-        return result.persistence_error.code == RODAQ_STATUS_OK &&
-               result.persistence_error.flags == 0 && result.persistence_error.native_code == 0 &&
+        return result.persistence_error.status_code == RODAQ_STATUS_OK &&
+               result.persistence_error.flags == 0 && result.persistence_error.error_code == 0 &&
                result.persistence_error.domain_size == 0 &&
                result.persistence_error.message_size == 0;
     }
-    return result.persistence_error.code != RODAQ_STATUS_OK &&
+    return result.persistence_error.status_code != RODAQ_STATUS_OK &&
            result.persistence_error.message_size != 0;
 }
 

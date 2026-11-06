@@ -23,7 +23,7 @@
 #include <thread>
 #include <vector>
 
-struct rodaq_error;
+struct rodaq_status;
 
 namespace rodaq::runtime {
 
@@ -85,7 +85,7 @@ struct PreGateAcquireResult {
 
 class StoragePipeline final {
 public:
-    using FailureSink = std::function<void(Error)>;
+    using FailureSink = std::function<void(Status)>;
     using PayloadReleaseSink = std::function<void(std::size_t)>;
     using OperationCompleteSink = std::function<void(rodaq_storage_persistence_state)>;
     using LatencySink = std::function<void(StorageLatencyKind, std::int64_t)>;
@@ -139,7 +139,7 @@ public:
     void payload_consumed(rodaq_storage_operation operation) noexcept;
     void persistence_completed(
         rodaq_storage_operation operation, rodaq_storage_persistence_state state,
-        const rodaq_error* error) noexcept;
+        const rodaq_status* error) noexcept;
 
     std::size_t active_operation_count() const noexcept;
     std::size_t ready_dispatch_count() const noexcept;
@@ -192,8 +192,8 @@ private:
     struct CompletionEffects {
         Payload payload_to_release;
         std::optional<RuntimeRecord> record_to_destroy;
-        std::optional<Error> failure;
-        std::optional<Error> violation;
+        Status failure;
+        Status violation;
         bool payload_released = false;
         std::size_t released_bytes = 0;
         bool operation_completed = false;
@@ -226,8 +226,8 @@ private:
     void completion_loop();
     void complete_submit(std::size_t index, Result<rodaq_storage_submit_result> result);
     bool wait_for_submit_return(std::size_t index, std::chrono::steady_clock::time_point deadline);
-    void fail(Error error) noexcept;
-    void copy_diagnostic(const rodaq_error* error, Slot& slot) noexcept;
+    void fail(Status error) noexcept;
+    void copy_diagnostic(const rodaq_status* error, Slot& slot) noexcept;
 
     const std::size_t capacity_;
     const std::size_t completion_capacity_;

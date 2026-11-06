@@ -31,204 +31,207 @@ public:
 
 }  // namespace rodaq
 
-#define RODAQ_EXPORT_ACQUISITION_PLUGIN(PluginType, Descriptor)                                    \
-    namespace {                                                                                    \
-    rodaq_status rodaq_sdk_acquisition_create(                                                     \
-        void** out_instance, rodaq_error* out_error) noexcept {                                    \
-        if (out_instance == nullptr) {                                                             \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "create output is null", out_error);      \
-            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
-        }                                                                                          \
-        *out_instance = nullptr;                                                                   \
-        try {                                                                                      \
-            *out_instance = new PluginType();                                                      \
-            return RODAQ_STATUS_OK;                                                                \
-        } catch (const std::bad_alloc&) {                                                          \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_RESOURCE_EXHAUSTED, "sdk", 0, "Plugin allocation failed", out_error); \
-            return RODAQ_STATUS_RESOURCE_EXHAUSTED;                                                \
-        } catch (const std::exception& error) {                                                    \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, error.what(), out_error);                   \
-            return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
-        } catch (...) {                                                                            \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, "Unknown create exception", out_error);     \
-            return RODAQ_STATUS_INTERNAL_ERROR;                                                    \
-        }                                                                                          \
-    }                                                                                              \
-    void rodaq_sdk_acquisition_destroy(void* instance) noexcept {                                  \
-        delete static_cast<PluginType*>(instance);                                                 \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_bind(                                                       \
-        void* instance, const rodaq_service_registry* services, rodaq_error* out_error) noexcept { \
-        if (instance == nullptr || services == nullptr) {                                          \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "bind input is null", out_error);         \
-            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [instance, services] {                                                                 \
-                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                   \
-                if (!registry.has_value()) {                                                       \
-                    return rodaq::Result<void>(                                                    \
-                        nonstd::make_unexpected(std::move(registry.error())));                     \
-                }                                                                                  \
-                auto runtime = rodaq::AcquisitionRuntime::bind(registry.value());                  \
-                if (!runtime.has_value()) {                                                        \
-                    return rodaq::Result<void>(                                                    \
-                        nonstd::make_unexpected(std::move(runtime.error())));                      \
-                }                                                                                  \
-                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));       \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_configure(                                                  \
-        void* instance, rodaq_config_view config, rodaq_error* out_error) noexcept {               \
-        if (instance == nullptr) {                                                                 \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [instance, config] {                                                                   \
-                auto view = rodaq::ConfigView::from_abi(config);                                   \
-                if (!view.has_value()) {                                                           \
-                    return rodaq::Result<void>(nonstd::make_unexpected(std::move(view.error())));  \
-                }                                                                                  \
-                return static_cast<PluginType*>(instance)->configure(view.value());                \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_start(void* instance, rodaq_error* out_error) noexcept {    \
-        if (instance == nullptr) {                                                                 \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_error);           \
-            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [instance] { return static_cast<PluginType*>(instance)->start(); }, out_error);        \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_stop(void* instance, rodaq_error* out_error) noexcept {     \
-        if (instance == nullptr) {                                                                 \
-            rodaq::assign_rodaq_error(                                                             \
-                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_error);           \
-            return RODAQ_STATUS_INVALID_ARGUMENT;                                                  \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [instance] { return static_cast<PluginType*>(instance)->stop(); }, out_error);         \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_prepare(                                                    \
-        void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,            \
-        rodaq_stream_descriptor_handle old_descriptor,                                             \
-        rodaq_stream_descriptor_handle new_descriptor, rodaq_error* out_error) noexcept {          \
-        if (context == nullptr || transition.value == 0 || stream.value == 0 ||                    \
-            new_descriptor.value == 0) {                                                           \
-            return rodaq::plugin::invalid_input("binding prepare input is invalid", out_error);    \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [context, transition, stream, old_descriptor, new_descriptor] {                        \
-                return static_cast<PluginType*>(context)->prepare_binding_switch(                  \
-                    transition, stream, old_descriptor, new_descriptor);                           \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_commit(                                                     \
-        void* context, rodaq_binding_transition transition, rodaq_error* out_error) noexcept {     \
-        if (context == nullptr || transition.value == 0) {                                         \
-            return rodaq::plugin::invalid_input("binding commit input is invalid", out_error);     \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [context, transition] {                                                                \
-                return static_cast<PluginType*>(context)->commit_binding_switch(transition);       \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_abort(                                                      \
-        void* context, rodaq_binding_transition transition,                                        \
-        rodaq_binding_abort_disposition disposition, rodaq_error* out_error) noexcept {            \
-        if (context == nullptr || transition.value == 0 ||                                         \
-            (disposition != RODAQ_BINDING_ABORT_KEEP_PAUSED &&                                     \
-             disposition != RODAQ_BINDING_ABORT_RESUME_OLD)) {                                     \
-            return rodaq::plugin::invalid_input("binding abort input is invalid", out_error);      \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [context, transition, disposition] {                                                   \
-                return static_cast<PluginType*>(context)->abort_binding_switch(                    \
-                    transition, disposition);                                                      \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_quiesce_stream(                                             \
-        void* context, rodaq_stream_handle stream, rodaq_error* out_error) noexcept {              \
-        if (context == nullptr || stream.value == 0) {                                             \
-            return rodaq::plugin::invalid_input("stream quiesce input is invalid", out_error);     \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [context, stream] {                                                                    \
-                return static_cast<PluginType*>(context)->quiesce_stream(stream);                  \
-            },                                                                                     \
-            out_error);                                                                            \
-    }                                                                                              \
-    rodaq_status rodaq_sdk_acquisition_quiesce_plugin(                                             \
-        void* context, rodaq_error* out_error) noexcept {                                          \
-        if (context == nullptr) {                                                                  \
-            return rodaq::plugin::invalid_input("instance is null", out_error);                    \
-        }                                                                                          \
-        return rodaq::plugin::invoke_void(                                                         \
-            [context] { return static_cast<PluginType*>(context)->quiesce_plugin(); }, out_error); \
-    }                                                                                              \
-    const rodaq_acquisition_control_v1 rodaq_sdk_acquisition_control = {                           \
-        RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,                                                \
-        RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE,                                              \
-        &rodaq_sdk_acquisition_prepare,                                                            \
-        &rodaq_sdk_acquisition_commit,                                                             \
-        &rodaq_sdk_acquisition_abort,                                                              \
-        &rodaq_sdk_acquisition_quiesce_stream,                                                     \
-        &rodaq_sdk_acquisition_quiesce_plugin,                                                     \
-    };                                                                                             \
-    rodaq_status rodaq_sdk_acquisition_query(                                                      \
-        void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,            \
-        rodaq_error* out_error) noexcept {                                                         \
-        if (instance == nullptr || out_interface == nullptr) {                                     \
-            return rodaq::plugin::invalid_input("interface query input is invalid", out_error);    \
-        }                                                                                          \
-        std::string_view parsed_id;                                                                \
-        if (!rodaq::parse_abi_string(interface_id, &parsed_id)) {                                  \
-            return rodaq::plugin::invalid_input("interface id is invalid", out_error);             \
-        }                                                                                          \
-        const char required[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;                            \
-        if (parsed_id == required) {                                                               \
-            return rodaq::plugin::invoke_interface(                                                \
-                [instance] {                                                                       \
-                    return rodaq::Result<rodaq::InterfaceView>(rodaq::InterfaceView(               \
-                        rodaq_interface{instance, &rodaq_sdk_acquisition_control}));               \
-                },                                                                                 \
-                out_interface, out_error);                                                         \
-        }                                                                                          \
-        return rodaq::plugin::invoke_interface(                                                    \
-            [instance, parsed_id] {                                                                \
-                return static_cast<PluginType*>(instance)->query_interface(parsed_id);             \
-            },                                                                                     \
-            out_interface, out_error);                                                             \
-    }                                                                                              \
-    const rodaq_acquisition_plugin rodaq_sdk_acquisition_plugin = {                                \
-        RODAQ_ACQUISITION_PROTOCOL_VERSION,                                                        \
-        RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE,                                                  \
-        &(Descriptor),                                                                             \
-        &rodaq_sdk_acquisition_create,                                                             \
-        &rodaq_sdk_acquisition_destroy,                                                            \
-        &rodaq_sdk_acquisition_bind,                                                               \
-        &rodaq_sdk_acquisition_configure,                                                          \
-        &rodaq_sdk_acquisition_start,                                                              \
-        &rodaq_sdk_acquisition_stop,                                                               \
-        &rodaq_sdk_acquisition_query,                                                              \
-    };                                                                                             \
-    }                                                                                              \
-    extern "C" RODAQ_PLUGIN_EXPORT const std::uint32_t rodaq_plugin_abi_version =                  \
-        RODAQ_PLUGIN_ABI_VERSION;                                                                  \
-    extern "C" RODAQ_PLUGIN_EXPORT const rodaq_acquisition_plugin* rodaq_get_acquisition_plugin(   \
-        void) noexcept {                                                                           \
-        return &rodaq_sdk_acquisition_plugin;                                                      \
+#define RODAQ_EXPORT_ACQUISITION_PLUGIN(PluginType, Descriptor)                                  \
+    namespace {                                                                                  \
+    rodaq_status_code rodaq_sdk_acquisition_create(                                              \
+        void** out_instance, rodaq_status* out_status) noexcept {                                \
+        if (out_instance == nullptr) {                                                           \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "create output is null", out_status);   \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                \
+        }                                                                                        \
+        *out_instance = nullptr;                                                                 \
+        try {                                                                                    \
+            *out_instance = new PluginType();                                                    \
+            return RODAQ_STATUS_OK;                                                              \
+        } catch (const std::bad_alloc&) {                                                        \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_RESOURCE_EXHAUSTED, "sdk", 0, "Plugin allocation failed",           \
+                out_status);                                                                     \
+            return RODAQ_STATUS_RESOURCE_EXHAUSTED;                                              \
+        } catch (const std::exception& error) {                                                  \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, error.what(), out_status);                \
+            return RODAQ_STATUS_INTERNAL_ERROR;                                                  \
+        } catch (...) {                                                                          \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INTERNAL_ERROR, "sdk", 0, "Unknown create exception", out_status);  \
+            return RODAQ_STATUS_INTERNAL_ERROR;                                                  \
+        }                                                                                        \
+    }                                                                                            \
+    void rodaq_sdk_acquisition_destroy(void* instance) noexcept {                                \
+        delete static_cast<PluginType*>(instance);                                               \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_bind(                                                \
+        void* instance, const rodaq_service_registry* services,                                  \
+        rodaq_status* out_status) noexcept {                                                     \
+        if (instance == nullptr || services == nullptr) {                                        \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "bind input is null", out_status);      \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [instance, services]() -> rodaq::Result<void> {                                      \
+                auto registry = rodaq::ServiceRegistryView::from_abi(*services);                 \
+                if (!registry.ok()) {                                                            \
+                    return registry.status();                                                    \
+                }                                                                                \
+                auto runtime = rodaq::AcquisitionRuntime::bind(registry.value());                \
+                if (!runtime.ok()) {                                                             \
+                    return runtime.status();                                                     \
+                }                                                                                \
+                return static_cast<PluginType*>(instance)->bind(std::move(runtime.value()));     \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_configure(                                           \
+        void* instance, rodaq_config_view config, rodaq_status* out_status) noexcept {           \
+        if (instance == nullptr) {                                                               \
+            return rodaq::plugin::invalid_input("instance is null", out_status);                 \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [instance, config]() -> rodaq::Result<void> {                                        \
+                auto view = rodaq::ConfigView::from_abi(config);                                 \
+                if (!view.ok()) {                                                                \
+                    return view.status();                                                        \
+                }                                                                                \
+                return static_cast<PluginType*>(instance)->configure(view.value());              \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_start(                                               \
+        void* instance, rodaq_status* out_status) noexcept {                                     \
+        if (instance == nullptr) {                                                               \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_status);        \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [instance] { return static_cast<PluginType*>(instance)->start(); }, out_status);     \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_stop(                                                \
+        void* instance, rodaq_status* out_status) noexcept {                                     \
+        if (instance == nullptr) {                                                               \
+            rodaq::assign_abi_status(                                                            \
+                RODAQ_STATUS_INVALID_ARGUMENT, "sdk", 0, "instance is null", out_status);        \
+            return RODAQ_STATUS_INVALID_ARGUMENT;                                                \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [instance] { return static_cast<PluginType*>(instance)->stop(); }, out_status);      \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_prepare(                                             \
+        void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,          \
+        rodaq_stream_descriptor_handle old_descriptor,                                           \
+        rodaq_stream_descriptor_handle new_descriptor, rodaq_status* out_status) noexcept {      \
+        if (context == nullptr || transition.value == 0 || stream.value == 0 ||                  \
+            new_descriptor.value == 0) {                                                         \
+            return rodaq::plugin::invalid_input("binding prepare input is invalid", out_status); \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [context, transition, stream, old_descriptor, new_descriptor] {                      \
+                return static_cast<PluginType*>(context)->prepare_binding_switch(                \
+                    transition, stream, old_descriptor, new_descriptor);                         \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_commit(                                              \
+        void* context, rodaq_binding_transition transition, rodaq_status* out_status) noexcept { \
+        if (context == nullptr || transition.value == 0) {                                       \
+            return rodaq::plugin::invalid_input("binding commit input is invalid", out_status);  \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [context, transition] {                                                              \
+                return static_cast<PluginType*>(context)->commit_binding_switch(transition);     \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_abort(                                               \
+        void* context, rodaq_binding_transition transition,                                      \
+        rodaq_binding_abort_disposition disposition, rodaq_status* out_status) noexcept {        \
+        if (context == nullptr || transition.value == 0 ||                                       \
+            (disposition != RODAQ_BINDING_ABORT_KEEP_PAUSED &&                                   \
+             disposition != RODAQ_BINDING_ABORT_RESUME_OLD)) {                                   \
+            return rodaq::plugin::invalid_input("binding abort input is invalid", out_status);   \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [context, transition, disposition] {                                                 \
+                return static_cast<PluginType*>(context)->abort_binding_switch(                  \
+                    transition, disposition);                                                    \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_quiesce_stream(                                      \
+        void* context, rodaq_stream_handle stream, rodaq_status* out_status) noexcept {          \
+        if (context == nullptr || stream.value == 0) {                                           \
+            return rodaq::plugin::invalid_input("stream quiesce input is invalid", out_status);  \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [context, stream] {                                                                  \
+                return static_cast<PluginType*>(context)->quiesce_stream(stream);                \
+            },                                                                                   \
+            out_status);                                                                         \
+    }                                                                                            \
+    rodaq_status_code rodaq_sdk_acquisition_quiesce_plugin(                                      \
+        void* context, rodaq_status* out_status) noexcept {                                      \
+        if (context == nullptr) {                                                                \
+            return rodaq::plugin::invalid_input("instance is null", out_status);                 \
+        }                                                                                        \
+        return rodaq::plugin::invoke_void(                                                       \
+            [context] { return static_cast<PluginType*>(context)->quiesce_plugin(); },           \
+            out_status);                                                                         \
+    }                                                                                            \
+    const rodaq_acquisition_control_v1 rodaq_sdk_acquisition_control = {                         \
+        RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,                                              \
+        RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE,                                            \
+        &rodaq_sdk_acquisition_prepare,                                                          \
+        &rodaq_sdk_acquisition_commit,                                                           \
+        &rodaq_sdk_acquisition_abort,                                                            \
+        &rodaq_sdk_acquisition_quiesce_stream,                                                   \
+        &rodaq_sdk_acquisition_quiesce_plugin,                                                   \
+    };                                                                                           \
+    rodaq_status_code rodaq_sdk_acquisition_query(                                               \
+        void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,          \
+        rodaq_status* out_status) noexcept {                                                     \
+        if (instance == nullptr || out_interface == nullptr) {                                   \
+            return rodaq::plugin::invalid_input("interface query input is invalid", out_status); \
+        }                                                                                        \
+        std::string_view parsed_id;                                                              \
+        if (!rodaq::parse_abi_string(interface_id, &parsed_id)) {                                \
+            return rodaq::plugin::invalid_input("interface id is invalid", out_status);          \
+        }                                                                                        \
+        const char required[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;                          \
+        if (parsed_id == required) {                                                             \
+            return rodaq::plugin::invoke_interface(                                              \
+                [instance] {                                                                     \
+                    return rodaq::Result<rodaq::InterfaceView>(rodaq::InterfaceView(             \
+                        rodaq_interface{instance, &rodaq_sdk_acquisition_control}));             \
+                },                                                                               \
+                out_interface, out_status);                                                      \
+        }                                                                                        \
+        return rodaq::plugin::invoke_interface(                                                  \
+            [instance, parsed_id] {                                                              \
+                return static_cast<PluginType*>(instance)->query_interface(parsed_id);           \
+            },                                                                                   \
+            out_interface, out_status);                                                          \
+    }                                                                                            \
+    const rodaq_acquisition_plugin rodaq_sdk_acquisition_plugin = {                              \
+        RODAQ_ACQUISITION_PROTOCOL_VERSION,                                                      \
+        RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE,                                                \
+        &(Descriptor),                                                                           \
+        &rodaq_sdk_acquisition_create,                                                           \
+        &rodaq_sdk_acquisition_destroy,                                                          \
+        &rodaq_sdk_acquisition_bind,                                                             \
+        &rodaq_sdk_acquisition_configure,                                                        \
+        &rodaq_sdk_acquisition_start,                                                            \
+        &rodaq_sdk_acquisition_stop,                                                             \
+        &rodaq_sdk_acquisition_query,                                                            \
+    };                                                                                           \
+    }                                                                                            \
+    extern "C" RODAQ_PLUGIN_EXPORT const std::uint32_t rodaq_plugin_abi_version =                \
+        RODAQ_PLUGIN_ABI_VERSION;                                                                \
+    extern "C" RODAQ_PLUGIN_EXPORT const rodaq_acquisition_plugin* rodaq_get_acquisition_plugin( \
+        void) noexcept {                                                                         \
+        return &rodaq_sdk_acquisition_plugin;                                                    \
     }
 
 #endif  // RODAQ_PLUGIN_ACQUISITION_PLUGIN_HPP_

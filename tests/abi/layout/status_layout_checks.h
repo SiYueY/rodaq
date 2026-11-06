@@ -1,5 +1,5 @@
-#ifndef RODAQ_TESTS_ABI_FROZEN_LAYOUT_CHECKS_H
-#define RODAQ_TESTS_ABI_FROZEN_LAYOUT_CHECKS_H
+#ifndef RODAQ_TESTS_ABI_STATUS_LAYOUT_CHECKS_H
+#define RODAQ_TESTS_ABI_STATUS_LAYOUT_CHECKS_H
 
 #include <rodaq/plugin/abi/runtime.h>
 
@@ -23,16 +23,16 @@ RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_bytes_view) == 8, "bytes view 
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_bytes_view, data) == 0, "bytes data offset");
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_bytes_view, size) == 8, "bytes size offset");
 
-RODAQ_TEST_STATIC_ASSERT(sizeof(rodaq_error) == 328, "error size");
-RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_error) == 8, "error align");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, code) == 0, "error code offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, flags) == 4, "error flags offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, native_code) == 8, "error native offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, domain_size) == 16, "error domain size offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, message_size) == 20, "error message size offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, domain) == 24, "error domain offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, message) == 56, "error message offset");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_error, reserved) == 312, "error reserved offset");
+RODAQ_TEST_STATIC_ASSERT(sizeof(rodaq_status) == 328, "error size");
+RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_status) == 8, "error align");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, status_code) == 0, "error code offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, flags) == 4, "error flags offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, error_code) == 8, "status error code offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, domain_size) == 16, "error domain size offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, message_size) == 20, "error message size offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, domain) == 24, "error domain offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, message) == 56, "error message offset");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_status, reserved) == 312, "error reserved offset");
 
 RODAQ_TEST_STATIC_ASSERT(
     sizeof(rodaq_descriptor_readiness_result) == 336, "descriptor readiness size");
@@ -112,4 +112,4 @@ RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_config_view) == 8, "config vie
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_config_view, context) == 0, "config context offset");
 RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_config_view, vtable) == 8, "config vtable offset");
 
-#endif /* RODAQ_TESTS_ABI_FROZEN_LAYOUT_CHECKS_H */
+#endif /* RODAQ_TESTS_ABI_STATUS_LAYOUT_CHECKS_H */

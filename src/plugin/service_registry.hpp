@@ -34,9 +34,9 @@ private:
         rodaq_interface service;
     };
 
-    static rodaq_status query(
+    static rodaq_status_code query(
         void* context, rodaq_string_view service_id, rodaq_interface* out_service,
-        rodaq_error* out_error) noexcept;
+        rodaq_status* out_status) noexcept;
 
     static const rodaq_service_registry_vtable kRegistryVtable;
 

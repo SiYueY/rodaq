@@ -19,7 +19,8 @@ add_library(rodaq_foundation STATIC
     abi_support.cpp
     config/config.cpp
     config/yaml_config_loader.cpp
-    error.cpp
+    status.cpp
+    result.cpp
     sdk/config_view.cpp
     sdk/runtime_services.cpp
     sdk/runtime_validation.cpp

@@ -1,6 +1,6 @@
 #include "scalar_checks.h"
 
-#include <rodaq/error.hpp>
+#include <rodaq/status.hpp>
 
 #include <gtest/gtest.h>
 
@@ -9,9 +9,10 @@
 namespace {
 
 void persistence_completed(
-    void*, rodaq_storage_operation, rodaq_storage_persistence_state, const rodaq_error*) noexcept {}
+    void*, rodaq_storage_operation, rodaq_storage_persistence_state, const rodaq_status*) noexcept {
+}
 
-void report_failure(void*, const rodaq_error*) noexcept {}
+void report_failure(void*, const rodaq_status*) noexcept {}
 
 }  // namespace
 
@@ -35,14 +36,14 @@ TEST(ScalarContractTest, StorageRuntimeCallbacksUseFullDiagnostics) {
     EXPECT_NE(storage_service.report_failure, nullptr);
 }
 
-TEST(ScalarContractTest, CppErrorTaxonomyMatchesStableStatusValues) {
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::InvalidArgument), 1U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::InvalidState), 2U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::NotFound), 3U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::Conflict), 4U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::ResourceExhausted), 5U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::Unavailable), 6U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::StorageError), 7U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::Timeout), 8U);
-    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::ErrorCode::InternalError), 9U);
+TEST(ScalarContractTest, CppStatusCodesMatchAbiValues) {
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::InvalidArgument), 1U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::InvalidState), 2U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::NotFound), 3U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::Conflict), 4U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::ResourceExhausted), 5U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::Unavailable), 6U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::StorageError), 7U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::Timeout), 8U);
+    EXPECT_EQ(static_cast<std::uint32_t>(rodaq::StatusCode::InternalError), 9U);
 }

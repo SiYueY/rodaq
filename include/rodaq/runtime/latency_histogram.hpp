@@ -21,7 +21,7 @@ public:
     LatencyHistogram& operator=(LatencyHistogram&&) = delete;
     ~LatencyHistogram();
 
-    bool record(std::int64_t value) noexcept;
+    bool record(std::int64_t sample) noexcept;
     std::uint64_t count() const noexcept;
     std::int64_t min() const noexcept;
     std::int64_t max() const noexcept;

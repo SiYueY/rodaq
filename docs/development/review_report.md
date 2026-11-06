@@ -1822,3 +1822,99 @@ All eight Release capacity benchmarks passed three repetitions; comparative
 medians are recorded in `capacity_qualification.md`. A full Clang TSan build was separately attempted and encounters an existing
 `-Wunused-const-variable` error for the null-descriptor fixture; it is outside
 the defined TSan subset. New hosted qualification remains PENDING.
+
+
+## 2026-11-05 C++ StatusCode convergence
+
+`StatusCode` replaces the C++ `ErrorCode` taxonomy and includes `Ok`, with
+explicit Stable C ABI status mappings. `Error::status_code()` replaces `code()`;
+constructing Error with Ok or an unknown enum normalizes it to InternalError
+without discarding diagnostics. Tests cover mappings for all ABI statuses, Ok,
+unknown values and malformed / mismatched diagnostics. C++ applications and
+Plugin sources must migrate and rebuild. C ABI headers and layouts remain
+unchanged. The Runtime-only build and installed consumer smoke passed.
+
+Post-change full CTest: Debug, Release, ASan/LSan, UBSan 94/94 each; Clang 14
+TSan CI subset 10/10 with thread-leak detection. Formatting and clang-tidy pass
+for 189 C/C++ files, 117 build translation units, public headers and installed
+consumers. Hosted qualification is PENDING; historical results above do not
+qualify this change. Native arm64 remains D-034 DEFERRED.
+
+
+## 2026-11-05 Status + Result full migration — COMPLETE / local PASS
+
+This section supersedes the earlier Error-based and direct expected-alias
+recommendations for the current revision. Status now represents success or
+failure; Result<T> privately uses pinned expected-lite and admits only non-OK
+failure states. OK-as-failure normalizes to UnknownError. No Error class,
+make_error helper, legacy result accessor or compatibility alias remains.
+Result<void> and Result<Status> are covered by negative compile tests; primary
+failure observation returns Status directly; OK means no primary failure. SDK, Runtime, benchmarks and all
+consumer/tests migrated. C status-code and diagnostic types are rodaq_status_code
+and rodaq_status, with status_code / error_code fields. Independent current ABI
+fixtures replace legacy compatibility sources. Existing Admission, ownership,
+Payload/Persistence and quarantine convergence tests continue to pass.
+
+Final local checks: Debug, Release, ASan/LSan, UBSan and Ubuntu 24/GCC 13 each
+96/96 CTest; Clang 14 TSan CI subset 10/10 with thread-leak detection; Runtime-only
+Release build PASS; eight capacity executables each three repetitions PASS.
+Formatting and clang-tidy PASS for 191 files, 117 build translation units,
+26 C++ headers, eight C ABI headers in both languages and five install consumers.
+Root clang-tidy configuration is supplied explicitly so dependency-local config
+files cannot change the approved checks. Plugin exports remain the two required
+C entry points per family; the foundation archive has no old Error symbols.
+Final namespace/identifier scans and git diff whitespace review PASS.
+
+New hosted qualification remains PENDING, M3 NOT STARTED, native arm64 D-034
+DEFERRED. These are local results for the uncommitted working tree; historical
+hosted successes above do not qualify the new interfaces.
+
+## 2026-11-06 Direct Status failure storage review
+
+Removed all project optional<Status> instances. primary_failure() and its stored
+history use OK to mean no failure; Descriptor reconciliation, deferred admission
+failures, Storage completion effects and Quarantine diagnostics use the same
+representation. Async completion remains guarded by the existing completion,
+Join and mutex protocols, independently of Status. Updated all callers and the
+installed Runtime consumer without aliases. Reviewed the final diff and verified
+no optional<Status> or old optional primary-failure access remains.
+
+Debug warnings-as-errors, ASan/LSan and UBSan: 96/96 each; Clang 14 TSan with
+thread-leak checks: 10/10. Full clang-format/clang-tidy checks and the separately
+rerun installed consumer pass. Regression assertions verify OK throughout a
+healthy lifecycle and exact failed-call diagnostic preservation. LSan could not
+operate in the initial ptrace-constrained sandbox; that run was stopped and the
+full outside-sandbox rerun passed with leak detection enabled.
+
+Release capacity, Runtime-only and Ubuntu 24 were not rerun for this follow-up.
+Earlier results are historical; new hosted qualification remains PENDING.
+
+## 2026-11-06 Result<void> operation migration — COMPLETE / local PASS
+
+All no-value fallible C++ operations now use Result<void>, backed privately by
+nonstd::expected<void, Status>. Default construction is success; non-OK Status
+constructs failure, and OK supplied as a failure becomes UnknownError. Status
+continues to carry diagnostics and primary/deferred failure observations.
+Non-void Result defaults and the Result<Status> prohibition remain unchanged.
+The specialization's non-template methods live in src/result.cpp.
+
+Reviewed Runtime, SDK virtuals/overrides/trampolines, loader/services, logging,
+Quarantine callbacks, tests, benchmarks and installed consumers. Explicit failure
+propagation prevents implicit Result<void>-to-Result<bool> conversion from
+turning Binding failures into successful values. Existing Binding failure/stall
+regressions pass. Success paths at ABI boundaries return a successful void
+Result rather than constructing it from OK Status. C ABI headers, values,
+layouts, exported Plugin entry points and domain correctness contracts are
+unchanged; no compatibility layer is retained.
+
+Debug warnings-as-errors, Release, ASan/LSan, UBSan and offline Ubuntu 24:
+95/95 each. Clang 14 TSan with thread-leak detection: 10/10. Runtime-only
+Release with production dependencies only and all eight Release benchmarks with
+three repetitions pass. Full clang-format/clang-tidy 14 checks pass: 191 files,
+118 TUs, 26 C++ headers, eight C ABI headers in both languages, five install
+consumers. Source residue, C exports and final staged/unstaged diff checks pass.
+CTest count is 95 after deleting the obsolete void compile-fail fixture; three
+positive void unit tests plus compile/install checks cover the replacement.
+
+New hosted qualification remains PENDING. Earlier validation is historical.
+M3 is NOT STARTED and D-034 remains DEFERRED. Existing staged work was preserved.

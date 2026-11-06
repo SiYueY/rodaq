@@ -35,17 +35,17 @@ foreach(header_name IN LISTS RODAQ_ABI_HEADER_NAMES)
     )
 endforeach()
 
-add_executable(rodaq_abi_frozen_layout_c_test layout/frozen_layout_test.c)
-target_link_libraries(rodaq_abi_frozen_layout_c_test PRIVATE rodaq_headers)
-rodaq_enable_c_warnings(rodaq_abi_frozen_layout_c_test)
-rodaq_enable_sanitizers(rodaq_abi_frozen_layout_c_test)
-add_test(NAME rodaq.abi.frozen_layout.c COMMAND rodaq_abi_frozen_layout_c_test)
+add_executable(rodaq_abi_status_layout_c_test layout/status_layout_test.c)
+target_link_libraries(rodaq_abi_status_layout_c_test PRIVATE rodaq_headers)
+rodaq_enable_c_warnings(rodaq_abi_status_layout_c_test)
+rodaq_enable_sanitizers(rodaq_abi_status_layout_c_test)
+add_test(NAME rodaq.abi.status_layout.c COMMAND rodaq_abi_status_layout_c_test)
 
-add_executable(rodaq_abi_frozen_layout_cpp_test layout/frozen_layout_test.cpp)
-target_link_libraries(rodaq_abi_frozen_layout_cpp_test PRIVATE rodaq_headers)
-rodaq_enable_warnings(rodaq_abi_frozen_layout_cpp_test)
-rodaq_enable_sanitizers(rodaq_abi_frozen_layout_cpp_test)
-add_test(NAME rodaq.abi.frozen_layout.cpp COMMAND rodaq_abi_frozen_layout_cpp_test)
+add_executable(rodaq_abi_status_layout_cpp_test layout/status_layout_test.cpp)
+target_link_libraries(rodaq_abi_status_layout_cpp_test PRIVATE rodaq_headers)
+rodaq_enable_warnings(rodaq_abi_status_layout_cpp_test)
+rodaq_enable_sanitizers(rodaq_abi_status_layout_cpp_test)
+add_test(NAME rodaq.abi.status_layout.cpp COMMAND rodaq_abi_status_layout_cpp_test)
 
 add_executable(rodaq_abi_minimum_prefix_c_test layout/minimum_prefix_test.c)
 target_link_libraries(rodaq_abi_minimum_prefix_c_test PRIVATE rodaq_headers)
@@ -110,6 +110,11 @@ add_test(
 )
 
 function(rodaq_add_compile_fail_test test_name source_file fake_path diagnostic)
+    if(fake_path STREQUAL "native")
+        set(failure_include "${RODAQ_THIRD_PARTY_ROOT}/expected-lite/include")
+    else()
+        set(failure_include "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/fake_expected/${fake_path}")
+    endif()
     set(test_object "${CMAKE_CURRENT_BINARY_DIR}/compile_fail/${test_name}.o")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compile_fail")
     add_test(
@@ -117,7 +122,7 @@ function(rodaq_add_compile_fail_test test_name source_file fake_path diagnostic)
         COMMAND
             "${CMAKE_COMMAND}"
             "-DRODAQ_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-            "-DRODAQ_TEST_FAKE_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/fake_expected/${fake_path}"
+            "-DRODAQ_TEST_FAKE_INCLUDE_DIR=${failure_include}"
             "-DRODAQ_TEST_PROJECT_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include"
             "-DRODAQ_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/${source_file}"
             "-DRODAQ_TEST_OBJECT=${test_object}"
@@ -214,47 +219,50 @@ add_test(
 )
 
 add_library(
-    rodaq_compat_v1_acquisition
+    rodaq_current_abi_acquisition
     SHARED
-    compat/v1/acquisition_fixture.cpp
+    contract/acquisition_fixture.cpp
 )
-set_target_properties(rodaq_compat_v1_acquisition PROPERTIES
+set_target_properties(rodaq_current_abi_acquisition PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
 )
-target_link_options(rodaq_compat_v1_acquisition PRIVATE
-    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/compat/v1/acquisition_fixture.map")
+target_link_options(rodaq_current_abi_acquisition PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/contract/acquisition_fixture.map")
 
 add_library(
-    rodaq_compat_v1_storage
+    rodaq_current_abi_storage
     SHARED
-    compat/v1/storage_fixture.cpp
+    contract/storage_fixture.cpp
 )
-set_target_properties(rodaq_compat_v1_storage PROPERTIES
+set_target_properties(rodaq_current_abi_storage PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
 )
-target_link_options(rodaq_compat_v1_storage PRIVATE
-    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/compat/v1/storage_fixture.map")
+target_link_options(rodaq_current_abi_storage PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/contract/storage_fixture.map")
 
 add_executable(
-    rodaq_compat_v1_output_test
-    compat/v1/output_compat_test.cpp
+    rodaq_status_output_test
+    contract/status_output_test.cpp
 )
-target_link_libraries(rodaq_compat_v1_output_test
+target_link_libraries(rodaq_status_output_test
     PRIVATE
         GTest::gtest_main
         rodaq_runtime_testing
 )
-rodaq_enable_warnings(rodaq_compat_v1_output_test)
-rodaq_enable_sanitizers(rodaq_compat_v1_output_test)
+rodaq_enable_warnings(rodaq_status_output_test)
+rodaq_enable_sanitizers(rodaq_status_output_test)
 add_test(
-    NAME rodaq.compat.v1.outputs
-    COMMAND rodaq_compat_v1_output_test
+    NAME rodaq.abi.status_output
+    COMMAND rodaq_status_output_test
 )
+
+rodaq_add_compile_fail_test(
+    result_status result_status.cpp native "Result<Status> is ambiguous")

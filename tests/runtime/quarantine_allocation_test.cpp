@@ -67,8 +67,7 @@ int main() {
     const bool timeout_guard_enabled = fail.load(std::memory_order_acquire);
     allocation_failure = nullptr;
     fail.store(false);
-    const bool timed_out =
-        outcome.has_value() && outcome.value().status == SupervisedCallStatus::TimedOut;
+    const bool timed_out = outcome.ok() && outcome.value().status == SupervisedCallStatus::TimedOut;
 
     auto done = std::make_shared<std::atomic<bool>>(false);
     auto joined_worker = std::make_shared<std::atomic<bool>>(false);

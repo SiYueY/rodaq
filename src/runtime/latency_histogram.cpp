@@ -23,9 +23,9 @@ public:
         }
     }
 
-    bool record(std::int64_t value) noexcept {
+    bool record(std::int64_t sample) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        return hdr_record_value(histogram_, value);
+        return hdr_record_value(histogram_, sample);
     }
 
     std::uint64_t count() const noexcept {
@@ -58,8 +58,8 @@ Result<std::unique_ptr<LatencyHistogram>> LatencyHistogram::create(
     int significant_figures) {
     if (lowest_discernible_value < 1 || highest_trackable_value < lowest_discernible_value ||
         significant_figures < 1 || significant_figures > 5) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "latency histogram configuration is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "latency histogram configuration is invalid");
     }
 
     hdr_histogram* histogram = nullptr;
@@ -69,9 +69,9 @@ Result<std::unique_ptr<LatencyHistogram>> LatencyHistogram::create(
         if (histogram != nullptr) {
             hdr_close(histogram);
         }
-        return nonstd::make_unexpected(Error(
-            status == ENOMEM ? ErrorCode::ResourceExhausted : ErrorCode::InvalidArgument,
-            "failed to initialize latency histogram"));
+        return rodaq::Status(
+            status == ENOMEM ? StatusCode::ResourceExhausted : StatusCode::InvalidArgument,
+            "failed to initialize latency histogram");
     }
 
     try {
@@ -79,8 +79,8 @@ Result<std::unique_ptr<LatencyHistogram>> LatencyHistogram::create(
         return std::unique_ptr<LatencyHistogram>(new LatencyHistogram(std::move(impl)));
     } catch (const std::bad_alloc&) {
         hdr_close(histogram);
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "failed to allocate latency histogram wrapper"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "failed to allocate latency histogram wrapper");
     }
 }
 
@@ -88,7 +88,7 @@ LatencyHistogram::LatencyHistogram(std::unique_ptr<Impl> impl) noexcept : impl_(
 
 LatencyHistogram::~LatencyHistogram() = default;
 
-bool LatencyHistogram::record(std::int64_t value) noexcept { return impl_->record(value); }
+bool LatencyHistogram::record(std::int64_t sample) noexcept { return impl_->record(sample); }
 
 std::uint64_t LatencyHistogram::count() const noexcept { return impl_->count(); }
 

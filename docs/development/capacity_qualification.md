@@ -195,3 +195,65 @@ accepted Records/s compared with the preceding naming-review run: per-joint
 280,176; Runtime pipeline 397,750 vs 387,945; storage slots 454,000 vs 454,423.
 The host frequency and scheduling were not controlled; these are capacity-gate
 and comparative observations, not evidence of a guaranteed speed change.
+
+
+## 2026-11-05 Status + Result migration qualification
+
+All eight existing Release benchmark executables passed three repetitions with
+unchanged workloads and capacity/acceptance/shutdown gates. Values below are
+medians on the same GCC 11 / amd64 host. PayloadClass and PayloadPool also
+completed without errors. Default Result failure construction has empty
+diagnostics, avoiding a new per-operation diagnostic-string allocation.
+
+| Profile | Accepted Records/s | Persistence p99 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|
+| bm_encoded_camera10x720p30 | 310 | 127.42 | 8 | 1,211 |
+| bm_raw_camera10x720p30 | 308 | 184.19 | 5 | 1,255 |
+| bm_per_joint100_streams1k_hz | 99,979 | 39.77 | 20 | 1,677 |
+| bm_aggregated_robot_state1k_hz | 1,000 | 82.94 | 1 | 843 |
+| run_encoded_aggregated | 1,300 | 101.76 | 5 | 1,176 |
+| run_raw_per_joint | 100,249 | 331.26 | 61 | 2,484 |
+| bm_adopt_release_workers/1 | 279,096 | 744.96 | 1,812 | 1,119 |
+| bm_adopt_release_workers/2 | 241,707 | 29,818.88 | 8,164 | 946 |
+| bm_adopt_release_workers/4 | 153,350 | 89,849.85 | 17,612 | 1,427 |
+| bm_runtime_pipeline_small_record_steady_state | 418,186 | 44,171.26 | 20,632 | 982 |
+| bm_storage_slot_terminalization100k | 453,695 | 46,989.31 | 28,302 | 866 |
+
+Compared with the preceding declaration-separation run, per-joint acceptance
+was approximately 99,979 vs 99,975 Records/s, raw mixed 100,249 vs 100,211,
+and the small-record pipeline 418,186 vs 397,750. The host CPU frequency and
+scheduling were not controlled; these observations establish existing gate
+passes and do not establish a performance improvement guarantee. Real backend
+and filesystem qualification remain outside this task.
+
+## 2026-11-06 Result<void> operation migration qualification
+
+All eight existing Release benchmark executables passed three repetitions with
+unchanged workload and correctness/capacity gates. PayloadClass and PayloadPool
+also completed without benchmark errors. Median observations on GCC 11 / amd64:
+
+| Profile | Accepted Records/s | Persistence p99 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|
+| bm_encoded_camera10x720p30 | 310 | 123.39 | 8 | 561 |
+| bm_raw_camera10x720p30 | 309 | 218.24 | 5 | 1,057 |
+| bm_per_joint100_streams1k_hz | 99,979 | 56.48 | 40 | 2,234 |
+| bm_aggregated_robot_state1k_hz | 1,000 | 83.58 | 1 | 792 |
+| run_encoded_aggregated | 1,300 | 122.62 | 7 | 593 |
+| run_raw_per_joint | 100,275 | 261.38 | 71 | 2,271 |
+| bm_adopt_release_workers/1 | 287,734 | 177.79 | 558 | 974 |
+| bm_adopt_release_workers/2 | 234,772 | 9,715.71 | 2,438 | 1,004 |
+| bm_adopt_release_workers/4 | 150,367 | 84,672.51 | 15,653 | 998 |
+| bm_runtime_pipeline_small_record_steady_state | 406,610 | 29,999.10 | 12,952 | 1,028 |
+| bm_storage_slot_terminalization100k | 475,031 | 51,412.99 | 31,424 | 922 |
+
+The preceding Status-returning migration results remain in the prior table.
+The workload gates passed after the Result<void> migration; host frequency and
+scheduling were not controlled, so these observations do not establish a speed
+improvement or a real backend/filesystem performance guarantee. M3 remains
+NOT STARTED. Hosted qualification for these changes remains PENDING.
+
+Compared with the preceding Status-returning run, median per-joint acceptance
+was 99,979 vs 99,979 Records/s, raw mixed
+100,275 vs 100,249, and the small-record
+pipeline 406,610 vs 418,186. These are
+uncontrolled host observations with unchanged pass thresholds.

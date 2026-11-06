@@ -39,7 +39,7 @@ const std::uint8_t* bytes(std::string_view value) noexcept {
 
 template <typename T>
 T take(rodaq::Result<T> result) {
-    if (!result.has_value()) {
+    if (!result.ok()) {
         throw std::runtime_error("Expected successful Runtime operation");
     }
     return std::move(result.value());
@@ -53,8 +53,7 @@ TEST(InteropProjectionRegistryTest, RegistersAndQueriesImmutableOwnedBytes) {
     std::string payload = "payload";
 
     ASSERT_TRUE(
-        registry.register_entry(descriptor(7), projection_id, bytes(payload), payload.size())
-            .has_value());
+        registry.register_entry(descriptor(7), projection_id, bytes(payload), payload.size()).ok());
     projection_id.assign("mutated");
     std::memset(payload.data(), 'x', payload.size());
 
@@ -62,24 +61,25 @@ TEST(InteropProjectionRegistryTest, RegistersAndQueriesImmutableOwnedBytes) {
     EXPECT_EQ("rodaq.test.projection.v1", view.projection_id);
     ASSERT_EQ(7U, view.payload_size);
     EXPECT_EQ(0, std::memcmp(view.payload, "payload", view.payload_size));
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, registry.get(descriptor(7), "missing").error().code());
+    EXPECT_EQ(
+        rodaq::StatusCode::NotFound, registry.get(descriptor(7), "missing").status().status_code());
 }
 
 TEST(InteropProjectionRegistryTest, AppliesIdempotenceAndConflictSemantics) {
     InteropProjectionRegistry registry(limits());
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "id", bytes("abc"), 3).has_value());
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "id", bytes("abc"), 3).has_value());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "id", bytes("abc"), 3).ok());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "id", bytes("abc"), 3).ok());
 
     EXPECT_EQ(
-        rodaq::ErrorCode::Conflict,
-        registry.register_entry(descriptor(1), "id", bytes("abd"), 3).error().code());
+        rodaq::StatusCode::Conflict,
+        registry.register_entry(descriptor(1), "id", bytes("abd"), 3).status().status_code());
 }
 
 TEST(InteropProjectionRegistryTest, KeysByDescriptorAndProjectionId) {
     InteropProjectionRegistry registry(limits());
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "one", bytes("a"), 1).has_value());
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "two", bytes("b"), 1).has_value());
-    ASSERT_TRUE(registry.register_entry(descriptor(2), "one", bytes("c"), 1).has_value());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "one", bytes("a"), 1).ok());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "two", bytes("b"), 1).ok());
+    ASSERT_TRUE(registry.register_entry(descriptor(2), "one", bytes("c"), 1).ok());
 
     EXPECT_EQ(
         "a",
@@ -98,24 +98,26 @@ TEST(InteropProjectionRegistryTest, KeysByDescriptorAndProjectionId) {
 TEST(InteropProjectionRegistryTest, RejectsInvalidKeysAndPayloads) {
     InteropProjectionRegistry registry(limits(4, 2, 8, 16));
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        registry.register_entry(descriptor(0), "id", nullptr, 0).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        registry.register_entry(descriptor(0), "id", nullptr, 0).status().status_code());
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        registry.register_entry(descriptor(1), "", nullptr, 0).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        registry.register_entry(descriptor(1), "", nullptr, 0).status().status_code());
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        registry.register_entry(descriptor(1), std::string_view("\xFF", 1), nullptr, 0)
-            .error()
-            .code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::ResourceExhausted,
-        registry.register_entry(descriptor(1), "toolong", nullptr, 0).error().code());
-    EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        registry.register_entry(descriptor(1), "id", nullptr, 1).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        registry
+            .register_entry(descriptor(1), std::string_view("\xFF", 1), nullptr, 0)
 
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "zero", nullptr, 0).has_value());
+            .status()
+            .status_code());
+    EXPECT_EQ(
+        rodaq::StatusCode::ResourceExhausted,
+        registry.register_entry(descriptor(1), "toolong", nullptr, 0).status().status_code());
+    EXPECT_EQ(
+        rodaq::StatusCode::InvalidArgument,
+        registry.register_entry(descriptor(1), "id", nullptr, 1).status().status_code());
+
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "zero", nullptr, 0).ok());
     const ProjectionView zero = take(registry.get(descriptor(1), "zero"));
     EXPECT_EQ(nullptr, zero.payload);
     EXPECT_EQ(0U, zero.payload_size);
@@ -123,28 +125,29 @@ TEST(InteropProjectionRegistryTest, RejectsInvalidKeysAndPayloads) {
 
 TEST(InteropProjectionRegistryTest, EnforcesAllBoundsAtomically) {
     InteropProjectionRegistry registry(limits(64, 2, 4, 5));
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "one", bytes("abc"), 3).has_value());
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "two", bytes("x"), 1).has_value());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "one", bytes("abc"), 3).ok());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "two", bytes("x"), 1).ok());
     EXPECT_EQ(
-        rodaq::ErrorCode::ResourceExhausted,
-        registry.register_entry(descriptor(1), "three", bytes("z"), 1).error().code());
+        rodaq::StatusCode::ResourceExhausted,
+        registry.register_entry(descriptor(1), "three", bytes("z"), 1).status().status_code());
 
     EXPECT_EQ(
-        rodaq::ErrorCode::ResourceExhausted,
-        registry.register_entry(descriptor(2), "big", bytes("abc"), 3).error().code());
-    ASSERT_TRUE(registry.register_entry(descriptor(2), "small", bytes("d"), 1).has_value());
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, registry.get(descriptor(2), "big").error().code());
+        rodaq::StatusCode::ResourceExhausted,
+        registry.register_entry(descriptor(2), "big", bytes("abc"), 3).status().status_code());
+    ASSERT_TRUE(registry.register_entry(descriptor(2), "small", bytes("d"), 1).ok());
+    EXPECT_EQ(
+        rodaq::StatusCode::NotFound, registry.get(descriptor(2), "big").status().status_code());
     EXPECT_EQ(1U, take(registry.get(descriptor(2), "small")).payload_size);
 }
 
 TEST(InteropProjectionRegistryTest, ReturnsStableViewsAcrossLaterRegistration) {
     InteropProjectionRegistry registry(limits(64, 16));
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "stable", bytes("value"), 5).has_value());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "stable", bytes("value"), 5).ok());
     const ProjectionView before = take(registry.get(descriptor(1), "stable"));
 
     for (int index = 0; index < 8; ++index) {
         const std::string id = "entry." + std::to_string(index);
-        ASSERT_TRUE(registry.register_entry(descriptor(1), id, bytes("x"), 1).has_value());
+        ASSERT_TRUE(registry.register_entry(descriptor(1), id, bytes("x"), 1).ok());
     }
 
     EXPECT_EQ("stable", before.projection_id);
@@ -166,7 +169,7 @@ TEST(InteropProjectionRegistryTest, AbiAdapterUsesCallerOwnedAppendableOutput) {
     registration.descriptor = descriptor(9);
     registration.projection_id = rodaq_string_view{id, sizeof(id) - 1};
     registration.payload = rodaq_bytes_view{bytes(payload), sizeof(payload) - 1};
-    rodaq_error error{};
+    rodaq_status error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK, vtable->register_projection(interface.context, &registration, &error));
 
@@ -212,14 +215,14 @@ TEST(InteropProjectionRegistryTest, AbiAdapterUsesCallerOwnedAppendableOutput) {
 
 TEST(InteropProjectionRegistryTest, SupportsConcurrentReadersWithSerializedWriter) {
     InteropProjectionRegistry registry(limits(64, 16, 256, 256));
-    ASSERT_TRUE(registry.register_entry(descriptor(1), "base", bytes("stable"), 6).has_value());
+    ASSERT_TRUE(registry.register_entry(descriptor(1), "base", bytes("stable"), 6).ok());
     const ProjectionView baseline = take(registry.get(descriptor(1), "base"));
 
     std::atomic<bool> failed{false};
     std::thread writer([&registry] {
         for (int index = 0; index < 12; ++index) {
             const std::string id = "writer." + std::to_string(index);
-            if (!registry.register_entry(descriptor(2), id, bytes("x"), 1).has_value()) {
+            if (!registry.register_entry(descriptor(2), id, bytes("x"), 1).ok()) {
                 return;
             }
         }
@@ -229,7 +232,7 @@ TEST(InteropProjectionRegistryTest, SupportsConcurrentReadersWithSerializedWrite
         readers.emplace_back([&registry, &baseline, &failed] {
             for (int iteration = 0; iteration < 500; ++iteration) {
                 const auto current = registry.get(descriptor(1), "base");
-                if (!current.has_value() || current.value().projection_id != "base" ||
+                if (!current.ok() || current.value().projection_id != "base" ||
                     current.value().payload_size != 6 ||
                     std::memcmp(current.value().payload, "stable", 6) != 0) {
                     failed.store(true, std::memory_order_release);

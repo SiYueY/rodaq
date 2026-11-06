@@ -16,7 +16,7 @@ void fixed_block_acquire_release(benchmark::State& state, std::size_t bytes) {
     PayloadPoolConfig config;
     config.classes.push_back(PayloadClassConfig{bytes, kBlockCount});
     auto pool = PayloadPool::create(config);
-    if (!pool.has_value()) {
+    if (!pool.ok()) {
         state.SkipWithError("failed to create PayloadPool");
         return;
     }
@@ -24,7 +24,7 @@ void fixed_block_acquire_release(benchmark::State& state, std::size_t bytes) {
     for (auto iteration : state) {
         static_cast<void>(iteration);
         auto reservation = pool.value().try_reserve(bytes);
-        if (!reservation.has_value()) {
+        if (!reservation.ok()) {
             state.SkipWithError("PayloadPool reserve failed");
             return;
         }
@@ -37,7 +37,7 @@ void fixed_block_acquire_copy_release(benchmark::State& state, std::size_t bytes
     PayloadPoolConfig config;
     config.classes.push_back(PayloadClassConfig{bytes, kBlockCount});
     auto pool = PayloadPool::create(config);
-    if (!pool.has_value()) {
+    if (!pool.ok()) {
         state.SkipWithError("failed to create PayloadPool");
         return;
     }
@@ -46,13 +46,13 @@ void fixed_block_acquire_copy_release(benchmark::State& state, std::size_t bytes
     for (auto iteration : state) {
         static_cast<void>(iteration);
         auto reservation = pool.value().try_reserve(bytes);
-        if (!reservation.has_value()) {
+        if (!reservation.ok()) {
             state.SkipWithError("PayloadPool reserve failed");
             return;
         }
         auto payload = pool.value().materialize(
             std::move(reservation.value()), PayloadView(source.data(), source.size()));
-        if (!payload.has_value()) {
+        if (!payload.ok()) {
             state.SkipWithError("PayloadPool copy acquire failed");
             return;
         }

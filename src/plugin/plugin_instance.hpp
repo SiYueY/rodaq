@@ -35,21 +35,22 @@ private:
 class PluginInstanceStateAccess {
 public:
     using BindFunction =
-        rodaq_status (*)(void*, const rodaq_service_registry*, rodaq_error*) noexcept;
-    using ConfigureFunction = rodaq_status (*)(void*, rodaq_config_view, rodaq_error*) noexcept;
+        rodaq_status_code (*)(void*, const rodaq_service_registry*, rodaq_status*) noexcept;
+    using ConfigureFunction =
+        rodaq_status_code (*)(void*, rodaq_config_view, rodaq_status*) noexcept;
     using QueryInterfaceFunction =
-        rodaq_status (*)(void*, rodaq_string_view, rodaq_interface*, rodaq_error*) noexcept;
-    using StartFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
-    using StopFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+        rodaq_status_code (*)(void*, rodaq_string_view, rodaq_interface*, rodaq_status*) noexcept;
+    using StartFunction = rodaq_status_code (*)(void*, rodaq_status*) noexcept;
+    using StopFunction = rodaq_status_code (*)(void*, rodaq_status*) noexcept;
     using DestroyFunction = void (*)(void*) noexcept;
     using OpenFunction =
-        rodaq_status (*)(void*, const rodaq_storage_open_request*, rodaq_error*) noexcept;
-    using SubmitFunction = rodaq_status (*)(
+        rodaq_status_code (*)(void*, const rodaq_storage_open_request*, rodaq_status*) noexcept;
+    using SubmitFunction = rodaq_status_code (*)(
         void*, const rodaq_storage_submission*, rodaq_storage_submit_result*,
-        rodaq_error*) noexcept;
-    using FlushFunction = rodaq_status (*)(void*, rodaq_error*) noexcept;
+        rodaq_status*) noexcept;
+    using FlushFunction = rodaq_status_code (*)(void*, rodaq_status*) noexcept;
     using CloseFunction =
-        rodaq_status (*)(void*, const rodaq_storage_close_request*, rodaq_error*) noexcept;
+        rodaq_status_code (*)(void*, const rodaq_storage_close_request*, rodaq_status*) noexcept;
 
     static std::shared_ptr<PluginInstanceState> create(
         const PluginLibraryLease& library_lease, void* instance, void (*destroy)(void*) noexcept,

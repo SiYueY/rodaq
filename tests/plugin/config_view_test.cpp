@@ -17,7 +17,7 @@ using rodaq::plugin::ConfigTree;
 
 template <typename T>
 T take(rodaq::Result<T> result) {
-    if (!result.has_value()) {
+    if (!result.ok()) {
         throw std::runtime_error("Expected successful Config operation");
     }
     return std::move(result.value());
@@ -100,21 +100,22 @@ TEST(ConfigViewTest, ReportsNotFoundAndInvalidStateWithoutImplicitConversion) {
     ConfigTree tree = make_nested_tree();
     const ConfigNodeView root = tree.view();
 
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, root.find("missing").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, take(root.find("items")).at(3).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, root.key_at(root.size()).error().code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, root.find("missing").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, take(root.find("items")).at(3).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, root.key_at(root.size()).status().status_code());
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument, root.find(std::string_view("\xFF", 1)).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        root.find(std::string_view("\xFF", 1)).status().status_code());
 
     const ConfigNodeView limit = take(root.find("limit"));
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.as_double().error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.find("child").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.at(0).error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, limit.key_at(0).error().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.as_double().status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.find("child").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.at(0).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.key_at(0).status().status_code());
 
     const ConfigNodeView items = take(root.find("items"));
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, items.find("child").error().code());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidState, items.key_at(0).error().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.find("child").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.key_at(0).status().status_code());
 }
 
 TEST(ConfigViewTest, AllowsEmptyAndUtf8MapKeys) {
@@ -136,15 +137,15 @@ TEST(ConfigViewTest, RejectsInvalidOrDuplicateMapEntries) {
     const auto invalid_key = ConfigTree::map({
         {std::string("\xFF", 1), ConfigTree::null()},
     });
-    ASSERT_FALSE(invalid_key.has_value());
-    EXPECT_EQ(rodaq::ErrorCode::InvalidArgument, invalid_key.error().code());
+    ASSERT_FALSE(invalid_key.ok());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, invalid_key.status().status_code());
 
     const auto duplicate = ConfigTree::map({
         {"key", ConfigTree::int64(1)},
         {"key", ConfigTree::int64(2)},
     });
-    ASSERT_FALSE(duplicate.has_value());
-    EXPECT_EQ(rodaq::ErrorCode::Conflict, duplicate.error().code());
+    ASSERT_FALSE(duplicate.ok());
+    EXPECT_EQ(rodaq::StatusCode::Conflict, duplicate.status().status_code());
 }
 
 TEST(ConfigViewTest, BorrowedViewsOutliveTreeOwner) {
@@ -169,7 +170,7 @@ TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
     EXPECT_EQ(7U, root.vtable->size(root.context));
 
     rodaq_config_view items{};
-    rodaq_error error{};
+    rodaq_status error{};
     EXPECT_EQ(
         RODAQ_STATUS_OK,
         root.vtable->find(root.context, rodaq_string_view{"items", 5}, &items, &error));
@@ -196,7 +197,7 @@ TEST(ConfigViewTest, AbiAdapterSupportsContainersAndExactScalars) {
 TEST(ConfigViewTest, AbiAdapterRejectsNullOutputsAndClearsFailedOutputs) {
     ConfigTree tree = make_nested_tree();
     const rodaq_config_view root = tree.view().abi_view();
-    rodaq_error error{};
+    rodaq_status error{};
 
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,

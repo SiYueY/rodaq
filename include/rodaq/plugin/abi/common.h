@@ -29,7 +29,7 @@ typedef uint32_t rodaq_bool;
 #define RODAQ_FALSE UINT32_C(0)
 #define RODAQ_TRUE UINT32_C(1)
 
-typedef uint32_t rodaq_status;
+typedef uint32_t rodaq_status_code;
 
 #define RODAQ_STATUS_OK UINT32_C(0)
 #define RODAQ_STATUS_INVALID_ARGUMENT UINT32_C(1)
@@ -41,6 +41,7 @@ typedef uint32_t rodaq_status;
 #define RODAQ_STATUS_STORAGE_ERROR UINT32_C(7)
 #define RODAQ_STATUS_TIMEOUT UINT32_C(8)
 #define RODAQ_STATUS_INTERNAL_ERROR UINT32_C(9)
+#define RODAQ_STATUS_UNKNOWN_ERROR UINT32_C(10)
 
 /* ABI-FROZEN: borrowed UTF-8 bytes, not necessarily NUL-terminated. */
 typedef struct rodaq_string_view {
@@ -54,26 +55,26 @@ typedef struct rodaq_bytes_view {
     uint64_t size;
 } rodaq_bytes_view;
 
-#define RODAQ_ERROR_DOMAIN_CAPACITY UINT32_C(32)
-#define RODAQ_ERROR_MESSAGE_CAPACITY UINT32_C(256)
+#define RODAQ_STATUS_DOMAIN_CAPACITY UINT32_C(32)
+#define RODAQ_STATUS_MESSAGE_CAPACITY UINT32_C(256)
 
-#define RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED UINT32_C(1)
+#define RODAQ_STATUS_FLAG_MESSAGE_TRUNCATED UINT32_C(1)
 
 /* ABI-FROZEN: caller-owned, self-contained diagnostic storage. */
-typedef struct rodaq_error {
-    rodaq_status code;
+typedef struct rodaq_status {
+    rodaq_status_code status_code;
     uint32_t flags;
 
-    int64_t native_code;
+    int64_t error_code;
 
     uint32_t domain_size;
     uint32_t message_size;
 
-    char domain[RODAQ_ERROR_DOMAIN_CAPACITY];
-    char message[RODAQ_ERROR_MESSAGE_CAPACITY];
+    char domain[RODAQ_STATUS_DOMAIN_CAPACITY];
+    char message[RODAQ_STATUS_MESSAGE_CAPACITY];
 
     uint64_t reserved[2];
-} rodaq_error;
+} rodaq_status;
 
 /* ABI-FROZEN: borrowed context/vtable pair. */
 typedef struct rodaq_interface {

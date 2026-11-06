@@ -42,13 +42,13 @@ std::filesystem::path plugin_path() {
 
 AcquisitionInstance create_instance(PluginManager& manager) {
     auto lease = manager.load_library(plugin_path());
-    if (!lease.has_value()) {
+    if (!lease.ok()) {
         throw std::runtime_error("Failed to load SDK Acquisition fixture");
     }
     AcquisitionInstance owner;
     owner.lease = lease.value();
     owner.protocol = lease.value().acquisition_protocol();
-    rodaq_error error{};
+    rodaq_status error{};
     if (owner.protocol == nullptr ||
         owner.protocol->create(&owner.instance, &error) != RODAQ_STATUS_OK) {
         owner.instance = nullptr;
@@ -62,7 +62,7 @@ TEST(AcquisitionInputValidationTest, ControlMethodsRejectMalformedArguments) {
     PluginManager manager;
     AcquisitionInstance owner = create_instance(manager);
     ASSERT_NE(nullptr, owner.instance);
-    rodaq_error error{};
+    rodaq_status error{};
     rodaq_interface interface {};
     ASSERT_EQ(
         RODAQ_STATUS_OK, owner.protocol->query_interface(
@@ -137,7 +137,7 @@ TEST(AcquisitionInputValidationTest, QueryInterfaceRejectsMalformedViews) {
     PluginManager manager;
     AcquisitionInstance owner = create_instance(manager);
     ASSERT_NE(nullptr, owner.instance);
-    rodaq_error error{};
+    rodaq_status error{};
     rodaq_interface interface {};
 
     EXPECT_EQ(

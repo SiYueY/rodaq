@@ -52,13 +52,13 @@ std::filesystem::path plugin_path() {
 
 StorageInstance create_instance(PluginManager& manager) {
     auto lease = manager.load_library(plugin_path());
-    if (!lease.has_value()) {
+    if (!lease.ok()) {
         throw std::runtime_error("Failed to load SDK Storage fixture");
     }
     StorageInstance owner;
     owner.lease = lease.value();
     owner.protocol = lease.value().storage_protocol();
-    rodaq_error error{};
+    rodaq_status error{};
     if (owner.protocol == nullptr ||
         owner.protocol->create(&owner.instance, &error) != RODAQ_STATUS_OK) {
         owner.instance = nullptr;
@@ -104,10 +104,10 @@ void expect_canary(const SubmitOutput& output) {
 }
 
 void expect_open_rejected(StorageInstance& owner, const rodaq_storage_open_request& request) {
-    rodaq_error error{};
+    rodaq_status error{};
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT, owner.protocol->open(owner.instance, &request, &error));
-    EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, error.code);
+    EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, error.status_code);
     EXPECT_NE(0U, error.message_size);
 
     const rodaq_storage_open_request valid = valid_open();
@@ -122,7 +122,7 @@ TEST(StorageInputValidationTest, OpenRejectsMalformedViewsBeforePluginEntry) {
     {
         StorageInstance owner = create_instance(manager);
         ASSERT_NE(nullptr, owner.instance);
-        rodaq_error error{};
+        rodaq_status error{};
         const auto request = valid_open();
         EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, owner.protocol->open(nullptr, &request, &error));
         EXPECT_EQ(
@@ -177,7 +177,7 @@ TEST(StorageInputValidationTest, OpenRejectsMalformedViewsBeforePluginEntry) {
         auto request = valid_open();
         request.session_id = {};
         request.target_uri = {};
-        rodaq_error error{};
+        rodaq_status error{};
         EXPECT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &request, &error));
     }
 }
@@ -188,7 +188,7 @@ TEST(StorageInputValidationTest, SubmitRejectsMalformedViewsBeforePluginEntry) {
     {
         StorageInstance owner = create_instance(manager);
         const auto request = valid_open();
-        rodaq_error error{};
+        rodaq_status error{};
         ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &request, &error));
         auto output = make_output();
         const auto submission = valid_submission();
@@ -207,7 +207,7 @@ TEST(StorageInputValidationTest, SubmitRejectsMalformedViewsBeforePluginEntry) {
         StorageInstance owner = create_instance(manager);
         ASSERT_NE(nullptr, owner.instance);
         const auto open = valid_open();
-        rodaq_error error{};
+        rodaq_status error{};
         ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &open, &error));
         auto submission = valid_submission();
         mutate(submission);
@@ -215,7 +215,7 @@ TEST(StorageInputValidationTest, SubmitRejectsMalformedViewsBeforePluginEntry) {
         EXPECT_EQ(
             RODAQ_STATUS_INVALID_ARGUMENT,
             owner.protocol->submit(owner.instance, &submission, &output.value, &error));
-        EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, error.code);
+        EXPECT_EQ(RODAQ_STATUS_INVALID_ARGUMENT, error.status_code);
         EXPECT_NE(0U, error.message_size);
         expect_canary(output);
 
@@ -271,7 +271,7 @@ TEST(StorageInputValidationTest, SubmitAcceptsExplicitEmptyViews) {
     StorageInstance owner = create_instance(manager);
     ASSERT_NE(nullptr, owner.instance);
     const auto open = valid_open();
-    rodaq_error error{};
+    rodaq_status error{};
     ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &open, &error));
 
     auto submission = valid_submission();
@@ -291,7 +291,7 @@ TEST(StorageInputValidationTest, QueryAndReadinessValidateInputs) {
     PluginManager manager;
     StorageInstance owner = create_instance(manager);
     ASSERT_NE(nullptr, owner.instance);
-    rodaq_error error{};
+    rodaq_status error{};
     rodaq_interface interface {};
 
     EXPECT_EQ(
@@ -349,8 +349,8 @@ TEST(StorageInputValidationTest, RejectsMalformedSynchronousSubmitResults) {
     EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
 
     valid(&result);
-    result.persistence_error.code = RODAQ_STATUS_OK;
-    result.persistence_error.native_code = 1;
+    result.persistence_error.status_code = RODAQ_STATUS_OK;
+    result.persistence_error.error_code = 1;
     EXPECT_FALSE(rodaq::plugin::is_valid_storage_submit_result(result));
 
     valid(&result);
@@ -363,7 +363,7 @@ TEST(StorageInputValidationTest, RejectsMalformedSynchronousSubmitResults) {
 
     valid(&result);
     result.persistence_state = RODAQ_STORAGE_PERSISTENCE_UNKNOWN;
-    result.persistence_error.code = RODAQ_STATUS_STORAGE_ERROR;
+    result.persistence_error.status_code = RODAQ_STATUS_STORAGE_ERROR;
     result.persistence_error.message_size = 1;
     result.persistence_error.message[0] = 'x';
     EXPECT_TRUE(rodaq::plugin::is_valid_storage_submit_result(result));

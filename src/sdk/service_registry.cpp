@@ -18,29 +18,28 @@ Result<ServiceRegistryView> ServiceRegistryView::from_abi(const rodaq_service_re
         registry.vtable->protocol_version != RODAQ_SERVICE_REGISTRY_PROTOCOL_VERSION ||
         registry.vtable->struct_size < RODAQ_SERVICE_REGISTRY_VTABLE_MIN_STRUCT_SIZE ||
         registry.vtable->query == nullptr) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0,
-            "Service Registry ABI is incomplete or incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0,
+            "Service Registry ABI is incomplete or incompatible");
     }
     return ServiceRegistryView(registry);
 }
 Result<InterfaceView> ServiceRegistryView::query(std::string_view service_id) const {
     if (registry_.context == nullptr || registry_.vtable == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "ServiceRegistryView is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "ServiceRegistryView is invalid");
     }
     rodaq_interface interface {};
-    rodaq_error error{};
-    const rodaq_status status = registry_.vtable->query(
+    rodaq_status error{};
+    const rodaq_status_code status = registry_.vtable->query(
         registry_.context, rodaq_string_view{service_id.data(), service_id.size()}, &interface,
         &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
     if (interface.context == nullptr || interface.vtable == nullptr) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0,
-            "Service Registry returned an incomplete interface"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0,
+            "Service Registry returned an incomplete interface");
     }
     return InterfaceView(interface);
 }

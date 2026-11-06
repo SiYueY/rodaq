@@ -35,12 +35,11 @@ public:
             return static_cast<T*>(nullptr);
         }
         if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::InvalidArgument, "arena allocation size overflows"));
+            return rodaq::Status(StatusCode::InvalidArgument, "arena allocation size overflows");
         }
         const auto bytes = allocate_bytes(count * sizeof(T), alignof(T));
-        if (!bytes.has_value()) {
-            return nonstd::make_unexpected(bytes.error());
+        if (!bytes.ok()) {
+            return bytes.status();
         }
         return static_cast<T*>(bytes.value());
     }

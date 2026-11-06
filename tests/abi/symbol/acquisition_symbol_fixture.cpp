@@ -18,7 +18,7 @@ bool string_equals(rodaq_string_view value, const char* expected, uint64_t expec
     return true;
 }
 
-rodaq_status create_instance(void** out_instance, rodaq_error*) noexcept {
+rodaq_status_code create_instance(void** out_instance, rodaq_status*) noexcept {
     if (out_instance == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
@@ -28,38 +28,38 @@ rodaq_status create_instance(void** out_instance, rodaq_error*) noexcept {
 
 void destroy_instance(void*) noexcept {}
 
-rodaq_status bind_instance(void*, const rodaq_service_registry*, rodaq_error*) noexcept {
+rodaq_status_code bind_instance(void*, const rodaq_service_registry*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status configure_instance(void*, rodaq_config_view, rodaq_error*) noexcept {
+rodaq_status_code configure_instance(void*, rodaq_config_view, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status start_instance(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code start_instance(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
-rodaq_status stop_instance(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code stop_instance(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
-rodaq_status prepare_binding_switch(
+rodaq_status_code prepare_binding_switch(
     void*, rodaq_binding_transition, rodaq_stream_handle, rodaq_stream_descriptor_handle,
-    rodaq_stream_descriptor_handle, rodaq_error*) noexcept {
+    rodaq_stream_descriptor_handle, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status commit_binding_switch(void*, rodaq_binding_transition, rodaq_error*) noexcept {
+rodaq_status_code commit_binding_switch(void*, rodaq_binding_transition, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status abort_binding_switch(
-    void*, rodaq_binding_transition, rodaq_binding_abort_disposition, rodaq_error*) noexcept {
+rodaq_status_code abort_binding_switch(
+    void*, rodaq_binding_transition, rodaq_binding_abort_disposition, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status quiesce_stream(void*, rodaq_stream_handle, rodaq_error*) noexcept {
+rodaq_status_code quiesce_stream(void*, rodaq_stream_handle, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status quiesce_plugin(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code quiesce_plugin(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
 const rodaq_acquisition_control_v1 control = {
     RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION,
@@ -71,9 +71,9 @@ const rodaq_acquisition_control_v1 control = {
     quiesce_plugin,
 };
 
-rodaq_status query_interface(
+rodaq_status_code query_interface(
     void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-    rodaq_error*) noexcept {
+    rodaq_status*) noexcept {
     if (out_interface == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }

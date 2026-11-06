@@ -43,23 +43,23 @@ TEST(HandleTest, AllocatorIsMonotonicAndDetectsOverflow) {
     HandleAllocator<StreamHandle> allocator(std::numeric_limits<std::uint64_t>::max());
 
     const auto last = allocator.allocate();
-    ASSERT_TRUE(last.has_value());
+    ASSERT_TRUE(last.ok());
     EXPECT_EQ(last.value().value(), std::numeric_limits<std::uint64_t>::max());
 
     const auto exhausted = allocator.allocate();
-    ASSERT_FALSE(exhausted.has_value());
-    EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(exhausted.ok());
+    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
 }
 
 TEST(RegistryTest, InsertFindEraseAndCapacity) {
     auto registry_result = IntRegistry::create(2);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     auto first = registry.insert(10);
     auto second = registry.insert(20);
-    ASSERT_TRUE(first.has_value());
-    ASSERT_TRUE(second.has_value());
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
     ASSERT_NE(first.value(), second.value());
     EXPECT_EQ(registry.size(), 2U);
     EXPECT_EQ(registry.capacity(), 2U);
@@ -67,43 +67,43 @@ TEST(RegistryTest, InsertFindEraseAndCapacity) {
     EXPECT_EQ(*registry.find(first.value()), 10);
 
     const auto full = registry.insert(30);
-    ASSERT_FALSE(full.has_value());
-    EXPECT_EQ(full.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(full.ok());
+    EXPECT_EQ(full.status().status_code(), StatusCode::ResourceExhausted);
 
-    ASSERT_TRUE(registry.erase(first.value()).has_value());
+    ASSERT_TRUE(registry.erase(first.value()).ok());
     EXPECT_EQ(registry.find(first.value()), nullptr);
     EXPECT_EQ(registry.size(), 1U);
 }
 
 TEST(RegistryTest, EraseRejectsInvalidAndMissingHandles) {
     auto registry_result = IntRegistry::create(1);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     const auto invalid = registry.erase(StreamHandle{});
-    ASSERT_FALSE(invalid.has_value());
-    EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(invalid.ok());
+    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
 
     auto handle = registry.insert(1);
-    ASSERT_TRUE(handle.has_value());
-    ASSERT_TRUE(registry.erase(handle.value()).has_value());
+    ASSERT_TRUE(handle.ok());
+    ASSERT_TRUE(registry.erase(handle.value()).ok());
 
     const auto double_erase = registry.erase(handle.value());
-    ASSERT_FALSE(double_erase.has_value());
-    EXPECT_EQ(double_erase.error().code(), ErrorCode::NotFound);
+    ASSERT_FALSE(double_erase.ok());
+    EXPECT_EQ(double_erase.status().status_code(), StatusCode::NotFound);
 }
 
 TEST(RegistryTest, StaleHandleCannotResolveReusedSlot) {
     auto registry_result = IntRegistry::create(1);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     auto old_handle = registry.insert(1);
-    ASSERT_TRUE(old_handle.has_value());
-    ASSERT_TRUE(registry.erase(old_handle.value()).has_value());
+    ASSERT_TRUE(old_handle.ok());
+    ASSERT_TRUE(registry.erase(old_handle.value()).ok());
 
     auto new_handle = registry.insert(2);
-    ASSERT_TRUE(new_handle.has_value());
+    ASSERT_TRUE(new_handle.ok());
     EXPECT_NE(old_handle.value(), new_handle.value());
     EXPECT_EQ(registry.find(old_handle.value()), nullptr);
     ASSERT_NE(registry.find(new_handle.value()), nullptr);
@@ -113,7 +113,7 @@ TEST(RegistryTest, StaleHandleCannotResolveReusedSlot) {
 TEST(RegistryTest, InvalidAndForeignHandlesDoNotResolve) {
     using StringRegistry = Registry<std::string, BindingHandle>;
     auto registry_result = StringRegistry::create(1);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     EXPECT_EQ(registry.find(BindingHandle{}), nullptr);
@@ -123,13 +123,13 @@ TEST(RegistryTest, InvalidAndForeignHandlesDoNotResolve) {
 
 TEST(RegistryTest, SupportsNonPowerOfTwoCapacity) {
     auto registry_result = IntRegistry::create(3);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     std::vector<StreamHandle> handles;
     for (int value = 0; value < 3; ++value) {
         auto handle = registry.insert(value);
-        ASSERT_TRUE(handle.has_value());
+        ASSERT_TRUE(handle.ok());
         handles.push_back(handle.value());
     }
     for (int value = 0; value < 3; ++value) {
@@ -146,16 +146,16 @@ TEST(RegistryTest, DirectlyUsesRealRuntimeHandleTypes) {
     auto sources = Registry<int, SourceHandle>::create(1);
     auto streams = Registry<int, StreamHandle>::create(1);
     auto bindings = Registry<int, BindingHandle>::create(1);
-    ASSERT_TRUE(sources.has_value());
-    ASSERT_TRUE(streams.has_value());
-    ASSERT_TRUE(bindings.has_value());
+    ASSERT_TRUE(sources.ok());
+    ASSERT_TRUE(streams.ok());
+    ASSERT_TRUE(bindings.ok());
 
     const auto source = sources.value().insert(1);
     const auto stream = streams.value().insert(2);
     const auto binding = bindings.value().insert(3);
-    ASSERT_TRUE(source.has_value());
-    ASSERT_TRUE(stream.has_value());
-    ASSERT_TRUE(binding.has_value());
+    ASSERT_TRUE(source.ok());
+    ASSERT_TRUE(stream.ok());
+    ASSERT_TRUE(binding.ok());
     EXPECT_EQ(*sources.value().find(source.value()), 1);
     EXPECT_EQ(*streams.value().find(stream.value()), 2);
     EXPECT_EQ(*bindings.value().find(binding.value()), 3);
@@ -163,18 +163,18 @@ TEST(RegistryTest, DirectlyUsesRealRuntimeHandleTypes) {
 
 TEST(RegistryTest, GenerationExhaustionRetiresSlotWithoutWrapping) {
     auto registry_result = IntRegistry::create(1, std::numeric_limits<std::uint32_t>::max());
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     auto handle = registry.insert(1);
-    ASSERT_TRUE(handle.has_value());
+    ASSERT_TRUE(handle.ok());
     EXPECT_EQ(handle.value().value() >> 32U, std::numeric_limits<std::uint32_t>::max());
-    ASSERT_TRUE(registry.erase(handle.value()).has_value());
+    ASSERT_TRUE(registry.erase(handle.value()).ok());
     EXPECT_EQ(registry.size(), 0U);
 
     const auto retired = registry.insert(2);
-    ASSERT_FALSE(retired.has_value());
-    EXPECT_EQ(retired.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(retired.ok());
+    EXPECT_EQ(retired.status().status_code(), StatusCode::ResourceExhausted);
 }
 
 struct ThrowingValue {
@@ -231,24 +231,24 @@ std::atomic<bool> BlockingValue::released{false};
 TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
     using ThrowingRegistry = Registry<ThrowingValue, StreamHandle>;
     auto registry_result = ThrowingRegistry::create(1);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     ThrowingValue::failure = ThrowingValue::Failure::RuntimeError;
     const auto failed = registry.insert(ThrowingValue(1));
-    ASSERT_FALSE(failed.has_value());
-    EXPECT_EQ(failed.error().code(), ErrorCode::InternalError);
+    ASSERT_FALSE(failed.ok());
+    EXPECT_EQ(failed.status().status_code(), StatusCode::InternalError);
     EXPECT_EQ(registry.size(), 0U);
 
     ThrowingValue::failure = ThrowingValue::Failure::BadAlloc;
     const auto allocation_failed = registry.insert(ThrowingValue(2));
-    ASSERT_FALSE(allocation_failed.has_value());
-    EXPECT_EQ(allocation_failed.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(allocation_failed.ok());
+    EXPECT_EQ(allocation_failed.status().status_code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(registry.size(), 0U);
 
     ThrowingValue::failure = ThrowingValue::Failure::None;
     const auto valid = registry.insert(ThrowingValue(3));
-    ASSERT_TRUE(valid.has_value());
+    ASSERT_TRUE(valid.ok());
     ASSERT_NE(registry.find(valid.value()), nullptr);
     EXPECT_EQ(registry.find(valid.value())->value, 3);
 }
@@ -256,7 +256,7 @@ TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
 TEST(RegistryTest, UnpublishedSlotCannotBeObservedDuringConcurrentInsert) {
     using BlockingRegistry = Registry<BlockingValue, StreamHandle>;
     auto registry_result = BlockingRegistry::create(1);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     BlockingValue::armed.store(true, std::memory_order_release);
@@ -280,7 +280,7 @@ TEST(RegistryTest, UnpublishedSlotCannotBeObservedDuringConcurrentInsert) {
     BlockingValue::released.store(true, std::memory_order_release);
     writer.join();
     ASSERT_TRUE(inserted.has_value());
-    ASSERT_TRUE(inserted->has_value());
+    ASSERT_TRUE(inserted->ok());
     EXPECT_EQ(inserted->value(), unpublished);
     const auto* published = registry.find_stable(unpublished);
     ASSERT_NE(published, nullptr);
@@ -290,7 +290,7 @@ TEST(RegistryTest, UnpublishedSlotCannotBeObservedDuringConcurrentInsert) {
 TEST(RegistryTest, PublishedSlotsRemainVisibleDuringLaterConcurrentInsert) {
     constexpr std::size_t kCount = 64;
     auto registry_result = IntRegistry::create(kCount);
-    ASSERT_TRUE(registry_result.has_value());
+    ASSERT_TRUE(registry_result.ok());
     auto registry = std::move(registry_result.value());
 
     std::array<StreamHandle, kCount> handles{};
@@ -298,7 +298,7 @@ TEST(RegistryTest, PublishedSlotsRemainVisibleDuringLaterConcurrentInsert) {
     std::thread writer([&registry, &handles, &published] {
         for (std::size_t index = 0; index < kCount; ++index) {
             auto handle = registry.insert(static_cast<int>(index));
-            if (!handle.has_value()) {
+            if (!handle.ok()) {
                 published.store(kCount + 1U, std::memory_order_release);
                 return;
             }

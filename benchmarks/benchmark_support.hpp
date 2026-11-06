@@ -46,7 +46,7 @@ inline std::filesystem::path required_path(const char* environment_name) {
 
 inline ConfigTree config(std::vector<ConfigTree::MapEntry> entries) {
     auto result = ConfigTree::map(std::move(entries));
-    if (!result.has_value()) {
+    if (!result.ok()) {
         throw std::runtime_error("Failed to construct benchmark config");
     }
     return std::move(result.value());
@@ -150,13 +150,13 @@ inline RunResult execute(
     try {
         runtime::Runtime runtime(std::move(config));
         auto configured = runtime.configure();
-        if (!configured.has_value()) {
-            result.error = std::string(configured.error().message());
+        if (!configured.ok()) {
+            result.error = std::string(configured.status().message());
             return result;
         }
         auto started_result = runtime.start();
-        if (!started_result.has_value()) {
-            result.error = std::string(started_result.error().message());
+        if (!started_result.ok()) {
+            result.error = std::string(started_result.status().message());
             return result;
         }
         cpu_started = process_cpu_seconds();
@@ -166,7 +166,7 @@ inline RunResult execute(
         bool converged = false;
         while (Clock::now() < deadline) {
             auto stats = runtime.stats();
-            if (stats.has_value()) {
+            if (stats.ok()) {
                 if (stats->accepted_records == expected_records && stats->inflight_records == 0) {
                     converged = true;
                     break;
@@ -184,17 +184,16 @@ inline RunResult execute(
         const double cpu_at_end = process_cpu_seconds();
         auto stopped = runtime.stop();
         auto stats = runtime.stats();
-        if (stats.has_value()) {
+        if (stats.ok()) {
             result.stats = std::move(stats.value());
             result.passed =
-                converged && stopped.has_value() &&
-                result.stats.accepted_records == expected_records &&
+                converged && stopped.ok() && result.stats.accepted_records == expected_records &&
                 result.stats.inflight_records == 0 && result.stats.timed_out_records == 0 &&
                 result.stats.rejected_records == 0 && result.stats.gate_closed_records == 0;
-        } else if (stopped.has_value() && converged) {
+        } else if (stopped.ok() && converged) {
             result.error = "Runtime statistics are unavailable";
-        } else if (!stopped.has_value() && result.error.empty()) {
-            result.error = std::string(stopped.error().message());
+        } else if (!stopped.ok() && result.error.empty()) {
+            result.error = std::string(stopped.status().message());
         }
         if (started != Clock::time_point{}) {
             result.elapsed_seconds =

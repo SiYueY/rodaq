@@ -191,11 +191,11 @@ public:
     bool wait_for_submissions(std::chrono::steady_clock::time_point deadline);
 
     void set_failure_signal(std::shared_ptr<FailureSignal> signal) noexcept;
-    void request_failure(Error error) noexcept;
-    void record_secondary_failure(Error error) noexcept;
+    void request_failure(Status error) noexcept;
+    void record_secondary_failure(Status error) noexcept;
     bool has_primary_failure() const noexcept;
-    Result<Error> primary_failure() const;
-    Result<std::vector<Error>> secondary_failures() const;
+    Status primary_failure() const;
+    Result<std::vector<Status>> secondary_failures() const;
     std::uint64_t secondary_failure_overflow_count() const noexcept;
     RuntimeStatsSnapshot stats() const noexcept;
     Result<PayloadPoolStats> payload_pool_statistics() const;
@@ -241,7 +241,7 @@ public:
         std::size_t plugin_index, StreamHandle stream, rodaq_availability_state state);
     Result<void> report_plugin_state(
         std::size_t plugin_index, rodaq_acquisition_plugin_state state,
-        const rodaq_error* diagnostic);
+        const rodaq_status* diagnostic);
 
     Result<void> get_source(SourceHandle handle, rodaq_source_view& view) const;
     Result<void> get_clock(ClockHandle handle, rodaq_clock_view& view) const;
@@ -347,7 +347,7 @@ private:
     bool descriptor_worker_started_ = false;
     bool descriptor_worker_busy_ = false;
     bool descriptor_worker_closing_ = false;
-    std::optional<Error> descriptor_worker_failure_;
+    Status descriptor_worker_failure_;
     std::thread descriptor_worker_;
 
     std::atomic<RuntimeState> state_{RuntimeState::Constructed};
@@ -362,8 +362,8 @@ private:
     std::atomic<bool> control_quarantine_required_{false};
 
     mutable std::mutex failure_mutex_;
-    std::optional<Error> primary_failure_;
-    std::vector<Error> secondary_failures_;
+    Status primary_failure_;
+    std::vector<Status> secondary_failures_;
     std::uint64_t secondary_overflow_count_ = 0;
     RuntimeStats stats_;
     std::unique_ptr<LatencyHistogram> admission_wait_latency_;

@@ -255,10 +255,11 @@ hdr_histogram*
 mi_heap_t
 ```
 
-D-025 明确冻结了一个例外：`rodaq::Result<T>` 直接 alias
-`nonstd::expected<T, Error>`。expected-lite 因此是 Public C++ source-level header
-dependency，但 RoDAQ-owned API 的 contract 仍是 `rodaq::Result<T>`；expected-lite
-不得进入 Stable C Plugin ABI。
+RoDAQ C++ 操作返回类型统一为 `Result<T>`（无值时为 `Result<void>`）。
+`Status` 表示状态码和诊断，作为 Result 的失败分支及诊断查询返回值；
+`Result<T>` 是维护值 / 失败状态约束的 RoDAQ 封装类。expected-lite 0.10.0 仅作为
+`Result<T>` 的私有存储机制及固定的编译依赖；第三方类型不进入公开函数签名或 C ABI。
+这项决策取代 D-025 原有的直接 alias 约定。
 
 
 ## 1.3 Canonical Model：系统语义中心
@@ -868,7 +869,7 @@ rodaq/
 │
 ├── include/
 │   └── rodaq/
-│       ├── error.hpp
+│       ├── status.hpp
 │       ├── result.hpp
 │       ├── types.hpp
 │       │
@@ -2209,7 +2210,7 @@ Queue 满时临时猜一个行为
 Reject 属于正常 Admission domain result，不是函数级 ABI failure：
 
 ```text
-rodaq_status == OK
+rodaq_status_code == OK
 AdmissionOutcome == PRE_REJECTED
 RejectionReason == RESOURCE_UNAVAILABLE
 ```
@@ -3260,7 +3261,7 @@ ABI-APPENDABLE
 ```text
 rodaq_string_view
 rodaq_bytes_view
-rodaq_error
+rodaq_status
 basic handles / tokens
 ```
 
@@ -3396,7 +3397,7 @@ PayloadDisposition
 其中：
 
 ```text
-rodaq_status
+rodaq_status_code
     表达 ABI/API call 本身是否可靠完成
 
 AdmissionOutcome
@@ -3472,13 +3473,13 @@ PERSISTENCE_UNKNOWN
 
 ```text
 payload_consumed()
-persistence_completed(..., const rodaq_error* error)
+persistence_completed(..., const rodaq_status* error)
 ```
 
 `persistence_completed()` 的 `error` 是 callback-duration borrowed、
 self-contained diagnostic：成功时必须为 `NULL`，`FAILED/UNKNOWN` 时必须
 非空且 code 非 OK。Storage systemic failure 的 `report_failure()` 同样携带
-完整 `rodaq_error` diagnostic。
+完整 `rodaq_status` diagnostic。
 
 V1 禁止 same-stack synchronous reentrant callback，但允许真正的 cross-thread completion 与 `submit()` return 发生竞态。Runtime 必须在调用 `submit()` 前建立 operation tracking，并在 return 后 reconcile synchronous result 与可能已经到达的 completion event。
 
@@ -4097,7 +4098,7 @@ HdrHistogram
 | Registry / Handles | iceoryx FixedPositionContainer | LLVM | Canonical Handle model |
 | Backpressure | Aeron | gRPC | Accepted semantics |
 | Lifecycle / Quiescence | eCAL | rosbag2 | Runtime + Plugin convergence |
-| Result/Error | LLVM Expected/Error | expected-lite | RoDAQ error taxonomy |
+| Status/Result | LLVM Expected/Error | expected-lite | RoDAQ error taxonomy |
 | Plugin ABI / SDK | PlotJuggler SDK | LLVM Plugin、gz-plugin、class_loader | family protocol、services、extensions、DSO lifetime |
 | FastDDS Acquisition | eProsima DDS-Pipe | eProsima DDS Record & Replay | ROS2 wire mapping、Canonical mapping、projection、lifecycle/bounds |
 | MCAP interoperability | rosbag2_storage_mcap | PlotJuggler MCAP loader、Foxglove/mcap | strict ROS2 profile + RoDAQ sidecar + qualification |
@@ -4245,7 +4246,7 @@ PassPlugin
 分别作为：
 
 ```text
-Result/Error
+Status/Result
 Arena
 Plugin ABI
 ```
@@ -4610,11 +4611,15 @@ V1 冻结的 Public C++ contract 是：
 rodaq::Result<T>
 ```
 
-C++ implementation 和 alias target 直接使用：
+C++ implementation 私有复用：
 
 ```text
-nonstd::expected<T, Error>
+nonstd::expected<T, Status>
 ```
+
+公开 `Result<T>` 不提供可变失败分支或底层 expected 的访问。
+`Status` 表达状态码和诊断。无返回值操作返回 `Result<void>`，底层为
+`expected<void, Status>`，默认构造成功；从 OK Status 构造失败时产生 UnknownError。
 
 expected-lite 是显式 Public C++ header dependency，但：
 
@@ -4691,8 +4696,8 @@ hdr_histogram*
 mi_heap_t
 ```
 
-Public C++ API 默认同样禁止这些类型。D-025 冻结的唯一例外是
-`rodaq::Result<T>` 直接 alias `nonstd::expected<T, Error>`。
+Public C++ API 的函数签名同样禁止这些类型。`rodaq::Result<T>` 是 RoDAQ 自有
+封装，不再是第三方类型的别名；实现头文件仍依赖固定版本 expected-lite。
 
 如果新增任何第三方类型进入：
 
@@ -4940,9 +4945,9 @@ RoDAQ Result
 expected-lite
 ```
 
-`rodaq::Result<T>` 直接 alias `nonstd::expected<T, Error>`。RoDAQ-owned API
-signatures 使用 `rodaq::Result<T>`，并且 expected-lite 不得进入 Stable C Plugin
-ABI。
+`rodaq::Result<T>` 是 RoDAQ 封装类，私有使用 `nonstd::expected<T, Status>`。
+RoDAQ-owned API signatures 使用 `Status` 和 `Result<T>`，expected-lite 类型
+不进入 C ABI。失败 Result 不能携带 OK；错误构造归一化为 UnknownError。
 
 V1 固定使用 nonstd implementation。未来迁移到：
 
@@ -5560,10 +5565,10 @@ submodule 不能算作 build、runtime usage 或 qualification 完成。
 Git submodule pinned by commit
 no build-time network fetching
 no third-party types in Stable ABI
-no third-party types in Public C++ API except the D-025 Result alias
+no third-party types in Public C++ API signatures; Result has private expected-lite storage
 ```
 
-Result / Error：
+Status / Result：
 
 ```text
 finalize rodaq::Result<T>
@@ -5639,7 +5644,7 @@ buildable project skeleton
 
 pinned third_party dependencies
 
-rodaq::Result / Error
+rodaq::Status / Result
 
 complete V1 ABI headers
 
@@ -5903,7 +5908,7 @@ M0 == PASS
 
 Plugin ABI headers frozen for implementation
 
-Result / Error available
+Status / Result available
 
 build/test/sanitizer infrastructure available
 ```
@@ -6652,7 +6657,7 @@ Stop while callbacks active
 
 ```text
 Accepted Copy:
-    rodaq_status == OK
+    rodaq_status_code == OK
     outcome == ACCEPTED
     rejection_reason == NONE
     payload_disposition == NOT_APPLICABLE

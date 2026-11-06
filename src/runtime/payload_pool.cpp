@@ -111,15 +111,15 @@ Result<PayloadPoolReservation> PayloadPoolState::try_reserve(std::size_t bytes) 
     std::lock_guard<std::mutex> lock(mutex_);
     const std::size_t class_index = select_class_locked(bytes);
     if (class_index >= classes_.size()) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::ResourceExhausted, "payload exceeds all configured Payload size classes"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "payload exceeds all configured Payload size classes");
     }
 
     ClassState& size_class = *classes_[class_index];
     if (size_class.free_blocks.empty()) {
         size_class.exhaustion_count.fetch_add(1, std::memory_order_relaxed);
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "payload size class has no available blocks"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "payload size class has no available blocks");
     }
 
     const std::size_t block_index = size_class.free_blocks.back();
@@ -244,13 +244,13 @@ Result<PayloadPool> PayloadPool::create(const PayloadPoolConfig& config) {
     try {
         return PayloadPool(std::make_shared<PayloadPoolState>(config));
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "failed to allocate payload pool storage"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "failed to allocate payload pool storage");
     } catch (const std::length_error&) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "payload pool size exceeds container limits"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "payload pool size exceeds container limits");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(Error(ErrorCode::InvalidArgument, error.what()));
+        return rodaq::Status(StatusCode::InvalidArgument, error.what());
     }
 }
 
@@ -269,33 +269,31 @@ Result<Payload> PayloadPool::materialize(PayloadPoolReservation&& reservation, P
         if (source.size() == 0 && source.valid()) {
             return Payload();
         }
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "payload reservation is not active"));
+        return rodaq::Status(StatusCode::InvalidArgument, "payload reservation is not active");
     }
     if (!source.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "payload source view is invalid"));
+        return rodaq::Status(StatusCode::InvalidArgument, "payload source view is invalid");
     }
     const std::size_t expected = reservation.payload_size_;
     if (source.size() != expected) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "payload source size does not match reservation"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "payload source size does not match reservation");
     }
     return state_->materialize(std::move(reservation), source);
 }
 
 Result<Payload> PayloadPool::acquire(std::size_t bytes, PayloadView source) {
     if (source.size() != bytes) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "payload source size does not match the requested size"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "payload source size does not match the requested size");
     }
     if (!source.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "payload source view is structurally invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "payload source view is structurally invalid");
     }
     auto reserved = try_reserve(bytes);
-    if (!reserved.has_value()) {
-        return nonstd::make_unexpected(std::move(reserved.error()));
+    if (!reserved.ok()) {
+        return std::move(reserved).status();
     }
     if (bytes == 0) {
         return Payload();

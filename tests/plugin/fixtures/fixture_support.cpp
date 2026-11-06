@@ -61,69 +61,70 @@ struct FixtureInstanceState {
 
 FixtureInstanceState instance_storage;
 
-rodaq_status fail(rodaq_status status, const char* message, rodaq_error* out_error) noexcept {
-    if (out_error != nullptr) {
-        *out_error = {};
-        out_error->code = status;
+rodaq_status_code fail(
+    rodaq_status_code status, const char* message, rodaq_status* out_status) noexcept {
+    if (out_status != nullptr) {
+        *out_status = {};
+        out_status->status_code = status;
         const std::string_view domain("fixture");
         const std::string_view text(message);
-        out_error->domain_size = static_cast<std::uint32_t>(domain.size());
-        out_error->message_size = static_cast<std::uint32_t>(text.size());
-        std::memcpy(out_error->domain, domain.data(), domain.size());
-        std::memcpy(out_error->message, text.data(), text.size());
+        out_status->domain_size = static_cast<std::uint32_t>(domain.size());
+        out_status->message_size = static_cast<std::uint32_t>(text.size());
+        std::memcpy(out_status->domain, domain.data(), domain.size());
+        std::memcpy(out_status->message, text.data(), text.size());
     }
     return status;
 }
 
-rodaq_status query_service(
+rodaq_status_code query_service(
     const rodaq_service_registry* services, const char* service_id, rodaq_interface* out_service,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (services == nullptr || services->context == nullptr || services->vtable == nullptr ||
         services->vtable->query == nullptr) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "invalid Service Registry", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "invalid Service Registry", out_status);
     }
     return services->vtable->query(
         services->context,
         rodaq_string_view{service_id, static_cast<std::uint64_t>(std::strlen(service_id))},
-        out_service, out_error);
+        out_service, out_status);
 }
 
 template <typename Table>
-rodaq_status validate_table(
+rodaq_status_code validate_table(
     const rodaq_interface& service, std::uint32_t protocol_version, std::uint32_t minimum_size,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const Table*>(service.vtable);
     if (service.context == nullptr || table == nullptr ||
         table->protocol_version != protocol_version || table->struct_size < minimum_size) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "required Runtime service ABI is invalid", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "required Runtime service ABI is invalid", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_common_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_common_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_common_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_common_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_common_v1>(
         service, RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION, RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE,
-        out_error);
+        out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->log == nullptr || table->monotonic_time_ns == nullptr ||
         table->get_lifecycle_snapshot == nullptr || table->report_diagnostic == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "common Runtime service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "common Runtime service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_canonical_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_canonical_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_canonical_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_canonical_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_canonical_v1>(
         service, RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE, out_error);
+        RODAQ_RUNTIME_CANONICAL_V1_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
@@ -131,33 +132,33 @@ rodaq_status validate_canonical_service(
         table->get_schema == nullptr || table->get_timestamp_key_set == nullptr ||
         table->get_stream == nullptr || table->get_stream_descriptor == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "canonical Runtime service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "canonical Runtime service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_projection_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_projection_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_projection_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_projection_v1>(
         service, RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE, out_error);
+        RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->register_projection == nullptr || table->get_projection == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "projection Runtime service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "projection Runtime service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_acquisition_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_acquisition_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_acquisition_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_acquisition_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_acquisition_v1>(
         service, RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE, out_error);
+        RODAQ_RUNTIME_ACQUISITION_V1_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
@@ -168,62 +169,63 @@ rodaq_status validate_acquisition_service(
         table->report_stream_availability == nullptr || table->report_plugin_state == nullptr ||
         table->submit == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "Acquisition Runtime service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "Acquisition Runtime service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_storage_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_storage_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_storage_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_storage_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_storage_v1>(
         service, RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION, RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE,
-        out_error);
+        out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->payload_consumed == nullptr || table->persistence_completed == nullptr ||
         table->report_failure == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "Storage Runtime service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "Storage Runtime service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_clock_service(
-    const rodaq_interface& service, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_clock_service(
+    const rodaq_interface& service, rodaq_status* out_status) noexcept {
     const auto* table = static_cast<const rodaq_runtime_clock_correlation_v1*>(service.vtable);
-    rodaq_status status = validate_table<rodaq_runtime_clock_correlation_v1>(
+    rodaq_status_code status = validate_table<rodaq_runtime_clock_correlation_v1>(
         service, RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION,
-        RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE, out_error);
+        RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (table->get_unix_epoch_anchor == nullptr) {
         return fail(
-            RODAQ_STATUS_INVALID_ARGUMENT, "clock-correlation service slot is null", out_error);
+            RODAQ_STATUS_INVALID_ARGUMENT, "clock-correlation service slot is null", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status require_service(
+rodaq_status_code require_service(
     const rodaq_service_registry* services, const char* service_id, rodaq_interface* out_service,
-    rodaq_error* out_error) noexcept {
-    rodaq_status status = query_service(services, service_id, out_service, out_error);
+    rodaq_status* out_status) noexcept {
+    rodaq_status_code status = query_service(services, service_id, out_service, out_status);
     if (status != RODAQ_STATUS_OK) {
         return status;
     }
     if (out_service->context == nullptr || out_service->vtable == nullptr) {
-        return fail(RODAQ_STATUS_UNAVAILABLE, "required Runtime service is unavailable", out_error);
+        return fail(
+            RODAQ_STATUS_UNAVAILABLE, "required Runtime service is unavailable", out_status);
     }
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status validate_fixture_config(
-    rodaq_config_view config, FixtureInstanceState* instance, rodaq_error* out_error) noexcept {
+rodaq_status_code validate_fixture_config(
+    rodaq_config_view config, FixtureInstanceState* instance, rodaq_status* out_status) noexcept {
     if (config.context == nullptr || config.vtable == nullptr ||
         config.vtable->kind(config.context) != RODAQ_CONFIG_MAP) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture config must be a MAP", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture config must be a MAP", out_status);
     }
 
     const auto find = [&config](const char* key, rodaq_config_view* out) noexcept {
@@ -234,12 +236,12 @@ rodaq_status validate_fixture_config(
 
     rodaq_config_view enabled{};
     if (find("enabled", &enabled) != RODAQ_STATUS_OK) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture config is missing enabled", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture config is missing enabled", out_status);
     }
     rodaq_bool enabled_value = RODAQ_FALSE;
     if (enabled.vtable->as_bool(enabled.context, &enabled_value, nullptr) != RODAQ_STATUS_OK ||
         enabled_value != RODAQ_TRUE) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture enabled is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture enabled is invalid", out_status);
     }
 
     rodaq_config_view limit{};
@@ -247,7 +249,7 @@ rodaq_status validate_fixture_config(
     if (find("limit", &limit) != RODAQ_STATUS_OK ||
         limit.vtable->as_int64(limit.context, &limit_value, nullptr) != RODAQ_STATUS_OK ||
         limit_value != 7) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture limit is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture limit is invalid", out_status);
     }
 
     rodaq_config_view gain{};
@@ -255,7 +257,7 @@ rodaq_status validate_fixture_config(
     if (find("gain", &gain) != RODAQ_STATUS_OK ||
         gain.vtable->as_double(gain.context, &gain_value, nullptr) != RODAQ_STATUS_OK ||
         gain_value != 0.25) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture gain is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture gain is invalid", out_status);
     }
 
     rodaq_config_view mode{};
@@ -264,7 +266,7 @@ rodaq_status validate_fixture_config(
         mode.vtable->as_string(mode.context, &mode_value, nullptr) != RODAQ_STATUS_OK ||
         mode_value.size >= sizeof(instance->mode) ||
         std::string_view(mode_value.data, mode_value.size) != "fixture") {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture mode is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture mode is invalid", out_status);
     }
     std::memcpy(instance->mode, mode_value.data, mode_value.size);
     instance->mode[mode_value.size] = '\0';
@@ -279,7 +281,7 @@ rodaq_status validate_fixture_config(
         nested_name.vtable->as_string(nested_name.context, &nested_name_value, nullptr) !=
             RODAQ_STATUS_OK ||
         std::string_view(nested_name_value.data, nested_name_value.size) != "node") {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture nested config is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture nested config is invalid", out_status);
     }
 
     rodaq_config_view items{};
@@ -291,7 +293,7 @@ rodaq_status validate_fixture_config(
         items.vtable->at(items.context, 2, &third, nullptr) != RODAQ_STATUS_OK ||
         third.vtable->as_string(third.context, &third_value, nullptr) != RODAQ_STATUS_OK ||
         std::string_view(third_value.data, third_value.size) != "three") {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture list config is invalid", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "fixture list config is invalid", out_status);
     }
 
     instance->limit = limit_value;
@@ -307,26 +309,26 @@ bool string_equals(
     return std::char_traits<char>::compare(value.data, expected, expected_size) == 0;
 }
 
-rodaq_status prepare_binding_switch(
+rodaq_status_code prepare_binding_switch(
     void*, rodaq_binding_transition, rodaq_stream_handle, rodaq_stream_descriptor_handle,
-    rodaq_stream_descriptor_handle, rodaq_error*) noexcept {
+    rodaq_stream_descriptor_handle, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status commit_binding_switch(void*, rodaq_binding_transition, rodaq_error*) noexcept {
+rodaq_status_code commit_binding_switch(void*, rodaq_binding_transition, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status abort_binding_switch(
-    void*, rodaq_binding_transition, rodaq_binding_abort_disposition, rodaq_error*) noexcept {
+rodaq_status_code abort_binding_switch(
+    void*, rodaq_binding_transition, rodaq_binding_abort_disposition, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status quiesce_stream(void*, rodaq_stream_handle, rodaq_error*) noexcept {
+rodaq_status_code quiesce_stream(void*, rodaq_stream_handle, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-[[maybe_unused]] rodaq_status quiesce_plugin(void*, rodaq_error*) noexcept {
+[[maybe_unused]] rodaq_status_code quiesce_plugin(void*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
@@ -353,8 +355,8 @@ const ExtendedAcquisitionControl acquisition_control = {
     0,
 };
 
-rodaq_status get_capabilities(
-    void*, rodaq_storage_capabilities* out_capabilities, rodaq_error*) noexcept {
+rodaq_status_code get_capabilities(
+    void*, rodaq_storage_capabilities* out_capabilities, rodaq_status*) noexcept {
     if (out_capabilities == nullptr ||
         out_capabilities->struct_size < RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
@@ -375,9 +377,9 @@ rodaq_status get_capabilities(
     return RODAQ_STATUS_OK;
 }
 
-[[maybe_unused]] rodaq_status ensure_descriptor_ready(
+[[maybe_unused]] rodaq_status_code ensure_descriptor_ready(
     void*, rodaq_stream_descriptor_handle descriptor, rodaq_descriptor_readiness_result* out_result,
-    rodaq_error*) noexcept {
+    rodaq_status*) noexcept {
     if (out_result == nullptr ||
         out_result->struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
@@ -422,7 +424,7 @@ void fixture_record_event(const char* event) noexcept {
     static_cast<void>(close(descriptor));
 }
 
-rodaq_status fixture_create(void** out_instance, rodaq_error*) noexcept {
+rodaq_status_code fixture_create(void** out_instance, rodaq_status*) noexcept {
     fixture_record_event("create");
     instance_storage = {};
     *out_instance = &instance_storage;
@@ -431,61 +433,62 @@ rodaq_status fixture_create(void** out_instance, rodaq_error*) noexcept {
 
 void fixture_destroy(void*) noexcept { fixture_record_event("destroy"); }
 
-rodaq_status fixture_create_failure(void** out_instance, rodaq_error* out_error) noexcept {
+rodaq_status_code fixture_create_failure(void** out_instance, rodaq_status* out_status) noexcept {
     fixture_record_event("create-failure");
     *out_instance = nullptr;
-    if (out_error != nullptr) {
-        *out_error = {};
-        out_error->code = RODAQ_STATUS_UNAVAILABLE;
-        out_error->native_code = 77;
+    if (out_status != nullptr) {
+        *out_status = {};
+        out_status->status_code = RODAQ_STATUS_UNAVAILABLE;
+        out_status->error_code = 77;
         const char domain[] = "fixture";
         const char message[] = "fixture create failure";
-        out_error->domain_size = sizeof(domain) - 1;
-        out_error->message_size = sizeof(message) - 1;
-        std::memcpy(out_error->domain, domain, sizeof(domain) - 1);
-        std::memcpy(out_error->message, message, sizeof(message) - 1);
+        out_status->domain_size = sizeof(domain) - 1;
+        out_status->message_size = sizeof(message) - 1;
+        std::memcpy(out_status->domain, domain, sizeof(domain) - 1);
+        std::memcpy(out_status->message, message, sizeof(message) - 1);
     }
     return RODAQ_STATUS_UNAVAILABLE;
 }
 
-rodaq_status fixture_create_null(void** out_instance, rodaq_error*) noexcept {
+rodaq_status_code fixture_create_null(void** out_instance, rodaq_status*) noexcept {
     fixture_record_event("create-null");
     *out_instance = nullptr;
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_acquisition_bind(
-    void* instance, const rodaq_service_registry* services, rodaq_error* out_error) noexcept {
+rodaq_status_code fixture_acquisition_bind(
+    void* instance, const rodaq_service_registry* services, rodaq_status* out_status) noexcept {
     fixture_record_event("bind");
     rodaq_interface service{};
-    rodaq_status status =
-        require_service(services, RODAQ_RUNTIME_COMMON_SERVICE_ID, &service, out_error);
+    rodaq_status_code status =
+        require_service(services, RODAQ_RUNTIME_COMMON_SERVICE_ID, &service, out_status);
     if (status == RODAQ_STATUS_OK) {
-        status = validate_common_service(service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status = require_service(services, RODAQ_RUNTIME_CANONICAL_SERVICE_ID, &service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status = validate_canonical_service(service, out_error);
+        status = validate_common_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         status =
-            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_error);
+            require_service(services, RODAQ_RUNTIME_CANONICAL_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        status = validate_projection_service(service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status =
-            require_service(services, RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, &service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status = validate_acquisition_service(service, out_error);
+        status = validate_canonical_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         status =
-            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_error);
+            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status = validate_projection_service(service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status =
+            require_service(services, RODAQ_RUNTIME_ACQUISITION_SERVICE_ID, &service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status = validate_acquisition_service(service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status =
+            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
@@ -497,7 +500,7 @@ rodaq_status fixture_acquisition_bind(
         registration.projection_id = rodaq_string_view{projection_id, sizeof(projection_id) - 1};
         registration.payload =
             rodaq_bytes_view{reinterpret_cast<const std::uint8_t*>(payload), sizeof(payload)};
-        status = projection->register_projection(service.context, &registration, out_error);
+        status = projection->register_projection(service.context, &registration, out_status);
     }
     if (status != RODAQ_STATUS_OK) {
         fixture_record_event("bind-failure");
@@ -507,42 +510,47 @@ rodaq_status fixture_acquisition_bind(
     return status;
 }
 
-rodaq_status fixture_acquisition_configure(
-    void* instance, rodaq_config_view config, rodaq_error* out_error) noexcept {
+rodaq_status_code fixture_acquisition_configure(
+    void* instance, rodaq_config_view config, rodaq_status* out_status) noexcept {
     fixture_record_event("configure");
-    rodaq_status status =
-        validate_fixture_config(config, static_cast<FixtureInstanceState*>(instance), out_error);
+    rodaq_status_code status =
+        validate_fixture_config(config, static_cast<FixtureInstanceState*>(instance), out_status);
     if (status != RODAQ_STATUS_OK) {
         fixture_record_event("configure-failure");
     }
     return status;
 }
 
-rodaq_status fixture_acquisition_start(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code fixture_acquisition_start(void*, rodaq_status*) noexcept {
+    return RODAQ_STATUS_OK;
+}
 
-rodaq_status fixture_acquisition_stop(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code fixture_acquisition_stop(void*, rodaq_status*) noexcept {
+    return RODAQ_STATUS_OK;
+}
 
-rodaq_status fixture_storage_bind(
-    void* instance, const rodaq_service_registry* services, rodaq_error* out_error) noexcept {
+rodaq_status_code fixture_storage_bind(
+    void* instance, const rodaq_service_registry* services, rodaq_status* out_status) noexcept {
     fixture_record_event("bind");
     rodaq_interface service{};
-    rodaq_status status =
-        require_service(services, RODAQ_RUNTIME_COMMON_SERVICE_ID, &service, out_error);
+    rodaq_status_code status =
+        require_service(services, RODAQ_RUNTIME_COMMON_SERVICE_ID, &service, out_status);
     if (status == RODAQ_STATUS_OK) {
-        status = validate_common_service(service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status = require_service(services, RODAQ_RUNTIME_CANONICAL_SERVICE_ID, &service, out_error);
-    }
-    if (status == RODAQ_STATUS_OK) {
-        status = validate_canonical_service(service, out_error);
+        status = validate_common_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         status =
-            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_error);
+            require_service(services, RODAQ_RUNTIME_CANONICAL_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        status = validate_projection_service(service, out_error);
+        status = validate_canonical_service(service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status =
+            require_service(services, RODAQ_RUNTIME_PROJECTION_SERVICE_ID, &service, out_status);
+    }
+    if (status == RODAQ_STATUS_OK) {
+        status = validate_projection_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(service.vtable);
@@ -551,20 +559,20 @@ rodaq_status fixture_storage_bind(
         const char id[] = "rodaq.test.projection.v1";
         status = projection->get_projection(
             service.context, rodaq_stream_descriptor_handle{42},
-            rodaq_string_view{id, sizeof(id) - 1}, &projection_view, out_error);
+            rodaq_string_view{id, sizeof(id) - 1}, &projection_view, out_status);
         if (status == RODAQ_STATUS_OK &&
             (projection_view.payload.size != 7U ||
              std::memcmp(projection_view.payload.data, "fixture", 7) != 0)) {
             status =
-                fail(RODAQ_STATUS_INVALID_ARGUMENT, "projection fixture bytes differ", out_error);
+                fail(RODAQ_STATUS_INVALID_ARGUMENT, "projection fixture bytes differ", out_status);
         }
     }
     if (status == RODAQ_STATUS_OK) {
         status = require_service(
-            services, RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, &service, out_error);
+            services, RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        status = validate_clock_service(service, out_error);
+        status = validate_clock_service(service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
         const auto* clock_service =
@@ -572,16 +580,17 @@ rodaq_status fixture_storage_bind(
         rodaq_unix_epoch_clock_anchor anchor{};
         anchor.struct_size = RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE;
         status = clock_service->get_unix_epoch_anchor(
-            service.context, rodaq_clock_handle{11}, &anchor, out_error);
+            service.context, rodaq_clock_handle{11}, &anchor, out_status);
         if (status == RODAQ_STATUS_OK && anchor.unix_anchor_ns != 1'000U) {
-            status = fail(RODAQ_STATUS_INVALID_ARGUMENT, "clock fixture anchor differs", out_error);
+            status =
+                fail(RODAQ_STATUS_INVALID_ARGUMENT, "clock fixture anchor differs", out_status);
         }
     }
     if (status == RODAQ_STATUS_OK) {
-        status = require_service(services, RODAQ_RUNTIME_STORAGE_SERVICE_ID, &service, out_error);
+        status = require_service(services, RODAQ_RUNTIME_STORAGE_SERVICE_ID, &service, out_status);
     }
     if (status == RODAQ_STATUS_OK) {
-        status = validate_storage_service(service, out_error);
+        status = validate_storage_service(service, out_status);
     }
     if (status != RODAQ_STATUS_OK) {
         fixture_record_event("bind-failure");
@@ -591,44 +600,45 @@ rodaq_status fixture_storage_bind(
     return status;
 }
 
-rodaq_status fixture_storage_configure(
-    void* instance, rodaq_config_view config, rodaq_error* out_error) noexcept {
+rodaq_status_code fixture_storage_configure(
+    void* instance, rodaq_config_view config, rodaq_status* out_status) noexcept {
     fixture_record_event("configure");
-    rodaq_status status =
-        validate_fixture_config(config, static_cast<FixtureInstanceState*>(instance), out_error);
+    rodaq_status_code status =
+        validate_fixture_config(config, static_cast<FixtureInstanceState*>(instance), out_status);
     if (status != RODAQ_STATUS_OK) {
         fixture_record_event("configure-failure");
     }
     return status;
 }
 
-rodaq_status fixture_storage_open(void*, const rodaq_storage_open_request*, rodaq_error*) noexcept {
+rodaq_status_code fixture_storage_open(
+    void*, const rodaq_storage_open_request*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_storage_submit(
-    void*, const rodaq_storage_submission*, rodaq_storage_submit_result*, rodaq_error*) noexcept {
+rodaq_status_code fixture_storage_submit(
+    void*, const rodaq_storage_submission*, rodaq_storage_submit_result*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_storage_flush(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code fixture_storage_flush(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
-rodaq_status fixture_storage_close(
-    void*, const rodaq_storage_close_request*, rodaq_error*) noexcept {
+rodaq_status_code fixture_storage_close(
+    void*, const rodaq_storage_close_request*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_acquisition_query_interface(
+rodaq_status_code fixture_acquisition_query_interface(
     void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     static_cast<void>(instance);
     if (out_interface == nullptr) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_status);
     }
     *out_interface = {};
     const char expected[] = RODAQ_ACQUISITION_CONTROL_INTERFACE_ID;
     if (!string_equals(interface_id, expected, sizeof(expected) - 1)) {
-        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_error);
+        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_status);
     }
     out_interface->context =
 #if RODAQ_FIXTURE_CONTROL_NULL_CONTEXT
@@ -640,16 +650,16 @@ rodaq_status fixture_acquisition_query_interface(
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status fixture_storage_query_interface(
+rodaq_status_code fixture_storage_query_interface(
     void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (out_interface == nullptr) {
-        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_error);
+        return fail(RODAQ_STATUS_INVALID_ARGUMENT, "interface output is null", out_status);
     }
     *out_interface = {};
     const char expected[] = RODAQ_STORAGE_CONTROL_INTERFACE_ID;
     if (!string_equals(interface_id, expected, sizeof(expected) - 1)) {
-        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_error);
+        return fail(RODAQ_STATUS_NOT_FOUND, "interface is unknown", out_status);
     }
     out_interface->context = instance;
     out_interface->vtable = &storage_control;

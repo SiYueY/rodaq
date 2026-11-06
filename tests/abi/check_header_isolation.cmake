@@ -75,17 +75,21 @@ set(nonstd_exposures)
 foreach(header IN LISTS public_cpp_headers)
     file(READ "${header}" contents)
     string(REGEX MATCHALL "nonstd::[A-Za-z_][A-Za-z0-9_]*" matches "${contents}")
+    get_filename_component(header_name "${header}" NAME)
+    if(matches AND NOT header_name STREQUAL "result.hpp")
+        message(FATAL_ERROR "${header_name} must not expose nonstd names: ${matches}")
+    endif()
     list(APPEND nonstd_exposures ${matches})
 endforeach()
 
 list(LENGTH nonstd_exposures nonstd_exposure_count)
-if(NOT nonstd_exposure_count EQUAL 1)
+if(NOT nonstd_exposure_count EQUAL 3)
     message(FATAL_ERROR
-        "Public C++ headers must expose exactly one nonstd alias, found: "
+        "Public C++ headers must only use nonstd in the Result implementation, found: "
         "${nonstd_exposures}")
 endif()
 
-if(NOT nonstd_exposures STREQUAL "nonstd::expected")
+if(NOT nonstd_exposures STREQUAL "nonstd::make_unexpected;nonstd::expected;nonstd::expected")
     message(FATAL_ERROR
         "Unexpected Public C++ nonstd exposure: ${nonstd_exposures}")
 endif()

@@ -19,15 +19,15 @@ public:
             return static_cast<void*>(nullptr);
         }
         if (alignment == 0 || (alignment & (alignment - 1U)) != 0) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::InvalidArgument, "arena alignment must be a power of two"));
+            return rodaq::Status(
+                StatusCode::InvalidArgument, "arena alignment must be a power of two");
         }
 
         try {
             return resource_.allocate(size, alignment);
         } catch (const std::bad_alloc&) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::ResourceExhausted, "structural arena capacity is exhausted"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted, "structural arena capacity is exhausted");
         }
     }
 
@@ -46,8 +46,8 @@ Result<std::unique_ptr<StructuralArena>> StructuralArena::create(std::size_t cap
         auto impl = std::make_unique<Impl>(capacity_bytes);
         return std::unique_ptr<StructuralArena>(new StructuralArena(std::move(impl)));
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "failed to allocate structural arena storage"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "failed to allocate structural arena storage");
     }
 }
 

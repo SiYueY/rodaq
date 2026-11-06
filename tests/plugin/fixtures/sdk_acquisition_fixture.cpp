@@ -85,14 +85,14 @@ public:
 private:
     enum class Stage { Created, Bound, Configured, Started, Stopped };
 
-    static rodaq::Result<void> invalid_state() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::InvalidState, "fixture", 0, "invalid lifecycle order"));
+    static rodaq::Status invalid_state() {
+        return rodaq::Status(
+            rodaq::StatusCode::InvalidState, "fixture", 0, "invalid lifecycle order");
     }
 
-    static rodaq::Result<void> failure() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::Unavailable, "fixture", 9, "fixture lifecycle failure"));
+    static rodaq::Status failure() {
+        return rodaq::Status(
+            rodaq::StatusCode::Unavailable, "fixture", 9, "fixture lifecycle failure");
     }
 
     rodaq::AcquisitionRuntime runtime_;

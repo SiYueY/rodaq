@@ -65,7 +65,7 @@ typedef struct rodaq_descriptor_readiness_result {
     uint32_t struct_size;
     rodaq_descriptor_readiness state;
 
-    rodaq_error failure;
+    rodaq_status failure;
 } rodaq_descriptor_readiness_result;
 
 #define RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION UINT32_C(1)
@@ -75,13 +75,13 @@ typedef struct rodaq_storage_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_capabilities)(
+    rodaq_status_code (*get_capabilities)(
         void* context, rodaq_storage_capabilities* out_capabilities,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*ensure_descriptor_ready)(
+    rodaq_status_code (*ensure_descriptor_ready)(
         void* context, rodaq_stream_descriptor_handle descriptor,
-        rodaq_descriptor_readiness_result* out_result, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_descriptor_readiness_result* out_result, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_storage_control_v1;
 
 /* ABI-APPENDABLE: Storage open request. */
@@ -133,7 +133,7 @@ typedef struct rodaq_storage_submit_result {
     rodaq_storage_payload_state payload_state;
     rodaq_storage_persistence_state persistence_state;
 
-    rodaq_error persistence_error;
+    rodaq_status persistence_error;
 } rodaq_storage_submit_result;
 
 #define RODAQ_STORAGE_PROTOCOL_VERSION UINT32_C(1)
@@ -145,34 +145,34 @@ struct rodaq_storage_plugin {
 
     const rodaq_plugin_descriptor* descriptor;
 
-    rodaq_status (*create)(void** out_instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*create)(void** out_instance, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     void (*destroy)(void* instance) RODAQ_NOEXCEPT;
 
-    rodaq_status (*bind)(
+    rodaq_status_code (*bind)(
         void* instance, const rodaq_service_registry* services,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*configure)(void* instance, rodaq_config_view config, rodaq_error* out_error)
-        RODAQ_NOEXCEPT;
+    rodaq_status_code (*configure)(
+        void* instance, rodaq_config_view config, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*open)(
+    rodaq_status_code (*open)(
         void* instance, const rodaq_storage_open_request* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*submit)(
+    rodaq_status_code (*submit)(
         void* instance, const rodaq_storage_submission* submission,
-        rodaq_storage_submit_result* out_result, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_storage_submit_result* out_result, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*flush)(void* instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*flush)(void* instance, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*close)(
+    rodaq_status_code (*close)(
         void* instance, const rodaq_storage_close_request* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*query_interface)(
+    rodaq_status_code (*query_interface)(
         void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 };
 
 #define RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE                     \

@@ -14,9 +14,9 @@ typedef struct rodaq_service_registry_vtable {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*query)(
+    rodaq_status_code (*query)(
         void* context, rodaq_string_view service_id, rodaq_interface* out_service,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_service_registry_vtable;
 
 /* ABI-FROZEN: borrowed context/vtable pair. */

@@ -1,6 +1,6 @@
 #include "plugin/shared_library.hpp"
 
-#include "plugin/plugin_error.hpp"
+#include "plugin/plugin_status.hpp"
 
 #include <dlfcn.h>
 #include <link.h>
@@ -15,8 +15,8 @@
 namespace rodaq::plugin {
 namespace {
 
-Error loader_error(std::string domain, std::string message) {
-    return Error(ErrorCode::Unavailable, std::move(domain), 0, std::move(message));
+Status loader_error(std::string domain, std::string message) {
+    return Status(StatusCode::Unavailable, std::move(domain), 0, std::move(message));
 }
 
 std::string current_dl_error(const char* fallback) {
@@ -31,47 +31,46 @@ std::string current_dl_error(const char* fallback) {
 
 Result<std::filesystem::path> SharedLibrary::canonicalize_path(const std::filesystem::path& path) {
     if (path.empty()) {
-        return nonstd::make_unexpected(invalid_argument_error("Plugin library path is empty"));
+        return invalid_argument_status("Plugin library path is empty");
     }
 
     try {
         std::error_code error;
         const bool exists = std::filesystem::exists(path, error);
         if (error) {
-            return nonstd::make_unexpected(loader_error("filesystem", error.message()));
+            return loader_error("filesystem", error.message());
         }
         if (!exists) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::NotFound, "filesystem", error.value(),
-                "Plugin library path does not exist: " + path.string()));
+            return rodaq::Status(
+                StatusCode::NotFound, "filesystem", error.value(),
+                "Plugin library path does not exist: " + path.string());
         }
 
         const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, error);
         if (error) {
-            return nonstd::make_unexpected(loader_error("filesystem", error.message()));
+            return loader_error("filesystem", error.message());
         }
         if (!std::filesystem::is_regular_file(canonical, error) || error) {
-            return nonstd::make_unexpected(invalid_argument_error(
-                "Plugin library path is not a regular file: " + canonical.string()));
+            return invalid_argument_status(
+                "Plugin library path is not a regular file: " + canonical.string());
         }
         return canonical;
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(
-            internal_error(std::string("Failed to canonicalize Plugin path: ") + error.what()));
+        return internal_status(std::string("Failed to canonicalize Plugin path: ") + error.what());
     }
 }
 
 Result<SharedLibrary> SharedLibrary::open(const std::filesystem::path& path) {
     Result<std::filesystem::path> canonical_result = canonicalize_path(path);
-    if (!canonical_result.has_value()) {
-        return nonstd::make_unexpected(std::move(canonical_result.error()));
+    if (!canonical_result.ok()) {
+        return std::move(canonical_result).status();
     }
     const std::filesystem::path canonical = std::move(canonical_result.value());
 
     dlerror();
     void* handle = dlopen(canonical.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) {
-        return nonstd::make_unexpected(loader_error("dlopen", current_dl_error("dlopen failed")));
+        return loader_error("dlopen", current_dl_error("dlopen failed"));
     }
 
     link_map* map = nullptr;
@@ -79,7 +78,7 @@ Result<SharedLibrary> SharedLibrary::open(const std::filesystem::path& path) {
     if (dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0 || map == nullptr) {
         const std::string message = current_dl_error("dlinfo failed");
         dlclose(handle);
-        return nonstd::make_unexpected(loader_error("dlinfo", message));
+        return loader_error("dlinfo", message);
     }
 
     return SharedLibrary(handle, reinterpret_cast<void*>(map->l_addr), canonical);
@@ -108,9 +107,9 @@ SharedLibrary::~SharedLibrary() noexcept { close(); }
 
 Result<void*> SharedLibrary::find_symbol(std::string_view name) const {
     if (!valid()) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidState, "dlsym", 0,
-            "Cannot resolve a symbol from an invalid SharedLibrary"));
+        return rodaq::Status(
+            StatusCode::InvalidState, "dlsym", 0,
+            "Cannot resolve a symbol from an invalid SharedLibrary");
     }
 
     try {
@@ -119,17 +118,17 @@ Result<void*> SharedLibrary::find_symbol(std::string_view name) const {
         void* symbol = dlsym(handle_, owning_name.c_str());
         const char* error = dlerror();
         if (error != nullptr || symbol == nullptr) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::NotFound, "dlsym", 0, "Plugin symbol was not found: " + owning_name));
+            return rodaq::Status(
+                StatusCode::NotFound, "dlsym", 0, "Plugin symbol was not found: " + owning_name);
         }
         return symbol;
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::ResourceExhausted, "dlsym", 0,
-            "Memory exhausted while resolving Plugin symbol"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "dlsym", 0,
+            "Memory exhausted while resolving Plugin symbol");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(internal_error(
-            std::string("Unexpected Plugin symbol lookup failure: ") + error.what()));
+        return internal_status(
+            std::string("Unexpected Plugin symbol lookup failure: ") + error.what());
     }
 }
 

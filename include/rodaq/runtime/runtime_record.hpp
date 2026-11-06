@@ -23,7 +23,7 @@ class TimestampState final {
 public:
     static constexpr std::size_t kMaxSlots = 4;
 
-    Result<void> set(std::size_t slot, std::int64_t value);
+    Result<void> set(std::size_t slot, std::int64_t reading);
 
     bool present(std::size_t slot) const noexcept;
     std::optional<std::int64_t> value(std::size_t slot) const noexcept;

@@ -54,7 +54,7 @@ StorageInstance create_instance(rodaq::plugin::PluginLibraryLease& lease) {
     if (owner.protocol == nullptr) {
         return owner;
     }
-    rodaq_error error{};
+    rodaq_status error{};
     if (owner.protocol->create(&owner.instance, &error) != RODAQ_STATUS_OK) {
         owner.instance = nullptr;
     }
@@ -67,15 +67,15 @@ void expect_canary(const std::uint8_t* bytes, std::size_t size) {
     }
 }
 
-std::string_view diagnostic(const rodaq_error& error) {
+std::string_view diagnostic(const rodaq_status& error) {
     return std::string_view(error.message, error.message_size);
 }
 
 void expect_exception_error(
-    rodaq_status status, const rodaq_error& error, rodaq_status expected_status,
+    rodaq_status_code status, const rodaq_status& error, rodaq_status_code expected_status,
     std::string_view expected_message) {
     EXPECT_EQ(expected_status, status);
-    EXPECT_EQ(expected_status, error.code);
+    EXPECT_EQ(expected_status, error.status_code);
     EXPECT_EQ("sdk", std::string_view(error.domain, error.domain_size));
     EXPECT_NE(std::string_view::npos, diagnostic(error).find(expected_message));
     EXPECT_EQ(0U, error.reserved[0]);
@@ -83,16 +83,16 @@ void expect_exception_error(
 }
 
 void run_capabilities_case(
-    const char* environment, rodaq_status expected_status, std::string_view expected_message) {
+    const char* environment, rodaq_status_code expected_status, std::string_view expected_message) {
     PluginManager manager;
     auto lease = manager.load_library(plugin_path(environment));
-    ASSERT_TRUE(lease.has_value()) << environment;
+    ASSERT_TRUE(lease.ok()) << environment;
     StorageInstance owner = create_instance(lease.value());
     ASSERT_NE(nullptr, owner.protocol) << environment;
     ASSERT_NE(nullptr, owner.instance) << environment;
 
     rodaq_interface interface {};
-    rodaq_error query_error{};
+    rodaq_status query_error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         owner.protocol->query_interface(
@@ -110,23 +110,24 @@ void run_capabilities_case(
     } output{};
     output.canary.fill(kCanary);
     output.value.struct_size = sizeof(output.value) + output.canary.size();
-    rodaq_error error{};
-    const rodaq_status status = control->get_capabilities(interface.context, &output.value, &error);
+    rodaq_status error{};
+    const rodaq_status_code status =
+        control->get_capabilities(interface.context, &output.value, &error);
     expect_exception_error(status, error, expected_status, expected_message);
     expect_canary(output.canary.data(), output.canary.size());
 }
 
 void run_ready_case(
-    const char* environment, rodaq_status expected_status, std::string_view expected_message) {
+    const char* environment, rodaq_status_code expected_status, std::string_view expected_message) {
     PluginManager manager;
     auto lease = manager.load_library(plugin_path(environment));
-    ASSERT_TRUE(lease.has_value()) << environment;
+    ASSERT_TRUE(lease.ok()) << environment;
     StorageInstance owner = create_instance(lease.value());
     ASSERT_NE(nullptr, owner.protocol) << environment;
     ASSERT_NE(nullptr, owner.instance) << environment;
 
     rodaq_interface interface {};
-    rodaq_error query_error{};
+    rodaq_status query_error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         owner.protocol->query_interface(
@@ -144,18 +145,18 @@ void run_ready_case(
     } output{};
     output.canary.fill(kCanary);
     output.value.struct_size = sizeof(output.value) + output.canary.size();
-    rodaq_error error{};
-    const rodaq_status status = control->ensure_descriptor_ready(
+    rodaq_status error{};
+    const rodaq_status_code status = control->ensure_descriptor_ready(
         interface.context, rodaq_stream_descriptor_handle{7}, &output.value, &error);
     expect_exception_error(status, error, expected_status, expected_message);
     expect_canary(output.canary.data(), output.canary.size());
 }
 
 void run_submit_case(
-    const char* environment, rodaq_status expected_status, std::string_view expected_message) {
+    const char* environment, rodaq_status_code expected_status, std::string_view expected_message) {
     PluginManager manager;
     auto lease = manager.load_library(plugin_path(environment));
-    ASSERT_TRUE(lease.has_value()) << environment;
+    ASSERT_TRUE(lease.ok()) << environment;
     StorageInstance owner = create_instance(lease.value());
     ASSERT_NE(nullptr, owner.protocol) << environment;
     ASSERT_NE(nullptr, owner.instance) << environment;
@@ -166,7 +167,7 @@ void run_submit_case(
     open.struct_size = sizeof(open);
     open.session_id = rodaq_string_view{session, sizeof(session) - 1};
     open.target_uri = rodaq_string_view{target, sizeof(target) - 1};
-    rodaq_error open_error{};
+    rodaq_status open_error{};
     ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &open, &open_error))
         << environment;
 
@@ -184,8 +185,8 @@ void run_submit_case(
     } output{};
     output.canary.fill(kCanary);
     output.value.struct_size = sizeof(output.value) + output.canary.size();
-    rodaq_error error{};
-    const rodaq_status status =
+    rodaq_status error{};
+    const rodaq_status_code status =
         owner.protocol->submit(owner.instance, &submission, &output.value, &error);
     expect_exception_error(status, error, expected_status, expected_message);
     expect_canary(output.canary.data(), output.canary.size());

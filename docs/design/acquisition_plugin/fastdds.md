@@ -967,7 +967,7 @@ PayloadDisposition = NOT_APPLICABLE
 
 如果未来把 DataReader loan 或其他 native storage 通过 Retain 暴露给 Runtime，则 disposition 只决定本次 retained anchor 谁负责 release；它不转移 Plugin 对原 DDS object 的所有权。
 
-函数级 `rodaq_status != OK` 是 Runtime boundary failure，不是普通 DDS backpressure。
+函数级 `rodaq_status_code != OK` 是 Runtime boundary failure，不是普通 DDS backpressure。
 
 ---
 
@@ -1617,13 +1617,13 @@ Copy baseline 必须验证 Stable ABI result：
 
 ```text
 Accepted
-    → rodaq_status == OK
+    → rodaq_status_code == OK
     → outcome == RODAQ_ADMISSION_ACCEPTED
     → rejection_reason == NONE
     → payload_disposition == NOT_APPLICABLE
 
 ordinary pre-gate rejection
-    → rodaq_status == OK
+    → rodaq_status_code == OK
     → outcome == RODAQ_ADMISSION_PRE_REJECTED
     → explicit rejection_reason
 ```

@@ -416,7 +416,7 @@ loader ownership
 ```text
 explicit Plugin API version
 entrypoint
-Expected / Error discipline
+Status / Result discipline
 ABI-conscious evolution
 ```
 
@@ -599,7 +599,7 @@ typedef uint32_t rodaq_bool;
 Status：
 
 ```c
-typedef uint32_t rodaq_status;
+typedef uint32_t rodaq_status_code;
 
 #define RODAQ_STATUS_OK                  UINT32_C(0)
 #define RODAQ_STATUS_INVALID_ARGUMENT    UINT32_C(1)
@@ -670,32 +670,32 @@ Schema Format
 
 ---
 
-## 2.5 Error ABI
+## 2.5 Status ABI
 
-Error 必须在 ABI call 返回之后仍然可由 Caller 安全读取，因此 V1 不允许 `rodaq_error` 保存 callee-owned string pointer。
+Status 诊断必须在 ABI call 返回之后仍然可由 Caller 安全读取，因此 V1 不允许 `rodaq_status` 保存 callee-owned string pointer。
 
 V1 冻结 caller-owned inline representation：
 
 ```c
-#define RODAQ_ERROR_DOMAIN_CAPACITY  UINT32_C(32)
-#define RODAQ_ERROR_MESSAGE_CAPACITY UINT32_C(256)
+#define RODAQ_STATUS_DOMAIN_CAPACITY  UINT32_C(32)
+#define RODAQ_STATUS_MESSAGE_CAPACITY UINT32_C(256)
 
-#define RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED UINT32_C(1)
+#define RODAQ_STATUS_FLAG_MESSAGE_TRUNCATED UINT32_C(1)
 
-typedef struct rodaq_error {
-    rodaq_status code;
+typedef struct rodaq_status {
+    rodaq_status_code status_code;
     uint32_t flags;
 
-    int64_t native_code;
+    int64_t error_code;
 
     uint32_t domain_size;
     uint32_t message_size;
 
-    char domain[RODAQ_ERROR_DOMAIN_CAPACITY];
-    char message[RODAQ_ERROR_MESSAGE_CAPACITY];
+    char domain[RODAQ_STATUS_DOMAIN_CAPACITY];
+    char message[RODAQ_STATUS_MESSAGE_CAPACITY];
 
     uint64_t reserved[2];
-} rodaq_error;
+} rodaq_status;
 ```
 
 该 struct 属于：
@@ -710,17 +710,17 @@ ABI-FROZEN
 code
     RoDAQ stable status
 
-native_code
+error_code
     backend-specific native error
     no native code → 0
 
 domain_size
     valid bytes in domain[]
-    MUST be <= RODAQ_ERROR_DOMAIN_CAPACITY
+    MUST be <= RODAQ_STATUS_DOMAIN_CAPACITY
 
 message_size
     valid bytes in message[]
-    MUST be <= RODAQ_ERROR_MESSAGE_CAPACITY
+    MUST be <= RODAQ_STATUS_MESSAGE_CAPACITY
 
 domain
     stable short error domain
@@ -742,7 +742,7 @@ Callee MUST ensure：
 
 ```text
 domain is never silently truncated
-message truncation sets RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED
+message truncation sets RODAQ_STATUS_FLAG_MESSAGE_TRUNCATED
 reserved[] == 0
 all undocumented flags == 0
 ```
@@ -751,16 +751,16 @@ all undocumented flags == 0
 
 ```text
 use "rodaq" as the safe domain
-preserve backend/native detail in native_code/message where possible
+preserve backend/native detail in error_code/message where possible
 ```
 
-### Error Lifetime
+### Status Diagnostic Lifetime
 
-`rodaq_error` storage 由 Caller 提供，Callee 只写入该 struct。
+`rodaq_status` storage 由 Caller 提供，Callee 只写入该 struct。
 
 因此：
 
-> **所有 Error bytes 在 ABI call 返回后仍属于 Caller-owned storage，并一直有效直到 Caller 覆写/销毁该 struct。**
+> **所有 Status diagnostic bytes 在 ABI call 返回后仍属于 Caller-owned storage，并一直有效直到 Caller 覆写/销毁该 struct。**
 
 不存在：
 
@@ -770,14 +770,14 @@ thread_local diagnostic pointer lifetime
 callee scratch string lifetime
 ```
 
-### Error 与返回 Status
+### 诊断结构与返回状态码
 
 所有 fallible operation：
 
 ```c
-rodaq_status operation(
+rodaq_status_code operation(
     ...,
-    rodaq_error* out_error);
+    rodaq_status* out_error);
 ```
 
 规则：
@@ -789,7 +789,7 @@ return == OK
 
 return != OK
     if out_error != NULL
-        Callee fills a self-contained rodaq_error
+        Callee fills a self-contained rodaq_status
 ```
 
 `out_error == NULL` 合法。
@@ -801,7 +801,7 @@ std::exception::what()
 unknown exception diagnostic
 ```
 
-复制进 caller-owned `rodaq_error.message[]`，不能暴露异常对象内部 pointer。
+复制进 caller-owned `rodaq_status.message[]`，不能暴露异常对象内部 pointer。
 
 ## 2.6 Generic Interface Fat Pointer
 
@@ -907,7 +907,7 @@ ABI-APPENDABLE
 ```text
 rodaq_string_view
 rodaq_bytes_view
-rodaq_error
+rodaq_status
 rodaq_interface
 all opaque handle structs
 rodaq_timestamp_key
@@ -1425,9 +1425,9 @@ catch (...) {
 必须把 exception 转换成：
 
 ```text
-rodaq_status
+rodaq_status_code
 +
-rodaq_error
+rodaq_status
 ```
 
 禁止 exception 穿越 ABI boundary。
@@ -1601,11 +1601,11 @@ typedef struct rodaq_service_registry_vtable {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*query)(
+    rodaq_status_code (*query)(
         void* context,
         rodaq_string_view service_id,
         rodaq_interface* out_service,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_service_registry_vtable;
 
@@ -1863,10 +1863,10 @@ typedef struct rodaq_runtime_common_v1 {
     uint64_t (*monotonic_time_ns)(
         void* context) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_lifecycle_snapshot)(
+    rodaq_status_code (*get_lifecycle_snapshot)(
         void* context,
         rodaq_runtime_lifecycle_snapshot* out_snapshot,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     void (*report_diagnostic)(
         void* context,
@@ -1924,11 +1924,11 @@ typedef struct rodaq_runtime_clock_correlation_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_unix_epoch_anchor)(
+    rodaq_status_code (*get_unix_epoch_anchor)(
         void* context,
         rodaq_clock_handle clock,
         rodaq_unix_epoch_clock_anchor* out_anchor,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 } rodaq_runtime_clock_correlation_v1;
 ```
 
@@ -2984,16 +2984,16 @@ payload_disposition = RUNTIME_RESPONSIBLE
 
 并进入 fail-closed path。
 
-### `rodaq_status` 与 AdmissionOutcome 分工
+### `rodaq_status_code` 与 AdmissionOutcome 分工
 
 `submit()` 的函数返回值不是 AdmissionOutcome。
 
 ```text
-rodaq_status == OK
+rodaq_status_code == OK
     ABI call 本身成功完成
     out_result 包含 terminal AdmissionOutcome
 
-rodaq_status != OK
+rodaq_status_code != OK
     ABI/API contract 或 Runtime boundary 本身发生错误
 ```
 
@@ -3054,25 +3054,25 @@ typedef uint32_t rodaq_acquisition_plugin_state;
 Runtime Acquisition Service 增加：
 
 ```c
-rodaq_status (*report_source_availability)(
+rodaq_status_code (*report_source_availability)(
     void* context,
     rodaq_source_handle source,
     rodaq_availability_state state,
-    const rodaq_error* diagnostic,
-    rodaq_error* out_error) RODAQ_NOEXCEPT;
+    const rodaq_status* diagnostic,
+    rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-rodaq_status (*report_stream_availability)(
+rodaq_status_code (*report_stream_availability)(
     void* context,
     rodaq_stream_handle stream,
     rodaq_availability_state state,
-    const rodaq_error* diagnostic,
-    rodaq_error* out_error) RODAQ_NOEXCEPT;
+    const rodaq_status* diagnostic,
+    rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-rodaq_status (*report_plugin_state)(
+rodaq_status_code (*report_plugin_state)(
     void* context,
     rodaq_acquisition_plugin_state state,
-    const rodaq_error* diagnostic,
-    rodaq_error* out_error) RODAQ_NOEXCEPT;
+    const rodaq_status* diagnostic,
+    rodaq_status* out_error) RODAQ_NOEXCEPT;
 ```
 
 `diagnostic == NULL` 合法。
@@ -3093,7 +3093,7 @@ RECOVERABLE_FAILURE
 TERMINAL_FAILURE
 ```
 
-Plugin SHOULD 提供 self-contained `rodaq_error` diagnostic。
+Plugin SHOULD 提供 self-contained `rodaq_status` diagnostic。
 
 语义：
 
@@ -3161,61 +3161,61 @@ typedef struct rodaq_runtime_acquisition_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*register_source)(
+    rodaq_status_code (*register_source)(
         void* context,
         const rodaq_source_registration* request,
         rodaq_source_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_clock)(
+    rodaq_status_code (*register_clock)(
         void* context,
         const rodaq_clock_registration* request,
         rodaq_clock_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_schema)(
+    rodaq_status_code (*register_schema)(
         void* context,
         const rodaq_schema_registration* request,
         rodaq_schema_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_stream)(
+    rodaq_status_code (*register_stream)(
         void* context,
         const rodaq_stream_registration* request,
         rodaq_stream_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*publish_stream_descriptor)(
+    rodaq_status_code (*publish_stream_descriptor)(
         void* context,
         const rodaq_stream_descriptor_registration* request,
         rodaq_stream_descriptor_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_source_availability)(
+    rodaq_status_code (*report_source_availability)(
         void* context,
         rodaq_source_handle source,
         rodaq_availability_state state,
-        const rodaq_error* diagnostic,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        const rodaq_status* diagnostic,
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_stream_availability)(
+    rodaq_status_code (*report_stream_availability)(
         void* context,
         rodaq_stream_handle stream,
         rodaq_availability_state state,
-        const rodaq_error* diagnostic,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        const rodaq_status* diagnostic,
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_plugin_state)(
+    rodaq_status_code (*report_plugin_state)(
         void* context,
         rodaq_acquisition_plugin_state state,
-        const rodaq_error* diagnostic,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        const rodaq_status* diagnostic,
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*submit)(
+    rodaq_status_code (*submit)(
         void* context,
         const rodaq_record_submission* submission,
         rodaq_acquisition_submit_result* out_result,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_runtime_acquisition_v1;
 ```
@@ -3572,41 +3572,41 @@ typedef struct rodaq_runtime_canonical_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_source)(
+    rodaq_status_code (*get_source)(
         void* context,
         rodaq_source_handle handle,
         rodaq_source_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_clock)(
+    rodaq_status_code (*get_clock)(
         void* context,
         rodaq_clock_handle handle,
         rodaq_clock_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_schema)(
+    rodaq_status_code (*get_schema)(
         void* context,
         rodaq_schema_handle handle,
         rodaq_schema_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_timestamp_key_set)(
+    rodaq_status_code (*get_timestamp_key_set)(
         void* context,
         uint64_t timestamp_key_set_id,
         rodaq_timestamp_key_set_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_stream)(
+    rodaq_status_code (*get_stream)(
         void* context,
         rodaq_stream_handle handle,
         rodaq_stream_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_stream_descriptor)(
+    rodaq_status_code (*get_stream_descriptor)(
         void* context,
         rodaq_stream_descriptor_handle handle,
         rodaq_stream_descriptor_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_runtime_canonical_v1;
 ```
@@ -3676,17 +3676,17 @@ typedef struct rodaq_runtime_projection_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*register_projection)(
+    rodaq_status_code (*register_projection)(
         void* context,
         const rodaq_projection_registration* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_projection)(
+    rodaq_status_code (*get_projection)(
         void* context,
         rodaq_stream_descriptor_handle descriptor,
         rodaq_string_view projection_id,
         rodaq_projection_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 } rodaq_runtime_projection_v1;
 ```
 
@@ -3837,43 +3837,43 @@ typedef struct rodaq_config_vtable {
     uint64_t (*size)(
         void* context) RODAQ_NOEXCEPT;
 
-    rodaq_status (*find)(
+    rodaq_status_code (*find)(
         void* context,
         rodaq_string_view key,
         rodaq_config_view* out_child,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*at)(
+    rodaq_status_code (*at)(
         void* context,
         uint64_t index,
         rodaq_config_view* out_child,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*key_at)(
+    rodaq_status_code (*key_at)(
         void* context,
         uint64_t index,
         rodaq_string_view* out_key,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_bool)(
+    rodaq_status_code (*as_bool)(
         void* context,
         rodaq_bool* out_value,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_int64)(
+    rodaq_status_code (*as_int64)(
         void* context,
         int64_t* out_value,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_double)(
+    rodaq_status_code (*as_double)(
         void* context,
         double* out_value,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_string)(
+    rodaq_status_code (*as_string)(
         void* context,
         rodaq_string_view* out_value,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_config_vtable;
 
@@ -4019,11 +4019,11 @@ Config string pointer
 Runtime → Plugin 的 capability discovery 统一通过：
 
 ```c
-rodaq_status (*query_interface)(
+rodaq_status_code (*query_interface)(
     void* instance,
     rodaq_string_view interface_id,
     rodaq_interface* out_interface,
-    rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status* out_error) RODAQ_NOEXCEPT;
 ```
 
 V1 Plugin Interface 查询分两类：
@@ -4102,33 +4102,33 @@ typedef struct rodaq_acquisition_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*prepare_binding_switch)(
+    rodaq_status_code (*prepare_binding_switch)(
         void* context,
         rodaq_binding_transition transition,
         rodaq_stream_handle stream,
         rodaq_stream_descriptor_handle old_descriptor,
         rodaq_stream_descriptor_handle new_descriptor,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*commit_binding_switch)(
+    rodaq_status_code (*commit_binding_switch)(
         void* context,
         rodaq_binding_transition transition,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*abort_binding_switch)(
+    rodaq_status_code (*abort_binding_switch)(
         void* context,
         rodaq_binding_transition transition,
         rodaq_binding_abort_disposition disposition,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*quiesce_stream)(
+    rodaq_status_code (*quiesce_stream)(
         void* context,
         rodaq_stream_handle stream,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*quiesce_plugin)(
+    rodaq_status_code (*quiesce_plugin)(
         void* context,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_acquisition_control_v1;
 ```
@@ -4375,7 +4375,7 @@ typedef struct rodaq_descriptor_readiness_result {
     uint32_t struct_size;
     rodaq_descriptor_readiness state;
 
-    rodaq_error failure;
+    rodaq_status failure;
 } rodaq_descriptor_readiness_result;
 ```
 
@@ -4393,16 +4393,16 @@ typedef struct rodaq_storage_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_capabilities)(
+    rodaq_status_code (*get_capabilities)(
         void* context,
         rodaq_storage_capabilities* out_capabilities,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*ensure_descriptor_ready)(
+    rodaq_status_code (*ensure_descriptor_ready)(
         void* context,
         rodaq_stream_descriptor_handle descriptor,
         rodaq_descriptor_readiness_result* out_result,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_storage_control_v1;
 ```
@@ -4439,7 +4439,7 @@ FAILED
     Storage failure path
 ```
 
-函数级 `rodaq_status != OK` 表示 ABI/control boundary failure，不代替 readiness domain result。
+函数级 `rodaq_status_code != OK` 表示 ABI/control boundary failure，不代替 readiness domain result。
 
 Runtime 对该 call 应使用 bounded Control Plane supervision；超时无法证明只是 Descriptor-specific unsupported 时，按 fatal Storage failure 处理。
 
@@ -4572,36 +4572,36 @@ typedef struct rodaq_acquisition_plugin {
 
     const rodaq_plugin_descriptor* descriptor;
 
-    rodaq_status (*create)(
+    rodaq_status_code (*create)(
         void** out_instance,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     void (*destroy)(
         void* instance) RODAQ_NOEXCEPT;
 
-    rodaq_status (*bind)(
+    rodaq_status_code (*bind)(
         void* instance,
         const rodaq_service_registry* services,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*configure)(
+    rodaq_status_code (*configure)(
         void* instance,
         rodaq_config_view config,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*start)(
+    rodaq_status_code (*start)(
         void* instance,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*stop)(
+    rodaq_status_code (*stop)(
         void* instance,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*query_interface)(
+    rodaq_status_code (*query_interface)(
         void* instance,
         rodaq_string_view interface_id,
         rodaq_interface* out_interface,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_acquisition_plugin;
 ```
@@ -4915,48 +4915,48 @@ typedef struct rodaq_storage_plugin {
 
     const rodaq_plugin_descriptor* descriptor;
 
-    rodaq_status (*create)(
+    rodaq_status_code (*create)(
         void** out_instance,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     void (*destroy)(
         void* instance) RODAQ_NOEXCEPT;
 
-    rodaq_status (*bind)(
+    rodaq_status_code (*bind)(
         void* instance,
         const struct rodaq_service_registry* services,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*configure)(
+    rodaq_status_code (*configure)(
         void* instance,
         struct rodaq_config_view config,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*open)(
+    rodaq_status_code (*open)(
         void* instance,
         const struct rodaq_storage_open_request* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*submit)(
+    rodaq_status_code (*submit)(
         void* instance,
         const struct rodaq_storage_submission* submission,
         struct rodaq_storage_submit_result* out_result,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*flush)(
+    rodaq_status_code (*flush)(
         void* instance,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*close)(
+    rodaq_status_code (*close)(
         void* instance,
         const struct rodaq_storage_close_request* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
-    rodaq_status (*query_interface)(
+    rodaq_status_code (*query_interface)(
         void* instance,
         rodaq_string_view interface_id,
         rodaq_interface* out_interface,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_storage_plugin;
 ```
@@ -5329,7 +5329,7 @@ typedef struct rodaq_storage_submit_result {
     rodaq_storage_payload_state payload_state;
     rodaq_storage_persistence_state persistence_state;
 
-    rodaq_error persistence_error;
+    rodaq_status persistence_error;
 } rodaq_storage_submit_result;
 ```
 
@@ -5346,10 +5346,10 @@ PERSISTENCE_SUCCEEDED
 
 PERSISTENCE_FAILED / UNKNOWN
     persistence_error.code MUST be non-OK
-    domain/native_code/message MUST provide self-contained diagnostic
+    domain/error_code/message MUST provide self-contained diagnostic
 ```
 
-`persistence_error.reserved[]` 必须为 0；message truncation 使用统一 Error flag。
+`persistence_error.reserved[]` 必须为 0；message truncation 使用统一 Status flag。
 
 ---
 
@@ -5584,11 +5584,11 @@ typedef struct rodaq_runtime_storage_v1 {
         void* context,
         rodaq_storage_operation operation,
         rodaq_storage_persistence_state terminal_state,
-        const rodaq_error* error) RODAQ_NOEXCEPT;
+        const rodaq_status* error) RODAQ_NOEXCEPT;
 
     void (*report_failure)(
         void* context,
-        const rodaq_error* error) RODAQ_NOEXCEPT;
+        const rodaq_status* error) RODAQ_NOEXCEPT;
 
 } rodaq_runtime_storage_v1;
 ```
@@ -5618,7 +5618,7 @@ PERSISTENCE_FAILED / PERSISTENCE_UNKNOWN
 ```
 
 `error` is borrowed for the callback duration. Runtime must copy the
-self-contained `rodaq_error` value before retaining it.
+self-contained `rodaq_status` value before retaining it.
 
 `report_failure()`：
 
@@ -6517,9 +6517,20 @@ search path order wins
 合并为同一个 PluginLibrary
 ```
 
+C++ 的 `StatusCode` 与 Stable C ABI 的 `rodaq_status_code` 使用对应的状态语义和数值，
+包含 `Ok` 和 `UnknownError`。`Status` 可表示成功或失败，默认构造为成功；
+成功时 domain、error_code 和 message 为空或零，未知状态归一化为 `UnknownError`。
+`Result<T>` 是 RoDAQ 封装的值或失败状态；将 OK Status 用于失败构造会生成
+`UnknownError`，状态访问为只读。无值操作返回 `Result<void>`，有值操作返回 `Result<T>`。
+`Result<void>` 私有存储为 `nonstd::expected<void, Status>`，默认构造表示成功；
+将 OK Status 传入失败构造同样归一化为 `UnknownError`。
+C ABI 的整数状态类型为 `rodaq_status_code`，诊断结构为 `rodaq_status`，字段包括
+`status_code`、`error_code`、domain 和 message。应用及插件必须迁移并重新构建；
+不提供旧 Error、旧 Result 接口或旧 C 类型别名。
+
 ## 5.12.1 Loader Error Classification
 
-Loader 不创建新的 error taxonomy，使用既有 `rodaq::ErrorCode`：
+Loader 不创建新的 error taxonomy，使用既有 `rodaq::StatusCode`：
 
 ```text
 missing file / required symbol
@@ -6542,7 +6553,7 @@ internal invariant failure
 ```
 
 Plugin family `create()` 的非 OK status 映射到对应既有 taxonomy，并保留
-caller-owned `rodaq_error` 的 domain、native code 和 message。
+caller-owned `rodaq_status` 的 domain、native code 和 message。
 
 ---
 
@@ -6655,7 +6666,7 @@ Log / Diagnostic / MonotonicTime
 `lifecycle_snapshot()` 返回一次性 observation，不返回持久 capability token；后续 Runtime operation 仍重新验证当前 lifecycle/admission state。
 
 所有 public Runtime Service wrapper 提供 `valid()` 并使用统一 invalid-state
-语义：`Result<T>` / `Result<void>` API 返回 `ErrorCode::InvalidState`，
+语义：`Result<T>`（包括 `Result<void>`）API 的失败状态码为 `StatusCode::InvalidState`，
 `log()` / `diagnostic()` 以及 Storage completion callbacks 安全 no-op。
 Monotonic time 不能假定 `0` 是 error sentinel，因此 SDK surface 为：
 
@@ -6820,8 +6831,8 @@ query_interface
 
 ```text
 exception catch
-Result → rodaq_status
-caller-owned rodaq_error formatting
+Result → rodaq_status_code
+caller-owned rodaq_status formatting
 ConfigView wrapper
 Service wrapper
 required Acquisition control interface wrapper
@@ -7350,10 +7361,10 @@ entrypoint defined by dependency instead of candidate DSO
 unexpected exported symbols
 
 C++ SDK Plugin method throws std::exception
-    → SDK trampoline catches and converts to rodaq_error
+    → SDK trampoline catches and converts to rodaq_status
 
 C++ SDK Plugin method throws unknown exception
-    → SDK trampoline catches and converts to rodaq_error
+    → SDK trampoline catches and converts to rodaq_status
 
 raw/broken ABI callback violates RODAQ_NOEXCEPT
     → subprocess death test / std::terminate expected

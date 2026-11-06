@@ -121,22 +121,23 @@ typedef struct rodaq_acquisition_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*prepare_binding_switch)(
+    rodaq_status_code (*prepare_binding_switch)(
         void* context, rodaq_binding_transition transition, rodaq_stream_handle stream,
         rodaq_stream_descriptor_handle old_descriptor,
-        rodaq_stream_descriptor_handle new_descriptor, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_stream_descriptor_handle new_descriptor, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*commit_binding_switch)(
-        void* context, rodaq_binding_transition transition, rodaq_error* out_error) RODAQ_NOEXCEPT;
-
-    rodaq_status (*abort_binding_switch)(
+    rodaq_status_code (*commit_binding_switch)(
         void* context, rodaq_binding_transition transition,
-        rodaq_binding_abort_disposition disposition, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*quiesce_stream)(
-        void* context, rodaq_stream_handle stream, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*abort_binding_switch)(
+        void* context, rodaq_binding_transition transition,
+        rodaq_binding_abort_disposition disposition, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*quiesce_plugin)(void* context, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*quiesce_stream)(
+        void* context, rodaq_stream_handle stream, rodaq_status* out_status) RODAQ_NOEXCEPT;
+
+    rodaq_status_code (*quiesce_plugin)(void* context, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_acquisition_control_v1;
 
 #define RODAQ_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
@@ -148,24 +149,24 @@ struct rodaq_acquisition_plugin {
 
     const rodaq_plugin_descriptor* descriptor;
 
-    rodaq_status (*create)(void** out_instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*create)(void** out_instance, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     void (*destroy)(void* instance) RODAQ_NOEXCEPT;
 
-    rodaq_status (*bind)(
+    rodaq_status_code (*bind)(
         void* instance, const rodaq_service_registry* services,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*configure)(void* instance, rodaq_config_view config, rodaq_error* out_error)
-        RODAQ_NOEXCEPT;
+    rodaq_status_code (*configure)(
+        void* instance, rodaq_config_view config, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*start)(void* instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*start)(void* instance, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*stop)(void* instance, rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*stop)(void* instance, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*query_interface)(
+    rodaq_status_code (*query_interface)(
         void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 };
 
 #define RODAQ_RECORD_SUBMISSION_MIN_STRUCT_SIZE   \

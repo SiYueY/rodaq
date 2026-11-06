@@ -30,29 +30,29 @@ typedef struct rodaq_config_vtable {
 
     uint64_t (*size)(void* context) RODAQ_NOEXCEPT;
 
-    rodaq_status (*find)(
+    rodaq_status_code (*find)(
         void* context, rodaq_string_view key, rodaq_config_view* out_child,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*at)(
+    rodaq_status_code (*at)(
         void* context, uint64_t index, rodaq_config_view* out_child,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*key_at)(
+    rodaq_status_code (*key_at)(
         void* context, uint64_t index, rodaq_string_view* out_key,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_bool)(void* context, rodaq_bool* out_value, rodaq_error* out_error)
+    rodaq_status_code (*as_bool)(void* context, rodaq_bool* out_value, rodaq_status* out_status)
         RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_int64)(void* context, int64_t* out_value, rodaq_error* out_error)
+    rodaq_status_code (*as_int64)(void* context, int64_t* out_value, rodaq_status* out_status)
         RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_double)(void* context, double* out_value, rodaq_error* out_error)
+    rodaq_status_code (*as_double)(void* context, double* out_value, rodaq_status* out_status)
         RODAQ_NOEXCEPT;
 
-    rodaq_status (*as_string)(void* context, rodaq_string_view* out_value, rodaq_error* out_error)
-        RODAQ_NOEXCEPT;
+    rodaq_status_code (*as_string)(
+        void* context, rodaq_string_view* out_value, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_config_vtable;
 
 /* ABI-FROZEN: borrowed configuration pair. */

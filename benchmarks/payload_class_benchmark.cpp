@@ -18,7 +18,7 @@ void bm_mixed_size_class_reserve_copy_release(benchmark::State& state) {
         PayloadClassConfig{4U * 1024U * 1024U, 32},
     };
     auto pool = PayloadPool::create(config);
-    if (!pool.has_value()) {
+    if (!pool.ok()) {
         state.SkipWithError("failed to create multi-class PayloadPool");
         return;
     }
@@ -39,14 +39,14 @@ void bm_mixed_size_class_reserve_copy_release(benchmark::State& state) {
         static_cast<void>(iteration);
         const std::size_t index = selected++ % request_sizes.size();
         auto reservation = pool.value().try_reserve(request_sizes[index]);
-        if (!reservation.has_value()) {
+        if (!reservation.ok()) {
             state.SkipWithError("mixed size-class reserve failed");
             return;
         }
         auto payload = pool.value().materialize(
             std::move(reservation.value()),
             PayloadView(sources[index].data(), sources[index].size()));
-        if (!payload.has_value()) {
+        if (!payload.ok()) {
             state.SkipWithError("mixed size-class materialization failed");
             return;
         }

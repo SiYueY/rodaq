@@ -27,7 +27,7 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **None — M2 local PASS; new hosted CI pending; M3 NOT STARTED**
+Current milestone: **None — M2 Result<void> local PASS; hosted CI pending; M3 NOT STARTED**
 
 Only one milestone may be `ACTIVE` at a time.
 
@@ -987,3 +987,89 @@ qualification for these changes remains PENDING until committed, pushed and run.
 
 M3 remains NOT STARTED. The earlier M2 local qualification and hosted runs are
 historical evidence and do not qualify the latest uncommitted changes.
+
+
+## 2026-11-05 Error native accessor rename
+
+- [x] Rename the C++ `Error` native accessor and member; update callers and
+  preserve the Stable C ABI field name.
+- [x] Run Debug full build/CTest and C++ style checks.
+- [ ] Run hosted qualification after committing and pushing these changes.
+
+
+## 2026-11-05 Result failure construction
+
+- [x] Expose `rodaq::make_error`, migrate project callers and SDK macros, and
+  confine expected-lite names to the Result implementation and contract tests.
+- [x] Validate error copy/move, void Result, installed consumers, full Debug
+  CTest and automated C++ style checks; Stable C ABI remains unchanged.
+- [ ] Obtain hosted qualification for the current working-tree changes.
+
+
+## 2026-11-05 Direct error construction
+
+- [x] Add direct `make_error` overloads and migrate applicable call sites while
+  preserving forwarding of existing Error objects and the Stable C ABI.
+- [x] Validate direct and propagated errors, full Debug build/CTest and C++ style.
+- [ ] Obtain hosted qualification for current working-tree changes.
+
+
+## 2026-11-05 C++ status terminology convergence
+
+- [x] Replace C++ ErrorCode with StatusCode including Ok; migrate Error accessor,
+  ABI mappings, project code, tests, SDK consumers and current design contracts.
+- [x] Normalize Ok / unknown codes on Error construction without losing supplied
+  diagnostics; preserve Stable C ABI and its existing diagnostic behavior.
+- [x] Verify Debug, Release, ASan/LSan and UBSan 94/94 each; Clang 14 TSan
+  subset 10/10; Runtime-only Release and C++ style checks PASS.
+- [ ] Complete hosted qualification of the current changes after commit/push.
+
+C++ sources must migrate and rebuild; M3 remains NOT STARTED.
+
+
+## Status + Result migration — COMPLETE / local PASS
+
+- [x] Replace public Error / Result<void> with Status and a RoDAQ Result<T>
+  wrapper; remove make_error, legacy result accessors and compatibility aliases.
+- [x] Migrate Runtime, SDK virtual functions/trampolines, tests, benchmark and
+  installed consumers; use Status directly for primary failure observation.
+- [x] Migrate C status types, fields and constants, independent ABI fixtures and
+  layout tests. Preserve domain ownership, admission and shutdown behavior.
+- [x] Validate OK/UnknownError normalization, immutable result failure state,
+  copy/move, all C/C++ status mappings and forbidden Result instantiations.
+- [x] Debug, Release, ASan/LSan, UBSan, Ubuntu 24: 96/96 each; Clang 14 TSan:
+  10/10 with thread-leak detection; Runtime-only and capacity gates PASS.
+- [x] Full C++ style checks, current design/decision updates and final diff review.
+- [ ] Obtain new hosted qualification after commit/push. Older CI is historical.
+
+No compatibility layer is retained. All C/C++ consumers and plugins must
+migrate and rebuild. M3 remains NOT STARTED; native arm64 remains D-034 DEFERRED.
+
+## 2026-11-06 Direct Status failure storage
+
+- [x] Remove optional<Status> and migrate public/internal failure observation,
+  deferred diagnostics, tests, install consumer and current contracts.
+- [x] Verify Debug/ASan+LSan/UBSan 96/96 each, Clang 14 TSan 10/10,
+  installed Runtime consumer and full automated C++ style checks.
+- [ ] Obtain new hosted qualification after commit/push. Release capacity,
+  Runtime-only and Ubuntu 24 were not rerun for this follow-up.
+
+No compatibility layer is retained. M3 remains NOT STARTED.
+
+## 2026-11-06 Result<void> operation migration — COMPLETE / local PASS
+
+- [x] Add the out-of-line Result<void> specialization with private expected<void,
+  Status> storage, default success, immutable diagnostics and OK-as-failure
+  normalization. Preserve non-void Result defaults and prohibit Result<Status>.
+- [x] Migrate every no-value operation, callback, SDK hook, test, benchmark and
+  consumer; retain Status for diagnostics and failure observations only.
+- [x] Replace the void compile-fail fixture with positive unit/header/install
+  checks and reject implicit void-result-to-value failure loss.
+- [x] Debug/Release/ASan+LSan/UBSan/Ubuntu 24: 95/95 each; Clang 14 TSan:
+  10/10; Runtime-only and eight Release capacity executables (three repetitions)
+  PASS. Full formatting/static checks and final diff review PASS.
+- [x] Update current designs, D-058, status, review and capacity evidence.
+- [ ] Obtain new hosted qualification after commit/push; previous CI is historical.
+
+M3 remains NOT STARTED; native arm64 remains D-034 DEFERRED. No compatibility
+aliases or old operation signatures are retained.

@@ -2,7 +2,7 @@
 
 #include <rodaq/plugin/abi_support.hpp>
 
-#include <rodaq/error.hpp>
+#include <rodaq/status.hpp>
 
 #include <exception>
 #include <algorithm>
@@ -26,8 +26,8 @@ ClockCorrelation::~ClockCorrelation() = default;
 
 namespace {
 
-Error clock_error(ErrorCode code, std::string message) {
-    return Error(code, "clock_correlation", 0, std::move(message));
+Status clock_status(StatusCode status_code, std::string message) {
+    return Status(status_code, "clock_correlation", 0, std::move(message));
 }
 
 std::int64_t midpoint(std::int64_t first, std::int64_t second) noexcept {
@@ -51,8 +51,8 @@ Result<std::uint64_t> project_unix_nanoseconds(
         const std::uint64_t delta =
             static_cast<std::uint64_t>(reading) - static_cast<std::uint64_t>(anchor.clock_reading);
         if (delta > std::numeric_limits<std::uint64_t>::max() - anchor.unix_anchor_ns) {
-            return nonstd::make_unexpected(
-                clock_error(ErrorCode::InvalidArgument, "Unix replay timestamp overflows uint64"));
+            return clock_status(
+                StatusCode::InvalidArgument, "Unix replay timestamp overflows uint64");
         }
         return anchor.unix_anchor_ns + delta;
     }
@@ -60,8 +60,8 @@ Result<std::uint64_t> project_unix_nanoseconds(
     const std::uint64_t magnitude =
         static_cast<std::uint64_t>(anchor.clock_reading) - static_cast<std::uint64_t>(reading);
     if (magnitude > anchor.unix_anchor_ns) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::InvalidArgument, "Unix replay timestamp is before Unix epoch"));
+        return clock_status(
+            StatusCode::InvalidArgument, "Unix replay timestamp is before Unix epoch");
     }
     return anchor.unix_anchor_ns - magnitude;
 }
@@ -72,12 +72,12 @@ ClockCorrelation::ClockCorrelation(std::unique_ptr<State> state) noexcept
 Result<ClockCorrelation> ClockCorrelation::establish(
     rodaq_clock_handle clock, ClockReadingFunction clock_reading, UnixTimeFunction unix_time) {
     if (clock.value == 0) {
-        return nonstd::make_unexpected(clock_error(
-            ErrorCode::InvalidArgument, "Clock correlation requires a valid ingress Clock"));
+        return clock_status(
+            StatusCode::InvalidArgument, "Clock correlation requires a valid ingress Clock");
     }
     if (!clock_reading || !unix_time) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::InvalidArgument, "Clock correlation readers must be provided"));
+        return clock_status(
+            StatusCode::InvalidArgument, "Clock correlation readers must be provided");
     }
 
     try {
@@ -85,26 +85,25 @@ Result<ClockCorrelation> ClockCorrelation::establish(
         const std::uint64_t unix_ns = unix_time();
         const std::int64_t after = clock_reading();
         if (after < before) {
-            return nonstd::make_unexpected(clock_error(
-                ErrorCode::Unavailable, "Ingress clock moved backward during anchor capture"));
+            return clock_status(
+                StatusCode::Unavailable, "Ingress clock moved backward during anchor capture");
         }
         return from_anchor(UnixEpochClockAnchor{clock, midpoint(before, after), unix_ns});
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(clock_error(
-            ErrorCode::ResourceExhausted, "Memory exhausted while capturing Clock anchor"));
+        return clock_status(
+            StatusCode::ResourceExhausted, "Memory exhausted while capturing Clock anchor");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(clock_error(
-            ErrorCode::Unavailable, std::string("Clock anchor capture failed: ") + error.what()));
+        return clock_status(
+            StatusCode::Unavailable, std::string("Clock anchor capture failed: ") + error.what());
     } catch (...) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::Unavailable, "Unknown Clock anchor capture failure"));
+        return clock_status(StatusCode::Unavailable, "Unknown Clock anchor capture failure");
     }
 }
 
 Result<ClockCorrelation> ClockCorrelation::from_anchor(UnixEpochClockAnchor anchor) {
     if (anchor.clock.value == 0) {
-        return nonstd::make_unexpected(clock_error(
-            ErrorCode::InvalidArgument, "Clock correlation requires a valid ingress Clock"));
+        return clock_status(
+            StatusCode::InvalidArgument, "Clock correlation requires a valid ingress Clock");
     }
 
     try {
@@ -112,23 +111,20 @@ Result<ClockCorrelation> ClockCorrelation::from_anchor(UnixEpochClockAnchor anch
         state->anchor = anchor;
         return ClockCorrelation(std::move(state));
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(clock_error(
-            ErrorCode::ResourceExhausted, "Memory exhausted while creating Clock correlation"));
+        return clock_status(
+            StatusCode::ResourceExhausted, "Memory exhausted while creating Clock correlation");
     }
 }
 
 Result<UnixEpochClockAnchor> ClockCorrelation::get_anchor(rodaq_clock_handle clock) const {
     if (clock.value == 0) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::InvalidArgument, "Clock handle is invalid"));
+        return clock_status(StatusCode::InvalidArgument, "Clock handle is invalid");
     }
     if (state_ == nullptr) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::InvalidState, "Clock correlation object is empty"));
+        return clock_status(StatusCode::InvalidState, "Clock correlation object is empty");
     }
     if (clock.value != state_->anchor.clock.value) {
-        return nonstd::make_unexpected(
-            clock_error(ErrorCode::NotFound, "No correlation exists for the requested Clock"));
+        return clock_status(StatusCode::NotFound, "No correlation exists for the requested Clock");
     }
     return state_->anchor;
 }
@@ -137,39 +133,39 @@ rodaq_interface ClockCorrelation::abi_interface() noexcept {
     return rodaq_interface{state_.get(), &kClockCorrelationVtable};
 }
 
-rodaq_status ClockCorrelation::get_unix_epoch_anchor(
+rodaq_status_code ClockCorrelation::get_unix_epoch_anchor(
     void* context, rodaq_clock_handle clock, rodaq_unix_epoch_clock_anchor* out_anchor,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (out_anchor == nullptr) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
-            "Clock anchor query requires a non-null output value", out_error);
+            "Clock anchor query requires a non-null output value", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t capacity = out_anchor->struct_size;
     if (capacity < RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE) {
         out_anchor->struct_size = 0;
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
-            "Clock anchor output capacity is below the V1 minimum", out_error);
+            "Clock anchor output capacity is below the V1 minimum", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t initialized =
         rodaq::initialized_prefix_size<rodaq_unix_epoch_clock_anchor>(capacity);
     std::memset(out_anchor, 0, initialized);
     if (context == nullptr) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
-            "Clock anchor query context is null", out_error);
+            "Clock anchor query context is null", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
     try {
         const auto* state = static_cast<const State*>(context);
         if (state->anchor.clock.value != clock.value) {
-            assign_rodaq_error(
+            assign_abi_status(
                 RODAQ_STATUS_NOT_FOUND, "clock_correlation", 0,
-                "No correlation exists for the requested Clock", out_error);
+                "No correlation exists for the requested Clock", out_status);
             return RODAQ_STATUS_NOT_FOUND;
         }
         out_anchor->struct_size = initialized;
@@ -185,13 +181,13 @@ rodaq_status ClockCorrelation::get_unix_epoch_anchor(
         }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        assign_rodaq_error(
-            RODAQ_STATUS_INTERNAL_ERROR, "clock_correlation", 0, error.what(), out_error);
+        assign_abi_status(
+            RODAQ_STATUS_INTERNAL_ERROR, "clock_correlation", 0, error.what(), out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     } catch (...) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INTERNAL_ERROR, "clock_correlation", 0,
-            "Unknown Clock anchor query failure", out_error);
+            "Unknown Clock anchor query failure", out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     }
 }

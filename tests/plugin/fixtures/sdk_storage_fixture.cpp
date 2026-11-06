@@ -124,7 +124,10 @@ public:
 #if RODAQ_SDK_STORAGE_FAIL_FLUSH
         return failure();
 #endif
-        return stage_ == Stage::Opened ? rodaq::Result<void>() : invalid_state();
+        if (stage_ != Stage::Opened) {
+            return invalid_state();
+        }
+        return {};
     }
     rodaq::Result<void> close(rodaq_storage_close_disposition) override {
         if (stage_ != Stage::Opened) {
@@ -140,19 +143,19 @@ public:
 private:
     enum class Stage { Created, Bound, Configured, Opened, Closed };
 
-    static rodaq::Result<void> invalid_state() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::InvalidState, "fixture", 0, "invalid lifecycle order"));
+    static rodaq::Status invalid_state() {
+        return rodaq::Status(
+            rodaq::StatusCode::InvalidState, "fixture", 0, "invalid lifecycle order");
     }
 
     static rodaq::Result<rodaq_storage_submit_result> invalid_state_value() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::InvalidState, "fixture", 0, "invalid lifecycle order"));
+        return rodaq::Status(
+            rodaq::StatusCode::InvalidState, "fixture", 0, "invalid lifecycle order");
     }
 
-    static rodaq::Result<void> failure() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::Unavailable, "fixture", 9, "fixture lifecycle failure"));
+    static rodaq::Status failure() {
+        return rodaq::Status(
+            rodaq::StatusCode::Unavailable, "fixture", 9, "fixture lifecycle failure");
     }
 
     rodaq::StorageRuntime runtime_;

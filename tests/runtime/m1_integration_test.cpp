@@ -38,17 +38,17 @@ void release_retain_probe(void* owner_context) noexcept {
 
 TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     auto registry = Registry<std::string, StreamHandle>::create(2);
-    ASSERT_TRUE(registry.has_value());
+    ASSERT_TRUE(registry.ok());
     auto stream_metadata = registry.value().insert("camera.front");
-    ASSERT_TRUE(stream_metadata.has_value());
+    ASSERT_TRUE(stream_metadata.ok());
 
     auto payload_pool = PayloadPool::create(32, 2);
-    ASSERT_TRUE(payload_pool.has_value());
+    ASSERT_TRUE(payload_pool.ok());
     auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{2, 64});
     ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::create(1);
-    ASSERT_TRUE(sequences_result.has_value());
+    ASSERT_TRUE(sequences_result.ok());
     AcceptanceSequenceAllocator sequences(std::move(sequences_result.value()));
     RuntimeStats stats;
     gate.open();
@@ -56,26 +56,26 @@ TEST(M1IntegrationTest, ComposesPrimitivesAndReturnsAllResources) {
     const std::array<std::uint8_t, 6> source{0, 1, 2, 3, 4, 5};
     auto payload =
         payload_pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
-    ASSERT_TRUE(payload.has_value());
+    ASSERT_TRUE(payload.ok());
 
     AdmissionRequest request;
     request.resources = ResourceAmount{1, source.size()};
     request.mode = AdmissionMode::Reject;
     auto admission = gate.admit(request);
-    ASSERT_TRUE(admission.has_value());
+    ASSERT_TRUE(admission.ok());
     ASSERT_EQ(admission.value().outcome, AdmissionGateOutcome::Granted);
 
     // This test composes M1 primitives explicitly. M2 owns the atomic
     // per-stream Admission Commit that combines Gate pass and publication.
     auto sequence = sequences.allocate(kStream);
-    ASSERT_TRUE(sequence.has_value());
+    ASSERT_TRUE(sequence.ok());
     TimestampState timestamps;
-    ASSERT_TRUE(timestamps.set(0, 1234).has_value());
+    ASSERT_TRUE(timestamps.set(0, 1234).ok());
     {
         auto record = RuntimeRecord::create(
             kBinding, sequence.value(), std::nullopt, std::nullopt, timestamps,
             std::move(payload.value()), std::move(admission.value().reservation));
-        ASSERT_TRUE(record.has_value());
+        ASSERT_TRUE(record.ok());
         stats.record_accepted(record.value().record_payload().size());
         stats.record_inflight_acquired(record.value().record_payload().size());
 
@@ -109,26 +109,26 @@ TEST(M1IntegrationTest, ResourceUnavailableDoesNotConsumeAcceptanceSequence) {
     ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::create(1);
-    ASSERT_TRUE(sequences_result.has_value());
+    ASSERT_TRUE(sequences_result.ok());
     AcceptanceSequenceAllocator sequences(std::move(sequences_result.value()));
     gate.open();
 
     auto holder = budget.try_reserve(ResourceAmount{1, 4});
-    ASSERT_TRUE(holder.has_value());
+    ASSERT_TRUE(holder.ok());
 
     AdmissionRequest request;
     request.resources = ResourceAmount{1, 4};
     request.mode = AdmissionMode::Reject;
     auto unavailable = gate.admit(request);
-    ASSERT_TRUE(unavailable.has_value());
+    ASSERT_TRUE(unavailable.ok());
     EXPECT_EQ(unavailable.value().outcome, AdmissionGateOutcome::ResourceUnavailable);
 
     holder.value().release();
     auto accepted = gate.admit(request);
-    ASSERT_TRUE(accepted.has_value());
+    ASSERT_TRUE(accepted.ok());
     ASSERT_EQ(accepted.value().outcome, AdmissionGateOutcome::Granted);
     auto first_sequence = sequences.allocate(kStream);
-    ASSERT_TRUE(first_sequence.has_value());
+    ASSERT_TRUE(first_sequence.ok());
     EXPECT_EQ(first_sequence.value(), 0U);
 }
 
@@ -138,16 +138,16 @@ TEST(M1IntegrationTest, RetainedBytesRemainBudgetedUntilRecordDestruction) {
     auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{1, source.size()});
     ResourceBudget& budget = *budget_owner;
     auto reservation = budget.try_reserve(ResourceAmount{1, source.size()});
-    ASSERT_TRUE(reservation.has_value());
+    ASSERT_TRUE(reservation.ok());
     auto retained =
         Payload::retain(PayloadView(source.data(), source.size()), &probe, &release_retain_probe);
-    ASSERT_TRUE(retained.has_value());
+    ASSERT_TRUE(retained.ok());
 
     {
         auto record = RuntimeRecord::create(
             kBinding, 0, std::nullopt, std::nullopt, TimestampState{}, std::move(retained.value()),
             std::move(reservation.value()));
-        ASSERT_TRUE(record.has_value());
+        ASSERT_TRUE(record.ok());
         EXPECT_EQ(budget.used(), (ResourceAmount{1, source.size()}));
         EXPECT_EQ(probe.releases, 0);
     }
@@ -164,12 +164,12 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
     constexpr int kExpectedOperations = kThreadCount * kOperationsPerThread;
 
     auto payload_pool = PayloadPool::create(16, kThreadCount * 4);
-    ASSERT_TRUE(payload_pool.has_value());
+    ASSERT_TRUE(payload_pool.ok());
     auto budget_owner = std::make_unique<ResourceBudget>(ResourceAmount{2, kPayloadSize * 2});
     ResourceBudget& budget = *budget_owner;
     AdmissionGate gate(budget);
     auto sequences_result = AcceptanceSequenceAllocator::create(1);
-    ASSERT_TRUE(sequences_result.has_value());
+    ASSERT_TRUE(sequences_result.ok());
     AcceptanceSequenceAllocator sequences(std::move(sequences_result.value()));
     RuntimeStats stats;
     gate.open();
@@ -190,7 +190,7 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
             for (int operation = 0; operation < kOperationsPerThread; ++operation) {
                 auto payload = payload_pool.value().acquire(
                     kPayloadSize, PayloadView(source.data(), source.size()));
-                if (!payload.has_value()) {
+                if (!payload.ok()) {
                     failures.fetch_add(1);
                     continue;
                 }
@@ -203,7 +203,7 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
                     request.deadline = Clock::now() + std::chrono::milliseconds(500);
                 }
                 auto admission = gate.admit(request);
-                if (!admission.has_value()) {
+                if (!admission.ok()) {
                     failures.fetch_add(1);
                     continue;
                 }
@@ -223,7 +223,7 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
                 }
 
                 auto sequence = sequences.allocate(kStream);
-                if (!sequence.has_value()) {
+                if (!sequence.ok()) {
                     failures.fetch_add(1);
                     continue;
                 }
@@ -234,7 +234,7 @@ TEST(M1IntegrationTest, BoundedMultiProducerRejectWaitMixLeavesNoLeaks) {
                 auto record = RuntimeRecord::create(
                     kBinding, sequence.value(), std::nullopt, std::nullopt, TimestampState{},
                     std::move(payload.value()), std::move(admission.value().reservation));
-                if (!record.has_value()) {
+                if (!record.ok()) {
                     failures.fetch_add(1);
                     continue;
                 }

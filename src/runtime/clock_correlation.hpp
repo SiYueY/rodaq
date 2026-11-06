@@ -44,9 +44,9 @@ private:
 
     explicit ClockCorrelation(std::unique_ptr<State> state) noexcept;
 
-    static rodaq_status get_unix_epoch_anchor(
+    static rodaq_status_code get_unix_epoch_anchor(
         void* context, rodaq_clock_handle clock, rodaq_unix_epoch_clock_anchor* out_anchor,
-        rodaq_error* out_error) noexcept;
+        rodaq_status* out_status) noexcept;
 
     static const rodaq_runtime_clock_correlation_v1 kClockCorrelationVtable;
 

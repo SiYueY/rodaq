@@ -1205,7 +1205,7 @@ Failed
 ```
 
 `Ready` and `Unsupported` carry `failure.code == OK`. `Failed` carries a non-OK
-`rodaq_error` value with the backend domain, native code and message. The
+`rodaq_status` value with the backend domain, native code and message. The
 function-level `out_error` remains reserved for ABI/control-call failure.
 
 Readiness is evaluated against the current immutable Descriptor and immutable
@@ -2676,7 +2676,7 @@ persistence_completed(
 ```
 
 `error` is borrowed for the callback duration and is a complete
-`rodaq_error` value. On `SUCCEEDED` it is `NULL`; on `FAILED` or `UNKNOWN` it
+`rodaq_status` value. On `SUCCEEDED` it is `NULL`; on `FAILED` or `UNKNOWN` it
 is non-NULL with a non-OK status. Runtime must copy the value before retaining
 it.
 

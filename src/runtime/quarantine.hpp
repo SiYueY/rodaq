@@ -24,7 +24,7 @@ enum class SupervisedCallStatus {
 
 struct SupervisedCallOutcome {
     SupervisedCallStatus status = SupervisedCallStatus::Failed;
-    std::optional<Error> error;
+    Status error;
 };
 
 class QuarantineManager final {

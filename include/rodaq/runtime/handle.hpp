@@ -46,8 +46,8 @@ public:
 
     Result<HandleType> allocate() {
         if (next_value_ == 0) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::ResourceExhausted, "runtime handle identity space is exhausted"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted, "runtime handle identity space is exhausted");
         }
 
         const std::uint64_t value = next_value_;

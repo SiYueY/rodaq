@@ -10,16 +10,16 @@ bool CommonRuntimeService::valid() const noexcept {
 
 Result<CommonRuntimeService> CommonRuntimeService::from(InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Common Runtime interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Common Runtime interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_common_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_COMMON_PROTOCOL_VERSION ||
         table->struct_size < RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE || table->log == nullptr ||
         table->monotonic_time_ns == nullptr || table->get_lifecycle_snapshot == nullptr ||
         table->report_diagnostic == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Common Runtime ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Common Runtime ABI is incompatible");
     }
     return CommonRuntimeService(interface.context(), table);
 }
@@ -36,24 +36,24 @@ void CommonRuntimeService::log(
 
 Result<std::uint64_t> CommonRuntimeService::monotonic_time_ns() const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Common Runtime service is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidState, "sdk", 0, "Common Runtime service is invalid");
     }
     return table_->monotonic_time_ns(context_);
 }
 
 Result<rodaq_runtime_lifecycle_snapshot> CommonRuntimeService::lifecycle_snapshot() const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Common Runtime service is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidState, "sdk", 0, "Common Runtime service is invalid");
     }
-    rodaq_runtime_lifecycle_snapshot value{};
-    rodaq_error error{};
-    const rodaq_status status = table_->get_lifecycle_snapshot(context_, &value, &error);
+    rodaq_runtime_lifecycle_snapshot snapshot{};
+    rodaq_status error{};
+    const rodaq_status_code status = table_->get_lifecycle_snapshot(context_, &snapshot, &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
-    return value;
+    return snapshot;
 }
 
 void CommonRuntimeService::diagnostic(
@@ -76,8 +76,8 @@ bool CanonicalRuntimeService::valid() const noexcept {
 
 Result<CanonicalRuntimeService> CanonicalRuntimeService::from(InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0, "Canonical Runtime interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Canonical Runtime interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_canonical_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_CANONICAL_PROTOCOL_VERSION ||
@@ -85,8 +85,8 @@ Result<CanonicalRuntimeService> CanonicalRuntimeService::from(InterfaceView inte
         table->get_source == nullptr || table->get_clock == nullptr ||
         table->get_schema == nullptr || table->get_timestamp_key_set == nullptr ||
         table->get_stream == nullptr || table->get_stream_descriptor == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Canonical Runtime ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Canonical Runtime ABI is incompatible");
     }
     return CanonicalRuntimeService(interface.context(), table);
 }
@@ -94,17 +94,16 @@ Result<CanonicalRuntimeService> CanonicalRuntimeService::from(InterfaceView inte
 Result<rodaq_timestamp_key_set_view> CanonicalRuntimeService::get_timestamp_key_set(
     std::uint64_t id) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Canonical service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Canonical service is invalid");
     }
-    rodaq_timestamp_key_set_view value{};
-    value.struct_size = sizeof(value);
-    rodaq_error error{};
-    const rodaq_status status = table_->get_timestamp_key_set(context_, id, &value, &error);
+    rodaq_timestamp_key_set_view key_set{};
+    key_set.struct_size = sizeof(key_set);
+    rodaq_status error{};
+    const rodaq_status_code status = table_->get_timestamp_key_set(context_, id, &key_set, &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
-    return value;
+    return key_set;
 }
 
 CanonicalRuntimeService::CanonicalRuntimeService(
@@ -117,15 +116,15 @@ bool ProjectionRuntimeService::valid() const noexcept {
 
 Result<ProjectionRuntimeService> ProjectionRuntimeService::from(InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Projection interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Projection interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_projection_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION ||
         table->struct_size < RODAQ_RUNTIME_PROJECTION_V1_MIN_STRUCT_SIZE ||
         table->register_projection == nullptr || table->get_projection == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Projection ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Projection ABI is incompatible");
     }
     return ProjectionRuntimeService(interface.context(), table);
 }
@@ -134,41 +133,39 @@ Result<void> ProjectionRuntimeService::register_entry(
     rodaq_stream_descriptor_handle descriptor, std::string_view id, const std::uint8_t* data,
     std::size_t size) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Projection service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Projection service is invalid");
     }
     if ((!id.empty() && id.data() == nullptr) || (size != 0 && data == nullptr)) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0, "Projection registration has an invalid view"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Projection registration has an invalid view");
     }
     rodaq_projection_registration request{};
     request.struct_size = sizeof(request);
     request.descriptor = descriptor;
     request.projection_id = rodaq_string_view{id.data(), id.size()};
     request.payload = rodaq_bytes_view{data, size};
-    rodaq_error error{};
+    rodaq_status error{};
     return runtime_result(table_->register_projection(context_, &request, &error), error);
 }
 
 Result<rodaq_projection_view> ProjectionRuntimeService::get(
     rodaq_stream_descriptor_handle descriptor, std::string_view id) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Projection service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Projection service is invalid");
     }
     if (!id.empty() && id.data() == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Projection lookup key is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Projection lookup key is invalid");
     }
-    rodaq_projection_view value{};
-    value.struct_size = sizeof(value);
-    rodaq_error error{};
-    const rodaq_status status = table_->get_projection(
-        context_, descriptor, rodaq_string_view{id.data(), id.size()}, &value, &error);
+    rodaq_projection_view projection{};
+    projection.struct_size = sizeof(projection);
+    rodaq_status error{};
+    const rodaq_status_code status = table_->get_projection(
+        context_, descriptor, rodaq_string_view{id.data(), id.size()}, &projection, &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
-    return value;
+    return projection;
 }
 
 ProjectionRuntimeService::ProjectionRuntimeService(
@@ -182,15 +179,15 @@ bool ClockCorrelationRuntimeService::valid() const noexcept {
 Result<ClockCorrelationRuntimeService> ClockCorrelationRuntimeService::from(
     InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0, "Clock-correlation interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Clock-correlation interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_clock_correlation_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_CLOCK_CORRELATION_PROTOCOL_VERSION ||
         table->struct_size < RODAQ_RUNTIME_CLOCK_CORRELATION_V1_MIN_STRUCT_SIZE ||
         table->get_unix_epoch_anchor == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Clock-correlation ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Clock-correlation ABI is incompatible");
     }
     return ClockCorrelationRuntimeService(interface.context(), table);
 }
@@ -198,15 +195,14 @@ Result<ClockCorrelationRuntimeService> ClockCorrelationRuntimeService::from(
 Result<rodaq_unix_epoch_clock_anchor> ClockCorrelationRuntimeService::anchor(
     rodaq_clock_handle clock) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Clock service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Clock service is invalid");
     }
     rodaq_unix_epoch_clock_anchor value{};
     value.struct_size = sizeof(value);
-    rodaq_error error{};
-    const rodaq_status status = table_->get_unix_epoch_anchor(context_, clock, &value, &error);
+    rodaq_status error{};
+    const rodaq_status_code status = table_->get_unix_epoch_anchor(context_, clock, &value, &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
     return value;
 }
@@ -221,8 +217,8 @@ bool AcquisitionRuntimeService::valid() const noexcept {
 
 Result<AcquisitionRuntimeService> AcquisitionRuntimeService::from(InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0, "Acquisition Runtime interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Acquisition Runtime interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_acquisition_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION ||
@@ -233,8 +229,8 @@ Result<AcquisitionRuntimeService> AcquisitionRuntimeService::from(InterfaceView 
         table->report_source_availability == nullptr ||
         table->report_stream_availability == nullptr || table->report_plugin_state == nullptr ||
         table->submit == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Acquisition Runtime ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Acquisition Runtime ABI is incompatible");
     }
     return AcquisitionRuntimeService(interface.context(), table);
 }
@@ -242,55 +238,51 @@ Result<AcquisitionRuntimeService> AcquisitionRuntimeService::from(InterfaceView 
 Result<rodaq_acquisition_submit_result> AcquisitionRuntimeService::submit(
     const rodaq_record_submission& submission) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Acquisition service is invalid");
     }
     if (!plugin::is_valid_record_submission(submission)) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::InvalidArgument, "sdk", 0,
-            "Acquisition submission is structurally invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0,
+            "Acquisition submission is structurally invalid");
     }
     rodaq_acquisition_submit_result result{};
     result.struct_size = sizeof(result);
-    rodaq_error error{};
-    const rodaq_status status = table_->submit(context_, &submission, &result, &error);
+    rodaq_status error{};
+    const rodaq_status_code status = table_->submit(context_, &submission, &result, &error);
     if (status != RODAQ_STATUS_OK) {
-        return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+        return status_from_abi(status, &error, "sdk");
     }
     return result;
 }
 
 Result<void> AcquisitionRuntimeService::report_source(
     rodaq_source_handle source, rodaq_availability_state state,
-    const rodaq_error* diagnostic) const {
+    const rodaq_status* diagnostic) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Acquisition service is invalid");
     }
-    rodaq_error error{};
+    rodaq_status error{};
     return runtime_result(
         table_->report_source_availability(context_, source, state, diagnostic, &error), error);
 }
 
 Result<void> AcquisitionRuntimeService::report_stream(
     rodaq_stream_handle stream, rodaq_availability_state state,
-    const rodaq_error* diagnostic) const {
+    const rodaq_status* diagnostic) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Acquisition service is invalid");
     }
-    rodaq_error error{};
+    rodaq_status error{};
     return runtime_result(
         table_->report_stream_availability(context_, stream, state, diagnostic, &error), error);
 }
 
 Result<void> AcquisitionRuntimeService::report_plugin_state(
-    rodaq_acquisition_plugin_state state, const rodaq_error* diagnostic) const {
+    rodaq_acquisition_plugin_state state, const rodaq_status* diagnostic) const {
     if (!valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Acquisition service is invalid");
     }
-    rodaq_error error{};
+    rodaq_status error{};
     return runtime_result(table_->report_plugin_state(context_, state, diagnostic, &error), error);
 }
 
@@ -304,16 +296,16 @@ bool StorageRuntimeService::valid() const noexcept {
 
 Result<StorageRuntimeService> StorageRuntimeService::from(InterfaceView interface) {
     if (!interface.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Storage Runtime interface is incomplete"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Storage Runtime interface is incomplete");
     }
     const auto* table = static_cast<const rodaq_runtime_storage_v1*>(interface.v_table());
     if (table->protocol_version != RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION ||
         table->struct_size < RODAQ_RUNTIME_STORAGE_V1_MIN_STRUCT_SIZE ||
         table->payload_consumed == nullptr || table->persistence_completed == nullptr ||
         table->report_failure == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "sdk", 0, "Storage Runtime ABI is incompatible"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "sdk", 0, "Storage Runtime ABI is incompatible");
     }
     return StorageRuntimeService(interface.context(), table);
 }
@@ -327,14 +319,14 @@ void StorageRuntimeService::payload_consumed(rodaq_storage_operation operation) 
 
 void StorageRuntimeService::persistence_completed(
     rodaq_storage_operation operation, rodaq_storage_persistence_state state,
-    const rodaq_error* error) const {
+    const rodaq_status* error) const {
     if (!valid()) {
         return;
     }
     table_->persistence_completed(context_, operation, state, error);
 }
 
-void StorageRuntimeService::report_failure(const rodaq_error* error) const {
+void StorageRuntimeService::report_failure(const rodaq_status* error) const {
     if (!valid()) {
         return;
     }
@@ -347,38 +339,38 @@ StorageRuntimeService::StorageRuntimeService(
 
 Result<AcquisitionRuntime> AcquisitionRuntime::bind(ServiceRegistryView services) {
     Result<InterfaceView> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
-    if (!common_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(common_interface.error()));
+    if (!common_interface.ok()) {
+        return std::move(common_interface).status();
     }
     auto common = CommonRuntimeService::from(common_interface.value());
-    if (!common.has_value()) {
-        return nonstd::make_unexpected(std::move(common.error()));
+    if (!common.ok()) {
+        return std::move(common).status();
     }
     Result<InterfaceView> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
-    if (!canonical_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(canonical_interface.error()));
+    if (!canonical_interface.ok()) {
+        return std::move(canonical_interface).status();
     }
     auto canonical = CanonicalRuntimeService::from(canonical_interface.value());
-    if (!canonical.has_value()) {
-        return nonstd::make_unexpected(std::move(canonical.error()));
+    if (!canonical.ok()) {
+        return std::move(canonical).status();
     }
     Result<InterfaceView> projection_interface =
         services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
-    if (!projection_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(projection_interface.error()));
+    if (!projection_interface.ok()) {
+        return std::move(projection_interface).status();
     }
     auto projection = ProjectionRuntimeService::from(projection_interface.value());
-    if (!projection.has_value()) {
-        return nonstd::make_unexpected(std::move(projection.error()));
+    if (!projection.ok()) {
+        return std::move(projection).status();
     }
     Result<InterfaceView> acquisition_interface =
         services.query(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID);
-    if (!acquisition_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(acquisition_interface.error()));
+    if (!acquisition_interface.ok()) {
+        return std::move(acquisition_interface).status();
     }
     auto acquisition = AcquisitionRuntimeService::from(acquisition_interface.value());
-    if (!acquisition.has_value()) {
-        return nonstd::make_unexpected(std::move(acquisition.error()));
+    if (!acquisition.ok()) {
+        return std::move(acquisition).status();
     }
     return AcquisitionRuntime{
         std::move(common.value()),
@@ -390,46 +382,46 @@ Result<AcquisitionRuntime> AcquisitionRuntime::bind(ServiceRegistryView services
 
 Result<StorageRuntime> StorageRuntime::bind(ServiceRegistryView services) {
     Result<InterfaceView> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
-    if (!common_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(common_interface.error()));
+    if (!common_interface.ok()) {
+        return std::move(common_interface).status();
     }
     auto common = CommonRuntimeService::from(common_interface.value());
-    if (!common.has_value()) {
-        return nonstd::make_unexpected(std::move(common.error()));
+    if (!common.ok()) {
+        return std::move(common).status();
     }
     Result<InterfaceView> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
-    if (!canonical_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(canonical_interface.error()));
+    if (!canonical_interface.ok()) {
+        return std::move(canonical_interface).status();
     }
     auto canonical = CanonicalRuntimeService::from(canonical_interface.value());
-    if (!canonical.has_value()) {
-        return nonstd::make_unexpected(std::move(canonical.error()));
+    if (!canonical.ok()) {
+        return std::move(canonical).status();
     }
     Result<InterfaceView> projection_interface =
         services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
-    if (!projection_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(projection_interface.error()));
+    if (!projection_interface.ok()) {
+        return std::move(projection_interface).status();
     }
     auto projection = ProjectionRuntimeService::from(projection_interface.value());
-    if (!projection.has_value()) {
-        return nonstd::make_unexpected(std::move(projection.error()));
+    if (!projection.ok()) {
+        return std::move(projection).status();
     }
     Result<InterfaceView> clock_interface =
         services.query(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID);
-    if (!clock_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(clock_interface.error()));
+    if (!clock_interface.ok()) {
+        return std::move(clock_interface).status();
     }
     auto clock = ClockCorrelationRuntimeService::from(clock_interface.value());
-    if (!clock.has_value()) {
-        return nonstd::make_unexpected(std::move(clock.error()));
+    if (!clock.ok()) {
+        return std::move(clock).status();
     }
     Result<InterfaceView> storage_interface = services.query(RODAQ_RUNTIME_STORAGE_SERVICE_ID);
-    if (!storage_interface.has_value()) {
-        return nonstd::make_unexpected(std::move(storage_interface.error()));
+    if (!storage_interface.ok()) {
+        return std::move(storage_interface).status();
     }
     auto storage = StorageRuntimeService::from(storage_interface.value());
-    if (!storage.has_value()) {
-        return nonstd::make_unexpected(std::move(storage.error()));
+    if (!storage.ok()) {
+        return std::move(storage).status();
     }
     return StorageRuntime{
         std::move(common.value()), std::move(canonical.value()), std::move(projection.value()),
@@ -437,20 +429,20 @@ Result<StorageRuntime> StorageRuntime::bind(ServiceRegistryView services) {
     };
 }
 
-#define RODAQ_SDK_CANONICAL_GETTER(method, handle_type, view_type)                             \
-    Result<view_type> CanonicalRuntimeService::method(handle_type handle) const {              \
-        if (!valid()) {                                                                        \
-            return nonstd::make_unexpected(                                                    \
-                Error(ErrorCode::InvalidState, "sdk", 0, "Canonical service is invalid"));     \
-        }                                                                                      \
-        view_type value{};                                                                     \
-        value.struct_size = sizeof(view_type);                                                 \
-        rodaq_error error{};                                                                   \
-        const rodaq_status status = table_->method(context_, handle, &value, &error);          \
-        if (status != RODAQ_STATUS_OK) {                                                       \
-            return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error()); \
-        }                                                                                      \
-        return value;                                                                          \
+#define RODAQ_SDK_CANONICAL_GETTER(method, handle_type, view_type)                         \
+    Result<view_type> CanonicalRuntimeService::method(handle_type handle) const {          \
+        if (!valid()) {                                                                    \
+            return rodaq::Status(                                                          \
+                StatusCode::InvalidState, "sdk", 0, "Canonical service is invalid");       \
+        }                                                                                  \
+        view_type value{};                                                                 \
+        value.struct_size = sizeof(view_type);                                             \
+        rodaq_status error{};                                                              \
+        const rodaq_status_code status = table_->method(context_, handle, &value, &error); \
+        if (status != RODAQ_STATUS_OK) {                                                   \
+            return status_from_abi(status, &error, "sdk");                                 \
+        }                                                                                  \
+        return value;                                                                      \
     }
 
 RODAQ_SDK_CANONICAL_GETTER(get_source, rodaq_source_handle, rodaq_source_view)
@@ -461,24 +453,24 @@ RODAQ_SDK_CANONICAL_GETTER(
     get_stream_descriptor, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_view)
 #undef RODAQ_SDK_CANONICAL_GETTER
 
-#define RODAQ_SDK_ACQ_REGISTER(method, abi_method, request_type, handle_type, validator)       \
-    Result<handle_type> AcquisitionRuntimeService::method(const request_type& request) const { \
-        if (!valid()) {                                                                        \
-            return nonstd::make_unexpected(                                                    \
-                Error(ErrorCode::InvalidState, "sdk", 0, "Acquisition service is invalid"));   \
-        }                                                                                      \
-        if (!plugin::validator(request)) {                                                     \
-            return nonstd::make_unexpected(Error(                                              \
-                ErrorCode::InvalidArgument, "sdk", 0,                                          \
-                "Acquisition registration request is structurally invalid"));                  \
-        }                                                                                      \
-        handle_type handle{};                                                                  \
-        rodaq_error error{};                                                                   \
-        const rodaq_status status = table_->abi_method(context_, &request, &handle, &error);   \
-        if (status != RODAQ_STATUS_OK) {                                                       \
-            return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error()); \
-        }                                                                                      \
-        return handle;                                                                         \
+#define RODAQ_SDK_ACQ_REGISTER(method, abi_method, request_type, handle_type, validator)          \
+    Result<handle_type> AcquisitionRuntimeService::method(const request_type& request) const {    \
+        if (!valid()) {                                                                           \
+            return rodaq::Status(                                                                 \
+                StatusCode::InvalidState, "sdk", 0, "Acquisition service is invalid");            \
+        }                                                                                         \
+        if (!plugin::validator(request)) {                                                        \
+            return rodaq::Status(                                                                 \
+                StatusCode::InvalidArgument, "sdk", 0,                                            \
+                "Acquisition registration request is structurally invalid");                      \
+        }                                                                                         \
+        handle_type handle{};                                                                     \
+        rodaq_status error{};                                                                     \
+        const rodaq_status_code status = table_->abi_method(context_, &request, &handle, &error); \
+        if (status != RODAQ_STATUS_OK) {                                                          \
+            return status_from_abi(status, &error, "sdk");                                        \
+        }                                                                                         \
+        return handle;                                                                            \
     }
 RODAQ_SDK_ACQ_REGISTER(
     register_source, register_source, rodaq_source_registration, rodaq_source_handle,

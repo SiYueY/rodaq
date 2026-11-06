@@ -54,8 +54,7 @@ Result<Reservation> ResourceBudget::try_reserve(ResourceAmount requested) {
     std::lock_guard<std::mutex> lock(mutex_);
     const ReserveResult result = try_reserve_locked(requested);
     if (!result.reserved) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "resource budget is exhausted"));
+        return rodaq::Status(StatusCode::ResourceExhausted, "resource budget is exhausted");
     }
     return Reservation(*this, requested);
 }

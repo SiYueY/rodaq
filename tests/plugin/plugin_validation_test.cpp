@@ -82,7 +82,7 @@ TEST(PluginDescriptorValidationTest, AcceptsValidDescriptorWithEmptyDescription)
     };
 
     const auto metadata = rodaq::plugin::validate_plugin_descriptor(descriptor);
-    ASSERT_TRUE(metadata.has_value());
+    ASSERT_TRUE(metadata.ok());
     EXPECT_EQ(metadata.value().id, "rodaq.acquisition.fixture");
     EXPECT_EQ(metadata.value().name, "Fixture");
     EXPECT_EQ(metadata.value().version, "1.2.3");
@@ -99,11 +99,11 @@ TEST(PluginDescriptorValidationTest, RejectsMissingRequiredFieldsAndReserved) {
         {"", 0},
     };
 
-    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).has_value());
+    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).ok());
     descriptor.name = {"Fixture", 7};
     descriptor.reserved = 1;
-    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).has_value());
+    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).ok());
     descriptor.reserved = 0;
     descriptor.struct_size = RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE - 1;
-    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).has_value());
+    EXPECT_FALSE(rodaq::plugin::validate_plugin_descriptor(descriptor).ok());
 }

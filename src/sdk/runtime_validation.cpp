@@ -2,11 +2,11 @@
 
 namespace rodaq {
 
-Result<void> runtime_result(rodaq_status status, const rodaq_error& error) {
+Result<void> runtime_result(rodaq_status_code status, const rodaq_status& error) {
     if (status == RODAQ_STATUS_OK) {
         return {};
     }
-    return nonstd::make_unexpected(result_from_status(status, &error, "sdk").error());
+    return status_from_abi(status, &error, "sdk");
 }
 
 }  // namespace rodaq

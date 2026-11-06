@@ -4,7 +4,7 @@
 #include "plugin/shared_library.hpp"
 #include "plugin/storage_plugin_instance.hpp"
 
-#include <rodaq/error.hpp>
+#include <rodaq/status.hpp>
 
 #include <cstdlib>
 #include <filesystem>
@@ -19,8 +19,9 @@
 namespace {
 
 namespace fs = std::filesystem;
-using rodaq::ErrorCode;
 using rodaq::Result;
+using rodaq::Status;
+using rodaq::StatusCode;
 using rodaq::plugin::AcquisitionPluginInstance;
 using rodaq::plugin::PluginCatalog;
 using rodaq::plugin::PluginFamily;
@@ -62,10 +63,10 @@ bool has_event(const std::vector<std::string>& events, std::string_view name) {
 }
 
 void expect_error(
-    const Result<PluginLibrary>& result, int expected_code, std::string_view scenario) {
-    require(!result.has_value(), scenario);
+    const Result<PluginLibrary>& result, int expected_status_code, std::string_view scenario) {
+    require(!result.ok(), scenario);
     require(
-        static_cast<int>(result.error().code()) == expected_code,
+        static_cast<int>(result.status().status_code()) == expected_status_code,
         "Unexpected Plugin error category");
 }
 
@@ -81,21 +82,21 @@ void check_shared_library(
     configure_event_log(event_path);
 
     Result<SharedLibrary> missing = SharedLibrary::open(missing_path);
-    require(!missing.has_value(), "Missing SharedLibrary path was accepted");
-    require(missing.error().code() == ErrorCode::NotFound, "Missing path error category");
+    require(!missing.ok(), "Missing SharedLibrary path was accepted");
+    require(missing.status().status_code() == StatusCode::NotFound, "Missing path error category");
 
     Result<SharedLibrary> non_dso = SharedLibrary::open(non_dso_path);
-    require(!non_dso.has_value(), "Non-DSO file was accepted");
-    require(non_dso.error().code() == ErrorCode::Unavailable, "Non-DSO error category");
+    require(!non_dso.ok(), "Non-DSO file was accepted");
+    require(non_dso.status().status_code() == StatusCode::Unavailable, "Non-DSO error category");
 
     Result<SharedLibrary> plain = SharedLibrary::open(plain_path);
-    require(plain.has_value(), "Plain DSO failed to open");
+    require(plain.ok(), "Plain DSO failed to open");
     Result<void*> absent = plain.value().find_symbol("missing_symbol");
-    require(!absent.has_value(), "Missing symbol was accepted");
-    require(absent.error().code() == ErrorCode::NotFound, "Missing symbol error category");
+    require(!absent.ok(), "Missing symbol was accepted");
+    require(absent.status().status_code() == StatusCode::NotFound, "Missing symbol error category");
 
     Result<SharedLibrary> opened = SharedLibrary::open(valid_path);
-    require(opened.has_value(), "Valid DSO failed to open");
+    require(opened.ok(), "Valid DSO failed to open");
     require(opened.value().valid(), "Valid DSO is not valid");
 
     SharedLibrary moved(std::move(opened.value()));
@@ -108,14 +109,14 @@ void check_shared_library(
     // NOLINTNEXTLINE(bugprone-use-after-move)
     require(!moved.valid(), "Move-assigned-from SharedLibrary remains valid");
     Result<void*> moved_from_symbol = moved.find_symbol("rodaq_plugin_abi_version");
-    require(!moved_from_symbol.has_value(), "Moved-from SharedLibrary resolved a symbol");
+    require(!moved_from_symbol.ok(), "Moved-from SharedLibrary resolved a symbol");
     require(
-        moved_from_symbol.error().code() == ErrorCode::InvalidState,
+        moved_from_symbol.status().status_code() == StatusCode::InvalidState,
         "Moved-from SharedLibrary error category");
 
     require(!has_event(read_events(event_path), "unload"), "DSO unloaded while owned");
     Result<SharedLibrary> replacement = SharedLibrary::open(plain_path);
-    require(replacement.has_value(), "Replacement DSO failed to open");
+    require(replacement.ok(), "Replacement DSO failed to open");
     assigned = std::move(replacement.value());
     require(
         has_event(read_events(event_path), "unload"), "Final SharedLibrary release did not unload");
@@ -125,7 +126,7 @@ void validate_success(const std::vector<fs::path>& paths) {
     std::size_t index = 0;
     for (const fs::path& path : paths) {
         Result<PluginLibrary> library = PluginLibrary::open(path);
-        require(library.has_value(), "Valid Plugin library was rejected");
+        require(library.ok(), "Valid Plugin library was rejected");
         require(library.value().valid(), "Valid Plugin library is inert");
         require(!library.value().metadata().id.empty(), "Valid Plugin ID is empty");
         require(library.value().lease().raw_descriptor() != nullptr, "Valid descriptor is null");
@@ -142,14 +143,16 @@ void validate_success(const std::vector<fs::path>& paths) {
     }
 }
 
-void validate_error(int expected_code, const fs::path& path) {
-    expect_error(PluginLibrary::open(path), expected_code, "Invalid Plugin library was accepted");
+void validate_error(int expected_status_code, const fs::path& path) {
+    expect_error(
+        PluginLibrary::open(path), expected_status_code, "Invalid Plugin library was accepted");
 }
 
 void validate_error_without_entrypoint(
-    int expected_code, const fs::path& path, const fs::path& event_path) {
+    int expected_status_code, const fs::path& path, const fs::path& event_path) {
     configure_event_log(event_path);
-    expect_error(PluginLibrary::open(path), expected_code, "Invalid Plugin library was accepted");
+    expect_error(
+        PluginLibrary::open(path), expected_status_code, "Invalid Plugin library was accepted");
     require(
         !has_event(read_events(event_path), "entrypoint"),
         "Family entrypoint executed before required validation");
@@ -158,10 +161,12 @@ void validate_error_without_entrypoint(
 void catalog_conflict(const fs::path& first_path, const fs::path& second_path) {
     PluginManager manager;
     Result<PluginLibraryLease> first = manager.load_library(first_path);
-    require(first.has_value(), "First Plugin failed to load");
+    require(first.ok(), "First Plugin failed to load");
     Result<PluginLibraryLease> second = manager.load_library(second_path);
-    require(!second.has_value(), "Duplicate Plugin ID was accepted");
-    require(second.error().code() == ErrorCode::Conflict, "Duplicate Plugin ID error category");
+    require(!second.ok(), "Duplicate Plugin ID was accepted");
+    require(
+        second.status().status_code() == StatusCode::Conflict,
+        "Duplicate Plugin ID error category");
 }
 
 void family_mismatch(
@@ -170,21 +175,20 @@ void family_mismatch(
     PluginManager manager;
     Result<PluginLibraryLease> acquisition = manager.load_library(acquisition_path);
     Result<PluginLibraryLease> storage = manager.load_library(storage_path);
-    require(
-        acquisition.has_value() && storage.has_value(), "Family mismatch fixtures failed to load");
+    require(acquisition.ok() && storage.ok(), "Family mismatch fixtures failed to load");
 
     Result<StoragePluginInstance> storage_instance =
         manager.create_storage_plugin_instance(std::move(acquisition.value()));
-    require(!storage_instance.has_value(), "Acquisition lease created a Storage instance");
+    require(!storage_instance.ok(), "Acquisition lease created a Storage instance");
     require(
-        storage_instance.error().code() == ErrorCode::InvalidArgument,
+        storage_instance.status().status_code() == StatusCode::InvalidArgument,
         "Acquisition-to-Storage mismatch error category");
 
     Result<AcquisitionPluginInstance> acquisition_instance =
         manager.create_acquisition_plugin_instance(std::move(storage.value()));
-    require(!acquisition_instance.has_value(), "Storage lease created an Acquisition instance");
+    require(!acquisition_instance.ok(), "Storage lease created an Acquisition instance");
     require(
-        acquisition_instance.error().code() == ErrorCode::InvalidArgument,
+        acquisition_instance.status().status_code() == StatusCode::InvalidArgument,
         "Storage-to-Acquisition mismatch error category");
     require(
         !has_event(read_events(event_path), "create"), "Family mismatch called Plugin create()");
@@ -195,13 +199,13 @@ void catalog_path_merge(const fs::path& path, const fs::path& event_path) {
     PluginManager manager;
     Result<PluginLibraryLease> first = manager.load_library(path);
     Result<PluginLibraryLease> second = manager.load_library(path);
-    require(first.has_value() && second.has_value(), "Same-path Plugin load failed");
+    require(first.ok() && second.ok(), "Same-path Plugin load failed");
     require(
         count_event(read_events(event_path), "load") == 1,
         "Same canonical path was opened more than once");
 
     Result<void> unloaded = manager.unload(first.value().metadata().id);
-    require(unloaded.has_value(), "Plugin unload request failed");
+    require(unloaded.ok(), "Plugin unload request failed");
     require(!has_event(read_events(event_path), "unload"), "DSO unloaded while leases existed");
 
     first.value() = PluginLibraryLease{};
@@ -216,7 +220,7 @@ void library_lease(const fs::path& path, const fs::path& event_path) {
     {
         PluginManager manager;
         Result<PluginLibraryLease> loaded = manager.load_library(path);
-        require(loaded.has_value(), "Plugin load failed");
+        require(loaded.ok(), "Plugin load failed");
         lease = loaded.value();
     }
     require(
@@ -229,21 +233,22 @@ void catalog_remove_with_live_instance(const fs::path& path, const fs::path& eve
     configure_event_log(event_path);
     PluginManager manager;
     Result<PluginLibraryLease> library = manager.load_library(path);
-    require(library.has_value(), "Plugin load failed");
+    require(library.ok(), "Plugin load failed");
     const std::string plugin_id = library.value().metadata().id;
 
     PluginInstanceLease instance_lease;
     {
         Result<AcquisitionPluginInstance> instance =
             manager.create_acquisition_plugin_instance(std::move(library.value()));
-        require(instance.has_value(), "Acquisition create failed");
+        require(instance.ok(), "Acquisition create failed");
         instance_lease = instance.value().lease();
 
         Result<void> unloaded = manager.unload(plugin_id);
-        require(unloaded.has_value(), "Plugin unload request failed");
+        require(unloaded.ok(), "Plugin unload request failed");
         Result<PluginLibraryLease> found = manager.find(plugin_id);
-        require(!found.has_value(), "Catalog entry remained visible");
-        require(found.error().code() == ErrorCode::NotFound, "Catalog removal error category");
+        require(!found.ok(), "Catalog entry remained visible");
+        require(
+            found.status().status_code() == StatusCode::NotFound, "Catalog removal error category");
 
         std::vector<std::string> removed_events = read_events(event_path);
         require(!has_event(removed_events, "destroy"), "Catalog removal destroyed instance");
@@ -267,7 +272,7 @@ void catalog_remove_with_live_library(const fs::path& path, const fs::path& even
     configure_event_log(event_path);
     PluginManager manager;
     Result<PluginLibraryLease> loaded = manager.load_library(path);
-    require(loaded.has_value(), "Plugin load failed");
+    require(loaded.ok(), "Plugin load failed");
     const std::string plugin_id = loaded.value().metadata().id;
     PluginLibraryLease retained = loaded.value();
     const rodaq_plugin_descriptor* descriptor = retained.raw_descriptor();
@@ -275,10 +280,10 @@ void catalog_remove_with_live_library(const fs::path& path, const fs::path& even
     require(descriptor != nullptr && protocol != nullptr, "Library metadata is unavailable");
 
     Result<void> unloaded = manager.unload(plugin_id);
-    require(unloaded.has_value(), "Plugin unload request failed");
+    require(unloaded.ok(), "Plugin unload request failed");
     Result<PluginLibraryLease> found = manager.find(plugin_id);
-    require(!found.has_value(), "Catalog entry remained visible");
-    require(found.error().code() == ErrorCode::NotFound, "Catalog removal error category");
+    require(!found.ok(), "Catalog entry remained visible");
+    require(found.status().status_code() == StatusCode::NotFound, "Catalog removal error category");
     require(descriptor->id.size > 0, "Descriptor became unreadable after catalog removal");
     require(protocol->query_interface != nullptr, "Protocol became invalid after catalog removal");
     require(
@@ -299,25 +304,25 @@ void plugin_instance_lease(const fs::path& path, bool acquisition, const fs::pat
     {
         PluginManager manager;
         Result<PluginLibraryLease> library = manager.load_library(path);
-        require(library.has_value(), "Plugin load failed");
+        require(library.ok(), "Plugin load failed");
         const std::string plugin_id = library.value().metadata().id;
         PluginInstanceLease lease;
         if (acquisition) {
             Result<AcquisitionPluginInstance> instance =
                 manager.create_acquisition_plugin_instance(std::move(library.value()));
-            require(instance.has_value(), "Acquisition create failed");
+            require(instance.ok(), "Acquisition create failed");
             lease = instance.value().lease();
             instance.value().destroy();
         } else {
             Result<StoragePluginInstance> instance =
                 manager.create_storage_plugin_instance(std::move(library.value()));
-            require(instance.has_value(), "Storage create failed");
+            require(instance.ok(), "Storage create failed");
             lease = instance.value().lease();
             instance.value().destroy();
         }
         instance_lease = lease;
         Result<void> unloaded = manager.unload(plugin_id);
-        require(unloaded.has_value(), "Plugin unload request failed");
+        require(unloaded.ok(), "Plugin unload request failed");
     }
 
     std::vector<std::string> before_destroy = read_events(event_path);
@@ -337,7 +342,7 @@ void descriptor_lifetime(const fs::path& path, const fs::path& event_path) {
     {
         PluginManager manager;
         Result<PluginLibraryLease> loaded = manager.load_library(path);
-        require(loaded.has_value(), "Plugin load failed");
+        require(loaded.ok(), "Plugin load failed");
         lease = loaded.value();
     }
 
@@ -352,24 +357,26 @@ void descriptor_lifetime(const fs::path& path, const fs::path& event_path) {
 void create_failure(const fs::path& path) {
     PluginManager manager;
     Result<PluginLibraryLease> library = manager.load_library(path);
-    require(library.has_value(), "Create-failure fixture failed to load");
+    require(library.ok(), "Create-failure fixture failed to load");
     Result<AcquisitionPluginInstance> instance =
         manager.create_acquisition_plugin_instance(std::move(library.value()));
-    require(!instance.has_value(), "Fixture create failure was accepted");
-    require(instance.error().code() == ErrorCode::Unavailable, "Create error category");
-    require(instance.error().native_code() == 77, "Create native code");
-    require(instance.error().domain() == "fixture", "Create error domain");
-    require(instance.error().message() == "fixture create failure", "Create error message");
+    require(!instance.ok(), "Fixture create failure was accepted");
+    require(instance.status().status_code() == StatusCode::Unavailable, "Create error category");
+    require(instance.status().error_code() == 77, "Create underlying error code");
+    require(instance.status().domain() == "fixture", "Create error domain");
+    require(instance.status().message() == "fixture create failure", "Create error message");
 }
 
 void create_null(const fs::path& path) {
     PluginManager manager;
     Result<PluginLibraryLease> library = manager.load_library(path);
-    require(library.has_value(), "Create-null fixture failed to load");
+    require(library.ok(), "Create-null fixture failed to load");
     Result<AcquisitionPluginInstance> instance =
         manager.create_acquisition_plugin_instance(std::move(library.value()));
-    require(!instance.has_value(), "OK + null create instance was accepted");
-    require(instance.error().code() == ErrorCode::InvalidArgument, "Null create error category");
+    require(!instance.ok(), "OK + null create instance was accepted");
+    require(
+        instance.status().status_code() == StatusCode::InvalidArgument,
+        "Null create error category");
 }
 
 void quarantine(const fs::path& path, const fs::path& event_path) {
@@ -378,25 +385,27 @@ void quarantine(const fs::path& path, const fs::path& event_path) {
     {
         PluginManager manager;
         Result<PluginLibraryLease> library = manager.load_library(path);
-        require(library.has_value(), "Quarantine fixture failed to load");
+        require(library.ok(), "Quarantine fixture failed to load");
         const std::string plugin_id = library.value().metadata().id;
         PluginLibraryLease retained_library = library.value();
         Result<AcquisitionPluginInstance> instance =
             manager.create_acquisition_plugin_instance(std::move(library.value()));
-        require(instance.has_value(), "Quarantine fixture create failed");
+        require(instance.ok(), "Quarantine fixture create failed");
         lease = instance.value().lease();
         manager.quarantine(lease);
 
         Result<PluginLibraryLease> found = manager.find(plugin_id);
-        require(!found.has_value(), "Quarantined Plugin remained available in catalog");
+        require(!found.ok(), "Quarantined Plugin remained available in catalog");
         require(
-            found.error().code() == ErrorCode::Unavailable, "Quarantine catalog error category");
+            found.status().status_code() == StatusCode::Unavailable,
+            "Quarantine catalog error category");
 
         Result<AcquisitionPluginInstance> blocked =
             manager.create_acquisition_plugin_instance(std::move(retained_library));
-        require(!blocked.has_value(), "Quarantined Plugin created another instance");
+        require(!blocked.ok(), "Quarantined Plugin created another instance");
         require(
-            blocked.error().code() == ErrorCode::Unavailable, "Quarantine create error category");
+            blocked.status().status_code() == StatusCode::Unavailable,
+            "Quarantine create error category");
     }
     lease = PluginInstanceLease{};
 
@@ -408,7 +417,7 @@ void quarantine(const fs::path& path, const fs::path& event_path) {
 void provenance_error(const fs::path& path, const fs::path& event_path) {
     configure_event_log(event_path);
     expect_error(
-        PluginLibrary::open(path), static_cast<int>(ErrorCode::InvalidArgument),
+        PluginLibrary::open(path), static_cast<int>(StatusCode::InvalidArgument),
         "Dependency-provided Plugin symbol was accepted");
     require(
         !has_event(read_events(event_path), "entrypoint"),

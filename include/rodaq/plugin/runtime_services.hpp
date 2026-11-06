@@ -11,7 +11,7 @@
 
 namespace rodaq {
 
-Result<void> runtime_result(rodaq_status status, const rodaq_error& error);
+Result<void> runtime_result(rodaq_status_code status, const rodaq_status& error);
 
 namespace plugin {
 
@@ -121,12 +121,12 @@ public:
     Result<rodaq_acquisition_submit_result> submit(const rodaq_record_submission& submission) const;
     Result<void> report_source(
         rodaq_source_handle source, rodaq_availability_state state,
-        const rodaq_error* diagnostic) const;
+        const rodaq_status* diagnostic) const;
     Result<void> report_stream(
         rodaq_stream_handle stream, rodaq_availability_state state,
-        const rodaq_error* diagnostic) const;
+        const rodaq_status* diagnostic) const;
     Result<void> report_plugin_state(
-        rodaq_acquisition_plugin_state state, const rodaq_error* diagnostic) const;
+        rodaq_acquisition_plugin_state state, const rodaq_status* diagnostic) const;
 
 private:
     AcquisitionRuntimeService(void* context, const rodaq_runtime_acquisition_v1* table) noexcept;
@@ -142,8 +142,8 @@ public:
     void payload_consumed(rodaq_storage_operation operation) const;
     void persistence_completed(
         rodaq_storage_operation operation, rodaq_storage_persistence_state state,
-        const rodaq_error* error) const;
-    void report_failure(const rodaq_error* error) const;
+        const rodaq_status* error) const;
+    void report_failure(const rodaq_status* error) const;
 
 private:
     StorageRuntimeService(void* context, const rodaq_runtime_storage_v1* table) noexcept;

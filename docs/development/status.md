@@ -1,6 +1,6 @@
 # RoDAQ Development Status
 
-**Updated:** 2026-11-05
+**Updated:** 2026-11-06
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
@@ -12,10 +12,11 @@ This file records factual current repository state. Keep it concise and update i
 
 **M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **PASS — coding standards local qualification; new hosted CI pending**
+Status: **PASS — Result<void> operation migration locally qualified; new hosted CI pending**
 
-M0 is **PASS**. Stable ABI core prefix is frozen. M0 Final Contract Correction
-is **PASS**. Native arm64 qualification is explicitly deferred by D-034.
+M0 historical qualification is **PASS**. D-058 replaces the earlier C/C++
+status source interfaces; applications and plugins must rebuild, and old hosted
+evidence does not qualify this revision. Native arm64 remains deferred by D-034.
 
 M1 Runtime Core Primitives is **PASS**, contract-aligned and qualified. The V1
 Runtime Foundation Convergence closed all reviewed P0/P1 findings: bounded
@@ -968,3 +969,159 @@ was also attempted: an existing null-descriptor fixture fails `-Werror` for an
 unused `descriptor`; the specified TSan subset builds and passes. The earlier
 qualification and hosted evidence above predate this additional refactoring;
 new hosted qualification is PENDING, and M3 remains NOT STARTED.
+
+
+## 2026-11-05 Error native accessor rename
+
+The C++ `Error::native_code()` accessor and backing member were renamed to
+`native()` and `native_`; callers must migrate and rebuild. The current `Error`
+member order also differs from commit `ab3b69e`, so C++ consumers must rebuild
+against the matching headers and library. Stable C ABI `rodaq_error.native_code`
+remains unchanged. A full Debug build and CTest passed 94/94; clang-format and
+clang-tidy checks passed for 189 files, 117 build translation units and the
+configured header/consumer checks. Hosted qualification for these latest
+working-tree changes has not run. M3 remains NOT STARTED.
+
+
+## 2026-11-05 RoDAQ error-result construction
+
+`rodaq::make_error` forwards errors to the expected-lite failure wrapper;
+project callers and the installed consumer use the RoDAQ name. `Result<T>`
+remains the D-025 expected-lite alias, and the Stable C ABI is unchanged.
+Debug warnings-as-errors build and full CTest passed 94/94, including the
+installed consumer and ABI checks; clang-format and clang-tidy passed for 189
+files and 117 build translation units. New hosted qualification remains
+pending. The earlier `Error::native()` working-tree changes are retained.
+
+
+## 2026-11-05 Contextual variable names
+
+Renamed selected ambiguous `value` parameters and locals in latency histogram,
+timestamp, hashing, SDK configuration size and Runtime service results to names
+that express their roles. Generic container and library `value` interfaces are
+unchanged. Debug build and full CTest passed 94/94; clang-format and clang-tidy
+passed for 189 files and 117 build translation units. Hosted qualification for
+the current working tree remains pending.
+
+
+## 2026-11-05 Direct error construction
+
+Added `make_error` overloads that construct `Error` from a code and message,
+with an optional domain and native diagnostic code. Existing Error forwarding
+remains supported; direct call sites were migrated. Debug warnings-as-errors
+build and full CTest passed 94/94, including installed consumers and ABI checks;
+clang-format and clang-tidy passed for 189 files and 117 build translation units.
+Hosted qualification for the current working tree remains pending.
+
+
+## 2026-11-05 C++ StatusCode convergence
+
+C++ `ErrorCode` was replaced by `StatusCode`, including `Ok`; `Error::status_code()`
+replaces `code()`. An Error constructed with `Ok` or an unknown status is
+normalized to `InternalError` and preserves its diagnostics. Explicit C ABI
+mapping covers all status values and preserves unknown / malformed diagnostic
+handling. Stable C ABI headers, layout and frozen fixtures are unchanged. C++
+applications and Plugin sources must migrate and rebuild; prior local/hosted
+qualification records above are historical evidence for earlier trees.
+
+Warnings-as-errors Debug, Release, ASan/LSan and UBSan full CTest: 94/94 each;
+Clang 14 TSan CI subset: 10/10 with thread-leak detection; Runtime-only Release
+build: PASS; clang-format 14 / clang-tidy 14: PASS for 189 files, 117 build
+translation units, public headers and installed consumers. The current working
+tree has no hosted qualification; hosted verification is PENDING. M3 remains
+NOT STARTED; native arm64 remains D-034 DEFERRED.
+
+
+## Status + Result migration — COMPLETE / local PASS
+
+The public C++ model is Status for no-value operations and validated Result<T>
+for value operations. Error, make_error, the direct expected-lite alias and the
+old result accessors are removed from implementation, SDK, consumers and tests.
+OK Status has empty diagnostics; unknown codes and OK used as a failed Result
+become UnknownError. Result exposes immutable status access and preserves value
+copy/move behavior. primary_failure() returns Status; OK means no primary failure.
+D-058 supersedes the earlier contracts.
+
+C uses rodaq_status_code and rodaq_status, with status_code / error_code fields
+and bounded diagnostics. Current independent fixture sources and layout tests
+replace legacy compatibility code; historical evidence remains in Git history.
+No source compatibility aliases remain. This migration does not change the
+Acquisition ownership, admission, Payload/Persistence, ordering or quarantine
+contracts. Expected-lite remains pinned and private to Result storage.
+
+Final qualification of the current working tree:
+
+- Debug / warnings-as-errors, Release, ASan/LSan, UBSan, Ubuntu 24/GCC 13:
+  **96/96 CTest PASS each**, including installed SDK/application consumers.
+- Clang 14 TSan CI subset: **10/10 PASS**, thread-leak detection enabled.
+- Runtime-only Release without development dependencies: **build PASS**.
+- Eight existing Release capacity executables: **three repetitions PASS each**;
+  medians are recorded in capacity_qualification.md.
+- clang-format 14 / clang-tidy 14: **PASS**, covering 191 C/C++ files,
+  117 build translation units, 26 public C++ headers, eight C ABI headers in
+  C/C++ modes and five installed consumers.
+- Namespace/name residue scan, plugin C export review and git diff checks: PASS.
+
+New hosted qualification is **PENDING**; no earlier hosted run qualifies these
+uncommitted changes. M3 remains **NOT STARTED**; native arm64 is D-034 DEFERRED.
+
+## 2026-11-06 Direct Status failure storage — COMPLETE / local PASS
+
+Runtime primary_failure() now returns Status directly: OK means no primary
+failure. Removed every optional<Status> from project code, including retained
+failure history, Descriptor worker/deferred failures, Storage completion effects
+and Quarantine/control-call diagnostics. Existing completion flags, Join and
+mutex protocols continue to govern asynchronous completion. No compatibility
+aliases are retained; callers must migrate and rebuild.
+
+Debug warnings-as-errors, ASan/LSan and UBSan full suites: 96/96 each. Clang 14
+TSan subset with thread-leak detection: 10/10. Clang-format/clang-tidy 14:
+191 files, 117 TUs, 26 C++ headers, 8 C ABI headers in both languages and
+5 install consumers PASS. The updated installed Runtime consumer also passes.
+New assertions cover no primary failure across a healthy lifecycle and exact
+Quarantine failure diagnostics. The initial sandbox ASan run encountered LSan's
+ptrace restriction and was stopped; the complete run outside the sandbox passed
+with leak detection enabled.
+
+Release capacity, Runtime-only and Ubuntu 24 were not rerun for this follow-up;
+the preceding migration results remain historical evidence. Hosted qualification
+is still PENDING. M3 remains NOT STARTED; D-034 remains unchanged.
+
+## 2026-11-06 Result<void> operation migration — COMPLETE / local PASS
+
+No-value operations now return Result<void>, privately backed by
+nonstd::expected<void, Status>. Its default construction is success. Constructing
+from non-OK Status represents failure; passing OK instead produces UnknownError.
+Value Results retain their previous default-failure semantics. Result<Status>
+remains prohibited. Status remains the diagnostic object for ABI conversion,
+primary failure observations, failure history and deferred diagnostics.
+
+Migrated Runtime, loader, SDK virtuals/trampolines, services, logging, quarantine
+callbacks, tests, benchmarks and installed consumers without old signatures or
+compatibility aliases. Void operation failure propagation explicitly extracts
+status(); implicit void-result-to-value conversion is rejected, including the
+bool case that could otherwise swallow Binding failures. Quarantine completion,
+Join, admission, ownership and C ABI contracts are unchanged.
+
+Final validation of this working tree:
+
+- Debug / warnings-as-errors, Release, ASan/LSan, UBSan and offline Ubuntu 24:
+  **95/95 CTest PASS each**, including installed SDK/Runtime consumers and ABI
+  layout, symbol and boundary tests.
+- Clang 14 TSan CI subset: **10/10 PASS**, thread-leak detection enabled.
+- Runtime-only Release with only the five production dependencies: **build PASS**.
+- All eight Release benchmark executables: **three repetitions PASS each**;
+  current medians and comparisons are recorded in capacity_qualification.md.
+- clang-format/clang-tidy 14: **PASS**, 191 files, 118 translation units,
+  26 C++ headers, eight C ABI headers in both languages and five install consumers.
+- Final source/signature audit, unchanged C ABI diff/export check and staged /
+  unstaged whitespace checks: **PASS**.
+
+CTest count decreased from 96 to 95 because the obsolete Result<void> compile-fail
+fixture was removed. Three positive void-result unit cases and independent
+header/install checks replace that negative requirement; Result<Status> remains
+a compile-fail test. No tests were removed to bypass a failure.
+
+New hosted qualification is **PENDING**. Earlier hosted CI remains historical.
+M3 remains NOT STARTED; native arm64 remains D-034 DEFERRED. Existing staged
+changes were preserved; this follow-up has not been committed or pushed.

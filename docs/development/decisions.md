@@ -467,7 +467,7 @@ The snapshot can become stale immediately; subsequent Runtime registration/repor
 
 ## D-025 — RoDAQ V1 Result uses expected-lite directly
 
-**Status:** Accepted
+**Status:** Superseded by D-058; retained as historical context
 
 RoDAQ V1 freezes:
 
@@ -488,6 +488,10 @@ it must never appear in the Stable C Plugin ABI.
 V1 explicitly selects expected-lite's nonstd implementation. A consumer language
 mode or toolchain configuration must not silently switch the alias to
 `std::expected`. Migration to `std::expected` requires a future explicit decision.
+
+The RoDAQ `make_error` forwarding function wraps an error for constructing a
+failed `Result`, so callers do not depend on the third-party factory name.
+The underlying `Result` type remains unchanged.
 
 This decision is the only approved exception to the default rule that RoDAQ-owned
 Public C++ APIs do not expose third-party types. Stable C ABI contracts continue
@@ -1157,3 +1161,49 @@ Clang-tidy 14 and clang-format 14 check project code in CI without adding a
 production dependency or a network fetch to normal builds.
 
 **Reference:** `docs/coding_guidelines/cpp_coding_guidelines.md`, D-033, D-050.
+
+
+## D-057 — Unify C++ and ABI status terminology
+
+**Status:** Superseded by D-058; retained as historical context; supersedes the `ErrorCode` spelling in D-027 and D-035.
+
+C++ `StatusCode` includes `Ok` and matches the Stable C ABI status values.
+`Error` represents failure only: both constructors normalize `Ok` and unknown
+values to `InternalError` while preserving diagnostic domain, native code and
+message. The C++ accessor is `status_code()`. Explicit mappings at the ABI
+boundary preserve ABI success and malformed-diagnostic behavior. C++ sources
+must migrate and rebuild; the Stable C ABI and frozen fixtures remain unchanged.
+
+**Reference:** `docs/design/rodaq_plugin_system.md`, D-025, D-027, D-035, D-056.
+
+
+## D-058 — Status and validated Result unify operation outcomes
+
+**Status:** Accepted; supersedes D-025's direct alias, D-057's failure-only Error,
+and the earlier C/C++ source-name and diagnostic contracts where they conflict.
+
+No-value operations return Result<void>; value operations return Result<T>. Status
+has ok(), status_code(), domain(), error_code() and message(). Default Status
+is OK with no diagnostics. Unknown codes normalize to UnknownError. Result is a
+RoDAQ class privately backed by pinned expected-lite 0.10.0, not a public alias.
+Its failure state is immutable through its public interface; attempting to create
+a failed Result from OK produces UnknownError. Result<Status> is a compile-time
+error. Result<void> privately stores nonstd::expected<void, Status> and defaults
+to success; constructing it from OK Status is misuse and produces UnknownError.
+Void results cannot implicitly become values of non-void results through their
+boolean conversion; propagate failure via status(). value() requires ok();
+lvalue value references follow the result's lifetime. A default non-void Result is an UnknownError, not a default T.
+Runtime primary_failure() returns Status; OK means no primary failure. Failure
+latches and deferred diagnostics also use Status directly. Completion flags,
+not diagnostic presence, establish asynchronous call completion.
+
+C uses rodaq_status_code for integers and rodaq_status for caller-owned bounded
+diagnostics. The latter has status_code, error_code and bounded domain/message
+storage. UnknownError is 10 on both sides. Source compatibility aliases and the
+old Error/make_error/expected-style result accessors are removed. Applications
+and plugins must migrate and rebuild; no legacy binary compatibility is promised.
+Independent current ABI fixture definitions and layout tests replace the old
+compatibility-source suite; Git history retains historical fixtures and results.
+
+This changes no Acquisition admission/ownership, Payload/Persistence axes,
+ordering, boundedness, stop/quarantine or backend scope contract. M3 is not started.

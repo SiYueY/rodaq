@@ -67,7 +67,7 @@ def main():
     if not generated:
         parser.error("run rodaq.abi.install_smoke before the style check to generate SDK metadata")
     include_args = compiler_include_args()
-    common = [args.clang_tidy, "--quiet", "--header-filter=^" + re.escape(str(ROOT)) + "/(include/rodaq|src|tests|benchmarks)/"]
+    common = [args.clang_tidy, "--quiet", "--config-file=" + str(ROOT / ".clang-tidy"), "--header-filter=^" + re.escape(str(ROOT)) + "/(include/rodaq|src|tests|benchmarks)/"]
     standalone = ["-x", "c++", "-std=c++17", "-I" + str(ROOT / "include"),
                   "-I" + str(ROOT / "third_party/expected-lite/include"),
                   "-I" + str(generated[0].parent), *include_args]

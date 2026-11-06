@@ -82,7 +82,7 @@ LoggingConfig async_config() {
 TEST(LoggingContextTest, OwnsCopiedCategoryAndMessageForAsyncDelivery) {
     auto backend = std::make_shared<RecordingBackend>();
     auto context = LoggingContext::create(async_config(), backend);
-    ASSERT_TRUE(context.has_value());
+    ASSERT_TRUE(context.ok());
     {
         std::string category = "rodaq.test";
         std::string message = "message";
@@ -102,7 +102,7 @@ TEST(LoggingContextTest, DropsNewRecordsAtRecordAndByteCapacity) {
     auto backend = std::make_shared<BlockingBackend>();
     auto config = async_config();
     auto context = LoggingContext::create(config, backend);
-    ASSERT_TRUE(context.has_value());
+    ASSERT_TRUE(context.ok());
     context.value()->log(RODAQ_LOG_INFO, "rodaq.test", "first");
     while (!backend->entered()) {
         std::this_thread::yield();
@@ -138,7 +138,7 @@ TEST(LoggingContextTest, DetectsDirectReentrantLogging) {
     LoggingContext* raw = nullptr;
     auto backend = std::make_shared<ReentrantBackend>(&raw);
     auto context = LoggingContext::create(async_config(), backend);
-    ASSERT_TRUE(context.has_value());
+    ASSERT_TRUE(context.ok());
     raw = context.value().get();
     raw->log(RODAQ_LOG_INFO, "rodaq.test", "outer");
     ASSERT_TRUE(raw->flush(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
@@ -156,7 +156,7 @@ TEST(LoggingContextTest, QuarantinesWorkerWhenShutdownTimesOut) {
         ~ReleaseGuard() { backend->release(); }
     } release{backend};
     auto context = LoggingContext::create(async_config(), backend);
-    ASSERT_TRUE(context.has_value());
+    ASSERT_TRUE(context.ok());
     context.value()->log(RODAQ_LOG_INFO, "rodaq.test", "blocked");
     const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!backend->entered() && std::chrono::steady_clock::now() < entered_deadline) {
@@ -190,7 +190,7 @@ TEST(LoggingContextTest, ContainsThrowingBackendWithoutTerminating) {
 
     auto backend = std::make_shared<ThrowingBackend>();
     auto context = LoggingContext::create(async_config(), backend);
-    ASSERT_TRUE(context.has_value());
+    ASSERT_TRUE(context.ok());
     context.value()->log(RODAQ_LOG_INFO, "rodaq.test", "throwing backend");
     ASSERT_TRUE(context.value()->flush(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
     EXPECT_EQ(1U, context.value()->stats().backend_failures);

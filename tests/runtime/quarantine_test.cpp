@@ -18,9 +18,23 @@ TEST(QuarantineManagerTest, CompletesAndReapsSupervisedCalls) {
     auto outcome = manager.run(
         [] { return Result<void>(); }, std::chrono::steady_clock::now() + std::chrono::seconds(1),
         "completed call");
-    ASSERT_TRUE(outcome.has_value());
+    ASSERT_TRUE(outcome.ok());
     EXPECT_EQ(outcome.value().status, SupervisedCallStatus::Completed);
+    EXPECT_TRUE(outcome.value().error.ok());
     EXPECT_EQ(manager.retained_call_count(), before);
+}
+
+TEST(QuarantineManagerTest, PreservesFailureStatusAndDiagnostics) {
+    auto outcome = QuarantineManager::process().run(
+        [] { return Status(StatusCode::StorageError, "test_storage", 17, "write failed"); },
+        std::chrono::steady_clock::now() + std::chrono::seconds(1), "failed call");
+    ASSERT_TRUE(outcome.ok());
+    EXPECT_EQ(outcome->status, SupervisedCallStatus::Failed);
+    EXPECT_FALSE(outcome->error.ok());
+    EXPECT_EQ(outcome->error.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(outcome->error.domain(), "test_storage");
+    EXPECT_EQ(outcome->error.error_code(), 17);
+    EXPECT_EQ(outcome->error.message(), "write failed");
 }
 
 TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
@@ -35,7 +49,7 @@ TEST(QuarantineManagerTest, RetainsThenJoinsTimedOutCall) {
             return Result<void>();
         },
         std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "timed out call");
-    ASSERT_TRUE(outcome.has_value());
+    ASSERT_TRUE(outcome.ok());
     EXPECT_EQ(outcome.value().status, SupervisedCallStatus::TimedOut);
     EXPECT_GT(manager.retained_call_count(), before);
 
@@ -153,7 +167,7 @@ TEST(QuarantineManagerTest, CaptureDestructionCompletesBeforeJoinPublication) {
     auto outcome = manager.run(
         std::move(operation), std::chrono::steady_clock::now() + std::chrono::milliseconds(10),
         "blocking capture destruction", joined);
-    ASSERT_TRUE(outcome.has_value());
+    ASSERT_TRUE(outcome.ok());
     EXPECT_EQ(outcome->status, SupervisedCallStatus::TimedOut);
     const auto entered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!entered->load(std::memory_order_acquire) &&
@@ -179,8 +193,8 @@ TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
     std::vector<std::uint64_t> slots;
     while (true) {
         auto slot = manager.reserve_activation("activation slot test");
-        if (!slot.has_value()) {
-            EXPECT_EQ(slot.error().code(), ErrorCode::ResourceExhausted);
+        if (!slot.ok()) {
+            EXPECT_EQ(slot.status().status_code(), StatusCode::ResourceExhausted);
             break;
         }
         slots.push_back(slot.value());
@@ -196,12 +210,12 @@ TEST(QuarantineManagerTest, BoundsActivationRootsAndReleasesCleanSlots) {
 
     for (std::uint64_t& slot : slots) {
         auto reserved = manager.reserve_activation("activation slot reuse test");
-        ASSERT_TRUE(reserved.has_value());
+        ASSERT_TRUE(reserved.ok());
         slot = reserved.value();
     }
     auto exhausted = manager.reserve_activation("activation slot exhaustion test");
-    ASSERT_FALSE(exhausted.has_value());
-    EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(exhausted.ok());
+    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
     for (const std::uint64_t slot : slots) {
         manager.release_activation(slot);
     }
@@ -225,8 +239,8 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
             },
             std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "capacity call",
             signal);
-        EXPECT_TRUE(result.has_value());
-        if (result.has_value()) {
+        EXPECT_TRUE(result.ok());
+        if (result.ok()) {
             EXPECT_EQ(result.value().status, SupervisedCallStatus::TimedOut);
         }
     }
@@ -270,7 +284,7 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
             return Result<void>();
         },
         std::chrono::steady_clock::now() + std::chrono::seconds(1), "capacity exhausted");
-    EXPECT_FALSE(exhausted.has_value());
+    EXPECT_FALSE(exhausted.ok());
     EXPECT_FALSE(invoked);
     release->store(true, std::memory_order_release);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -295,8 +309,8 @@ TEST(QuarantineManagerTest, SharedCapacityRejectsWithoutTakingWorkerAndSlotsAreR
         },
         std::chrono::steady_clock::now() + std::chrono::milliseconds(1), "reused call slot",
         reused_joined);
-    EXPECT_TRUE(reused.has_value());
-    if (reused.has_value()) {
+    EXPECT_TRUE(reused.ok());
+    if (reused.ok()) {
         EXPECT_EQ(reused.value().status, SupervisedCallStatus::TimedOut);
     }
     auto worker_joined = std::make_shared<std::atomic<bool>>(false);

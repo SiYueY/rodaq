@@ -603,8 +603,8 @@ add_dependencies(
     rodaq_test_plugin_sdk_storage
     rodaq_test_plugin_sdk_exception
     rodaq_test_plugin_sdk_storage_open_failure
-    rodaq_compat_v1_acquisition
-    rodaq_compat_v1_storage
+    rodaq_current_abi_acquisition
+    rodaq_current_abi_storage
 )
 add_test(
     NAME rodaq.plugin.service_integration
@@ -614,7 +614,7 @@ set_tests_properties(
     rodaq.plugin.service_integration
     PROPERTIES
         ENVIRONMENT
-            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>;RODAQ_TEST_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_control_wrong_protocol>;RODAQ_TEST_CONTROL_TOO_SMALL=$<TARGET_FILE:rodaq_test_plugin_control_too_small>;RODAQ_TEST_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_control_missing_slot>;RODAQ_TEST_CONTROL_APPENDABLE=$<TARGET_FILE:rodaq_test_plugin_control_appendable>;RODAQ_TEST_CONTROL_NULL_CONTEXT=$<TARGET_FILE:rodaq_test_plugin_control_null_context>;RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_storage_control_wrong_protocol>;RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_storage_control_missing_slot>;RODAQ_TEST_SDK_ACQUISITION=$<TARGET_FILE:rodaq_test_plugin_sdk_acquisition>;RODAQ_TEST_SDK_STORAGE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage>;RODAQ_TEST_SDK_EXCEPTION=$<TARGET_FILE:rodaq_test_plugin_sdk_exception>;RODAQ_TEST_SDK_OPEN_FAILURE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage_open_failure>;RODAQ_TEST_COMPAT_ACQUISITION=$<TARGET_FILE:rodaq_compat_v1_acquisition>;RODAQ_TEST_COMPAT_STORAGE=$<TARGET_FILE:rodaq_compat_v1_storage>"
+            "RODAQ_TEST_ACQUISITION_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_acquisition>;RODAQ_TEST_STORAGE_PLUGIN=$<TARGET_FILE:rodaq_test_plugin_valid_storage>;RODAQ_TEST_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_control_wrong_protocol>;RODAQ_TEST_CONTROL_TOO_SMALL=$<TARGET_FILE:rodaq_test_plugin_control_too_small>;RODAQ_TEST_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_control_missing_slot>;RODAQ_TEST_CONTROL_APPENDABLE=$<TARGET_FILE:rodaq_test_plugin_control_appendable>;RODAQ_TEST_CONTROL_NULL_CONTEXT=$<TARGET_FILE:rodaq_test_plugin_control_null_context>;RODAQ_TEST_STORAGE_CONTROL_WRONG_PROTOCOL=$<TARGET_FILE:rodaq_test_plugin_storage_control_wrong_protocol>;RODAQ_TEST_STORAGE_CONTROL_MISSING_SLOT=$<TARGET_FILE:rodaq_test_plugin_storage_control_missing_slot>;RODAQ_TEST_SDK_ACQUISITION=$<TARGET_FILE:rodaq_test_plugin_sdk_acquisition>;RODAQ_TEST_SDK_STORAGE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage>;RODAQ_TEST_SDK_EXCEPTION=$<TARGET_FILE:rodaq_test_plugin_sdk_exception>;RODAQ_TEST_SDK_OPEN_FAILURE=$<TARGET_FILE:rodaq_test_plugin_sdk_storage_open_failure>;RODAQ_TEST_CURRENT_ABI_ACQUISITION=$<TARGET_FILE:rodaq_current_abi_acquisition>;RODAQ_TEST_CURRENT_ABI_STORAGE=$<TARGET_FILE:rodaq_current_abi_storage>"
 )
 
 add_executable(rodaq_plugin_loader_probe plugin_loader_probe.cpp)

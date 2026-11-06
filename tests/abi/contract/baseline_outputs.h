@@ -1,52 +1,52 @@
-#ifndef RODAQ_TEST_COMPAT_V1_FROZEN_OUTPUTS_H
-#define RODAQ_TEST_COMPAT_V1_FROZEN_OUTPUTS_H
+#ifndef RODAQ_TEST_CURRENT_ABI_V1_BASELINE_OUTPUTS_H
+#define RODAQ_TEST_CURRENT_ABI_V1_BASELINE_OUTPUTS_H
 
 #include <stdint.h>
 
 typedef struct {
     const char* data;
     uint64_t size;
-} frozen_string_view_v1;
+} baseline_string_view;
 typedef struct {
     const uint8_t* data;
     uint64_t size;
-} frozen_bytes_view_v1;
+} baseline_bytes_view;
 typedef struct {
     uint64_t value;
-} frozen_descriptor_handle_v1;
+} baseline_descriptor_handle;
 typedef struct {
     uint64_t value;
-} frozen_clock_handle_v1;
+} baseline_clock_handle;
 typedef struct {
     uint64_t value;
-} frozen_storage_operation_v1;
+} baseline_storage_operation;
 
 typedef struct {
-    uint32_t code;
+    uint32_t status_code;
     uint32_t flags;
-    int64_t native_code;
+    int64_t error_code;
     uint32_t domain_size;
     uint32_t message_size;
     char domain[32];
     char message[256];
     uint64_t reserved[2];
-} frozen_error_v1;
+} baseline_status;
 
 typedef struct {
     uint32_t struct_size;
     uint32_t reserved;
-    frozen_descriptor_handle_v1 descriptor;
-    frozen_string_view_v1 projection_id;
-    frozen_bytes_view_v1 payload;
-} frozen_projection_view_v1;
+    baseline_descriptor_handle descriptor;
+    baseline_string_view projection_id;
+    baseline_bytes_view payload;
+} baseline_projection_view;
 
 typedef struct {
     uint32_t struct_size;
     uint32_t reserved;
-    frozen_clock_handle_v1 clock;
+    baseline_clock_handle clock;
     int64_t clock_reading;
     uint64_t unix_anchor_ns;
-} frozen_clock_anchor_v1;
+} baseline_clock_anchor;
 
 typedef struct {
     uint32_t struct_size;
@@ -60,20 +60,20 @@ typedef struct {
     uint64_t descriptor_progress_timeout_ns;
     uint64_t flush_progress_timeout_ns;
     uint64_t close_progress_timeout_ns;
-} frozen_storage_capabilities_v1;
+} baseline_storage_capabilities;
 
 typedef struct {
     uint32_t struct_size;
     uint32_t state;
-    frozen_error_v1 failure;
-} frozen_descriptor_readiness_result_v1;
+    baseline_status failure;
+} baseline_descriptor_readiness_result;
 
 typedef struct {
     uint32_t struct_size;
     uint32_t reserved;
     uint32_t payload_state;
     uint32_t persistence_state;
-    frozen_error_v1 persistence_error;
-} frozen_storage_submit_result_v1;
+    baseline_status persistence_error;
+} baseline_storage_submit_result;
 
 #endif

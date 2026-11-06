@@ -58,16 +58,17 @@ private:
         std::vector<std::uint8_t> payload;
     };
 
-    static rodaq_status register_projection(
+    static rodaq_status_code register_projection(
         void* context, const rodaq_projection_registration* request,
-        rodaq_error* out_error) noexcept;
+        rodaq_status* out_status) noexcept;
 
-    static rodaq_status get_projection(
+    static rodaq_status_code get_projection(
         void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-        rodaq_projection_view* out_view, rodaq_error* out_error) noexcept;
+        rodaq_projection_view* out_view, rodaq_status* out_status) noexcept;
 
     static const rodaq_runtime_projection_v1 kProjectionVtable;
 
+private:
     const ProjectionLimits limits_;
     mutable std::mutex mutex_;
     std::vector<std::unique_ptr<Entry>> entries_;

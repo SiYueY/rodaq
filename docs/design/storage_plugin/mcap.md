@@ -1462,10 +1462,7 @@ new Record uses new ChannelId
 该版本关键 API：
 
 ```text
-McapWriter::write(Message)    → Status
-McapWriter::write(Attachment) → Status
-McapWriter::write(Metadata)   → Status
-McapWriter::closeLastChunk()  → void
+McapWriter::write(Message)    → Result<void> McapWriter::write(Attachment) → Result<void> McapWriter::write(Metadata)   → Result<void> McapWriter::closeLastChunk()  → void
 McapWriter::close()           → void
 McapWriter::terminate()       → void
 
@@ -1481,8 +1478,7 @@ IWritable::size()             → uint64
 同样不得写出并不存在的：
 
 ```text
-McapWriter::close() Status
-McapWriter::closeLastChunk() Status
+McapWriter::close() Result<void> McapWriter::closeLastChunk() Status
 ```
 
 作为 correctness proof。

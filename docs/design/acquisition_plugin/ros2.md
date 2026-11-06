@@ -1069,7 +1069,7 @@ PayloadDisposition = NOT_APPLICABLE
 
 > 必须严格遵守 Payload Transfer/Acquisition Point 和 CallerResponsible / RuntimeResponsible disposition；不能从 rejection reason 推断 ownership。
 
-函数级 `rodaq_status != OK` 表示 Runtime boundary failure，不是普通 ROS2 backpressure。
+函数级 `rodaq_status_code != OK` 表示 Runtime boundary failure，不是普通 ROS2 backpressure。
 
 ---
 
@@ -1658,13 +1658,13 @@ Stop while pre-gate submit is active
 
 ```text
 Accepted
-    → rodaq_status == OK
+    → rodaq_status_code == OK
     → outcome == RODAQ_ADMISSION_ACCEPTED
     → rejection_reason == NONE
     → payload_disposition == NOT_APPLICABLE
 
 ordinary GateClosed / ResourceUnavailable / WaitTimeout
-    → rodaq_status == OK
+    → rodaq_status_code == OK
     → outcome == RODAQ_ADMISSION_PRE_REJECTED
     → matching rejection_reason
     → payload_disposition == NOT_APPLICABLE

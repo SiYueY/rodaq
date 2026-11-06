@@ -31,21 +31,21 @@ public:
         constexpr std::size_t kMaxCapacity =
             static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max() - 1U);
         if (capacity > kMaxCapacity) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InvalidArgument, "registry capacity exceeds the handle slot domain"));
+            return rodaq::Status(
+                StatusCode::InvalidArgument, "registry capacity exceeds the handle slot domain");
         }
         try {
             if (initial_generation == 0) {
-                return nonstd::make_unexpected(Error(
-                    ErrorCode::InvalidArgument, "registry initial generation must be non-zero"));
+                return rodaq::Status(
+                    StatusCode::InvalidArgument, "registry initial generation must be non-zero");
             }
             return Registry(capacity, initial_generation);
         } catch (const std::bad_alloc&) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::ResourceExhausted, "failed to allocate registry storage"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted, "failed to allocate registry storage");
         } catch (const std::length_error&) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::ResourceExhausted, "registry capacity exceeds container limits"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted, "registry capacity exceeds container limits");
         }
     }
 
@@ -56,8 +56,7 @@ public:
 
     Result<HandleType> insert(T value) {
         if (free_slots_.empty()) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::ResourceExhausted, "registry capacity is exhausted"));
+            return rodaq::Status(StatusCode::ResourceExhausted, "registry capacity is exhausted");
         }
 
         const std::size_t index = free_slots_.back();
@@ -65,18 +64,16 @@ public:
         try {
             slot.value.emplace(std::move(value));
         } catch (const std::bad_alloc&) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::ResourceExhausted, "registry value construction exhausted memory"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted, "registry value construction exhausted memory");
         } catch (const std::length_error&) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::ResourceExhausted,
-                "registry value construction exceeded a length limit"));
+            return rodaq::Status(
+                StatusCode::ResourceExhausted,
+                "registry value construction exceeded a length limit");
         } catch (const std::exception&) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::InternalError, "registry value construction failed"));
+            return rodaq::Status(StatusCode::InternalError, "registry value construction failed");
         } catch (...) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::InternalError, "registry value construction failed"));
+            return rodaq::Status(StatusCode::InternalError, "registry value construction failed");
         }
 
         slot.published.store(true, std::memory_order_release);
@@ -139,22 +136,19 @@ public:
 
     Result<void> erase(HandleType handle) {
         if (!handle.valid()) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::InvalidArgument, "registry handle is invalid"));
+            return Status(StatusCode::InvalidArgument, "registry handle is invalid");
         }
 
         const std::uint64_t raw_index = (handle.value() & kIndexMask) - 1U;
         if (raw_index >= slots_.size()) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::NotFound, "registry handle was not found"));
+            return Status(StatusCode::NotFound, "registry handle was not found");
         }
 
         const std::size_t index = static_cast<std::size_t>(raw_index);
         Slot& slot = slots_[index];
         if (!slot.published.load(std::memory_order_acquire) ||
             slot.generation != static_cast<std::uint32_t>(handle.value() >> kIndexBits)) {
-            return nonstd::make_unexpected(
-                Error(ErrorCode::NotFound, "registry handle was not found"));
+            return Status(StatusCode::NotFound, "registry handle was not found");
         }
 
         slot.published.store(false, std::memory_order_release);

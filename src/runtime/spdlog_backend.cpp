@@ -55,34 +55,32 @@ SpdlogBackend::~SpdlogBackend() {
 
 Result<void> SpdlogBackend::write(const LogRecord& record) {
     if (impl_ == nullptr || impl_->logger == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "logging backend is shut down"));
+        return rodaq::Status(StatusCode::InvalidState, "logging backend is shut down");
     }
     try {
         impl_->logger->log(
             to_spdlog_level(record.level), "[{}] {}", record.category, record.message);
         return {};
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(Error(ErrorCode::StorageError, "spdlog", 0, error.what()));
+        return rodaq::Status(StatusCode::StorageError, "spdlog", 0, error.what());
     } catch (...) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::StorageError, "spdlog", 0, "unknown logging backend failure"));
+        return rodaq::Status(
+            StatusCode::StorageError, "spdlog", 0, "unknown logging backend failure");
     }
 }
 
 Result<void> SpdlogBackend::flush() {
     if (impl_ == nullptr || impl_->logger == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "logging backend is shut down"));
+        return rodaq::Status(StatusCode::InvalidState, "logging backend is shut down");
     }
     try {
         impl_->logger->flush();
         return {};
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(Error(ErrorCode::StorageError, "spdlog", 0, error.what()));
+        return rodaq::Status(StatusCode::StorageError, "spdlog", 0, error.what());
     } catch (...) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::StorageError, "spdlog", 0, "unknown logging flush failure"));
+        return rodaq::Status(
+            StatusCode::StorageError, "spdlog", 0, "unknown logging flush failure");
     }
 }
 
@@ -95,10 +93,10 @@ Result<void> SpdlogBackend::shutdown() {
         impl_->logger.reset();
         return {};
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(Error(ErrorCode::StorageError, "spdlog", 0, error.what()));
+        return rodaq::Status(StatusCode::StorageError, "spdlog", 0, error.what());
     } catch (...) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::StorageError, "spdlog", 0, "unknown logging shutdown failure"));
+        return rodaq::Status(
+            StatusCode::StorageError, "spdlog", 0, "unknown logging shutdown failure");
     }
 }
 

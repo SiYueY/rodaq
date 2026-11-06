@@ -40,15 +40,15 @@ private:
             return invalid();
         }
         rodaq_config_view child{};
-        rodaq_error error{};
-        const rodaq_status status =
+        rodaq_status error{};
+        const rodaq_status_code status =
             find_function(view_.context, rodaq_string_view{key.data(), key.size()}, &child, &error);
         return child_result(status, &error, child);
     }
 
     static Result<ConfigView> child_result(
-        rodaq_status status, const rodaq_error* error, rodaq_config_view child);
-    static nonstd::unexpected_type<Error> invalid();
+        rodaq_status_code status, const rodaq_status* error, rodaq_config_view child);
+    static Status invalid();
 
     rodaq_config_view view_{};
 };

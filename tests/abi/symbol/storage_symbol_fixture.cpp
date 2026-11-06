@@ -22,7 +22,7 @@ bool string_equals(rodaq_string_view value, const char* expected, uint64_t expec
     return true;
 }
 
-rodaq_status create_instance(void** out_instance, rodaq_error*) noexcept {
+rodaq_status_code create_instance(void** out_instance, rodaq_status*) noexcept {
     if (out_instance == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
@@ -32,31 +32,31 @@ rodaq_status create_instance(void** out_instance, rodaq_error*) noexcept {
 
 void destroy_instance(void*) noexcept {}
 
-rodaq_status bind_instance(void*, const rodaq_service_registry*, rodaq_error*) noexcept {
+rodaq_status_code bind_instance(void*, const rodaq_service_registry*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status configure_instance(void*, rodaq_config_view, rodaq_error*) noexcept {
+rodaq_status_code configure_instance(void*, rodaq_config_view, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status open_storage(void*, const rodaq_storage_open_request*, rodaq_error*) noexcept {
+rodaq_status_code open_storage(void*, const rodaq_storage_open_request*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status submit_record(
-    void*, const rodaq_storage_submission*, rodaq_storage_submit_result*, rodaq_error*) noexcept {
+rodaq_status_code submit_record(
+    void*, const rodaq_storage_submission*, rodaq_storage_submit_result*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status flush_storage(void*, rodaq_error*) noexcept { return RODAQ_STATUS_OK; }
+rodaq_status_code flush_storage(void*, rodaq_status*) noexcept { return RODAQ_STATUS_OK; }
 
-rodaq_status close_storage(void*, const rodaq_storage_close_request*, rodaq_error*) noexcept {
+rodaq_status_code close_storage(void*, const rodaq_storage_close_request*, rodaq_status*) noexcept {
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status get_capabilities(
-    void*, rodaq_storage_capabilities* out_capabilities, rodaq_error*) noexcept {
+rodaq_status_code get_capabilities(
+    void*, rodaq_storage_capabilities* out_capabilities, rodaq_status*) noexcept {
     if (out_capabilities == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
@@ -64,9 +64,9 @@ rodaq_status get_capabilities(
     return RODAQ_STATUS_OK;
 }
 
-rodaq_status ensure_descriptor_ready(
+rodaq_status_code ensure_descriptor_ready(
     void*, rodaq_stream_descriptor_handle, rodaq_descriptor_readiness_result* out_result,
-    rodaq_error*) noexcept {
+    rodaq_status*) noexcept {
     if (out_result == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
@@ -89,9 +89,9 @@ const rodaq_storage_control_v1 control = {
     ensure_descriptor_ready,
 };
 
-rodaq_status query_interface(
+rodaq_status_code query_interface(
     void* instance, rodaq_string_view interface_id, rodaq_interface* out_interface,
-    rodaq_error*) noexcept {
+    rodaq_status*) noexcept {
     if (out_interface == nullptr) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }

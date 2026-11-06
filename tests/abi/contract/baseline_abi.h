@@ -1,5 +1,5 @@
-#ifndef RODAQ_TEST_COMPAT_V1_FROZEN_ABI_H_
-#define RODAQ_TEST_COMPAT_V1_FROZEN_ABI_H_
+#ifndef RODAQ_TEST_CURRENT_ABI_V1_BASELINE_ABI_H_
+#define RODAQ_TEST_CURRENT_ABI_V1_BASELINE_ABI_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-typedef uint32_t rodaq_status;
+typedef uint32_t rodaq_status_code;
 #define RODAQ_STATUS_OK 0U
 #define RODAQ_STATUS_NOT_FOUND 3U
 
@@ -46,7 +46,7 @@ typedef struct {
     uint64_t unix_anchor_ns;
 } rodaq_unix_epoch_clock_anchor_v1_frozen;
 
-typedef struct rodaq_error rodaq_error;
+typedef struct rodaq_status rodaq_status;
 typedef struct rodaq_service_registry rodaq_service_registry;
 
 typedef struct {
@@ -73,25 +73,25 @@ typedef struct {
 typedef struct rodaq_acquisition_control_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
-    rodaq_status (*prepare_binding_switch)(
-        void*, uint64_t, uint64_t, uint64_t, uint64_t, rodaq_error*);
-    rodaq_status (*commit_binding_switch)(void*, uint64_t, rodaq_error*);
-    rodaq_status (*abort_binding_switch)(void*, uint64_t, uint32_t, rodaq_error*);
-    rodaq_status (*quiesce_stream)(void*, uint64_t, rodaq_error*);
-    rodaq_status (*quiesce_plugin)(void*, rodaq_error*);
+    rodaq_status_code (*prepare_binding_switch)(
+        void*, uint64_t, uint64_t, uint64_t, uint64_t, rodaq_status*);
+    rodaq_status_code (*commit_binding_switch)(void*, uint64_t, rodaq_status*);
+    rodaq_status_code (*abort_binding_switch)(void*, uint64_t, uint32_t, rodaq_status*);
+    rodaq_status_code (*quiesce_stream)(void*, uint64_t, rodaq_status*);
+    rodaq_status_code (*quiesce_plugin)(void*, rodaq_status*);
 } rodaq_acquisition_control_v1;
 
 typedef struct rodaq_acquisition_plugin {
     uint32_t protocol_version;
     uint32_t struct_size;
     const rodaq_plugin_descriptor* descriptor;
-    rodaq_status (*create)(void**, rodaq_error*);
+    rodaq_status_code (*create)(void**, rodaq_status*);
     void (*destroy)(void*);
-    rodaq_status (*bind)(void*, const rodaq_service_registry*, rodaq_error*);
-    rodaq_status (*configure)(void*, rodaq_config_view, rodaq_error*);
-    rodaq_status (*start)(void*, rodaq_error*);
-    rodaq_status (*stop)(void*, rodaq_error*);
-    rodaq_status (*query_interface)(void*, rodaq_string_view, rodaq_interface*, rodaq_error*);
+    rodaq_status_code (*bind)(void*, const rodaq_service_registry*, rodaq_status*);
+    rodaq_status_code (*configure)(void*, rodaq_config_view, rodaq_status*);
+    rodaq_status_code (*start)(void*, rodaq_status*);
+    rodaq_status_code (*stop)(void*, rodaq_status*);
+    rodaq_status_code (*query_interface)(void*, rodaq_string_view, rodaq_interface*, rodaq_status*);
 } rodaq_acquisition_plugin;
 
 extern const uint32_t rodaq_plugin_abi_version;

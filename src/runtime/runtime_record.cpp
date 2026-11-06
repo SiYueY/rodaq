@@ -13,22 +13,21 @@ namespace rodaq {
 namespace {
 
 std::size_t hash_stream(StreamHandle stream) noexcept {
-    std::uint64_t value = stream.value();
-    value ^= value >> 33U;
-    value *= UINT64_C(0xff51afd7ed558ccd);
-    value ^= value >> 33U;
-    return static_cast<std::size_t>(value);
+    std::uint64_t hash = stream.value();
+    hash ^= hash >> 33U;
+    hash *= UINT64_C(0xff51afd7ed558ccd);
+    hash ^= hash >> 33U;
+    return static_cast<std::size_t>(hash);
 }
 
 }  // namespace
 
-Result<void> TimestampState::set(std::size_t slot, std::int64_t value) {
+Result<void> TimestampState::set(std::size_t slot, std::int64_t reading) {
     if (slot >= kMaxSlots) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "timestamp slot is out of range"));
+        return Status(StatusCode::InvalidArgument, "timestamp slot is out of range");
     }
 
-    readings_[slot] = value;
+    readings_[slot] = reading;
     const auto bit = static_cast<std::uint8_t>(1U << slot);
     present_mask_ = static_cast<std::uint8_t>(present_mask_ | bit);
     return {};
@@ -50,12 +49,12 @@ Result<AcceptanceSequenceAllocator> AcceptanceSequenceAllocator::create(
     try {
         return AcceptanceSequenceAllocator(max_streams, first_sequence);
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "failed to allocate acceptance sequence state"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "failed to allocate acceptance sequence state");
     } catch (const std::length_error&) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::ResourceExhausted,
-            "acceptance sequence stream count exceeds container limits"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted,
+            "acceptance sequence stream count exceeds container limits");
     }
 }
 
@@ -74,24 +73,23 @@ AcceptanceSequenceAllocator::AcceptanceSequenceAllocator(
 
 Result<std::uint64_t> AcceptanceSequenceAllocator::allocate(StreamHandle stream) {
     if (!stream.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "stream handle is invalid"));
+        return rodaq::Status(StatusCode::InvalidArgument, "stream handle is invalid");
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (entries_.empty()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "acceptance sequence capacity is exhausted"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "acceptance sequence capacity is exhausted");
     }
 
     Entry* entry = find_or_insert_locked(stream);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "acceptance sequence capacity is exhausted"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "acceptance sequence capacity is exhausted");
     }
     if (entry->exhausted) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "acceptance sequence is exhausted for the stream"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "acceptance sequence is exhausted for the stream");
     }
 
     const std::uint64_t sequence = entry->next_sequence;
@@ -167,20 +165,20 @@ Result<RuntimeRecord> RuntimeRecord::create(
     std::optional<std::uint64_t> source_sequence, TimestampState timestamps, Payload payload,
     Reservation reservation, std::int64_t accepted_steady_time_ns) {
     if (!binding.valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "runtime record binding handle is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "runtime record binding handle is invalid");
     }
     if (source_sequence.has_value() && !source.has_value()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "source sequence requires a source handle"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "source sequence requires a source handle");
     }
     if (source.has_value() && !source->valid()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "runtime record source handle is invalid"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "runtime record source handle is invalid");
     }
     if (!reservation.active()) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "runtime record requires a resource reservation"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "runtime record requires a resource reservation");
     }
 
     return RuntimeRecord(

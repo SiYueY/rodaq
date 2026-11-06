@@ -68,21 +68,21 @@ void release_anchor(void* context) noexcept {
 std::string config_string(
     const rodaq::ConfigView& view, std::string_view key, std::string default_value) {
     auto child = view.find(key);
-    if (!child.has_value()) {
+    if (!child.ok()) {
         return default_value;
     }
     auto value = child.value().as_string();
-    return value.has_value() ? std::string(value.value()) : std::move(default_value);
+    return value.ok() ? std::string(value.value()) : std::move(default_value);
 }
 
 std::int64_t config_int(
     const rodaq::ConfigView& view, std::string_view key, std::int64_t default_value) {
     auto child = view.find(key);
-    if (!child.has_value()) {
+    if (!child.ok()) {
         return default_value;
     }
     auto value = child.value().as_int64();
-    return value.has_value() ? value.value() : default_value;
+    return value.ok() ? value.value() : default_value;
 }
 
 class FakeAcquisitionPlugin final : public rodaq::AcquisitionPlugin {
@@ -168,8 +168,8 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         if (lifecycle_scenario_ == "start_failure") {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0,
                 "configured acquisition start failure"));
         }
         auto source = runtime_.acquisition.register_source(rodaq_source_registration{
@@ -178,8 +178,8 @@ public:
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(source_id_.data()), source_id_.size()},
         });
-        if (!source.has_value()) {
-            return fail(source.error());
+        if (!source.ok()) {
+            return fail(source.status());
         }
         source_ = source.value();
         auto clock = runtime_.acquisition.register_clock(rodaq_clock_registration{
@@ -191,8 +191,8 @@ public:
             1'000'000'000,
             fixture_string("monotonic"),
         });
-        if (!clock.has_value()) {
-            return fail(clock.error());
+        if (!clock.ok()) {
+            return fail(clock.status());
         }
         clock_ = clock.value();
         auto schema = runtime_.acquisition.register_schema(rodaq_schema_registration{
@@ -204,8 +204,8 @@ public:
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>("schema"), sizeof("schema") - 1U},
         });
-        if (!schema.has_value()) {
-            return fail(schema.error());
+        if (!schema.ok()) {
+            return fail(schema.status());
         }
         schema_ = schema.value();
 
@@ -224,8 +224,8 @@ public:
                 rodaq_bytes_view{
                     reinterpret_cast<const std::uint8_t*>(native.data()), native.size()},
             });
-            if (!stream.has_value()) {
-                return fail(stream.error());
+            if (!stream.ok()) {
+                return fail(stream.status());
             }
             auto transition = std::make_unique<TransitionState>();
             transition->stream = stream.value();
@@ -235,40 +235,40 @@ public:
         for (std::size_t index = 0; index < stream_count_; ++index) {
             std::string descriptor_name = "fake/0";
             auto descriptor = publish_descriptor(streams_[index], descriptor_name);
-            if (!descriptor.has_value()) {
-                return fail(descriptor.error());
+            if (!descriptor.ok()) {
+                return fail(descriptor.status());
             }
             if (projection_before_start_) {
                 auto projection = register_projection(descriptor.value());
-                if (!projection.has_value()) {
-                    return fail(projection.error());
+                if (!projection.ok()) {
+                    return fail(projection.status());
                 }
                 if (projection_registration_mode_ == "same") {
                     auto duplicate = register_projection(descriptor.value());
-                    if (!duplicate.has_value()) {
-                        return fail(duplicate.error());
+                    if (!duplicate.ok()) {
+                        return fail(duplicate.status());
                     }
                 } else if (projection_registration_mode_ == "conflict") {
                     auto conflicting = register_projection(descriptor.value(), "-different");
-                    if (!conflicting.has_value()) {
-                        return fail(conflicting.error());
+                    if (!conflicting.ok()) {
+                        return fail(conflicting.status());
                     }
                 }
             }
             descriptor_name.assign("mutated-after-publication");
             auto views = validate_published_views(streams_[index], descriptor.value(), "fake/0");
-            if (!views.has_value()) {
-                return fail(views.error());
+            if (!views.ok()) {
+                return fail(views.status());
             }
             descriptors_.push_back(descriptor.value());
         }
         auto ownership = validate_ownership();
-        if (!ownership.has_value()) {
-            return fail(ownership.error());
+        if (!ownership.ok()) {
+            return fail(ownership.status());
         }
         auto stale_handles = validate_or_record_stale_handles();
-        if (!stale_handles.has_value()) {
-            return fail(stale_handles.error());
+        if (!stale_handles.ok()) {
+            return fail(stale_handles.status());
         }
 
         stopping_.store(false);
@@ -277,8 +277,8 @@ public:
         }
         if (lifecycle_scenario_ == "start_partial_failure" ||
             lifecycle_scenario_ == "start_partial_cleanup_failure") {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0,
                 "configured partial start failure"));
         }
         stage_ = Stage::Started;
@@ -302,8 +302,8 @@ public:
         stage_ = Stage::Stopped;
         log_control("stop");
         if (lifecycle_scenario_ == "stop_failure") {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0, "configured stop failure"));
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0, "configured stop failure"));
         }
         return {};
     }
@@ -334,8 +334,8 @@ public:
             ((binding_scenario_ == "prepare_failure_switch" ||
               binding_scenario_ == "prepare_failure_abort_stall") &&
              old_descriptor.value != 0)) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0,
                 "configured binding prepare failure"));
         }
         if (binding_scenario_ == "prepare_stall_switch" && old_descriptor.value != 0) {
@@ -350,8 +350,8 @@ public:
         const std::size_t commit_index = commit_count_.fetch_add(1);
         if (binding_scenario_ == "commit_failure_switch" && commit_index != 0) {
             complete_transition(state, transition.value, false, RODAQ_BINDING_ABORT_KEEP_PAUSED);
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0,
                 "configured binding commit failure"));
         }
         if (binding_scenario_ == "commit_stall_switch" && commit_index != 0) {
@@ -384,8 +384,8 @@ public:
             // native workers. Runtime still cannot assume quiescence on error
             // and must quarantine; the fixture owns its completed threads.
             quiesce();
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::Unavailable, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::Unavailable, "fake_acquisition", 0,
                 "configured quiesce failure"));
         }
         if (lifecycle_scenario_ == "quiesce_stall") {
@@ -458,11 +458,10 @@ private:
     void produce(std::size_t producer_index) {
         while (!stopping_.load()) {
             const auto lifecycle = runtime_.common.lifecycle_snapshot();
-            if (lifecycle.has_value() &&
-                lifecycle.value().normal_acquisition_allowed == RODAQ_TRUE) {
+            if (lifecycle.ok() && lifecycle.value().normal_acquisition_allowed == RODAQ_TRUE) {
                 break;
             }
-            if (lifecycle.has_value() && lifecycle.value().state == RODAQ_RUNTIME_FAILED) {
+            if (lifecycle.ok() && lifecycle.value().state == RODAQ_RUNTIME_FAILED) {
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -526,7 +525,7 @@ private:
                 }
                 projection = register_projection(current);
             }
-            if (!projection.has_value()) {
+            if (!projection.ok()) {
                 return false;
             }
             std::unique_lock<std::mutex> transition_lock(transition.mutex);
@@ -547,7 +546,7 @@ private:
                 if (pause_before_switch_) {
                     const auto paused = runtime_.acquisition.report_stream(
                         streams_[stream_index], RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
-                    if (!paused.has_value()) {
+                    if (!paused.ok()) {
                         return false;
                     }
                 }
@@ -558,13 +557,13 @@ private:
                 }
                 auto switched_descriptor =
                     publish_descriptor(streams_[stream_index], "fake/switched");
-                if (!switched_descriptor.has_value()) {
+                if (!switched_descriptor.ok()) {
                     return false;
                 }
                 TransitionState& transition = *transitions_[stream_index];
                 if (projection_before_start_) {
                     auto projection = register_projection(switched_descriptor.value());
-                    if (!projection.has_value()) {
+                    if (!projection.ok()) {
                         return false;
                     }
                 }
@@ -605,7 +604,7 @@ private:
             std::int64_t reading = static_cast<std::int64_t>(record_index + slot + 1U);
             if (timestamp_scenario_ == "monotonic") {
                 const auto monotonic = runtime_.common.monotonic_time_ns();
-                if (monotonic.has_value()) {
+                if (monotonic.ok()) {
                     reading = static_cast<std::int64_t>(monotonic.value());
                 }
             }
@@ -631,12 +630,12 @@ private:
             const auto expected_disposition = mode == RODAQ_PAYLOAD_COPY
                                                   ? RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE
                                                   : RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE;
-            if (!rejected.has_value() || rejected.value().outcome != RODAQ_ADMISSION_PRE_REJECTED ||
+            if (!rejected.ok() || rejected.value().outcome != RODAQ_ADMISSION_PRE_REJECTED ||
                 rejected.value().rejection_reason != RODAQ_REJECTION_STALE_HANDLE ||
                 rejected.value().payload_disposition != expected_disposition) {
                 if (anchor != nullptr &&
-                    (!rejected.has_value() || rejected.value().payload_disposition ==
-                                                  RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE)) {
+                    (!rejected.ok() || rejected.value().payload_disposition ==
+                                           RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE)) {
                     delete anchor;
                 }
                 log_control("ownership_submit_failed");
@@ -646,11 +645,11 @@ private:
             submission.source = *source_;
         }
         auto result = runtime_.acquisition.submit(submission);
-        if (!result.has_value()) {
+        if (!result.ok()) {
             if (anchor != nullptr) {
                 delete anchor;
             }
-            log_submit_error(result.error());
+            log_submit_error(result.status());
             return !stopping_.load();
         }
         if (anchor != nullptr &&
@@ -661,7 +660,7 @@ private:
         if (plugin_health_scenario_ == "source_recovered" && record_index == 1) {
             if (result.value().rejection_reason != RODAQ_REJECTION_SOURCE_UNAVAILABLE ||
                 !runtime_.acquisition.report_source(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
-                     .has_value()) {
+                     .ok()) {
                 log_control("source_recovery_failed");
                 return false;
             }
@@ -677,14 +676,14 @@ private:
     }
 
     bool trigger_plugin_health(std::size_t stream_index) {
-        rodaq_error diagnostic{};
-        rodaq::assign_rodaq_error(
+        rodaq_status diagnostic{};
+        rodaq::assign_abi_status(
             RODAQ_STATUS_UNAVAILABLE, "fake_acquisition", 0, "configured Plugin health failure",
             &diagnostic);
         const rodaq_acquisition_plugin_state state =
             plugin_health_scenario_ == "terminal" ? RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE
                                                   : RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE;
-        if (!runtime_.acquisition.report_plugin_state(state, &diagnostic).has_value()) {
+        if (!runtime_.acquisition.report_plugin_state(state, &diagnostic).ok()) {
             return false;
         }
         log_control("plugin_health state=" + plugin_health_scenario_);
@@ -693,12 +692,12 @@ private:
             return true;
         }
         if (!runtime_.acquisition.report_plugin_state(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
-                 .has_value()) {
+                 .ok()) {
             return false;
         }
         if (plugin_health_scenario_ == "recovered" &&
             !runtime_.acquisition.report_source(*source_, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
-                 .has_value()) {
+                 .ok()) {
             return false;
         }
         TransitionState& transition = *transitions_[stream_index];
@@ -708,12 +707,12 @@ private:
             transition.committed = false;
         }
         auto descriptor = publish_descriptor(streams_[stream_index], "fake/recovered");
-        if (!descriptor.has_value()) {
+        if (!descriptor.ok()) {
             return false;
         }
         if (projection_before_start_ || !projection_id_.empty()) {
             auto projection = register_projection(descriptor.value());
-            if (!projection.has_value()) {
+            if (!projection.ok()) {
                 return false;
             }
         }
@@ -742,13 +741,13 @@ private:
                << " disposition=" << result.payload_disposition << '\n';
     }
 
-    void log_submit_error(const rodaq::Error& error) {
+    void log_submit_error(const rodaq::Status& error) {
         if (event_log_.empty()) {
             return;
         }
         std::lock_guard<std::mutex> lock(log_mutex_);
         std::ofstream output(event_log_, std::ios::app);
-        output << "submit error=" << static_cast<std::uint32_t>(error.code())
+        output << "submit error=" << static_cast<std::uint32_t>(error.status_code())
                << " message=" << error.message() << '\n';
     }
 
@@ -765,35 +764,35 @@ private:
         rodaq_stream_handle stream, rodaq_stream_descriptor_handle descriptor,
         std::string_view expected_name) {
         auto stream_view = runtime_.canonical.get_stream(stream);
-        if (!stream_view.has_value() || stream_view.value().stream_id == 0) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+        if (!stream_view.ok() || stream_view.value().stream_id == 0) {
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "canonical Stream view is invalid"));
         }
         auto descriptor_view = runtime_.canonical.get_stream_descriptor(descriptor);
-        if (!descriptor_view.has_value()) {
-            return fail(descriptor_view.error());
+        if (!descriptor_view.ok()) {
+            return fail(descriptor_view.status());
         }
         const rodaq_string_view name = descriptor_view.value().name;
         const std::string_view published_name(name.data, name.size);
         if (published_name != expected_name) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "published Descriptor view was mutated"));
         }
         auto key_set =
             runtime_.canonical.get_timestamp_key_set(descriptor_view.value().timestamp_key_set_id);
-        if (!key_set.has_value() || key_set.value().key_count != timestamp_key_count_ + 1U) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+        if (!key_set.ok() || key_set.value().key_count != timestamp_key_count_ + 1U) {
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "canonical TimestampKeySet has the wrong size"));
         }
         const rodaq_timestamp_key& ingress_key = key_set.value().keys[0];
         const std::string_view ingress_role(ingress_key.role.data, ingress_key.role.size);
         if (ingress_role != "rodaq/acquisition_ingress" ||
             descriptor_view.value().transport_timestamp_key_count != timestamp_key_count_) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "canonical/transport timestamp separation is invalid"));
         }
         return {};
@@ -807,23 +806,26 @@ private:
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(source_id_.data()), source_id_.size()}});
-        if (!duplicate.has_value() || duplicate.value().value != source_->value) {
+        if (!duplicate.ok() || duplicate.value().value != source_->value) {
             return invalid_state();
         }
         if (ownership_scenario_ == "owner") {
             auto descriptor = runtime_.canonical.get_stream_descriptor(descriptors_.front());
-            if (!descriptor.has_value()) {
-                return fail(descriptor.error());
+            if (!descriptor.ok()) {
+                return fail(descriptor.status());
             }
             auto keys =
                 runtime_.canonical.get_timestamp_key_set(descriptor.value().timestamp_key_set_id);
-            if (!keys.has_value() || keys.value().key_count == 0) {
+            if (!keys.ok() || keys.value().key_count == 0) {
                 return invalid_state();
             }
             std::ofstream output(ownership_file_);
             output << source_->value << ' ' << streams_.front().value << ' ' << clock_.value << ' '
                    << keys.value().keys[0].clock.value << ' ' << source_id_ << '\n';
-            return output ? rodaq::Result<void>() : invalid_state();
+            if (!output) {
+                return invalid_state();
+            }
+            return {};
         }
         std::ifstream input(ownership_file_);
         rodaq_stream_handle foreign_stream{};
@@ -838,15 +840,15 @@ private:
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(foreign_id.data()), foreign_id.size()}});
-        if (conflict.has_value() || conflict.error().code() != rodaq::ErrorCode::Conflict) {
+        if (conflict.ok() || conflict.status().status_code() != rodaq::StatusCode::Conflict) {
             return invalid_state();
         }
         for (auto availability : {RODAQ_AVAILABILITY_UNAVAILABLE, RODAQ_AVAILABILITY_AVAILABLE}) {
             auto source =
                 runtime_.acquisition.report_source(foreign_source_, availability, nullptr);
             auto stream = runtime_.acquisition.report_stream(foreign_stream, availability, nullptr);
-            if (source.has_value() || source.error().code() != rodaq::ErrorCode::InvalidState ||
-                stream.has_value() || stream.error().code() != rodaq::ErrorCode::InvalidState) {
+            if (source.ok() || source.status().status_code() != rodaq::StatusCode::InvalidState ||
+                stream.ok() || stream.status().status_code() != rodaq::StatusCode::InvalidState) {
                 return invalid_state();
             }
         }
@@ -854,19 +856,19 @@ private:
             rodaq_source_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
         auto unknown_stream = runtime_.acquisition.report_stream(
             rodaq_stream_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
-        if (unknown_source.has_value() ||
-            unknown_source.error().code() != rodaq::ErrorCode::NotFound ||
-            unknown_stream.has_value() ||
-            unknown_stream.error().code() != rodaq::ErrorCode::NotFound) {
+        if (unknown_source.ok() ||
+            unknown_source.status().status_code() != rodaq::StatusCode::NotFound ||
+            unknown_stream.ok() ||
+            unknown_stream.status().status_code() != rodaq::StatusCode::NotFound) {
             return invalid_state();
         }
         const auto own_clock = clock_;
         for (auto clock : {foreign_clock, ingress_clock, rodaq_clock_handle{UINT64_MAX}}) {
             clock_ = clock;
             auto descriptor = publish_descriptor(streams_.front(), "fake/foreign-clock");
-            const auto expected = clock.value == UINT64_MAX ? rodaq::ErrorCode::NotFound
-                                                            : rodaq::ErrorCode::InvalidState;
-            if (descriptor.has_value() || descriptor.error().code() != expected) {
+            const auto expected = clock.value == UINT64_MAX ? rodaq::StatusCode::NotFound
+                                                            : rodaq::StatusCode::InvalidState;
+            if (descriptor.ok() || descriptor.status().status_code() != expected) {
                 clock_ = own_clock;
                 return invalid_state();
             }
@@ -887,17 +889,17 @@ private:
             std::uint64_t old_ingress_clock = 0;
             input >> old_stream >> old_descriptor >> old_ingress_clock;
             if (!input) {
-                return fail(rodaq::Error(
-                    rodaq::ErrorCode::InvalidArgument, "fake_acquisition", 0,
+                return fail(rodaq::Status(
+                    rodaq::StatusCode::InvalidArgument, "fake_acquisition", 0,
                     "stale handle fixture is invalid"));
             }
             auto stream = runtime_.canonical.get_stream(rodaq_stream_handle{old_stream});
             auto descriptor = runtime_.canonical.get_stream_descriptor(
                 rodaq_stream_descriptor_handle{old_descriptor});
             auto ingress = runtime_.canonical.get_clock(rodaq_clock_handle{old_ingress_clock});
-            if (stream.has_value() || descriptor.has_value() || ingress.has_value()) {
-                return fail(rodaq::Error(
-                    rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+            if (stream.ok() || descriptor.ok() || ingress.ok()) {
+                return fail(rodaq::Status(
+                    rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                     "stale activation handle resolved"));
             }
             log_control("stale_handles_rejected");
@@ -906,27 +908,29 @@ private:
 
         std::ofstream output(stale_handle_file_);
         if (!output || streams_.empty() || descriptors_.empty()) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "failed to record stale handle fixture"));
         }
         auto descriptor = runtime_.canonical.get_stream_descriptor(descriptors_.front());
-        if (!descriptor.has_value()) {
-            return fail(descriptor.error());
+        if (!descriptor.ok()) {
+            return fail(descriptor.status());
         }
         auto key_set =
             runtime_.canonical.get_timestamp_key_set(descriptor.value().timestamp_key_set_id);
-        if (!key_set.has_value() || key_set.value().key_count == 0) {
-            return fail(rodaq::Error(
-                rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
+        if (!key_set.ok() || key_set.value().key_count == 0) {
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
                 "failed to inspect ingress Clock fixture"));
         }
         output << streams_.front().value << ' ' << descriptors_.front().value << ' '
                << key_set.value().keys[0].clock.value << '\n';
-        return output ? rodaq::Result<void>()
-                      : fail(rodaq::Error(
-                            rodaq::ErrorCode::InternalError, "fake_acquisition", 0,
-                            "failed to record stale handle fixture"));
+        if (!output) {
+            return fail(rodaq::Status(
+                rodaq::StatusCode::InternalError, "fake_acquisition", 0,
+                "failed to record stale handle fixture"));
+        }
+        return {};
     }
 
     rodaq::Result<void> register_projection(
@@ -939,7 +943,7 @@ private:
         auto result = runtime_.projection.register_entry(
             descriptor, projection_id_, reinterpret_cast<const std::uint8_t*>(bytes.data()),
             bytes.size());
-        if (!result.has_value()) {
+        if (!result.ok()) {
             return result;
         }
         log_control("projection descriptor=" + std::to_string(descriptor.value));
@@ -982,25 +986,23 @@ private:
             static_cast<std::uint32_t>(timestamp_keys.size()),
             0,
         });
-        if (result.has_value()) {
+        if (result.ok()) {
             log_control("descriptor_published descriptor=" + std::to_string(result.value().value));
         }
         return result;
     }
 
     static rodaq::Result<void> invalid_state() {
-        return nonstd::make_unexpected(
-            rodaq::Error(rodaq::ErrorCode::InvalidState, "fake_acquisition", 0, "invalid state"));
+        return rodaq::Status(
+            rodaq::StatusCode::InvalidState, "fake_acquisition", 0, "invalid state");
     }
 
     static rodaq::Result<void> invalid_argument() {
-        return nonstd::make_unexpected(rodaq::Error(
-            rodaq::ErrorCode::InvalidArgument, "fake_acquisition", 0, "invalid config"));
+        return rodaq::Status(
+            rodaq::StatusCode::InvalidArgument, "fake_acquisition", 0, "invalid config");
     }
 
-    static rodaq::Result<void> fail(const rodaq::Error& error) {
-        return nonstd::make_unexpected(error);
-    }
+    static rodaq::Result<void> fail(const rodaq::Status& error) { return rodaq::Status(error); }
 
     rodaq::AcquisitionRuntime runtime_;
     Stage stage_ = Stage::Created;

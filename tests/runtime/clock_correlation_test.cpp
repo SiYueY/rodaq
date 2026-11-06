@@ -22,7 +22,7 @@ UnixEpochClockAnchor anchor(std::int64_t reading, std::uint64_t unix_ns) {
 
 template <typename T>
 T take(rodaq::Result<T> result) {
-    if (!result.has_value()) {
+    if (!result.ok()) {
         throw std::runtime_error("Expected successful clock operation");
     }
     return std::move(result.value());
@@ -44,17 +44,21 @@ TEST(ClockCorrelationTest, ProjectsPositiveNegativeAndEqualDeltas) {
 TEST(ClockCorrelationTest, RejectsCheckedArithmeticFailures) {
     const UnixEpochClockAnchor overflow = anchor(0, std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument, project_unix_nanoseconds(1, overflow).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        project_unix_nanoseconds(1, overflow).status().status_code());
 
     const UnixEpochClockAnchor underflow = anchor(0, 0);
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument, project_unix_nanoseconds(-1, underflow).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        project_unix_nanoseconds(-1, underflow).status().status_code());
 
     const UnixEpochClockAnchor extreme =
         anchor(std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        project_unix_nanoseconds(std::numeric_limits<std::int64_t>::max(), extreme).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        project_unix_nanoseconds(std::numeric_limits<std::int64_t>::max(), extreme)
+            .status()
+            .status_code());
 }
 
 TEST(ClockCorrelationTest, CapturesOneStableAnchorWithInjectedReaders) {
@@ -81,7 +85,7 @@ TEST(ClockCorrelationTest, CapturesOneStableAnchorWithInjectedReaders) {
     const UnixEpochClockAnchor second = take(correlation.get_anchor(clock(7)));
     EXPECT_EQ(first.clock_reading, second.clock_reading);
     EXPECT_EQ(first.unix_anchor_ns, second.unix_anchor_ns);
-    EXPECT_EQ(rodaq::ErrorCode::NotFound, correlation.get_anchor(clock(8)).error().code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, correlation.get_anchor(clock(8)).status().status_code());
 }
 
 TEST(ClockCorrelationTest, CreatesIndependentAnchorsPerActivation) {
@@ -96,12 +100,12 @@ TEST(ClockCorrelationTest, RejectsBackwardAndUnknownClockInputs) {
     int call = 0;
     const auto backward = ClockCorrelation::establish(
         clock(1), [&call] { return call++ == 0 ? 100 : 99; }, [] { return 1'000U; });
-    ASSERT_FALSE(backward.has_value());
-    EXPECT_EQ(rodaq::ErrorCode::Unavailable, backward.error().code());
+    ASSERT_FALSE(backward.ok());
+    EXPECT_EQ(rodaq::StatusCode::Unavailable, backward.status().status_code());
 
     EXPECT_EQ(
-        rodaq::ErrorCode::InvalidArgument,
-        ClockCorrelation::from_anchor(UnixEpochClockAnchor{clock(0), 0, 0}).error().code());
+        rodaq::StatusCode::InvalidArgument,
+        ClockCorrelation::from_anchor(UnixEpochClockAnchor{clock(0), 0, 0}).status().status_code());
 }
 
 TEST(ClockCorrelationTest, AbiAdapterReturnsStableCallerOwnedAnchor) {
@@ -114,7 +118,7 @@ TEST(ClockCorrelationTest, AbiAdapterReturnsStableCallerOwnedAnchor) {
 
     rodaq_unix_epoch_clock_anchor output{};
     output.struct_size = RODAQ_UNIX_EPOCH_CLOCK_ANCHOR_MIN_STRUCT_SIZE;
-    rodaq_error error{};
+    rodaq_status error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         vtable->get_unix_epoch_anchor(interface.context, clock(11), &output, &error));

@@ -63,9 +63,9 @@ typedef struct rodaq_runtime_common_v1 {
 
     uint64_t (*monotonic_time_ns)(void* context) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_lifecycle_snapshot)(
+    rodaq_status_code (*get_lifecycle_snapshot)(
         void* context, rodaq_runtime_lifecycle_snapshot* out_snapshot,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     void (*report_diagnostic)(
         void* context, rodaq_diagnostic_severity severity, rodaq_string_view code,
@@ -79,29 +79,29 @@ typedef struct rodaq_runtime_canonical_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_source)(
+    rodaq_status_code (*get_source)(
         void* context, rodaq_source_handle handle, rodaq_source_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_clock)(
+    rodaq_status_code (*get_clock)(
         void* context, rodaq_clock_handle handle, rodaq_clock_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_schema)(
+    rodaq_status_code (*get_schema)(
         void* context, rodaq_schema_handle handle, rodaq_schema_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_timestamp_key_set)(
+    rodaq_status_code (*get_timestamp_key_set)(
         void* context, uint64_t timestamp_key_set_id, rodaq_timestamp_key_set_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_stream)(
+    rodaq_status_code (*get_stream)(
         void* context, rodaq_stream_handle handle, rodaq_stream_view* out_view,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_stream_descriptor)(
+    rodaq_status_code (*get_stream_descriptor)(
         void* context, rodaq_stream_descriptor_handle handle,
-        rodaq_stream_descriptor_view* out_view, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_stream_descriptor_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_canonical_v1;
 
 #define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
@@ -131,13 +131,13 @@ typedef struct rodaq_runtime_projection_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*register_projection)(
+    rodaq_status_code (*register_projection)(
         void* context, const rodaq_projection_registration* request,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*get_projection)(
+    rodaq_status_code (*get_projection)(
         void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-        rodaq_projection_view* out_view, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_projection_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_projection_v1;
 
 /* ABI-APPENDABLE: activation-scoped ingress Clock to Unix epoch correlation. */
@@ -157,9 +157,9 @@ typedef struct rodaq_runtime_clock_correlation_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*get_unix_epoch_anchor)(
+    rodaq_status_code (*get_unix_epoch_anchor)(
         void* context, rodaq_clock_handle clock, rodaq_unix_epoch_clock_anchor* out_anchor,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_clock_correlation_v1;
 
 #define RODAQ_RUNTIME_ACQUISITION_PROTOCOL_VERSION UINT32_C(1)
@@ -169,41 +169,41 @@ typedef struct rodaq_runtime_acquisition_v1 {
     uint32_t protocol_version;
     uint32_t struct_size;
 
-    rodaq_status (*register_source)(
+    rodaq_status_code (*register_source)(
         void* context, const rodaq_source_registration* request, rodaq_source_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_clock)(
+    rodaq_status_code (*register_clock)(
         void* context, const rodaq_clock_registration* request, rodaq_clock_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_schema)(
+    rodaq_status_code (*register_schema)(
         void* context, const rodaq_schema_registration* request, rodaq_schema_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*register_stream)(
+    rodaq_status_code (*register_stream)(
         void* context, const rodaq_stream_registration* request, rodaq_stream_handle* out_handle,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*publish_stream_descriptor)(
+    rodaq_status_code (*publish_stream_descriptor)(
         void* context, const rodaq_stream_descriptor_registration* request,
-        rodaq_stream_descriptor_handle* out_handle, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_stream_descriptor_handle* out_handle, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_source_availability)(
+    rodaq_status_code (*report_source_availability)(
         void* context, rodaq_source_handle source, rodaq_availability_state state,
-        const rodaq_error* diagnostic, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        const rodaq_status* diagnostic, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_stream_availability)(
+    rodaq_status_code (*report_stream_availability)(
         void* context, rodaq_stream_handle stream, rodaq_availability_state state,
-        const rodaq_error* diagnostic, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        const rodaq_status* diagnostic, rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*report_plugin_state)(
-        void* context, rodaq_acquisition_plugin_state state, const rodaq_error* diagnostic,
-        rodaq_error* out_error) RODAQ_NOEXCEPT;
+    rodaq_status_code (*report_plugin_state)(
+        void* context, rodaq_acquisition_plugin_state state, const rodaq_status* diagnostic,
+        rodaq_status* out_status) RODAQ_NOEXCEPT;
 
-    rodaq_status (*submit)(
+    rodaq_status_code (*submit)(
         void* context, const rodaq_record_submission* submission,
-        rodaq_acquisition_submit_result* out_result, rodaq_error* out_error) RODAQ_NOEXCEPT;
+        rodaq_acquisition_submit_result* out_result, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_acquisition_v1;
 
 #define RODAQ_RUNTIME_STORAGE_PROTOCOL_VERSION UINT32_C(1)
@@ -217,9 +217,9 @@ typedef struct rodaq_runtime_storage_v1 {
 
     void (*persistence_completed)(
         void* context, rodaq_storage_operation operation,
-        rodaq_storage_persistence_state terminal_state, const rodaq_error* error) RODAQ_NOEXCEPT;
+        rodaq_storage_persistence_state terminal_state, const rodaq_status* error) RODAQ_NOEXCEPT;
 
-    void (*report_failure)(void* context, const rodaq_error* error) RODAQ_NOEXCEPT;
+    void (*report_failure)(void* context, const rodaq_status* error) RODAQ_NOEXCEPT;
 } rodaq_runtime_storage_v1;
 
 #define RODAQ_RUNTIME_COMMON_V1_MIN_STRUCT_SIZE             \

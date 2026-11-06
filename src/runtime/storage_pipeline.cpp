@@ -64,7 +64,7 @@ struct StoragePipeline::Slot {
     bool persistence_event_seen = false;
     rodaq_storage_persistence_state persistence_event_state = RODAQ_STORAGE_PERSISTENCE_PENDING;
     bool persistence_diagnostic_present = false;
-    rodaq_error persistence_diagnostic{};
+    rodaq_status persistence_diagnostic{};
     bool scheduled = false;
     std::size_t payload_size = 0;
 };
@@ -208,8 +208,8 @@ StoragePipeline::~StoragePipeline() {
 
 Result<void> StoragePipeline::start() {
     if (started_) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidState, "runtime", 0, "StoragePipeline is already started"));
+        return rodaq::Status(
+            StatusCode::InvalidState, "runtime", 0, "StoragePipeline is already started");
     }
     try {
         watchdog_thread_ = std::thread([this] {
@@ -253,9 +253,9 @@ Result<void> StoragePipeline::start() {
         if (watchdog_thread_.joinable()) {
             watchdog_thread_.join();
         }
-        return nonstd::make_unexpected(Error(
-            ErrorCode::Unavailable, "runtime", 0,
-            std::string("Failed to start Storage pipeline workers: ") + error.what()));
+        return rodaq::Status(
+            StatusCode::Unavailable, "runtime", 0,
+            std::string("Failed to start Storage pipeline workers: ") + error.what());
     }
 }
 
@@ -284,8 +284,8 @@ Result<PreGateAcquireResult> StoragePipeline::acquire_pre_gate(
     std::chrono::steady_clock::time_point deadline,
     const std::atomic<std::uint64_t>& eligibility_generation) {
     if (payload_bytes > maximum_payload_bytes_) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "runtime", 0, "Payload exceeds runtime limit"));
+        return rodaq::Status(
+            StatusCode::InvalidArgument, "runtime", 0, "Payload exceeds runtime limit");
     }
 
     std::unique_lock<std::mutex> lock(mutex_);
@@ -309,21 +309,20 @@ Result<PreGateAcquireResult> StoragePipeline::acquire_pre_gate(
                 payload_budget_.try_reserve(ResourceAmount{0, payload_bytes});
             PayloadPoolReservation pool_reservation;
             bool pool_reserved = !copy_payload || payload_bytes == 0;
-            if (record_reservation.has_value() && payload_reservation.has_value() && copy_payload &&
+            if (record_reservation.ok() && payload_reservation.ok() && copy_payload &&
                 payload_bytes != 0) {
                 if (copy_pool == nullptr) {
-                    return nonstd::make_unexpected(Error(
-                        ErrorCode::InvalidState, "runtime", 0,
-                        "Copy Payload requires a PayloadPool"));
+                    return rodaq::Status(
+                        StatusCode::InvalidState, "runtime", 0,
+                        "Copy Payload requires a PayloadPool");
                 }
                 auto reserved = copy_pool->try_reserve(payload_bytes);
-                if (reserved.has_value()) {
+                if (reserved.ok()) {
                     pool_reservation = std::move(reserved.value());
                     pool_reserved = true;
                 }
             }
-            if (!record_reservation.has_value() || !payload_reservation.has_value() ||
-                !pool_reserved) {
+            if (!record_reservation.ok() || !payload_reservation.ok() || !pool_reserved) {
                 if (mode == AdmissionMode::Reject) {
                     return PreGateAcquireResult{
                         PreGateAcquireOutcome::ResourceUnavailable, PipelineReservation()};
@@ -663,8 +662,8 @@ void StoragePipeline::watchdog_loop() {
                 dispatch_overdue_generation_ != generation) {
                 dispatch_overdue_generation_ = generation;
                 lock.unlock();
-                fail(Error(
-                    ErrorCode::Timeout, "storage", 0,
+                fail(Status(
+                    StatusCode::Timeout, "storage", 0,
                     "Storage submit exceeded its progress deadline"));
                 lock.lock();
             }
@@ -679,8 +678,8 @@ void StoragePipeline::watchdog_loop() {
 void StoragePipeline::dispatch_one(std::size_t index) {
     std::array<rodaq_timestamp_value, TimestampState::kMaxSlots> timestamp_values{};
     rodaq_storage_operation operation{};
-    Result<rodaq_storage_submission> submission = nonstd::make_unexpected(
-        Error(ErrorCode::InvalidState, "storage", 0, "Storage dispatch slot is unavailable"));
+    Result<rodaq_storage_submission> submission = rodaq::Status(
+        StatusCode::InvalidState, "storage", 0, "Storage dispatch slot is unavailable");
     const RuntimeRecord* record = nullptr;
     std::int64_t accepted_steady_time_ns = 0;
     {
@@ -696,17 +695,16 @@ void StoragePipeline::dispatch_one(std::size_t index) {
     try {
         submission = submission_builder_(*record, operation, timestamp_values);
     } catch (const std::exception& error) {
-        submission =
-            nonstd::make_unexpected(Error(ErrorCode::InternalError, "storage", 0, error.what()));
+        submission = rodaq::Status(StatusCode::InternalError, "storage", 0, error.what());
     } catch (...) {
-        submission = nonstd::make_unexpected(
-            Error(ErrorCode::InternalError, "storage", 0, "Storage submission construction threw"));
+        submission = rodaq::Status(
+            StatusCode::InternalError, "storage", 0, "Storage submission construction threw");
     }
-    if (!submission.has_value()) {
+    if (!submission.ok()) {
         observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        complete_submit(index, nonstd::make_unexpected(submission.error()));
-        fail(Error(
-            ErrorCode::InternalError, "storage", 0, "Storage submission construction failed"));
+        complete_submit(index, submission.status());
+        fail(Status(
+            StatusCode::InternalError, "storage", 0, "Storage submission construction failed"));
         return;
     }
 
@@ -726,15 +724,13 @@ void StoragePipeline::dispatch_one(std::size_t index) {
         result = storage_->submit(submission.value());
     } catch (const std::exception& error) {
         active_submit_frame = previous;
-        result =
-            nonstd::make_unexpected(Error(ErrorCode::InternalError, "storage", 0, error.what()));
+        result = rodaq::Status(StatusCode::InternalError, "storage", 0, error.what());
         observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
         complete_submit(index, std::move(result));
         return;
     } catch (...) {
         active_submit_frame = previous;
-        result = nonstd::make_unexpected(
-            Error(ErrorCode::InternalError, "storage", 0, "Storage submit threw"));
+        result = rodaq::Status(StatusCode::InternalError, "storage", 0, "Storage submit threw");
         observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
         complete_submit(index, std::move(result));
         return;
@@ -758,13 +754,13 @@ void StoragePipeline::complete_submit(
         }
         accepted_steady_time_ns = slot.record->accepted_steady_time_ns();
 
-        if (!result.has_value()) {
+        if (!result.ok()) {
             slot.submit_return = SubmitReturn::ReturnedError;
             if (slot.payload_event_seen || slot.persistence_event_seen) {
                 apply_violation(
                     effects, "Storage emitted completion before returning a non-OK submit result");
             }
-            effects.failure.emplace(std::move(result.error()));
+            effects.failure = std::move(result).status();
             slot.payload_axis = PayloadAxis::Consumed;
             slot.persistence_axis = PersistenceAxis::Failed;
             release_payload_locked(index, slot, effects);
@@ -838,43 +834,43 @@ void StoragePipeline::complete_submit(
     }
     notify_payload_released(effects);
     notify_operation_completed(effects);
-    if (effects.violation.has_value()) {
-        fail(std::move(effects.violation.value()));
-    } else if (effects.failure.has_value()) {
-        fail(std::move(effects.failure.value()));
+    if (!effects.violation.ok()) {
+        fail(std::move(effects.violation));
+    } else if (!effects.failure.ok()) {
+        fail(std::move(effects.failure));
     }
     effects.payload_to_release = Payload();
     effects.record_to_destroy.reset();
 }
 
 void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexcept {
-    std::optional<Error> violation;
+    Status violation;
     std::int64_t accepted_steady_time_ns = 0;
     try {
         if (active_submit_frame != nullptr && active_submit_frame->pipeline == this &&
             active_submit_frame->operation.value == operation.value) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage emitted same-stack PayloadConsumed during submit");
-            fail(std::move(violation.value()));
+            fail(std::move(violation));
             return;
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
         std::size_t index = 0;
         if (!find_operation_locked(operation, index)) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage emitted PayloadConsumed for an unknown operation");
         } else if (callbacks_closed_) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage emitted PayloadConsumed after callback quiescence");
         } else {
             Slot& slot = slots_[index];
             if (slot.payload_event_seen || slot.payload_axis == PayloadAxis::Consumed) {
-                violation.emplace(
-                    ErrorCode::InternalError, "storage", 0,
+                violation = Status(
+                    StatusCode::InternalError, "storage", 0,
                     "Storage emitted duplicate PayloadConsumed");
             } else {
                 slot.payload_event_seen = true;
@@ -882,18 +878,18 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
                     accepted_steady_time_ns = slot.record->accepted_steady_time_ns();
                 }
                 if (!schedule_completion_locked(index)) {
-                    violation.emplace(
-                        ErrorCode::InternalError, "storage", 0,
+                    violation = Status(
+                        StatusCode::InternalError, "storage", 0,
                         "Completion scheduling capacity was exceeded");
                 }
             }
         }
     } catch (...) {
-        violation.emplace(
-            ErrorCode::InternalError, "storage", 0, "Storage PayloadConsumed staging failed");
+        violation = Status(
+            StatusCode::InternalError, "storage", 0, "Storage PayloadConsumed staging failed");
     }
-    if (violation.has_value()) {
-        fail(std::move(violation.value()));
+    if (!violation.ok()) {
+        fail(std::move(violation));
     } else {
         observe_latency(StorageLatencyKind::PayloadConsumed, accepted_steady_time_ns);
     }
@@ -901,32 +897,32 @@ void StoragePipeline::payload_consumed(rodaq_storage_operation operation) noexce
 
 void StoragePipeline::persistence_completed(
     rodaq_storage_operation operation, rodaq_storage_persistence_state state,
-    const rodaq_error* error) noexcept {
-    std::optional<Error> violation;
+    const rodaq_status* error) noexcept {
+    Status violation;
     std::int64_t accepted_steady_time_ns = 0;
     try {
         if (active_submit_frame != nullptr && active_submit_frame->pipeline == this &&
             active_submit_frame->operation.value == operation.value) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage emitted same-stack persistence completion during submit");
-            fail(std::move(violation.value()));
+            fail(std::move(violation));
             return;
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
         std::size_t index = 0;
         if (!find_operation_locked(operation, index)) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage completed an unknown persistence operation");
         } else if (callbacks_closed_) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage completed persistence after callback quiescence");
         } else if (!is_terminal(state)) {
-            violation.emplace(
-                ErrorCode::InternalError, "storage", 0,
+            violation = Status(
+                StatusCode::InternalError, "storage", 0,
                 "Storage completed persistence with an invalid state");
         } else {
             Slot& slot = slots_[index];
@@ -934,16 +930,16 @@ void StoragePipeline::persistence_completed(
                 slot.persistence_axis == PersistenceAxis::Succeeded ||
                 slot.persistence_axis == PersistenceAxis::Failed ||
                 slot.persistence_axis == PersistenceAxis::Unknown) {
-                violation.emplace(
-                    ErrorCode::InternalError, "storage", 0,
+                violation = Status(
+                    StatusCode::InternalError, "storage", 0,
                     "Storage emitted duplicate persistence completion");
             } else if (state == RODAQ_STORAGE_PERSISTENCE_SUCCEEDED && error != nullptr) {
-                violation.emplace(
-                    ErrorCode::InternalError, "storage", 0,
+                violation = Status(
+                    StatusCode::InternalError, "storage", 0,
                     "Storage supplied a diagnostic for successful persistence");
             } else if (state != RODAQ_STORAGE_PERSISTENCE_SUCCEEDED && error == nullptr) {
-                violation.emplace(
-                    ErrorCode::InternalError, "storage", 0,
+                violation = Status(
+                    StatusCode::InternalError, "storage", 0,
                     "Storage persistence failure diagnostic is missing");
             } else {
                 slot.persistence_event_seen = true;
@@ -953,19 +949,19 @@ void StoragePipeline::persistence_completed(
                 }
                 copy_diagnostic(error, slot);
                 if (!schedule_completion_locked(index)) {
-                    violation.emplace(
-                        ErrorCode::InternalError, "storage", 0,
+                    violation = Status(
+                        StatusCode::InternalError, "storage", 0,
                         "Completion scheduling capacity was exceeded");
                 }
             }
         }
     } catch (...) {
-        violation.emplace(
-            ErrorCode::InternalError, "storage", 0,
+        violation = Status(
+            StatusCode::InternalError, "storage", 0,
             "Storage persistence completion staging failed");
     }
-    if (violation.has_value()) {
-        fail(std::move(violation.value()));
+    if (!violation.ok()) {
+        fail(std::move(violation));
     } else {
         observe_latency(StorageLatencyKind::PersistenceCompleted, accepted_steady_time_ns);
     }
@@ -987,16 +983,16 @@ void StoragePipeline::completion_loop() {
         }
 
         if (!wait_for_submit_return(index, Clock::now() + progress_timeout_)) {
-            fail(Error(
-                ErrorCode::Timeout, "storage", 0,
+            fail(Status(
+                StatusCode::Timeout, "storage", 0,
                 "Storage completion arrived but submit return was not reconciled"));
             continue;
         }
         CompletionEffects effects = process_completion(index);
         notify_payload_released(effects);
         notify_operation_completed(effects);
-        if (effects.violation.has_value()) {
-            fail(std::move(effects.violation.value()));
+        if (!effects.violation.ok()) {
+            fail(std::move(effects.violation));
         }
         effects.payload_to_release = Payload();
         effects.record_to_destroy.reset();
@@ -1041,8 +1037,8 @@ void StoragePipeline::release_loop(const std::shared_ptr<ReleaseWorkerState>& st
                 }
                 release_condition_.notify_all();
             }
-            fail(Error(
-                ErrorCode::Timeout, "storage", 0,
+            fail(Status(
+                StatusCode::Timeout, "storage", 0,
                 "Payload release waited for an unreconciled Storage submit"));
             continue;
         }
@@ -1215,8 +1211,8 @@ void StoragePipeline::notify_payload_released(const CompletionEffects& effects) 
     try {
         payload_release_sink_(effects.released_bytes);
     } catch (...) {
-        fail(Error(
-            ErrorCode::InternalError, "storage", 0,
+        fail(Status(
+            StatusCode::InternalError, "storage", 0,
             "Payload-release observer raised an exception"));
     }
 }
@@ -1228,8 +1224,8 @@ void StoragePipeline::notify_operation_completed(const CompletionEffects& effect
     try {
         operation_complete_sink_(effects.persistence);
     } catch (...) {
-        fail(Error(
-            ErrorCode::InternalError, "storage", 0,
+        fail(Status(
+            StatusCode::InternalError, "storage", 0,
             "Storage-completion observer raised an exception"));
     }
 }
@@ -1246,8 +1242,8 @@ void StoragePipeline::observe_latency(StorageLatencyKind kind, std::int64_t acce
     try {
         latency_sink_(kind, now_ns - accepted_ns);
     } catch (...) {
-        fail(Error(
-            ErrorCode::InternalError, "storage", 0,
+        fail(Status(
+            StatusCode::InternalError, "storage", 0,
             "Storage latency observer raised an exception"));
     }
 }
@@ -1323,15 +1319,15 @@ bool StoragePipeline::schedule_completion_locked(std::size_t index) noexcept {
 }
 
 void StoragePipeline::apply_violation(CompletionEffects& effects, const char* message) noexcept {
-    if (!effects.violation.has_value()) {
+    if (effects.violation.ok()) {
         try {
-            effects.violation.emplace(ErrorCode::InternalError, "storage", 0, message);
+            effects.violation = Status(StatusCode::InternalError, "storage", 0, message);
         } catch (...) {
         }
     }
 }
 
-void StoragePipeline::fail(Error error) noexcept {
+void StoragePipeline::fail(Status error) noexcept {
     if (failure_reported_.exchange(true)) {
         return;
     }
@@ -1341,7 +1337,7 @@ void StoragePipeline::fail(Error error) noexcept {
     }
 }
 
-void StoragePipeline::copy_diagnostic(const rodaq_error* error, Slot& slot) noexcept {
+void StoragePipeline::copy_diagnostic(const rodaq_status* error, Slot& slot) noexcept {
     slot.persistence_diagnostic_present = error != nullptr;
     if (error != nullptr) {
         slot.persistence_diagnostic = *error;

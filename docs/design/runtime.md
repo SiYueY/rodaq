@@ -7416,3 +7416,11 @@ accepts an unbounded or remote configuration stream in V1. YAML file size is
 checked before reading; after yaml-cpp constructs its node graph, ConfigLoader
 enforces node count, depth, duplicate keys, scalar conversion and the
 RoDAQ-owned ConfigTree schema. `YAML::Node` never crosses the loader boundary.
+
+## Status-based failure observation
+
+`Runtime::primary_failure()` returns `Status` directly. A default OK status means
+no primary failure; a non-OK status preserves the first failure and its complete
+diagnostics through cleanup. Failure latches and deferred diagnostics also store
+Status directly. Asynchronous call completion is determined by its existing
+completion/Join protocol, independently of whether its Status is OK.

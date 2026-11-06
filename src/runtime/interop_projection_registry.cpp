@@ -2,7 +2,7 @@
 
 #include <rodaq/plugin/abi_support.hpp>
 
-#include <rodaq/error.hpp>
+#include <rodaq/status.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -21,8 +21,8 @@ bool limits_are_positive(const ProjectionLimits& limits) noexcept {
            limits.max_projection_bytes_per_activation > 0;
 }
 
-Error projection_error(ErrorCode code, std::string message) {
-    return Error(code, "projection", 0, std::move(message));
+Status projection_status(StatusCode status_code, std::string message) {
+    return Status(status_code, "projection", 0, std::move(message));
 }
 
 bool same_payload(
@@ -52,28 +52,26 @@ Result<void> InteropProjectionRegistry::register_entry(
     rodaq_stream_descriptor_handle descriptor, std::string_view projection_id,
     const std::uint8_t* payload, std::size_t payload_size) {
     if (!limits_are_positive(limits_)) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::InvalidState, "Projection Registry limits must be positive"));
+        return projection_status(
+            StatusCode::InvalidState, "Projection Registry limits must be positive");
     }
     if (descriptor.value == 0) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::InvalidArgument, "Projection descriptor handle is invalid"));
+        return projection_status(
+            StatusCode::InvalidArgument, "Projection descriptor handle is invalid");
     }
     if (projection_id.empty()) {
-        return nonstd::make_unexpected(
-            projection_error(ErrorCode::InvalidArgument, "Projection ID must not be empty"));
+        return projection_status(StatusCode::InvalidArgument, "Projection ID must not be empty");
     }
     if (projection_id.size() > limits_.max_projection_id_bytes) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::ResourceExhausted, "Projection ID exceeds the configured byte limit"));
+        return projection_status(
+            StatusCode::ResourceExhausted, "Projection ID exceeds the configured byte limit");
     }
     if (!rodaq::is_valid_utf8_without_nul(projection_id)) {
-        return nonstd::make_unexpected(projection_error(
-            ErrorCode::InvalidArgument, "Projection ID is not valid UTF-8 without NUL"));
+        return projection_status(
+            StatusCode::InvalidArgument, "Projection ID is not valid UTF-8 without NUL");
     }
     if (payload_size != 0 && payload == nullptr) {
-        return nonstd::make_unexpected(
-            projection_error(ErrorCode::InvalidArgument, "Projection payload has null data"));
+        return projection_status(StatusCode::InvalidArgument, "Projection payload has null data");
     }
 
     RegistrationSink sink;
@@ -89,8 +87,8 @@ Result<void> InteropProjectionRegistry::register_entry(
             if (same_payload((*existing)->payload, payload, payload_size)) {
                 return {};
             }
-            return nonstd::make_unexpected(projection_error(
-                ErrorCode::Conflict, "Projection already exists with different bytes"));
+            return projection_status(
+                StatusCode::Conflict, "Projection already exists with different bytes");
         }
 
         std::size_t descriptor_count = 0;
@@ -102,24 +100,24 @@ Result<void> InteropProjectionRegistry::register_entry(
             ++descriptor_count;
             if (entry->payload.size() >
                 std::numeric_limits<std::size_t>::max() - descriptor_bytes) {
-                return nonstd::make_unexpected(projection_error(
-                    ErrorCode::InternalError, "Projection byte accounting overflowed"));
+                return projection_status(
+                    StatusCode::InternalError, "Projection byte accounting overflowed");
             }
             descriptor_bytes += entry->payload.size();
         }
         if (descriptor_count >= limits_.max_projection_count_per_descriptor) {
-            return nonstd::make_unexpected(projection_error(
-                ErrorCode::ResourceExhausted, "Projection count limit is exhausted"));
+            return projection_status(
+                StatusCode::ResourceExhausted, "Projection count limit is exhausted");
         }
         if (payload_size > std::numeric_limits<std::size_t>::max() - descriptor_bytes ||
             descriptor_bytes + payload_size > limits_.max_projection_bytes_per_descriptor) {
-            return nonstd::make_unexpected(projection_error(
-                ErrorCode::ResourceExhausted, "Projection descriptor byte limit is exhausted"));
+            return projection_status(
+                StatusCode::ResourceExhausted, "Projection descriptor byte limit is exhausted");
         }
         if (payload_size > std::numeric_limits<std::size_t>::max() - total_payload_bytes_ ||
             total_payload_bytes_ + payload_size > limits_.max_projection_bytes_per_activation) {
-            return nonstd::make_unexpected(projection_error(
-                ErrorCode::ResourceExhausted, "Projection activation byte limit is exhausted"));
+            return projection_status(
+                StatusCode::ResourceExhausted, "Projection activation byte limit is exhausted");
         }
 
         try {
@@ -132,8 +130,8 @@ Result<void> InteropProjectionRegistry::register_entry(
             entries_.push_back(std::move(entry));
             total_payload_bytes_ += payload_size;
         } catch (const std::bad_alloc&) {
-            return nonstd::make_unexpected(projection_error(
-                ErrorCode::ResourceExhausted, "Memory exhausted while storing a Projection"));
+            return projection_status(
+                StatusCode::ResourceExhausted, "Memory exhausted while storing a Projection");
         }
         sink = registration_sink_;
     }
@@ -152,8 +150,7 @@ Result<ProjectionView> InteropProjectionRegistry::get(
     if (descriptor.value == 0 || projection_id.empty() ||
         !rodaq::is_valid_utf8_without_nul(projection_id) ||
         projection_id.size() > limits_.max_projection_id_bytes) {
-        return nonstd::make_unexpected(
-            projection_error(ErrorCode::InvalidArgument, "Projection lookup key is invalid"));
+        return projection_status(StatusCode::InvalidArgument, "Projection lookup key is invalid");
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -164,8 +161,7 @@ Result<ProjectionView> InteropProjectionRegistry::get(
                    entry->projection_id == projection_id;
         });
     if (found == entries_.end()) {
-        return nonstd::make_unexpected(
-            projection_error(ErrorCode::NotFound, "Projection was not found"));
+        return projection_status(StatusCode::NotFound, "Projection was not found");
     }
     return ProjectionView{
         (*found)->projection_id,
@@ -178,35 +174,36 @@ rodaq_interface InteropProjectionRegistry::abi_interface() noexcept {
     return rodaq_interface{this, &kProjectionVtable};
 }
 
-rodaq_status InteropProjectionRegistry::register_projection(
-    void* context, const rodaq_projection_registration* request, rodaq_error* out_error) noexcept {
+rodaq_status_code InteropProjectionRegistry::register_projection(
+    void* context, const rodaq_projection_registration* request,
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr ||
         request->struct_size < RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
-            "Projection registration has an invalid context or request", out_error);
+            "Projection registration has an invalid context or request", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     if (request->reserved != 0) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
-            "Projection registration reserved field is non-zero", out_error);
+            "Projection registration reserved field is non-zero", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
     std::string_view projection_id;
     if (!parse_abi_string(request->projection_id, &projection_id)) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection ID is not valid UTF-8",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint8_t* payload = nullptr;
     std::size_t payload_size = 0;
     if (!parse_abi_bytes(request->payload, &payload, &payload_size)) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection payload is invalid",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
@@ -214,63 +211,63 @@ rodaq_status InteropProjectionRegistry::register_projection(
         auto* registry = static_cast<InteropProjectionRegistry*>(context);
         Result<void> result =
             registry->register_entry(request->descriptor, projection_id, payload, payload_size);
-        if (!result.has_value()) {
-            assign_rodaq_error(result.error(), out_error);
-            return status_from_error_code(result.error().code());
+        if (!result.ok()) {
+            assign_abi_status(result.status(), out_status);
+            return abi_status_from_status_code(result.status().status_code());
         }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        assign_rodaq_error(RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, error.what(), out_error);
+        assign_abi_status(RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, error.what(), out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     } catch (...) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, "Unknown Projection registration failure",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     }
 }
 
-rodaq_status InteropProjectionRegistry::get_projection(
+rodaq_status_code InteropProjectionRegistry::get_projection(
     void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-    rodaq_projection_view* out_view, rodaq_error* out_error) noexcept {
+    rodaq_projection_view* out_view, rodaq_status* out_status) noexcept {
     if (out_view == nullptr) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
-            "Projection query requires a non-null output view", out_error);
+            "Projection query requires a non-null output view", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t capacity = out_view->struct_size;
     if (capacity < RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE) {
         out_view->struct_size = 0;
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
-            "Projection output capacity is below the V1 minimum", out_error);
+            "Projection output capacity is below the V1 minimum", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t initialized =
         rodaq::initialized_prefix_size<rodaq_projection_view>(capacity);
     std::memset(out_view, 0, initialized);
     if (context == nullptr) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection query context is null",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
     std::string_view parsed_id;
     if (!parse_abi_string(projection_id, &parsed_id)) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection ID is not valid UTF-8",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
 
     try {
         const auto* registry = static_cast<const InteropProjectionRegistry*>(context);
         Result<ProjectionView> result = registry->get(descriptor, parsed_id);
-        if (!result.has_value()) {
-            assign_rodaq_error(result.error(), out_error);
-            return status_from_error_code(result.error().code());
+        if (!result.ok()) {
+            assign_abi_status(result.status(), out_status);
+            return abi_status_from_status_code(result.status().status_code());
         }
         const ProjectionView& view = result.value();
         out_view->struct_size = initialized;
@@ -287,12 +284,12 @@ rodaq_status InteropProjectionRegistry::get_projection(
         }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        assign_rodaq_error(RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, error.what(), out_error);
+        assign_abi_status(RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, error.what(), out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     } catch (...) {
-        assign_rodaq_error(
+        assign_abi_status(
             RODAQ_STATUS_INTERNAL_ERROR, "projection", 0, "Unknown Projection query failure",
-            out_error);
+            out_status);
         return RODAQ_STATUS_INTERNAL_ERROR;
     }
 }

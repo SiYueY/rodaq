@@ -1,7 +1,7 @@
 #include "plugin/plugin_validation.hpp"
 
 #include <rodaq/plugin/abi_support.hpp>
-#include "plugin/plugin_error.hpp"
+#include "plugin/plugin_status.hpp"
 
 #include <array>
 #include <exception>
@@ -87,21 +87,21 @@ bool is_valid_dot_identifier(std::string_view value, bool reject_numeric_leading
 Result<std::string> copy_text(
     rodaq_string_view value, std::string_view field_name, bool allow_empty) {
     if (value.size > 0 && value.data == nullptr) {
-        return nonstd::make_unexpected(invalid_argument_error(
-            "Plugin descriptor " + std::string(field_name) + " has null data"));
+        return invalid_argument_status(
+            "Plugin descriptor " + std::string(field_name) + " has null data");
     }
     if (value.size == 0) {
         if (!allow_empty) {
-            return nonstd::make_unexpected(invalid_argument_error(
-                "Plugin descriptor " + std::string(field_name) + " is empty"));
+            return invalid_argument_status(
+                "Plugin descriptor " + std::string(field_name) + " is empty");
         }
         return std::string();
     }
 
     const std::string_view text(value.data, static_cast<std::size_t>(value.size));
     if (!is_valid_utf8_without_nul(text)) {
-        return nonstd::make_unexpected(invalid_argument_error(
-            "Plugin descriptor " + std::string(field_name) + " is not valid UTF-8 without NUL"));
+        return invalid_argument_status(
+            "Plugin descriptor " + std::string(field_name) + " is not valid UTF-8 without NUL");
     }
     return std::string(text);
 }
@@ -111,8 +111,7 @@ Result<void> validate_required_callbacks(const rodaq_acquisition_plugin& protoco
         protocol.destroy == nullptr || protocol.bind == nullptr || protocol.configure == nullptr ||
         protocol.start == nullptr || protocol.stop == nullptr ||
         protocol.query_interface == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Acquisition family protocol has a null required slot"));
+        return invalid_argument_status("Acquisition family protocol has a null required slot");
     }
     return {};
 }
@@ -122,8 +121,7 @@ Result<void> validate_required_callbacks(const rodaq_storage_plugin& protocol) {
         protocol.destroy == nullptr || protocol.bind == nullptr || protocol.configure == nullptr ||
         protocol.open == nullptr || protocol.submit == nullptr || protocol.flush == nullptr ||
         protocol.close == nullptr || protocol.query_interface == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Storage family protocol has a null required slot"));
+        return invalid_argument_status("Storage family protocol has a null required slot");
     }
     return {};
 }
@@ -195,39 +193,35 @@ bool is_valid_utf8_without_nul(std::string_view value) noexcept {
 
 Result<PluginMetadata> validate_plugin_descriptor(const rodaq_plugin_descriptor& descriptor) {
     if (descriptor.struct_size < RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Plugin descriptor struct_size is below the V1 minimum"));
+        return invalid_argument_status("Plugin descriptor struct_size is below the V1 minimum");
     }
     if (descriptor.reserved != 0) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Plugin descriptor reserved field is non-zero"));
+        return invalid_argument_status("Plugin descriptor reserved field is non-zero");
     }
 
     try {
         Result<std::string> id = copy_text(descriptor.id, "id", false);
-        if (!id.has_value()) {
-            return nonstd::make_unexpected(std::move(id.error()));
+        if (!id.ok()) {
+            return std::move(id).status();
         }
         Result<std::string> name = copy_text(descriptor.name, "name", false);
-        if (!name.has_value()) {
-            return nonstd::make_unexpected(std::move(name.error()));
+        if (!name.ok()) {
+            return std::move(name).status();
         }
         Result<std::string> version = copy_text(descriptor.version, "version", false);
-        if (!version.has_value()) {
-            return nonstd::make_unexpected(std::move(version.error()));
+        if (!version.ok()) {
+            return std::move(version).status();
         }
         Result<std::string> description = copy_text(descriptor.description, "description", true);
-        if (!description.has_value()) {
-            return nonstd::make_unexpected(std::move(description.error()));
+        if (!description.ok()) {
+            return std::move(description).status();
         }
 
         if (!is_valid_plugin_id(id.value())) {
-            return nonstd::make_unexpected(
-                invalid_argument_error("Plugin ID does not match the V1 identifier grammar"));
+            return invalid_argument_status("Plugin ID does not match the V1 identifier grammar");
         }
         if (!is_valid_semantic_version(version.value())) {
-            return nonstd::make_unexpected(
-                invalid_argument_error("Plugin version is not valid SemVer 2.0"));
+            return invalid_argument_status("Plugin version is not valid SemVer 2.0");
         }
 
         return PluginMetadata{
@@ -237,79 +231,70 @@ Result<PluginMetadata> validate_plugin_descriptor(const rodaq_plugin_descriptor&
             std::move(description.value()),
         };
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::ResourceExhausted, "plugin", 0,
-            "Memory exhausted while validating Plugin descriptor"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "plugin", 0,
+            "Memory exhausted while validating Plugin descriptor");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(internal_error(
-            std::string("Unexpected Plugin descriptor validation failure: ") + error.what()));
+        return internal_status(
+            std::string("Unexpected Plugin descriptor validation failure: ") + error.what());
     }
 }
 
 Result<void> validate_acquisition_protocol(const rodaq_acquisition_plugin& protocol) {
     if (protocol.protocol_version != RODAQ_ACQUISITION_PROTOCOL_VERSION) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Unsupported Acquisition family protocol version"));
+        return invalid_argument_status("Unsupported Acquisition family protocol version");
     }
     if (protocol.struct_size < RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Acquisition family struct_size is below the V1 minimum"));
+        return invalid_argument_status("Acquisition family struct_size is below the V1 minimum");
     }
     return validate_required_callbacks(protocol);
 }
 
 Result<void> validate_storage_protocol(const rodaq_storage_plugin& protocol) {
     if (protocol.protocol_version != RODAQ_STORAGE_PROTOCOL_VERSION) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Unsupported Storage family protocol version"));
+        return invalid_argument_status("Unsupported Storage family protocol version");
     }
     if (protocol.struct_size < RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Storage family struct_size is below the V1 minimum"));
+        return invalid_argument_status("Storage family struct_size is below the V1 minimum");
     }
     return validate_required_callbacks(protocol);
 }
 
 Result<rodaq_interface> validate_acquisition_control_interface(rodaq_interface interface) {
     if (interface.context == nullptr || interface.vtable == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Acquisition control interface is incomplete"));
+        return invalid_argument_status("Acquisition control interface is incomplete");
     }
     const auto* control = static_cast<const rodaq_acquisition_control_v1*>(interface.vtable);
     if (control->protocol_version != RODAQ_ACQUISITION_CONTROL_PROTOCOL_VERSION) {
-        return nonstd::make_unexpected(invalid_argument_error(
-            "Acquisition control interface protocol version is unsupported"));
+        return invalid_argument_status(
+            "Acquisition control interface protocol version is unsupported");
     }
     if (control->struct_size < RODAQ_ACQUISITION_CONTROL_V1_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(invalid_argument_error(
-            "Acquisition control interface struct_size is below the V1 minimum"));
+        return invalid_argument_status(
+            "Acquisition control interface struct_size is below the V1 minimum");
     }
     if (control->prepare_binding_switch == nullptr || control->commit_binding_switch == nullptr ||
         control->abort_binding_switch == nullptr || control->quiesce_stream == nullptr ||
         control->quiesce_plugin == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Acquisition control interface has a null required slot"));
+        return invalid_argument_status("Acquisition control interface has a null required slot");
     }
     return interface;
 }
 
 Result<rodaq_interface> validate_storage_control_interface(rodaq_interface interface) {
     if (interface.context == nullptr || interface.vtable == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Storage control interface is incomplete"));
+        return invalid_argument_status("Storage control interface is incomplete");
     }
     const auto* control = static_cast<const rodaq_storage_control_v1*>(interface.vtable);
     if (control->protocol_version != RODAQ_STORAGE_CONTROL_PROTOCOL_VERSION) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Storage control interface protocol version is unsupported"));
+        return invalid_argument_status("Storage control interface protocol version is unsupported");
     }
     if (control->struct_size < RODAQ_STORAGE_CONTROL_V1_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(invalid_argument_error(
-            "Storage control interface struct_size is below the V1 minimum"));
+        return invalid_argument_status(
+            "Storage control interface struct_size is below the V1 minimum");
     }
     if (control->get_capabilities == nullptr || control->ensure_descriptor_ready == nullptr) {
-        return nonstd::make_unexpected(
-            invalid_argument_error("Storage control interface has a null required slot"));
+        return invalid_argument_status("Storage control interface has a null required slot");
     }
     return interface;
 }

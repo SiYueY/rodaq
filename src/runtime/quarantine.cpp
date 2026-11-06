@@ -14,8 +14,8 @@ namespace rodaq::runtime {
 
 namespace {
 
-Error quarantine_error(ErrorCode code, std::string message) {
-    return Error(code, "runtime_quarantine", 0, std::move(message));
+Status quarantine_status(StatusCode status_code, std::string message) {
+    return Status(status_code, "runtime_quarantine", 0, std::move(message));
 }
 
 #if defined(__SANITIZE_ADDRESS__)
@@ -35,7 +35,7 @@ struct QuarantineManager::Completion {
     std::condition_variable condition;
     bool done = false;
     bool threw = false;
-    std::optional<Error> error;
+    Status error;
 };
 
 struct QuarantineManager::CallEntry {
@@ -125,8 +125,7 @@ Result<SupervisedCallOutcome> QuarantineManager::run(
     std::function<Result<void>()> operation, std::chrono::steady_clock::time_point deadline,
     std::string reason, std::shared_ptr<std::atomic<bool>> joined) {
     if (!operation) {
-        return nonstd::make_unexpected(
-            quarantine_error(ErrorCode::InvalidArgument, "Supervised Plugin call is empty"));
+        return quarantine_status(StatusCode::InvalidArgument, "Supervised Plugin call is empty");
     }
 
     reap_completed();
@@ -137,16 +136,15 @@ Result<SupervisedCallOutcome> QuarantineManager::run(
         entry = create_call_entry(completion, std::move(reason));
         entry->joined = std::move(joined);
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(
-            quarantine_error(ErrorCode::ResourceExhausted, error.what()));
+        return quarantine_status(StatusCode::ResourceExhausted, error.what());
     }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (active_calls_ >= kMaxRetainedCalls) {
-            return nonstd::make_unexpected(quarantine_error(
-                ErrorCode::ResourceExhausted,
-                "Supervised Plugin call quarantine capacity is exhausted"));
+            return quarantine_status(
+                StatusCode::ResourceExhausted,
+                "Supervised Plugin call quarantine capacity is exhausted");
         }
         ++active_calls_;
     }
@@ -156,8 +154,8 @@ Result<SupervisedCallOutcome> QuarantineManager::run(
             try {
                 Result<void> result = operation();
                 std::lock_guard<std::mutex> lock(completion->mutex);
-                if (!result.has_value()) {
-                    completion->error.emplace(std::move(result.error()));
+                if (!result.ok()) {
+                    completion->error = std::move(result).status();
                 }
             } catch (...) {
                 std::lock_guard<std::mutex> lock(completion->mutex);
@@ -176,9 +174,9 @@ Result<SupervisedCallOutcome> QuarantineManager::run(
     } catch (const std::exception& error) {
         std::lock_guard<std::mutex> lock(mutex_);
         --active_calls_;
-        return nonstd::make_unexpected(quarantine_error(
-            ErrorCode::Unavailable,
-            std::string("Failed to start supervised Plugin call: ") + error.what()));
+        return quarantine_status(
+            StatusCode::Unavailable,
+            std::string("Failed to start supervised Plugin call: ") + error.what());
     }
 
     SupervisedCallOutcome outcome = wait_for_call(entry, deadline);
@@ -202,7 +200,7 @@ SupervisedCallOutcome QuarantineManager::wait_for_call(
         std::unique_lock<std::mutex> lock(entry->completion->mutex);
         if (!entry->completion->condition.wait_until(
                 lock, deadline, [&entry] { return entry->completion->done; })) {
-            return SupervisedCallOutcome{SupervisedCallStatus::TimedOut, std::nullopt};
+            return SupervisedCallOutcome{SupervisedCallStatus::TimedOut, {}};
         }
     }
     if (entry->worker.joinable()) {
@@ -216,13 +214,13 @@ SupervisedCallOutcome QuarantineManager::wait_for_call(
     if (entry->completion->threw) {
         return SupervisedCallOutcome{
             SupervisedCallStatus::Failed,
-            quarantine_error(ErrorCode::InternalError, "Supervised Plugin call threw")};
+            quarantine_status(StatusCode::InternalError, "Supervised Plugin call threw")};
     }
-    if (entry->completion->error.has_value()) {
+    if (!entry->completion->error.ok()) {
         return SupervisedCallOutcome{
-            SupervisedCallStatus::Failed, std::move(entry->completion->error.value())};
+            SupervisedCallStatus::Failed, std::move(entry->completion->error)};
     }
-    return SupervisedCallOutcome{SupervisedCallStatus::Completed, std::nullopt};
+    return SupervisedCallOutcome{SupervisedCallStatus::Completed, {}};
 }
 
 bool QuarantineManager::retain_worker(
@@ -260,8 +258,8 @@ Result<std::uint64_t> QuarantineManager::reserve_activation(std::string reason) 
             return static_cast<std::uint64_t>(index + 1U);
         }
     }
-    return nonstd::make_unexpected(quarantine_error(
-        ErrorCode::ResourceExhausted, "Quarantined Activation capacity is exhausted"));
+    return quarantine_status(
+        StatusCode::ResourceExhausted, "Quarantined Activation capacity is exhausted");
 }
 
 bool QuarantineManager::retain_activation(

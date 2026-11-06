@@ -107,7 +107,7 @@ TEST(RuntimeStatsTest, ReleasesPayloadBytesAndOperationRecordsIndependently) {
 
 TEST(LatencyHistogramTest, RecordsSamplesAndComputesPercentiles) {
     auto histogram = LatencyHistogram::create(1, 10000, 3);
-    ASSERT_TRUE(histogram.has_value());
+    ASSERT_TRUE(histogram.ok());
 
     for (std::int64_t value = 1; value <= 1000; ++value) {
         ASSERT_TRUE(histogram.value()->record(value));
@@ -123,18 +123,18 @@ TEST(LatencyHistogramTest, RecordsSamplesAndComputesPercentiles) {
 
 TEST(LatencyHistogramTest, RejectsInvalidConfigurationAndOutOfRangeSamples) {
     const auto invalid = LatencyHistogram::create(0, 100, 3);
-    ASSERT_FALSE(invalid.has_value());
-    EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(invalid.ok());
+    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
 
     auto histogram = LatencyHistogram::create(1, 100, 3);
-    ASSERT_TRUE(histogram.has_value());
+    ASSERT_TRUE(histogram.ok());
     EXPECT_FALSE(histogram.value()->record(101));
     EXPECT_EQ(histogram.value()->count(), 0U);
 }
 
 TEST(LatencyHistogramTest, SupportsConcurrentRecording) {
     auto histogram = LatencyHistogram::create(1, 1000, 3);
-    ASSERT_TRUE(histogram.has_value());
+    ASSERT_TRUE(histogram.ok());
     constexpr int kThreadCount = 4;
     constexpr int kSamplesPerThread = 250;
     std::vector<std::thread> threads;

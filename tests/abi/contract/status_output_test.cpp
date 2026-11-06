@@ -1,4 +1,4 @@
-#include "frozen_outputs.h"
+#include "baseline_outputs.h"
 
 #include "rodaq/plugin/storage_plugin.hpp"
 
@@ -12,80 +12,81 @@
 #include <memory>
 #include <utility>
 
-#define RODAQ_ASSERT_FROZEN_PREFIX_FIELD(Frozen, Current, field)                          \
-    static_assert(offsetof(Frozen, field) == offsetof(Current, field), #field " offset"); \
-    static_assert(                                                                        \
-        sizeof(std::declval<Frozen&>().field) == sizeof(std::declval<Current&>().field),  \
+#define RODAQ_ASSERT_BASELINE_PREFIX_FIELD(Baseline, Current, field)                        \
+    static_assert(offsetof(Baseline, field) == offsetof(Current, field), #field " offset"); \
+    static_assert(                                                                          \
+        sizeof(std::declval<Baseline&>().field) == sizeof(std::declval<Current&>().field),  \
         #field " width")
 
-static_assert(sizeof(frozen_projection_view_v1) <= sizeof(rodaq_projection_view));
-static_assert(alignof(frozen_projection_view_v1) == alignof(rodaq_projection_view));
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, struct_size);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, reserved);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, descriptor);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, projection_id);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_projection_view_v1, rodaq_projection_view, payload);
+static_assert(sizeof(baseline_projection_view) <= sizeof(rodaq_projection_view));
+static_assert(alignof(baseline_projection_view) == alignof(rodaq_projection_view));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, reserved);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, descriptor);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, projection_id);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, payload);
 
-static_assert(sizeof(frozen_clock_anchor_v1) <= sizeof(rodaq_unix_epoch_clock_anchor));
-static_assert(alignof(frozen_clock_anchor_v1) == alignof(rodaq_unix_epoch_clock_anchor));
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, struct_size);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, reserved);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, clock);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, clock_reading);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_clock_anchor_v1, rodaq_unix_epoch_clock_anchor, unix_anchor_ns);
+static_assert(sizeof(baseline_clock_anchor) <= sizeof(rodaq_unix_epoch_clock_anchor));
+static_assert(alignof(baseline_clock_anchor) == alignof(rodaq_unix_epoch_clock_anchor));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_clock_anchor, rodaq_unix_epoch_clock_anchor, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_clock_anchor, rodaq_unix_epoch_clock_anchor, reserved);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_clock_anchor, rodaq_unix_epoch_clock_anchor, clock);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_clock_anchor, rodaq_unix_epoch_clock_anchor, clock_reading);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_clock_anchor, rodaq_unix_epoch_clock_anchor, unix_anchor_ns);
 
-static_assert(sizeof(frozen_storage_capabilities_v1) <= sizeof(rodaq_storage_capabilities));
-static_assert(alignof(frozen_storage_capabilities_v1) == alignof(rodaq_storage_capabilities));
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, struct_size);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(frozen_storage_capabilities_v1, rodaq_storage_capabilities, flags);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, full_fidelity);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, reserved);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_payload_bytes);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_inflight_records);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, maximum_inflight_bytes);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, handoff_progress_timeout_ns);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, descriptor_progress_timeout_ns);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, flush_progress_timeout_ns);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_capabilities_v1, rodaq_storage_capabilities, close_progress_timeout_ns);
+static_assert(sizeof(baseline_storage_capabilities) <= sizeof(rodaq_storage_capabilities));
+static_assert(alignof(baseline_storage_capabilities) == alignof(rodaq_storage_capabilities));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, flags);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, full_fidelity);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, reserved);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, maximum_payload_bytes);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, maximum_inflight_records);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, maximum_inflight_bytes);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, handoff_progress_timeout_ns);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, descriptor_progress_timeout_ns);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, flush_progress_timeout_ns);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_capabilities, rodaq_storage_capabilities, close_progress_timeout_ns);
 
 static_assert(
-    sizeof(frozen_descriptor_readiness_result_v1) <= sizeof(rodaq_descriptor_readiness_result));
+    sizeof(baseline_descriptor_readiness_result) <= sizeof(rodaq_descriptor_readiness_result));
 static_assert(
-    alignof(frozen_descriptor_readiness_result_v1) == alignof(rodaq_descriptor_readiness_result));
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, struct_size);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, state);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_descriptor_readiness_result_v1, rodaq_descriptor_readiness_result, failure);
+    alignof(baseline_descriptor_readiness_result) == alignof(rodaq_descriptor_readiness_result));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_descriptor_readiness_result, rodaq_descriptor_readiness_result, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_descriptor_readiness_result, rodaq_descriptor_readiness_result, state);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_descriptor_readiness_result, rodaq_descriptor_readiness_result, failure);
 
-static_assert(sizeof(frozen_storage_submit_result_v1) <= sizeof(rodaq_storage_submit_result));
-static_assert(alignof(frozen_storage_submit_result_v1) == alignof(rodaq_storage_submit_result));
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_submit_result_v1, rodaq_storage_submit_result, struct_size);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_submit_result_v1, rodaq_storage_submit_result, reserved);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_submit_result_v1, rodaq_storage_submit_result, payload_state);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_submit_result_v1, rodaq_storage_submit_result, persistence_state);
-RODAQ_ASSERT_FROZEN_PREFIX_FIELD(
-    frozen_storage_submit_result_v1, rodaq_storage_submit_result, persistence_error);
+static_assert(sizeof(baseline_storage_submit_result) <= sizeof(rodaq_storage_submit_result));
+static_assert(alignof(baseline_storage_submit_result) == alignof(rodaq_storage_submit_result));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_submit_result, rodaq_storage_submit_result, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_submit_result, rodaq_storage_submit_result, reserved);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_submit_result, rodaq_storage_submit_result, payload_state);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_submit_result, rodaq_storage_submit_result, persistence_state);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(
+    baseline_storage_submit_result, rodaq_storage_submit_result, persistence_error);
 
-#undef RODAQ_ASSERT_FROZEN_PREFIX_FIELD
+#undef RODAQ_ASSERT_BASELINE_PREFIX_FIELD
 
 namespace {
 
@@ -96,16 +97,16 @@ constexpr std::uint32_t expected_initialized_prefix(std::uint32_t capacity) noex
     return static_cast<std::uint32_t>(capacity < sizeof(Struct) ? capacity : sizeof(Struct));
 }
 
-const rodaq_plugin_descriptor compatibility_descriptor = {
+const rodaq_plugin_descriptor status_descriptor = {
     RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE,
     0,
-    {"rodaq.storage.output_compat", sizeof("rodaq.storage.output_compat") - 1},
+    {"rodaq.storage.status_output", sizeof("rodaq.storage.status_output") - 1},
     {"Output Compatibility", sizeof("Output Compatibility") - 1},
     {"1.0.0", sizeof("1.0.0") - 1},
     {"", 0},
 };
 
-class CompatibilityStoragePlugin final : public rodaq::StoragePlugin {
+class StatusStoragePlugin final : public rodaq::StoragePlugin {
 public:
     rodaq::Result<void> bind(rodaq::StorageRuntime) override { return {}; }
     rodaq::Result<void> configure(const rodaq::ConfigView&) override { return {}; }
@@ -176,7 +177,7 @@ StorageAbiInstance create_storage_instance() {
     if (owner.protocol == nullptr) {
         return owner;
     }
-    rodaq_error error{};
+    rodaq_status error{};
     EXPECT_EQ(RODAQ_STATUS_OK, owner.protocol->create(&owner.instance, &error));
     return owner;
 }
@@ -191,26 +192,26 @@ void fill_canary(std::uint8_t* bytes, std::size_t size) { std::memset(bytes, kCa
 
 }  // namespace
 
-RODAQ_EXPORT_STORAGE_PLUGIN(CompatibilityStoragePlugin, compatibility_descriptor)
+RODAQ_EXPORT_STORAGE_PLUGIN(StatusStoragePlugin, status_descriptor)
 
-TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
+TEST(BaselineV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
     rodaq::runtime::InteropProjectionRegistry registry({64, 4, 128, 256});
     ASSERT_TRUE(registry
                     .register_entry(
                         rodaq_stream_descriptor_handle{7}, "rodaq.test.projection.v1",
                         reinterpret_cast<const std::uint8_t*>("x"), 1)
-                    .has_value());
+                    .ok());
     const auto interface = registry.abi_interface();
     const auto* projection = static_cast<const rodaq_runtime_projection_v1*>(interface.vtable);
 
     struct ProjectionBuffer {
-        frozen_projection_view_v1 value;
+        baseline_projection_view value;
         std::uint8_t canary[32];
     } projection_buffer{};
     std::memset(projection_buffer.canary, 0xA5, sizeof(projection_buffer.canary));
     const std::uint32_t frozen_projection_capacity = sizeof(projection_buffer.value);
     projection_buffer.value.struct_size = frozen_projection_capacity;
-    rodaq_error error{};
+    rodaq_status error{};
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         projection->get_projection(
@@ -279,13 +280,13 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
 
     auto clock = rodaq::runtime::ClockCorrelation::from_anchor(
         rodaq::runtime::UnixEpochClockAnchor{rodaq_clock_handle{3}, 10, 1'000});
-    ASSERT_TRUE(clock.has_value());
+    ASSERT_TRUE(clock.ok());
     auto correlation = std::move(clock.value());
     const auto clock_interface = correlation.abi_interface();
     const auto* clock_table =
         static_cast<const rodaq_runtime_clock_correlation_v1*>(clock_interface.vtable);
     struct ClockBuffer {
-        frozen_clock_anchor_v1 value;
+        baseline_clock_anchor value;
         std::uint8_t canary[32];
     } clock_buffer{};
     std::memset(clock_buffer.canary, 0xA5, sizeof(clock_buffer.canary));
@@ -354,8 +355,8 @@ TEST(FrozenV1OutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
     }
 }
 
-TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
-    rodaq_error error{};
+TEST(BaselineV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
+    rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);
     rodaq_interface interface {};
@@ -371,7 +372,7 @@ TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
 
     {
         struct {
-            frozen_storage_capabilities_v1 value;
+            baseline_storage_capabilities value;
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
@@ -439,8 +440,8 @@ TEST(FrozenV1OutputCompatibility, StorageCapabilitiesRespectCallerCapacity) {
     }
 }
 
-TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
-    rodaq_error error{};
+TEST(BaselineV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
+    rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);
     rodaq_interface interface {};
@@ -456,7 +457,7 @@ TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
 
     {
         struct {
-            frozen_descriptor_readiness_result_v1 value;
+            baseline_descriptor_readiness_result value;
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));
@@ -526,14 +527,14 @@ TEST(FrozenV1OutputCompatibility, DescriptorReadinessRespectsCallerCapacity) {
     }
 }
 
-TEST(FrozenV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
-    rodaq_error error{};
+TEST(BaselineV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
+    rodaq_status error{};
     StorageAbiInstance owner = create_storage_instance();
     ASSERT_NE(nullptr, owner.instance);
     rodaq_storage_open_request open{};
     open.struct_size = sizeof(open);
     const char session[] = "session";
-    const char target[] = "memory://compat";
+    const char target[] = "memory://status";
     open.session_id = rodaq_string_view{session, sizeof(session) - 1};
     open.target_uri = rodaq_string_view{target, sizeof(target) - 1};
     ASSERT_EQ(RODAQ_STATUS_OK, owner.protocol->open(owner.instance, &open, &error));
@@ -548,7 +549,7 @@ TEST(FrozenV1OutputCompatibility, StorageSubmitRespectsCallerCapacity) {
 
     {
         struct {
-            frozen_storage_submit_result_v1 value;
+            baseline_storage_submit_result value;
             std::uint8_t canary[16];
         } buffer{};
         fill_canary(buffer.canary, sizeof(buffer.canary));

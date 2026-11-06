@@ -1,4 +1,4 @@
-#include "frozen_abi.h"
+#include "baseline_abi.h"
 
 #include <cstdint>
 #include <string_view>
@@ -14,24 +14,24 @@ bool equals(rodaq_string_view value, const char* text, std::uint64_t size) {
            std::string_view(value.data, size) == std::string_view(text, size);
 }
 
-rodaq_status create(void** out, rodaq_error*) {
+rodaq_status_code create(void** out, rodaq_status*) {
     static Instance instance{};
     *out = &instance;
     return RODAQ_STATUS_OK;
 }
 void destroy(void*) {}
-rodaq_status bind(void*, const rodaq_service_registry*, rodaq_error*) { return 0; }
-rodaq_status configure(void*, rodaq_config_view, rodaq_error*) { return 0; }
-rodaq_status start(void*, rodaq_error*) { return 0; }
-rodaq_status stop(void*, rodaq_error*) { return 0; }
-rodaq_status prepare(
-    void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, rodaq_error*) {
+rodaq_status_code bind(void*, const rodaq_service_registry*, rodaq_status*) { return 0; }
+rodaq_status_code configure(void*, rodaq_config_view, rodaq_status*) { return 0; }
+rodaq_status_code start(void*, rodaq_status*) { return 0; }
+rodaq_status_code stop(void*, rodaq_status*) { return 0; }
+rodaq_status_code prepare(
+    void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, rodaq_status*) {
     return 0;
 }
-rodaq_status commit(void*, std::uint64_t, rodaq_error*) { return 0; }
-rodaq_status abort(void*, std::uint64_t, std::uint32_t, rodaq_error*) { return 0; }
-rodaq_status quiesce_stream(void*, std::uint64_t, rodaq_error*) { return 0; }
-rodaq_status quiesce_plugin(void*, rodaq_error*) { return 0; }
+rodaq_status_code commit(void*, std::uint64_t, rodaq_status*) { return 0; }
+rodaq_status_code abort(void*, std::uint64_t, std::uint32_t, rodaq_status*) { return 0; }
+rodaq_status_code quiesce_stream(void*, std::uint64_t, rodaq_status*) { return 0; }
+rodaq_status_code quiesce_plugin(void*, rodaq_status*) { return 0; }
 
 const rodaq_acquisition_control_v1 control = {
     1,
@@ -43,7 +43,7 @@ const rodaq_acquisition_control_v1 control = {
     &quiesce_plugin,
 };
 
-rodaq_status query(void* instance, rodaq_string_view id, rodaq_interface* out, rodaq_error*) {
+rodaq_status_code query(void* instance, rodaq_string_view id, rodaq_interface* out, rodaq_status*) {
     *out = {};
     const char expected[] = "rodaq.acquisition.control.v1";
     if (!equals(id, expected, sizeof(expected) - 1)) {
@@ -57,10 +57,10 @@ rodaq_status query(void* instance, rodaq_string_view id, rodaq_interface* out, r
 const rodaq_plugin_descriptor descriptor = {
     sizeof(rodaq_plugin_descriptor),
     0,
-    {"rodaq.acquisition.compat_v1", 27},
-    {"Compat Acquisition", 18},
+    {"rodaq.acquisition.current_abi", sizeof("rodaq.acquisition.current_abi") - 1},
+    {"Current Acquisition", sizeof("Current Acquisition") - 1},
     {"0.1.0", 5},
-    {"frozen V1 fixture", 17},
+    {"current ABI fixture", sizeof("current ABI fixture") - 1},
 };
 
 const rodaq_acquisition_plugin plugin = {

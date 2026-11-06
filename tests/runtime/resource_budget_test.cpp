@@ -14,12 +14,12 @@ TEST(ResourceBudgetTest, ReservationIsAllOrNothing) {
     ResourceBudget budget(ResourceAmount{2, 8});
 
     auto first = budget.try_reserve(ResourceAmount{1, 6});
-    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(first.ok());
     EXPECT_EQ(budget.used(), (ResourceAmount{1, 6}));
 
     const auto rejected = budget.try_reserve(ResourceAmount{1, 3});
-    ASSERT_FALSE(rejected.has_value());
-    EXPECT_EQ(rejected.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_EQ(rejected.status().status_code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(budget.used(), (ResourceAmount{1, 6}));
     EXPECT_EQ(budget.available(), (ResourceAmount{1, 2}));
 }
@@ -28,7 +28,7 @@ TEST(ResourceBudgetTest, ReservationReleasesExactlyOnce) {
     ResourceBudget budget(ResourceAmount{3, 12});
 
     auto reservation = budget.try_reserve(ResourceAmount{2, 8});
-    ASSERT_TRUE(reservation.has_value());
+    ASSERT_TRUE(reservation.ok());
     EXPECT_EQ(budget.active_reservations(), 1U);
 
     reservation.value().release();
@@ -45,7 +45,7 @@ TEST(ResourceBudgetTest, MoveTransfersReservationOwnership) {
     ResourceBudget budget(ResourceAmount{1, 4});
 
     auto source = budget.try_reserve(ResourceAmount{1, 4});
-    ASSERT_TRUE(source.has_value());
+    ASSERT_TRUE(source.ok());
     Reservation target(std::move(source.value()));
 
     EXPECT_FALSE(source.value().active());
@@ -62,8 +62,8 @@ TEST(ResourceBudgetTest, MoveAssignmentReleasesPreviousReservation) {
 
     auto first = budget.try_reserve(ResourceAmount{1, 4});
     auto second = budget.try_reserve(ResourceAmount{1, 4});
-    ASSERT_TRUE(first.has_value());
-    ASSERT_TRUE(second.has_value());
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
     EXPECT_EQ(budget.used(), (ResourceAmount{2, 8}));
 
     second.value() = std::move(first.value());
@@ -76,8 +76,8 @@ TEST(ResourceBudgetTest, HighWaterTracksPeakUsage) {
 
     auto first = budget.try_reserve(ResourceAmount{2, 12});
     auto second = budget.try_reserve(ResourceAmount{1, 20});
-    ASSERT_TRUE(first.has_value());
-    ASSERT_TRUE(second.has_value());
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
     EXPECT_EQ(budget.high_water(), (ResourceAmount{3, 32}));
 
     first.value().release();
@@ -91,15 +91,15 @@ TEST(ResourceBudgetTest, HandlesUnsignedBoundariesWithoutOverflow) {
     ResourceBudget budget(ResourceAmount{maximum, maximum});
 
     auto reservation = budget.try_reserve(ResourceAmount{maximum - 1U, maximum});
-    ASSERT_TRUE(reservation.has_value());
+    ASSERT_TRUE(reservation.ok());
     EXPECT_EQ(budget.available(), (ResourceAmount{1, 0}));
 
     const auto rejected = budget.try_reserve(ResourceAmount{2, 0});
-    ASSERT_FALSE(rejected.has_value());
+    ASSERT_FALSE(rejected.ok());
     EXPECT_EQ(budget.used(), (ResourceAmount{maximum - 1U, maximum}));
 
     auto last_record = budget.try_reserve(ResourceAmount{1, 0});
-    ASSERT_TRUE(last_record.has_value());
+    ASSERT_TRUE(last_record.ok());
     EXPECT_EQ(budget.available(), ResourceAmount{});
     EXPECT_EQ(budget.used(), (ResourceAmount{maximum, maximum}));
 }
@@ -109,7 +109,7 @@ TEST(ResourceBudgetTest, SaturatedCapacitiesAreNotIntegerWrapped) {
     ResourceBudget budget(ResourceAmount{1, 1});
 
     const auto rejected = budget.try_reserve(ResourceAmount{maximum, maximum});
-    ASSERT_FALSE(rejected.has_value());
+    ASSERT_FALSE(rejected.ok());
     EXPECT_EQ(budget.used(), ResourceAmount{});
 }
 

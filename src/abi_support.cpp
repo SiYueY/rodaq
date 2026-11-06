@@ -131,16 +131,21 @@ bool is_valid_abi_bool(rodaq_bool value) noexcept {
     return value == RODAQ_FALSE || value == RODAQ_TRUE;
 }
 
-bool is_valid_abi_error(const rodaq_error& error) noexcept {
-    const bool known_status =
-        error.code == RODAQ_STATUS_OK || error.code == RODAQ_STATUS_INVALID_ARGUMENT ||
-        error.code == RODAQ_STATUS_INVALID_STATE || error.code == RODAQ_STATUS_NOT_FOUND ||
-        error.code == RODAQ_STATUS_CONFLICT || error.code == RODAQ_STATUS_RESOURCE_EXHAUSTED ||
-        error.code == RODAQ_STATUS_UNAVAILABLE || error.code == RODAQ_STATUS_STORAGE_ERROR ||
-        error.code == RODAQ_STATUS_TIMEOUT || error.code == RODAQ_STATUS_INTERNAL_ERROR;
-    if (!known_status || (error.flags & ~RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED) != 0 ||
-        error.domain_size > RODAQ_ERROR_DOMAIN_CAPACITY ||
-        error.message_size > RODAQ_ERROR_MESSAGE_CAPACITY || error.reserved[0] != 0 ||
+bool is_valid_abi_status(const rodaq_status& error) noexcept {
+    const bool known_status = error.status_code == RODAQ_STATUS_OK ||
+                              error.status_code == RODAQ_STATUS_INVALID_ARGUMENT ||
+                              error.status_code == RODAQ_STATUS_INVALID_STATE ||
+                              error.status_code == RODAQ_STATUS_NOT_FOUND ||
+                              error.status_code == RODAQ_STATUS_CONFLICT ||
+                              error.status_code == RODAQ_STATUS_RESOURCE_EXHAUSTED ||
+                              error.status_code == RODAQ_STATUS_UNAVAILABLE ||
+                              error.status_code == RODAQ_STATUS_STORAGE_ERROR ||
+                              error.status_code == RODAQ_STATUS_TIMEOUT ||
+                              error.status_code == RODAQ_STATUS_INTERNAL_ERROR ||
+                              error.status_code == RODAQ_STATUS_UNKNOWN_ERROR;
+    if (!known_status || (error.flags & ~RODAQ_STATUS_FLAG_MESSAGE_TRUNCATED) != 0 ||
+        error.domain_size > RODAQ_STATUS_DOMAIN_CAPACITY ||
+        error.message_size > RODAQ_STATUS_MESSAGE_CAPACITY || error.reserved[0] != 0 ||
         error.reserved[1] != 0) {
         return false;
     }
@@ -163,111 +168,129 @@ bool is_valid_timestamp_values(
     return true;
 }
 
-rodaq_status status_from_error_code(ErrorCode code) noexcept {
-    switch (code) {
-        case ErrorCode::InvalidArgument:
+rodaq_status_code abi_status_from_status_code(StatusCode status_code) noexcept {
+    switch (status_code) {
+        case StatusCode::Ok:
+            return RODAQ_STATUS_OK;
+        case StatusCode::InvalidArgument:
             return RODAQ_STATUS_INVALID_ARGUMENT;
-        case ErrorCode::InvalidState:
+        case StatusCode::InvalidState:
             return RODAQ_STATUS_INVALID_STATE;
-        case ErrorCode::NotFound:
+        case StatusCode::NotFound:
             return RODAQ_STATUS_NOT_FOUND;
-        case ErrorCode::Conflict:
+        case StatusCode::Conflict:
             return RODAQ_STATUS_CONFLICT;
-        case ErrorCode::ResourceExhausted:
+        case StatusCode::ResourceExhausted:
             return RODAQ_STATUS_RESOURCE_EXHAUSTED;
-        case ErrorCode::Unavailable:
+        case StatusCode::Unavailable:
             return RODAQ_STATUS_UNAVAILABLE;
-        case ErrorCode::StorageError:
+        case StatusCode::StorageError:
             return RODAQ_STATUS_STORAGE_ERROR;
-        case ErrorCode::Timeout:
+        case StatusCode::Timeout:
             return RODAQ_STATUS_TIMEOUT;
-        case ErrorCode::InternalError:
+        case StatusCode::InternalError:
             return RODAQ_STATUS_INTERNAL_ERROR;
+        case StatusCode::UnknownError:
+            return RODAQ_STATUS_UNKNOWN_ERROR;
     }
-    return RODAQ_STATUS_INTERNAL_ERROR;
+    return RODAQ_STATUS_UNKNOWN_ERROR;
 }
 
-void assign_rodaq_error(
-    rodaq_status status, std::string_view domain, std::int64_t native_code,
-    std::string_view message, rodaq_error* out_error) noexcept {
-    if (out_error == nullptr) {
+void assign_abi_status(
+    rodaq_status_code status, std::string_view domain, std::int64_t error_code,
+    std::string_view message, rodaq_status* out_status) noexcept {
+    if (out_status == nullptr) {
         return;
     }
 
-    *out_error = {};
-    out_error->code = status;
-    out_error->native_code = native_code;
-    copy_bounded(out_error->domain, RODAQ_ERROR_DOMAIN_CAPACITY, domain, &out_error->domain_size);
+    *out_status = {};
+    out_status->status_code = status;
+    if (status == RODAQ_STATUS_OK) {
+        return;
+    }
+    out_status->error_code = error_code;
     copy_bounded(
-        out_error->message, RODAQ_ERROR_MESSAGE_CAPACITY, message, &out_error->message_size);
-    if (domain.size() > RODAQ_ERROR_DOMAIN_CAPACITY ||
-        message.size() > RODAQ_ERROR_MESSAGE_CAPACITY) {
-        out_error->flags |= RODAQ_ERROR_FLAG_MESSAGE_TRUNCATED;
+        out_status->domain, RODAQ_STATUS_DOMAIN_CAPACITY, domain, &out_status->domain_size);
+    copy_bounded(
+        out_status->message, RODAQ_STATUS_MESSAGE_CAPACITY, message, &out_status->message_size);
+    if (domain.size() > RODAQ_STATUS_DOMAIN_CAPACITY ||
+        message.size() > RODAQ_STATUS_MESSAGE_CAPACITY) {
+        out_status->flags |= RODAQ_STATUS_FLAG_MESSAGE_TRUNCATED;
     }
 }
 
-void assign_rodaq_error(const Error& error, rodaq_error* out_error) noexcept {
-    assign_rodaq_error(
-        status_from_error_code(error.code()), error.domain(), error.native_code(), error.message(),
-        out_error);
+void assign_abi_status(const Status& status, rodaq_status* out_status) noexcept {
+    assign_abi_status(
+        abi_status_from_status_code(status.status_code()), status.domain(), status.error_code(),
+        status.message(), out_status);
 }
 
-Result<void> result_from_status(
-    rodaq_status status, const rodaq_error* status_error, std::string_view fallback_domain) {
+Status status_from_abi(
+    rodaq_status_code status, const rodaq_status* status_error, std::string_view fallback_domain) {
     if (status == RODAQ_STATUS_OK) {
         return {};
     }
 
-    ErrorCode code = ErrorCode::InternalError;
+    StatusCode status_code = StatusCode::UnknownError;
     switch (status) {
         case RODAQ_STATUS_INVALID_ARGUMENT:
-            code = ErrorCode::InvalidArgument;
+            status_code = StatusCode::InvalidArgument;
             break;
         case RODAQ_STATUS_INVALID_STATE:
-            code = ErrorCode::InvalidState;
+            status_code = StatusCode::InvalidState;
             break;
         case RODAQ_STATUS_NOT_FOUND:
-            code = ErrorCode::NotFound;
+            status_code = StatusCode::NotFound;
             break;
         case RODAQ_STATUS_CONFLICT:
-            code = ErrorCode::Conflict;
+            status_code = StatusCode::Conflict;
             break;
         case RODAQ_STATUS_RESOURCE_EXHAUSTED:
-            code = ErrorCode::ResourceExhausted;
+            status_code = StatusCode::ResourceExhausted;
             break;
         case RODAQ_STATUS_UNAVAILABLE:
-            code = ErrorCode::Unavailable;
+            status_code = StatusCode::Unavailable;
             break;
         case RODAQ_STATUS_STORAGE_ERROR:
-            code = ErrorCode::StorageError;
+            status_code = StatusCode::StorageError;
             break;
         case RODAQ_STATUS_TIMEOUT:
-            code = ErrorCode::Timeout;
+            status_code = StatusCode::Timeout;
+            break;
+        case RODAQ_STATUS_UNKNOWN_ERROR:
+            status_code = StatusCode::UnknownError;
+            break;
+        case RODAQ_STATUS_INTERNAL_ERROR:
+            status_code = StatusCode::InternalError;
             break;
         default:
             break;
     }
 
     std::string domain(fallback_domain);
-    std::int64_t native_code = 0;
+    std::int64_t error_code = 0;
     std::string message = "plugin ABI call failed";
     if (status_error != nullptr) {
-        if (!is_valid_abi_error(*status_error) || status_error->code != status) {
-            return nonstd::make_unexpected(Error(
-                ErrorCode::InternalError, "plugin", 0,
-                "Plugin returned a malformed ABI diagnostic"));
+        rodaq_status normalized = *status_error;
+        if (status > RODAQ_STATUS_UNKNOWN_ERROR && status_error->status_code == status) {
+            normalized.status_code = RODAQ_STATUS_UNKNOWN_ERROR;
+        }
+        if (!is_valid_abi_status(normalized) || status_error->status_code != status) {
+            return rodaq::Status(
+                StatusCode::InternalError, "plugin", 0,
+                "Plugin returned a malformed ABI diagnostic");
         }
         if (status_error->domain_size > 0 &&
-            status_error->domain_size <= RODAQ_ERROR_DOMAIN_CAPACITY) {
+            status_error->domain_size <= RODAQ_STATUS_DOMAIN_CAPACITY) {
             domain.assign(status_error->domain, status_error->domain_size);
         }
         if (status_error->message_size > 0 &&
-            status_error->message_size <= RODAQ_ERROR_MESSAGE_CAPACITY) {
+            status_error->message_size <= RODAQ_STATUS_MESSAGE_CAPACITY) {
             message.assign(status_error->message, status_error->message_size);
         }
-        native_code = status_error->native_code;
+        error_code = status_error->error_code;
     }
-    return nonstd::make_unexpected(Error(code, std::move(domain), native_code, std::move(message)));
+    return rodaq::Status(status_code, std::move(domain), error_code, std::move(message));
 }
 
 }  // namespace rodaq

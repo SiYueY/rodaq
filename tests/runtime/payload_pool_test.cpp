@@ -37,11 +37,11 @@ TEST(PayloadViewTest, PreservesInvalidNonEmptyView) {
 
 TEST(PayloadTest, MoveTransfersOwnershipAndLeavesSourceEmpty) {
     auto pool = PayloadPool::create(16, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const std::array<std::uint8_t, 4> source{1, 2, 3, 4};
 
     auto acquired = pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
-    ASSERT_TRUE(acquired.has_value());
+    ASSERT_TRUE(acquired.ok());
     const std::uint8_t* original_data = acquired.value().view().data();
 
     Payload moved(std::move(acquired.value()));
@@ -60,28 +60,28 @@ TEST(PayloadTest, MoveTransfersOwnershipAndLeavesSourceEmpty) {
 
 TEST(PayloadTest, MoveAssignmentReleasesPreviousPayload) {
     auto pool = PayloadPool::create(8, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const std::array<std::uint8_t, 1> first_source{1};
     const std::array<std::uint8_t, 1> second_source{2};
 
     auto first = pool.value().acquire(
         first_source.size(), PayloadView(first_source.data(), first_source.size()));
-    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(first.ok());
     auto second = pool.value().acquire(
         second_source.size(), PayloadView(second_source.data(), second_source.size()));
-    ASSERT_FALSE(second.has_value());
-    EXPECT_EQ(second.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(second.ok());
+    EXPECT_EQ(second.status().status_code(), StatusCode::ResourceExhausted);
 
     Payload target(std::move(first.value()));
     auto second_attempt = pool.value().acquire(
         second_source.size(), PayloadView(second_source.data(), second_source.size()));
-    ASSERT_FALSE(second_attempt.has_value());
+    ASSERT_FALSE(second_attempt.ok());
 
     target = Payload();
     EXPECT_EQ(pool.value().used_bytes(), 0U);
     second_attempt = pool.value().acquire(
         second_source.size(), PayloadView(second_source.data(), second_source.size()));
-    ASSERT_TRUE(second_attempt.has_value());
+    ASSERT_TRUE(second_attempt.ok());
     EXPECT_EQ(second_attempt.value().view().data()[0], 2U);
 }
 
@@ -104,7 +104,7 @@ TEST(PayloadTest, AdoptTransfersExternalLifetimeAnchorExactlyOnce) {
     {
         auto adopted =
             Payload::adopt(PayloadView(source.data(), source.size()), &probe, &release_probe);
-        ASSERT_TRUE(adopted.has_value());
+        ASSERT_TRUE(adopted.ok());
         EXPECT_EQ(adopted.value().view().data(), source.data());
 
         Payload moved(std::move(adopted.value()));
@@ -121,7 +121,7 @@ TEST(PayloadTest, RetainKeepsExternalAnchorExactlyOnce) {
     {
         auto retained =
             Payload::retain(PayloadView(source.data(), source.size()), &probe, &release_probe);
-        ASSERT_TRUE(retained.has_value());
+        ASSERT_TRUE(retained.ok());
         EXPECT_EQ(retained.value().view().data(), source.data());
     }
     EXPECT_EQ(probe.calls, 1);
@@ -138,7 +138,7 @@ TEST(PayloadTest, MoveRetainsPluginLifetimeGuardWithExternalAnchor) {
         });
         auto retained =
             Payload::retain(PayloadView(source.data(), source.size()), &release, &release_probe);
-        ASSERT_TRUE(retained.has_value());
+        ASSERT_TRUE(retained.ok());
         retained.value().attach_lifetime_guard(guard);
 
         Payload moved(std::move(retained.value()));
@@ -155,13 +155,13 @@ TEST(PayloadTest, ExternalModesRejectMissingReleaseCapability) {
     const std::array<std::uint8_t, 1> source{1};
     const auto adopted =
         Payload::adopt(PayloadView(source.data(), source.size()), nullptr, nullptr);
-    ASSERT_FALSE(adopted.has_value());
-    EXPECT_EQ(adopted.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(adopted.ok());
+    EXPECT_EQ(adopted.status().status_code(), StatusCode::InvalidArgument);
 
     const auto retained =
         Payload::retain(PayloadView(source.data(), source.size()), nullptr, nullptr);
-    ASSERT_FALSE(retained.has_value());
-    EXPECT_EQ(retained.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(retained.ok());
+    EXPECT_EQ(retained.status().status_code(), StatusCode::InvalidArgument);
 }
 
 TEST(PayloadTest, AdoptAndRetainValidateBeforeAcquiringResponsibility) {
@@ -169,13 +169,13 @@ TEST(PayloadTest, AdoptAndRetainValidateBeforeAcquiringResponsibility) {
     const PayloadView invalid(nullptr, 3);
 
     const auto adopted = Payload::adopt(invalid, &probe, &release_probe);
-    ASSERT_FALSE(adopted.has_value());
-    EXPECT_EQ(adopted.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(adopted.ok());
+    EXPECT_EQ(adopted.status().status_code(), StatusCode::InvalidArgument);
     EXPECT_EQ(probe.calls, 0);
 
     const auto retained = Payload::retain(invalid, &probe, &release_probe);
-    ASSERT_FALSE(retained.has_value());
-    EXPECT_EQ(retained.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(retained.ok());
+    EXPECT_EQ(retained.status().status_code(), StatusCode::InvalidArgument);
     EXPECT_EQ(probe.calls, 0);
 }
 
@@ -183,7 +183,7 @@ TEST(PayloadTest, EmptyExternalPayloadStillOwnsItsAnchor) {
     ReleaseProbe adopt_probe;
     {
         auto adopted = Payload::adopt(PayloadView(), &adopt_probe, &release_probe);
-        ASSERT_TRUE(adopted.has_value());
+        ASSERT_TRUE(adopted.ok());
         EXPECT_TRUE(adopted.value().empty());
         EXPECT_EQ(adopt_probe.calls, 0);
     }
@@ -192,7 +192,7 @@ TEST(PayloadTest, EmptyExternalPayloadStillOwnsItsAnchor) {
     ReleaseProbe retain_probe;
     {
         auto retained = Payload::retain(PayloadView(), &retain_probe, &release_probe);
-        ASSERT_TRUE(retained.has_value());
+        ASSERT_TRUE(retained.ok());
         EXPECT_TRUE(retained.value().empty());
         EXPECT_EQ(retain_probe.calls, 0);
     }
@@ -201,11 +201,11 @@ TEST(PayloadTest, EmptyExternalPayloadStillOwnsItsAnchor) {
 
 TEST(PayloadPoolTest, OwnsExactLogicalBytes) {
     auto pool = PayloadPool::create(32, 2);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const std::array<std::uint8_t, 5> source{9, 8, 7, 6, 5};
 
     auto payload = pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
-    ASSERT_TRUE(payload.has_value());
+    ASSERT_TRUE(payload.ok());
     ASSERT_EQ(payload.value().size(), source.size());
     for (std::size_t index = 0; index < source.size(); ++index) {
         EXPECT_EQ(payload.value().view().data()[index], source[index]);
@@ -214,10 +214,10 @@ TEST(PayloadPoolTest, OwnsExactLogicalBytes) {
 
 TEST(PayloadPoolTest, ZeroLengthPayloadDoesNotConsumePoolStorage) {
     auto pool = PayloadPool::create(8, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
 
     const auto empty = pool.value().try_reserve(0);
-    ASSERT_TRUE(empty.has_value());
+    ASSERT_TRUE(empty.ok());
     EXPECT_FALSE(empty.value().active());
     EXPECT_EQ(pool.value().used_bytes(), 0U);
     EXPECT_EQ(pool.value().available_bytes(), 8U);
@@ -225,31 +225,31 @@ TEST(PayloadPoolTest, ZeroLengthPayloadDoesNotConsumePoolStorage) {
 
 TEST(PayloadPoolTest, ReusesReleasedStorage) {
     auto pool = PayloadPool::create(8, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const std::array<std::uint8_t, 8> source{};
 
     auto first = pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
-    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(first.ok());
     const std::uint8_t* first_data = first.value().view().data();
 
     const auto exhausted = pool.value().try_reserve(1);
-    ASSERT_FALSE(exhausted.has_value());
-    EXPECT_EQ(exhausted.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(exhausted.ok());
+    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
 
     first.value() = Payload();
     auto second = pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
-    ASSERT_TRUE(second.has_value());
+    ASSERT_TRUE(second.ok());
     EXPECT_EQ(second.value().view().data(), first_data);
 }
 
 TEST(PayloadPoolTest, TracksUsedAvailableAndHighWaterBytes) {
     auto pool = PayloadPool::create(16, 3);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
 
     auto first = pool.value().try_reserve(3);
     auto second = pool.value().try_reserve(5);
-    ASSERT_TRUE(first.has_value());
-    ASSERT_TRUE(second.has_value());
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
     EXPECT_EQ(pool.value().capacity_bytes(), 48U);
     EXPECT_EQ(pool.value().used_bytes(), 32U);
     EXPECT_EQ(pool.value().available_bytes(), 16U);
@@ -263,42 +263,42 @@ TEST(PayloadPoolTest, TracksUsedAvailableAndHighWaterBytes) {
 
 TEST(PayloadPoolTest, RejectsInvalidConfigurationAndOversizedRequests) {
     const auto zero_size = PayloadPool::create(0, 1);
-    ASSERT_FALSE(zero_size.has_value());
-    EXPECT_EQ(zero_size.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(zero_size.ok());
+    EXPECT_EQ(zero_size.status().status_code(), StatusCode::InvalidArgument);
 
     const auto zero_count = PayloadPool::create(1, 0);
-    ASSERT_FALSE(zero_count.has_value());
-    EXPECT_EQ(zero_count.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(zero_count.ok());
+    EXPECT_EQ(zero_count.status().status_code(), StatusCode::InvalidArgument);
 
     const auto overflow = PayloadPool::create(std::numeric_limits<std::size_t>::max(), 2);
-    ASSERT_FALSE(overflow.has_value());
-    EXPECT_EQ(overflow.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(overflow.ok());
+    EXPECT_EQ(overflow.status().status_code(), StatusCode::InvalidArgument);
 
     auto pool = PayloadPool::create(4, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const auto oversized = pool.value().try_reserve(5);
-    ASSERT_FALSE(oversized.has_value());
-    EXPECT_EQ(oversized.error().code(), ErrorCode::ResourceExhausted);
+    ASSERT_FALSE(oversized.ok());
+    EXPECT_EQ(oversized.status().status_code(), StatusCode::ResourceExhausted);
 }
 
 TEST(PayloadPoolTest, RejectsMismatchedSourceSize) {
     auto pool = PayloadPool::create(4, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
     const std::array<std::uint8_t, 2> source{1, 2};
 
     const auto mismatch = pool.value().acquire(3, PayloadView(source.data(), source.size()));
-    ASSERT_FALSE(mismatch.has_value());
-    EXPECT_EQ(mismatch.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(mismatch.ok());
+    EXPECT_EQ(mismatch.status().status_code(), StatusCode::InvalidArgument);
     EXPECT_EQ(pool.value().used_bytes(), 0U);
 }
 
 TEST(PayloadPoolTest, CopyRejectsInvalidSourceWithoutConsumingStorage) {
     auto pool = PayloadPool::create(4, 1);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
 
     const auto invalid = pool.value().acquire(4, PayloadView(nullptr, 4));
-    ASSERT_FALSE(invalid.has_value());
-    EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
+    ASSERT_FALSE(invalid.ok());
+    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
     EXPECT_EQ(pool.value().used_bytes(), 0U);
 }
 
@@ -309,10 +309,10 @@ TEST(PayloadPoolTest, SelectsSmallestClassAndKeepsClassBudgetsIsolated) {
         PayloadClassConfig{64, 1},
     };
     auto pool = PayloadPool::create(config);
-    ASSERT_TRUE(pool.has_value());
+    ASSERT_TRUE(pool.ok());
 
     auto small = pool.value().try_reserve(4);
-    ASSERT_TRUE(small.has_value());
+    ASSERT_TRUE(small.ok());
     const auto small_stats = pool.value().stats();
     ASSERT_EQ(2U, small_stats.classes.size());
     EXPECT_EQ(1U, small_stats.classes[0].used_blocks);
@@ -320,12 +320,12 @@ TEST(PayloadPoolTest, SelectsSmallestClassAndKeepsClassBudgetsIsolated) {
     EXPECT_EQ(0U, small_stats.classes[1].used_blocks);
 
     const auto small_exhausted = pool.value().try_reserve(4);
-    ASSERT_FALSE(small_exhausted.has_value());
-    EXPECT_EQ(ErrorCode::ResourceExhausted, small_exhausted.error().code());
+    ASSERT_FALSE(small_exhausted.ok());
+    EXPECT_EQ(StatusCode::ResourceExhausted, small_exhausted.status().status_code());
     EXPECT_EQ(1U, pool.value().stats().classes[0].exhaustion_count);
 
     auto large = pool.value().try_reserve(9);
-    ASSERT_TRUE(large.has_value());
+    ASSERT_TRUE(large.ok());
     const auto large_stats = pool.value().stats();
     EXPECT_EQ(1U, large_stats.classes[0].used_blocks);
     EXPECT_EQ(1U, large_stats.classes[1].used_blocks);

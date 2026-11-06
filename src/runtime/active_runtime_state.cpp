@@ -1,6 +1,6 @@
 #include "runtime/active_runtime_state.hpp"
 
-#include "plugin/plugin_error.hpp"
+#include "plugin/plugin_status.hpp"
 #include "runtime/quarantine.hpp"
 #include "runtime/spdlog_backend.hpp"
 
@@ -30,14 +30,14 @@ constexpr std::string_view kIngressTimestampRole = "rodaq/acquisition_ingress";
 constexpr std::size_t kMaxSecondaryFailures = 8;
 constexpr std::size_t kRuntimeClockPluginIndex = std::numeric_limits<std::size_t>::max();
 
-Error runtime_error(ErrorCode code, std::string message) {
-    return Error(code, "runtime", 0, std::move(message));
+Status runtime_status(StatusCode status_code, std::string message) {
+    return Status(status_code, "runtime", 0, std::move(message));
 }
 
 std::unique_ptr<LatencyHistogram> make_latency_histogram() {
     auto result = LatencyHistogram::create(1, 60LL * 1'000'000'000LL, 3);
-    if (!result.has_value()) {
-        throw std::runtime_error(std::string(result.error().message()));
+    if (!result.ok()) {
+        throw std::runtime_error(std::string(result.status().message()));
     }
     return std::move(result.value());
 }
@@ -60,8 +60,8 @@ LatencySnapshot latency_snapshot(const LatencyHistogram& histogram) noexcept {
 template <typename T, typename HandleType>
 Registry<T, HandleType> make_registry(std::size_t capacity, std::uint32_t generation) {
     auto result = Registry<T, HandleType>::create(capacity, generation);
-    if (!result.has_value()) {
-        throw std::runtime_error(std::string(result.error().message()));
+    if (!result.ok()) {
+        throw std::runtime_error(std::string(result.status().message()));
     }
     return std::move(result.value());
 }
@@ -91,8 +91,8 @@ Result<std::int64_t> capture_ingress_reading() {
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
             .count();
     if (count > std::numeric_limits<std::int64_t>::max()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "Runtime ingress clock reading overflowed"));
+        return runtime_status(
+            StatusCode::InternalError, "Runtime ingress clock reading overflowed");
     }
     return static_cast<std::int64_t>(count);
 }
@@ -108,8 +108,7 @@ bool strings_equal(const ArenaString& stored, std::string_view value) noexcept {
 template <typename Struct>
 Result<void> write_output_prefix(const Struct& output, Struct* destination) {
     if (destination == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Runtime output pointer is null"));
+        return runtime_status(StatusCode::InvalidArgument, "Runtime output pointer is null");
     }
     const std::uint32_t capacity = destination->struct_size;
     const std::uint32_t initialized = initialized_prefix_size<Struct>(capacity);
@@ -119,53 +118,56 @@ Result<void> write_output_prefix(const Struct& output, Struct* destination) {
     return {};
 }
 
-Error from_abi_error(const rodaq_error& error) {
+Status status_from_abi_diagnostic(const rodaq_status& error) {
     const std::string_view domain(
         error.domain, std::min<std::size_t>(error.domain_size, sizeof(error.domain)));
     const std::string_view message(
         error.message, std::min<std::size_t>(error.message_size, sizeof(error.message)));
-    ErrorCode code = ErrorCode::InternalError;
-    switch (error.code) {
+    StatusCode status_code = StatusCode::InternalError;
+    switch (error.status_code) {
         case RODAQ_STATUS_INVALID_ARGUMENT:
-            code = ErrorCode::InvalidArgument;
+            status_code = StatusCode::InvalidArgument;
             break;
         case RODAQ_STATUS_INVALID_STATE:
-            code = ErrorCode::InvalidState;
+            status_code = StatusCode::InvalidState;
             break;
         case RODAQ_STATUS_NOT_FOUND:
-            code = ErrorCode::NotFound;
+            status_code = StatusCode::NotFound;
             break;
         case RODAQ_STATUS_CONFLICT:
-            code = ErrorCode::Conflict;
+            status_code = StatusCode::Conflict;
             break;
         case RODAQ_STATUS_RESOURCE_EXHAUSTED:
-            code = ErrorCode::ResourceExhausted;
+            status_code = StatusCode::ResourceExhausted;
             break;
         case RODAQ_STATUS_UNAVAILABLE:
-            code = ErrorCode::Unavailable;
+            status_code = StatusCode::Unavailable;
             break;
         case RODAQ_STATUS_STORAGE_ERROR:
-            code = ErrorCode::StorageError;
+            status_code = StatusCode::StorageError;
             break;
         case RODAQ_STATUS_TIMEOUT:
-            code = ErrorCode::Timeout;
+            status_code = StatusCode::Timeout;
+            break;
+        case RODAQ_STATUS_UNKNOWN_ERROR:
+            status_code = StatusCode::UnknownError;
             break;
         default:
-            code = ErrorCode::InternalError;
+            status_code = StatusCode::InternalError;
             break;
     }
-    return Error(code, std::string(domain), error.native_code, std::string(message));
+    return Status(status_code, std::string(domain), error.error_code, std::string(message));
 }
 
-rodaq_status assign_status(const Error& error, rodaq_error* out_error) noexcept {
-    assign_rodaq_error(error, out_error);
-    return status_from_error_code(error.code());
+rodaq_status_code assign_status(const Status& error, rodaq_status* out_status) noexcept {
+    assign_abi_status(error, out_status);
+    return abi_status_from_status_code(error.status_code());
 }
 
-rodaq_status assign_message(
-    ErrorCode code, std::string_view message, rodaq_error* out_error) noexcept {
-    assign_rodaq_error(status_from_error_code(code), "runtime", 0, message, out_error);
-    return status_from_error_code(code);
+rodaq_status_code assign_message(
+    StatusCode status_code, std::string_view message, rodaq_status* out_status) noexcept {
+    assign_abi_status(abi_status_from_status_code(status_code), "runtime", 0, message, out_status);
+    return abi_status_from_status_code(status_code);
 }
 
 rodaq_acquisition_submit_result submit_result(
@@ -209,25 +211,25 @@ std::uint64_t common_monotonic_time_ns(void*) noexcept {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
-rodaq_status common_lifecycle_snapshot(
+rodaq_status_code common_lifecycle_snapshot(
     void* context, rodaq_runtime_lifecycle_snapshot* out_snapshot,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || out_snapshot == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "lifecycle snapshot input is invalid", out_error);
+            StatusCode::InvalidArgument, "lifecycle snapshot input is invalid", out_status);
     }
     try {
         *out_snapshot = {};
         const auto result = state_from(context)->lifecycle_snapshot();
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         *out_snapshot = result.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "lifecycle snapshot failed", out_error);
+        return assign_message(StatusCode::InternalError, "lifecycle snapshot failed", out_status);
     }
 }
 
@@ -246,119 +248,117 @@ void common_diagnostic(
 }
 
 template <typename View, typename Getter>
-rodaq_status canonical_view(
-    void* context, View* out_view, rodaq_error* out_error, Getter&& getter) noexcept {
+rodaq_status_code canonical_view(
+    void* context, View* out_view, rodaq_status* out_status, Getter&& getter) noexcept {
     if (context == nullptr || out_view == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "canonical view input is null", out_error);
+            StatusCode::InvalidArgument, "canonical view input is null", out_status);
     }
     try {
         const auto result = getter(*state_from(context));
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         const auto copied = write_output_prefix(result.value(), out_view);
-        return copied.has_value() ? RODAQ_STATUS_OK : assign_status(copied.error(), out_error);
+        return copied.ok() ? RODAQ_STATUS_OK : assign_status(copied.status(), out_status);
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "canonical view failed", out_error);
+        return assign_message(StatusCode::InternalError, "canonical view failed", out_status);
     }
 }
 
-rodaq_status canonical_get_source(
+rodaq_status_code canonical_get_source(
     void* context, rodaq_source_handle handle, rodaq_source_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [handle](ActiveRuntimeState& state) {
         rodaq_source_view view{};
         view.struct_size = sizeof(view);
         auto result = state.get_source(SourceHandle::from_raw(handle.value), view);
-        if (!result.has_value()) {
-            return Result<rodaq_source_view>(nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_source_view>(std::move(result).status());
         }
         return Result<rodaq_source_view>(view);
     });
 }
 
-rodaq_status canonical_get_clock(
+rodaq_status_code canonical_get_clock(
     void* context, rodaq_clock_handle handle, rodaq_clock_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [handle](ActiveRuntimeState& state) {
         rodaq_clock_view view{};
         view.struct_size = sizeof(view);
         auto result = state.get_clock(ClockHandle::from_raw(handle.value), view);
-        if (!result.has_value()) {
-            return Result<rodaq_clock_view>(nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_clock_view>(std::move(result).status());
         }
         return Result<rodaq_clock_view>(view);
     });
 }
 
-rodaq_status canonical_get_schema(
+rodaq_status_code canonical_get_schema(
     void* context, rodaq_schema_handle handle, rodaq_schema_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [handle](ActiveRuntimeState& state) {
         rodaq_schema_view view{};
         view.struct_size = sizeof(view);
         auto result = state.get_schema(SchemaHandle::from_raw(handle.value), view);
-        if (!result.has_value()) {
-            return Result<rodaq_schema_view>(nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_schema_view>(std::move(result).status());
         }
         return Result<rodaq_schema_view>(view);
     });
 }
 
-rodaq_status canonical_get_timestamp_key_set(
+rodaq_status_code canonical_get_timestamp_key_set(
     void* context, std::uint64_t id, rodaq_timestamp_key_set_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [id](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [id](ActiveRuntimeState& state) {
         rodaq_timestamp_key_set_view view{};
         view.struct_size = sizeof(view);
         auto result = state.get_timestamp_key_set(id, view);
-        if (!result.has_value()) {
-            return Result<rodaq_timestamp_key_set_view>(
-                nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_timestamp_key_set_view>(std::move(result).status());
         }
         return Result<rodaq_timestamp_key_set_view>(view);
     });
 }
 
-rodaq_status canonical_get_stream(
+rodaq_status_code canonical_get_stream(
     void* context, rodaq_stream_handle handle, rodaq_stream_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [handle](ActiveRuntimeState& state) {
         rodaq_stream_view view{};
         view.struct_size = sizeof(view);
         auto result = state.get_stream(StreamHandle::from_raw(handle.value), view);
-        if (!result.has_value()) {
-            return Result<rodaq_stream_view>(nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_stream_view>(std::move(result).status());
         }
         return Result<rodaq_stream_view>(view);
     });
 }
 
-rodaq_status canonical_get_stream_descriptor(
+rodaq_status_code canonical_get_stream_descriptor(
     void* context, rodaq_stream_descriptor_handle handle, rodaq_stream_descriptor_view* out_view,
-    rodaq_error* out_error) noexcept {
-    return canonical_view(context, out_view, out_error, [handle](ActiveRuntimeState& state) {
+    rodaq_status* out_status) noexcept {
+    return canonical_view(context, out_view, out_status, [handle](ActiveRuntimeState& state) {
         rodaq_stream_descriptor_view view{};
         view.struct_size = sizeof(view);
         auto result =
             state.get_stream_descriptor(StreamDescriptorHandle::from_raw(handle.value), view);
-        if (!result.has_value()) {
-            return Result<rodaq_stream_descriptor_view>(
-                nonstd::make_unexpected(std::move(result.error())));
+        if (!result.ok()) {
+            return Result<rodaq_stream_descriptor_view>(std::move(result).status());
         }
         return Result<rodaq_stream_descriptor_view>(view);
     });
 }
 
-rodaq_status acquisition_register_source(
+rodaq_status_code acquisition_register_source(
     void* context, const rodaq_source_registration* request, rodaq_source_handle* out_handle,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr || out_handle == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "source registration input is null", out_error);
+            StatusCode::InvalidArgument, "source registration input is null", out_status);
     }
     *out_handle = {};
     try {
@@ -366,24 +366,24 @@ rodaq_status acquisition_register_source(
         SourceHandle handle;
         const auto result = service_context->state->register_source(
             service_context->plugin_index, *request, handle);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "source registration failed", out_error);
+        return assign_message(StatusCode::InternalError, "source registration failed", out_status);
     }
 }
 
-rodaq_status acquisition_register_clock(
+rodaq_status_code acquisition_register_clock(
     void* context, const rodaq_clock_registration* request, rodaq_clock_handle* out_handle,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr || out_handle == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "clock registration input is null", out_error);
+            StatusCode::InvalidArgument, "clock registration input is null", out_status);
     }
     *out_handle = {};
     try {
@@ -391,24 +391,24 @@ rodaq_status acquisition_register_clock(
         ClockHandle handle;
         const auto result =
             service_context->state->register_clock(service_context->plugin_index, *request, handle);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "clock registration failed", out_error);
+        return assign_message(StatusCode::InternalError, "clock registration failed", out_status);
     }
 }
 
-rodaq_status acquisition_register_schema(
+rodaq_status_code acquisition_register_schema(
     void* context, const rodaq_schema_registration* request, rodaq_schema_handle* out_handle,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr || out_handle == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "schema registration input is null", out_error);
+            StatusCode::InvalidArgument, "schema registration input is null", out_status);
     }
     *out_handle = {};
     try {
@@ -416,24 +416,24 @@ rodaq_status acquisition_register_schema(
         SchemaHandle handle;
         const auto result = service_context->state->register_schema(
             service_context->plugin_index, *request, handle);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "schema registration failed", out_error);
+        return assign_message(StatusCode::InternalError, "schema registration failed", out_status);
     }
 }
 
-rodaq_status acquisition_register_stream(
+rodaq_status_code acquisition_register_stream(
     void* context, const rodaq_stream_registration* request, rodaq_stream_handle* out_handle,
-    rodaq_error* out_error) noexcept {
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr || out_handle == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "stream registration input is null", out_error);
+            StatusCode::InvalidArgument, "stream registration input is null", out_status);
     }
     *out_handle = {};
     try {
@@ -441,24 +441,24 @@ rodaq_status acquisition_register_stream(
         StreamHandle handle;
         const auto result = service_context->state->register_stream(
             service_context->plugin_index, *request, handle);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "stream registration failed", out_error);
+        return assign_message(StatusCode::InternalError, "stream registration failed", out_status);
     }
 }
 
-rodaq_status acquisition_publish_descriptor(
+rodaq_status_code acquisition_publish_descriptor(
     void* context, const rodaq_stream_descriptor_registration* request,
-    rodaq_stream_descriptor_handle* out_handle, rodaq_error* out_error) noexcept {
+    rodaq_stream_descriptor_handle* out_handle, rodaq_status* out_status) noexcept {
     if (context == nullptr || request == nullptr || out_handle == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "descriptor publication input is null", out_error);
+            StatusCode::InvalidArgument, "descriptor publication input is null", out_status);
     }
     *out_handle = {};
     try {
@@ -466,111 +466,112 @@ rodaq_status acquisition_publish_descriptor(
         StreamDescriptorHandle handle;
         const auto result = service_context->state->publish_stream_descriptor(
             service_context->plugin_index, *request, handle);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         out_handle->value = handle.value();
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "descriptor publication failed", out_error);
+        return assign_message(
+            StatusCode::InternalError, "descriptor publication failed", out_status);
     }
 }
 
-rodaq_status acquisition_report_source(
+rodaq_status_code acquisition_report_source(
     void* context, rodaq_source_handle source, rodaq_availability_state availability,
-    const rodaq_error*, rodaq_error* out_error) noexcept {
+    const rodaq_status*, rodaq_status* out_status) noexcept {
     if (context == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "source report context is null", out_error);
+            StatusCode::InvalidArgument, "source report context is null", out_status);
     }
     try {
         const auto result = state_from(acquisition_context_from(context)->state)
                                 ->report_source_availability(
                                     acquisition_context_from(context)->plugin_index,
                                     SourceHandle::from_raw(source.value), availability);
-        return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
+        return result.ok() ? RODAQ_STATUS_OK : assign_status(result.status(), out_status);
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "source report failed", out_error);
+        return assign_message(StatusCode::InternalError, "source report failed", out_status);
     }
 }
 
-rodaq_status acquisition_report_stream(
+rodaq_status_code acquisition_report_stream(
     void* context, rodaq_stream_handle stream, rodaq_availability_state availability,
-    const rodaq_error*, rodaq_error* out_error) noexcept {
+    const rodaq_status*, rodaq_status* out_status) noexcept {
     if (context == nullptr) {
         return assign_message(
-            ErrorCode::InvalidArgument, "stream report context is null", out_error);
+            StatusCode::InvalidArgument, "stream report context is null", out_status);
     }
     try {
         const auto result = state_from(acquisition_context_from(context)->state)
                                 ->report_stream_availability(
                                     acquisition_context_from(context)->plugin_index,
                                     StreamHandle::from_raw(stream.value), availability);
-        return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
+        return result.ok() ? RODAQ_STATUS_OK : assign_status(result.status(), out_status);
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "stream report failed", out_error);
+        return assign_message(StatusCode::InternalError, "stream report failed", out_status);
     }
 }
 
-rodaq_status acquisition_report_plugin_state(
-    void* context, rodaq_acquisition_plugin_state plugin_state, const rodaq_error* diagnostic,
-    rodaq_error* out_error) noexcept {
+rodaq_status_code acquisition_report_plugin_state(
+    void* context, rodaq_acquisition_plugin_state plugin_state, const rodaq_status* diagnostic,
+    rodaq_status* out_status) noexcept {
     if (context == nullptr || (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE &&
                                plugin_state != RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE &&
                                plugin_state != RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE)) {
         return assign_message(
-            ErrorCode::InvalidArgument, "plugin state report is invalid", out_error);
+            StatusCode::InvalidArgument, "plugin state report is invalid", out_status);
     }
-    if (diagnostic != nullptr && (!rodaq::is_valid_abi_error(*diagnostic) ||
+    if (diagnostic != nullptr && (!rodaq::is_valid_abi_status(*diagnostic) ||
                                   (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE &&
-                                   diagnostic->code == RODAQ_STATUS_OK))) {
+                                   diagnostic->status_code == RODAQ_STATUS_OK))) {
         return assign_message(
-            ErrorCode::InvalidArgument, "plugin state diagnostic is malformed", out_error);
+            StatusCode::InvalidArgument, "plugin state diagnostic is malformed", out_status);
     }
     try {
         const auto* service_context = acquisition_context_from(context);
         const auto result =
             state_from(service_context->state)
                 ->report_plugin_state(service_context->plugin_index, plugin_state, diagnostic);
-        return result.has_value() ? RODAQ_STATUS_OK : assign_status(result.error(), out_error);
+        return result.ok() ? RODAQ_STATUS_OK : assign_status(result.status(), out_status);
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "Plugin state report failed", out_error);
+        return assign_message(StatusCode::InternalError, "Plugin state report failed", out_status);
     }
 }
 
-rodaq_status acquisition_submit(
+rodaq_status_code acquisition_submit(
     void* context, const rodaq_record_submission* submission,
-    rodaq_acquisition_submit_result* out_result, rodaq_error* out_error) noexcept {
+    rodaq_acquisition_submit_result* out_result, rodaq_status* out_status) noexcept {
     if (context == nullptr || submission == nullptr || out_result == nullptr) {
-        return assign_message(ErrorCode::InvalidArgument, "submit input is null", out_error);
+        return assign_message(StatusCode::InvalidArgument, "submit input is null", out_status);
     }
     const std::uint32_t capacity = out_result->struct_size;
     if (capacity < RODAQ_ACQUISITION_SUBMIT_RESULT_MIN_STRUCT_SIZE) {
         return assign_message(
-            ErrorCode::InvalidArgument, "submit result capacity is too small", out_error);
+            StatusCode::InvalidArgument, "submit result capacity is too small", out_status);
     }
     try {
         auto* service_context = acquisition_context_from(context);
         rodaq_payload_disposition disposition = RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE;
         const auto result =
             service_context->state->submit(service_context->plugin_index, *submission, disposition);
-        if (!result.has_value()) {
-            return assign_status(result.error(), out_error);
+        if (!result.ok()) {
+            return assign_status(result.status(), out_status);
         }
         const auto copied = write_output_prefix(result.value(), out_result);
-        return copied.has_value() ? RODAQ_STATUS_OK : assign_status(copied.error(), out_error);
+        return copied.ok() ? RODAQ_STATUS_OK : assign_status(copied.status(), out_status);
     } catch (const std::exception& error) {
-        return assign_message(ErrorCode::InternalError, error.what(), out_error);
+        return assign_message(StatusCode::InternalError, error.what(), out_status);
     } catch (...) {
-        return assign_message(ErrorCode::InternalError, "submit failed", out_error);
+        return assign_message(StatusCode::InternalError, "submit failed", out_status);
     }
 }
 
@@ -589,16 +590,16 @@ void storage_payload_consumed(void* context, rodaq_storage_operation operation) 
 
 void storage_persistence_completed(
     void* context, rodaq_storage_operation operation, rodaq_storage_persistence_state state_value,
-    const rodaq_error* error) noexcept {
+    const rodaq_status* error) noexcept {
     if (context == nullptr) {
         return;
     }
     try {
         auto* state = state_from(storage_context_from(context)->state);
         if (error != nullptr &&
-            (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
-            state->request_failure(runtime_error(
-                ErrorCode::InvalidArgument,
+            (!rodaq::is_valid_abi_status(*error) || error->status_code == RODAQ_STATUS_OK)) {
+            state->request_failure(runtime_status(
+                StatusCode::InvalidArgument,
                 "Storage persistence callback supplied a malformed diagnostic"));
             return;
         }
@@ -609,22 +610,22 @@ void storage_persistence_completed(
     }
 }
 
-void storage_report_failure(void* context, const rodaq_error* error) noexcept {
+void storage_report_failure(void* context, const rodaq_status* error) noexcept {
     if (context == nullptr) {
         return;
     }
     try {
         if (error != nullptr &&
-            (!rodaq::is_valid_abi_error(*error) || error->code == RODAQ_STATUS_OK)) {
+            (!rodaq::is_valid_abi_status(*error) || error->status_code == RODAQ_STATUS_OK)) {
             state_from(storage_context_from(context)->state)
-                ->request_failure(runtime_error(
-                    ErrorCode::InvalidArgument,
+                ->request_failure(runtime_status(
+                    StatusCode::InvalidArgument,
                     "Storage failure callback supplied a malformed diagnostic"));
             return;
         }
-        Error failure = error == nullptr
-                            ? runtime_error(ErrorCode::StorageError, "Storage reported failure")
-                            : from_abi_error(*error);
+        Status failure = error == nullptr
+                             ? runtime_status(StatusCode::StorageError, "Storage reported failure")
+                             : status_from_abi_diagnostic(*error);
         state_from(storage_context_from(context)->state)->request_failure(std::move(failure));
     } catch (...) {
     }
@@ -680,13 +681,12 @@ Result<std::unique_ptr<ActiveRuntimeState>> ActiveRuntimeState::create(
         return std::unique_ptr<ActiveRuntimeState>(
             new ActiveRuntimeState(std::move(config), activation_generation));
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::ResourceExhausted, "Runtime activation allocation failed"));
+        return runtime_status(
+            StatusCode::ResourceExhausted, "Runtime activation allocation failed");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(runtime_error(ErrorCode::InternalError, error.what()));
+        return runtime_status(StatusCode::InternalError, error.what());
     } catch (...) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "Runtime activation construction failed"));
+        return runtime_status(StatusCode::InternalError, "Runtime activation construction failed");
     }
 }
 
@@ -695,8 +695,8 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
   activation_generation_(activation_generation),
   arena_([this] {
       auto result = StructuralArena::create(options_.resources.structural_arena_bytes);
-      if (!result.has_value()) {
-          throw std::runtime_error(std::string(result.error().message()));
+      if (!result.ok()) {
+          throw std::runtime_error(std::string(result.status().message()));
       }
       return std::move(result.value());
   }()),
@@ -716,15 +716,15 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
       options_.resources.max_bindings, registry_generation(activation_generation))),
   sequences_([this] {
       auto result = AcceptanceSequenceAllocator::create(options_.resources.max_streams);
-      if (!result.has_value()) {
-          throw std::runtime_error(std::string(result.error().message()));
+      if (!result.ok()) {
+          throw std::runtime_error(std::string(result.status().message()));
       }
       return std::move(result.value());
   }()),
   payload_pool_([this] {
       auto result = PayloadPool::create(options_.resources.payload_pool);
-      if (!result.has_value()) {
-          throw std::runtime_error(std::string(result.error().message()));
+      if (!result.ok()) {
+          throw std::runtime_error(std::string(result.status().message()));
       }
       return std::move(result.value());
   }()),
@@ -761,13 +761,13 @@ ActiveRuntimeState::ActiveRuntimeState(RuntimeConfig config, std::uint64_t activ
     storage_context_ = std::make_unique<StorageServiceContext>();
     storage_context_->state = this;
     auto logging = LoggingContext::create(options_.logging, std::make_shared<SpdlogBackend>());
-    if (!logging.has_value()) {
-        throw std::runtime_error(std::string(logging.error().message()));
+    if (!logging.ok()) {
+        throw std::runtime_error(std::string(logging.status().message()));
     }
     logging_context_ = std::move(logging.value());
     auto ingress = initialize_ingress_clock();
-    if (!ingress.has_value()) {
-        throw std::runtime_error(std::string(ingress.error().message()));
+    if (!ingress.ok()) {
+        throw std::runtime_error(std::string(ingress.status().message()));
     }
     projections_.set_registration_sink(
         [this](rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) {
@@ -814,8 +814,8 @@ Result<void> ActiveRuntimeState::initialize_ingress_clock() {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         if (ingress_clock_.valid()) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is already created"));
+            return runtime_status(
+                StatusCode::InvalidState, "Runtime ingress Clock is already created");
         }
         auto inserted = clocks_.insert(ClockEntry{
             copy_bytes(
@@ -827,8 +827,8 @@ Result<void> ActiveRuntimeState::initialize_ingress_clock() {
             copy_string(arena_->resource(), kOrigin),
             kRuntimeClockPluginIndex,
         });
-        if (!inserted.has_value()) {
-            return nonstd::make_unexpected(std::move(inserted.error()));
+        if (!inserted.ok()) {
+            return std::move(inserted).status();
         }
         ingress_clock_ = inserted.value();
         clock_handles_.push_back(ingress_clock_);
@@ -838,8 +838,8 @@ Result<void> ActiveRuntimeState::initialize_ingress_clock() {
         rodaq_clock_handle{ingress_clock_.value()},
         []() -> std::int64_t {
             auto reading = capture_ingress_reading();
-            if (!reading.has_value()) {
-                throw std::runtime_error(std::string(reading.error().message()));
+            if (!reading.ok()) {
+                throw std::runtime_error(std::string(reading.status().message()));
             }
             return reading.value();
         },
@@ -852,8 +852,8 @@ Result<void> ActiveRuntimeState::initialize_ingress_clock() {
             }
             return static_cast<std::uint64_t>(count);
         });
-    if (!correlation.has_value()) {
-        return nonstd::make_unexpected(std::move(correlation.error()));
+    if (!correlation.ok()) {
+        return std::move(correlation).status();
     }
     ingress_clock_correlation_.emplace(std::move(correlation.value()));
     return {};
@@ -861,29 +861,26 @@ Result<void> ActiveRuntimeState::initialize_ingress_clock() {
 
 Result<rodaq_storage_capabilities> ActiveRuntimeState::storage_capabilities() const {
     if (!storage_control_.has_value()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Storage control interface is unavailable"));
+        return runtime_status(StatusCode::InvalidState, "Storage control interface is unavailable");
     }
     const auto* table = static_cast<const rodaq_storage_control_v1*>(storage_control_->vtable);
     if (table->get_capabilities == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Storage capabilities slot is missing"));
+        return runtime_status(StatusCode::InvalidArgument, "Storage capabilities slot is missing");
     }
     rodaq_storage_capabilities capabilities{};
     capabilities.struct_size = sizeof(capabilities);
-    rodaq_error error{};
-    const rodaq_status status =
+    rodaq_status error{};
+    const rodaq_status_code status =
         table->get_capabilities(storage_control_->context, &capabilities, &error);
     if (status != RODAQ_STATUS_OK) {
-        auto converted = result_from_status(status, &error, "storage");
-        return nonstd::make_unexpected(
-            converted.has_value()
-                ? runtime_error(ErrorCode::InternalError, "Storage capabilities failed")
-                : std::move(converted.error()));
+        auto converted = status_from_abi(status, &error, "storage");
+        return converted.ok()
+                   ? runtime_status(StatusCode::InternalError, "Storage capabilities failed")
+                   : std::move(converted);
     }
     if (capabilities.struct_size < RODAQ_STORAGE_CAPABILITIES_MIN_STRUCT_SIZE) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Storage capabilities output is incomplete"));
+        return runtime_status(
+            StatusCode::InvalidArgument, "Storage capabilities output is incomplete");
     }
     return capabilities;
 }
@@ -928,45 +925,41 @@ Result<void> ActiveRuntimeState::supervise_binding_control(
     auto outcome = QuarantineManager::process().run(
         [guard, operation = std::move(operation)]() mutable { return operation(); },
         Clock::now() + binding_progress_timeout_, reason);
-    if (!outcome.has_value()) {
-        return nonstd::make_unexpected(std::move(outcome.error()));
+    if (!outcome.ok()) {
+        return std::move(outcome).status();
     }
     switch (outcome.value().status) {
         case SupervisedCallStatus::Completed:
             return {};
         case SupervisedCallStatus::Failed:
-            return nonstd::make_unexpected(std::move(outcome.value().error.value()));
+            return std::move(outcome.value().error);
         case SupervisedCallStatus::TimedOut:
             control_quarantine_required_.store(true, std::memory_order_release);
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::Timeout, "Acquisition Binding control timed out"));
+            return runtime_status(StatusCode::Timeout, "Acquisition Binding control timed out");
     }
-    return nonstd::make_unexpected(
-        runtime_error(ErrorCode::InternalError, "Unknown Binding control outcome"));
+    return runtime_status(StatusCode::InternalError, "Unknown Binding control outcome");
 }
 
 Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::ensure_descriptor_ready(
     StreamDescriptorHandle descriptor) {
     if (!storage_control_.has_value()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Storage control interface is unavailable"));
+        return runtime_status(StatusCode::InvalidState, "Storage control interface is unavailable");
     }
     const rodaq_interface control = storage_control_.value();
     const auto* table = static_cast<const rodaq_storage_control_v1*>(control.vtable);
     if (table->ensure_descriptor_ready == nullptr) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidArgument, "Storage descriptor readiness slot is missing"));
+        return runtime_status(
+            StatusCode::InvalidArgument, "Storage descriptor readiness slot is missing");
     }
 
     std::shared_ptr<ActiveRuntimeState> state;
     try {
         state = shared_from_this();
     } catch (const std::bad_weak_ptr&) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Runtime activation has no shared owner"));
+        return runtime_status(StatusCode::InvalidState, "Runtime activation has no shared owner");
     }
     auto result = std::make_shared<std::optional<DescriptorReadiness>>();
-    auto result_error = std::make_shared<std::optional<Error>>();
+    auto result_error = std::make_shared<Status>();
     const auto descriptor_value = rodaq_stream_descriptor_handle{descriptor.value()};
     auto guard = track_control_call();
     auto outcome = QuarantineManager::process().run(
@@ -974,22 +967,21 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::ensure_descr
             static_cast<void>(state);
             rodaq_descriptor_readiness_result readiness{};
             readiness.struct_size = sizeof(readiness);
-            rodaq_error error{};
-            const rodaq_status status = table->ensure_descriptor_ready(
+            rodaq_status error{};
+            const rodaq_status_code status = table->ensure_descriptor_ready(
                 control.context, descriptor_value, &readiness, &error);
             if (status != RODAQ_STATUS_OK) {
-                auto converted = result_from_status(status, &error, "storage");
-                result_error->emplace(
-                    converted.has_value()
-                        ? runtime_error(
-                              ErrorCode::InternalError, "Storage descriptor readiness failed")
-                        : std::move(converted.error()));
+                auto converted = status_from_abi(status, &error, "storage");
+                *result_error = converted.ok() ? runtime_status(
+                                                     StatusCode::InternalError,
+                                                     "Storage descriptor readiness failed")
+                                               : std::move(converted);
                 return {};
             }
             if (readiness.struct_size < RODAQ_DESCRIPTOR_READINESS_RESULT_MIN_STRUCT_SIZE) {
-                result_error->emplace(runtime_error(
-                    ErrorCode::InvalidArgument,
-                    "Storage descriptor readiness output is incomplete"));
+                *result_error = runtime_status(
+                    StatusCode::InvalidArgument,
+                    "Storage descriptor readiness output is incomplete");
                 return {};
             }
             if (readiness.state == RODAQ_DESCRIPTOR_UNSUPPORTED) {
@@ -997,35 +989,33 @@ Result<ActiveRuntimeState::DescriptorReadiness> ActiveRuntimeState::ensure_descr
             } else if (readiness.state == RODAQ_DESCRIPTOR_READY) {
                 result->emplace(DescriptorReadiness::Ready);
             } else {
-                result_error->emplace(
-                    readiness.state == RODAQ_DESCRIPTOR_FAILED
-                        ? from_abi_error(readiness.failure)
-                        : runtime_error(
-                              ErrorCode::InvalidArgument,
-                              "Storage returned invalid descriptor readiness"));
+                *result_error = readiness.state == RODAQ_DESCRIPTOR_FAILED
+                                    ? status_from_abi_diagnostic(readiness.failure)
+                                    : runtime_status(
+                                          StatusCode::InvalidArgument,
+                                          "Storage returned invalid descriptor readiness");
             }
             return {};
         },
         Clock::now() + descriptor_progress_timeout_, "Descriptor readiness");
-    if (!outcome.has_value()) {
-        return nonstd::make_unexpected(std::move(outcome.error()));
+    if (!outcome.ok()) {
+        return std::move(outcome).status();
     }
     switch (outcome.value().status) {
         case SupervisedCallStatus::TimedOut:
             control_quarantine_required_.store(true, std::memory_order_release);
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::Timeout, "Storage descriptor readiness timed out"));
+            return runtime_status(StatusCode::Timeout, "Storage descriptor readiness timed out");
         case SupervisedCallStatus::Failed:
-            return nonstd::make_unexpected(std::move(outcome.value().error.value()));
+            return std::move(outcome.value().error);
         case SupervisedCallStatus::Completed:
             break;
     }
-    if (result_error->has_value()) {
-        return nonstd::make_unexpected(std::move(result_error->value()));
+    if (!result_error->ok()) {
+        return std::move(*result_error);
     }
     if (!result->has_value()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InternalError, "Descriptor readiness produced no outcome"));
+        return runtime_status(
+            StatusCode::InternalError, "Descriptor readiness produced no outcome");
     }
     return result->value();
 }
@@ -1034,33 +1024,32 @@ Result<void> ActiveRuntimeState::initialize_pipeline(
     std::size_t effective_payload_limit, std::size_t maximum_payload_inflight_bytes,
     plugin::StoragePluginInstance* storage, std::chrono::nanoseconds progress_timeout) {
     if (pipeline_ != nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Runtime pipeline is already initialized"));
+        return runtime_status(StatusCode::InvalidState, "Runtime pipeline is already initialized");
     }
     const PayloadPoolConfig& pool_config = options_.resources.payload_pool;
     if (effective_payload_limit == 0 || pool_config.classes.empty() ||
         pool_config.classes.back().max_payload_bytes < effective_payload_limit) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidArgument,
-            "Configured payload block size is below the effective payload limit"));
+        return runtime_status(
+            StatusCode::InvalidArgument,
+            "Configured payload block size is below the effective payload limit");
     }
     try {
         pipeline_ = std::make_unique<StoragePipeline>(
             options_.resources.operation_capacity, options_.resources.completion_capacity,
             effective_payload_limit, maximum_payload_inflight_bytes, storage, progress_timeout,
             options_.resources.payload_release_workers,
-            [this](Error error) { request_failure(std::move(error)); },
+            [this](Status error) { request_failure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
                 if (!stats_.record_payload_released(bytes)) {
-                    request_failure(runtime_error(
-                        ErrorCode::InternalError, "Runtime inflight byte accounting underflowed"));
+                    request_failure(runtime_status(
+                        StatusCode::InternalError, "Runtime inflight byte accounting underflowed"));
                 }
             },
             [this](rodaq_storage_persistence_state persistence) noexcept {
                 stats_.record_persistence(persistence);
                 if (!stats_.record_operation_completed()) {
-                    request_failure(runtime_error(
-                        ErrorCode::InternalError,
+                    request_failure(runtime_status(
+                        StatusCode::InternalError,
                         "Runtime inflight record accounting underflowed"));
                 }
             },
@@ -1072,14 +1061,14 @@ Result<void> ActiveRuntimeState::initialize_pipeline(
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
                 const BindingEntry* binding = bindings_.find_stable(record.binding());
                 if (binding == nullptr) {
-                    return Result<rodaq_storage_submission>(nonstd::make_unexpected(
-                        runtime_error(ErrorCode::InvalidState, "Record Binding is unavailable")));
+                    return Result<rodaq_storage_submission>(
+                        runtime_status(StatusCode::InvalidState, "Record Binding is unavailable"));
                 }
                 const StreamDescriptorEntry* descriptor =
                     descriptors_.find_stable(binding->descriptor);
                 if (descriptor == nullptr) {
-                    return Result<rodaq_storage_submission>(nonstd::make_unexpected(runtime_error(
-                        ErrorCode::InvalidState, "Record Descriptor is unavailable")));
+                    return Result<rodaq_storage_submission>(runtime_status(
+                        StatusCode::InvalidState, "Record Descriptor is unavailable"));
                 }
                 for (std::size_t slot = 0; slot < TimestampState::kMaxSlots; ++slot) {
                     values[slot] = {};
@@ -1114,35 +1103,34 @@ Result<void> ActiveRuntimeState::initialize_pipeline(
             });
         payload_pool_.set_capacity_changed_sink([this] { pipeline_->notify_admission_waiters(); });
         auto started = pipeline_->start();
-        if (!started.has_value()) {
+        if (!started.ok()) {
             pipeline_.reset();
-            return nonstd::make_unexpected(std::move(started.error()));
+            return started;
         }
         return {};
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(runtime_error(ErrorCode::InternalError, error.what()));
+        return runtime_status(StatusCode::InternalError, error.what());
     }
 }
 
 Result<void> ActiveRuntimeState::register_acquisition_services(
     plugin::ServiceRegistry& registry, std::size_t plugin_index) {
     if (plugin_index >= acquisition_contexts_.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Acquisition service index is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Acquisition service index is invalid");
     }
     auto result = registry.register_entry(
         RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result = registry.register_entry(
         RODAQ_RUNTIME_CANONICAL_SERVICE_ID, rodaq_interface{this, &kCanonicalVtable});
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result =
         registry.register_entry(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.abi_interface());
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result = registry.register_entry(
@@ -1153,26 +1141,25 @@ Result<void> ActiveRuntimeState::register_acquisition_services(
 Result<void> ActiveRuntimeState::register_storage_services(plugin::ServiceRegistry& registry) {
     auto result = registry.register_entry(
         RODAQ_RUNTIME_COMMON_SERVICE_ID, rodaq_interface{this, &kCommonVtable});
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result = registry.register_entry(
         RODAQ_RUNTIME_CANONICAL_SERVICE_ID, rodaq_interface{this, &kCanonicalVtable});
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result =
         registry.register_entry(RODAQ_RUNTIME_PROJECTION_SERVICE_ID, projections_.abi_interface());
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     if (!ingress_clock_correlation_.has_value()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Runtime ingress Clock is unavailable"));
+        return runtime_status(StatusCode::InvalidState, "Runtime ingress Clock is unavailable");
     }
     result = registry.register_entry(
         RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID, ingress_clock_correlation_->abi_interface());
-    if (!result.has_value()) {
+    if (!result.ok()) {
         return result;
     }
     result = registry.register_entry(RODAQ_RUNTIME_STORAGE_SERVICE_ID, storage_service_interface());
@@ -1295,12 +1282,12 @@ bool ActiveRuntimeState::wait_for_submissions(std::chrono::steady_clock::time_po
         lock, deadline, [this] { return active_submission_calls_ == 0; });
 }
 
-void ActiveRuntimeState::request_failure(Error error) noexcept {
+void ActiveRuntimeState::request_failure(Status error) noexcept {
     try {
         {
             std::lock_guard<std::mutex> lock(failure_mutex_);
-            if (!primary_failure_.has_value()) {
-                primary_failure_.emplace(std::move(error));
+            if (primary_failure_.ok()) {
+                primary_failure_ = std::move(error);
             } else if (secondary_failures_.size() < kMaxSecondaryFailures) {
                 secondary_failures_.push_back(std::move(error));
             } else {
@@ -1315,7 +1302,7 @@ void ActiveRuntimeState::request_failure(Error error) noexcept {
     }
 }
 
-void ActiveRuntimeState::record_secondary_failure(Error error) noexcept {
+void ActiveRuntimeState::record_secondary_failure(Status error) noexcept {
     try {
         std::lock_guard<std::mutex> lock(failure_mutex_);
         if (secondary_failures_.size() < kMaxSecondaryFailures) {
@@ -1378,16 +1365,16 @@ Result<PayloadPoolStats> ActiveRuntimeState::payload_pool_statistics() const {
     try {
         return payload_pool_.stats();
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::ResourceExhausted, "Payload statistics allocation failed"));
+        return runtime_status(
+            StatusCode::ResourceExhausted, "Payload statistics allocation failed");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(runtime_error(ErrorCode::InternalError, error.what()));
+        return runtime_status(StatusCode::InternalError, error.what());
     }
 }
 
 bool ActiveRuntimeState::has_primary_failure() const noexcept {
     std::lock_guard<std::mutex> lock(failure_mutex_);
-    return primary_failure_.has_value();
+    return !primary_failure_.ok();
 }
 
 Result<void> ActiveRuntimeState::start_descriptor_reconciliation() {
@@ -1395,28 +1382,27 @@ Result<void> ActiveRuntimeState::start_descriptor_reconciliation() {
     try {
         state = shared_from_this();
     } catch (const std::bad_weak_ptr&) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Runtime activation has no shared owner"));
+        return runtime_status(StatusCode::InvalidState, "Runtime activation has no shared owner");
     }
 
     std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
     if (descriptor_worker_started_ || descriptor_worker_.joinable()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Descriptor reconciliation is already started"));
+        return runtime_status(
+            StatusCode::InvalidState, "Descriptor reconciliation is already started");
     }
     descriptor_worker_head_ = 0;
     descriptor_worker_count_ = 0;
     descriptor_worker_busy_ = false;
     descriptor_worker_closing_ = false;
-    descriptor_worker_failure_.reset();
+    descriptor_worker_failure_ = {};
     descriptor_worker_started_ = true;
     try {
         descriptor_worker_ = std::thread([state]() { state->run_descriptor_reconciliation(); });
     } catch (const std::exception& error) {
         descriptor_worker_started_ = false;
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::ResourceExhausted,
-            std::string("Failed to start Descriptor reconciliation worker: ") + error.what()));
+        return runtime_status(
+            StatusCode::ResourceExhausted,
+            std::string("Failed to start Descriptor reconciliation worker: ") + error.what());
     }
     return {};
 }
@@ -1425,8 +1411,8 @@ Result<void> ActiveRuntimeState::request_descriptor_reconciliation(
     StreamDescriptorHandle descriptor, bool critical_for_start) {
     std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
     if (!descriptor_worker_started_ || descriptor_worker_closing_) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidState, "Descriptor reconciliation is not accepting work"));
+        return runtime_status(
+            StatusCode::InvalidState, "Descriptor reconciliation is not accepting work");
     }
     for (std::size_t offset = 0; offset < descriptor_worker_count_; ++offset) {
         DescriptorWorkerRequest& request = descriptor_worker_requests_
@@ -1437,9 +1423,9 @@ Result<void> ActiveRuntimeState::request_descriptor_reconciliation(
         }
     }
     if (descriptor_worker_count_ == descriptor_worker_requests_.size()) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::ResourceExhausted,
-            "Descriptor reconciliation request capacity is exhausted"));
+        return runtime_status(
+            StatusCode::ResourceExhausted,
+            "Descriptor reconciliation request capacity is exhausted");
     }
     const std::size_t tail =
         (descriptor_worker_head_ + descriptor_worker_count_) % descriptor_worker_requests_.size();
@@ -1453,17 +1439,15 @@ Result<void> ActiveRuntimeState::wait_for_descriptor_reconciliation(
     std::chrono::steady_clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
     if (!descriptor_worker_started_ && !descriptor_worker_.joinable()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Descriptor reconciliation is not running"));
+        return runtime_status(StatusCode::InvalidState, "Descriptor reconciliation is not running");
     }
     if (!descriptor_worker_condition_.wait_until(lock, deadline, [this] {
             return descriptor_worker_count_ == 0 && !descriptor_worker_busy_;
         })) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::Timeout, "Descriptor reconciliation did not become idle"));
+        return runtime_status(StatusCode::Timeout, "Descriptor reconciliation did not become idle");
     }
-    if (descriptor_worker_failure_.has_value()) {
-        return nonstd::make_unexpected(descriptor_worker_failure_.value());
+    if (!descriptor_worker_failure_.ok()) {
+        return descriptor_worker_failure_;
     }
     return {};
 }
@@ -1480,8 +1464,8 @@ bool ActiveRuntimeState::close_and_join_descriptor_reconciliation(
         std::unique_lock<std::mutex> lock(descriptor_worker_mutex_);
         if (!descriptor_worker_condition_.wait_until(
                 lock, deadline, [this] { return !descriptor_worker_started_; })) {
-            request_failure(
-                runtime_error(ErrorCode::Timeout, "Descriptor reconciliation shutdown timed out"));
+            request_failure(runtime_status(
+                StatusCode::Timeout, "Descriptor reconciliation shutdown timed out"));
             return false;
         }
     }
@@ -1509,30 +1493,29 @@ void ActiveRuntimeState::run_descriptor_reconciliation() noexcept {
             descriptor_worker_busy_ = true;
         }
 
-        std::optional<Error> failure;
+        Status failure;
         try {
             auto reconciled = reconcile_descriptor(request.descriptor);
-            if (!reconciled.has_value()) {
-                failure.emplace(reconciled.error());
+            if (!reconciled.ok()) {
+                failure = reconciled.status();
             }
         } catch (const std::exception& error) {
-            failure.emplace(runtime_error(ErrorCode::InternalError, error.what()));
+            failure = runtime_status(StatusCode::InternalError, error.what());
         } catch (...) {
-            failure.emplace(
-                runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
+            failure = runtime_status(StatusCode::InternalError, "Descriptor reconciliation failed");
         }
 
         bool fatal_failure = false;
         {
             std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
-            if (failure.has_value() && (request.critical_for_start || requires_quarantine() ||
-                                        state_.load() == RuntimeState::Failed)) {
+            if (!failure.ok() && (request.critical_for_start || requires_quarantine() ||
+                                  state_.load() == RuntimeState::Failed)) {
                 descriptor_worker_failure_ = failure;
                 descriptor_worker_closing_ = true;
                 descriptor_worker_count_ = 0;
                 fatal_failure = true;
                 if (!has_primary_failure()) {
-                    request_failure(failure.value());
+                    request_failure(failure);
                 }
             }
         }
@@ -1553,22 +1536,17 @@ void ActiveRuntimeState::run_descriptor_reconciliation() noexcept {
     }
 }
 
-Result<Error> ActiveRuntimeState::primary_failure() const {
+Status ActiveRuntimeState::primary_failure() const {
     std::lock_guard<std::mutex> lock(failure_mutex_);
-    if (!primary_failure_.has_value()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Runtime has no primary failure"));
-    }
-    return primary_failure_.value();
+    return primary_failure_;
 }
 
-Result<std::vector<Error>> ActiveRuntimeState::secondary_failures() const {
+Result<std::vector<Status>> ActiveRuntimeState::secondary_failures() const {
     std::lock_guard<std::mutex> lock(failure_mutex_);
-    if (primary_failure_.has_value()) {
+    if (!primary_failure_.ok()) {
         return secondary_failures_;
     }
-    return nonstd::make_unexpected(
-        runtime_error(ErrorCode::InvalidState, "Runtime has no primary failure"));
+    return runtime_status(StatusCode::InvalidState, "Runtime has no primary failure");
 }
 
 std::uint64_t ActiveRuntimeState::secondary_failure_overflow_count() const noexcept {
@@ -1675,8 +1653,7 @@ Result<void> ActiveRuntimeState::register_source(
     std::size_t plugin_index, const rodaq_source_registration& request, SourceHandle& handle) {
     if (!rodaq::plugin::is_valid_source_registration(request) ||
         plugin_index >= acquisition_health_.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Source registration is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Source registration is invalid");
     }
     const auto* source_id = request.source_id.data;
     const std::size_t source_id_size = static_cast<std::size_t>(request.source_id.size);
@@ -1684,20 +1661,19 @@ Result<void> ActiveRuntimeState::register_source(
     std::lock_guard<std::mutex> lock(control_mutex_);
     const RuntimeState current_state = state_.load();
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Source registration is not allowed"));
+        return runtime_status(StatusCode::InvalidState, "Source registration is not allowed");
     }
     if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
         RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidState, "Source registration requires an available Plugin"));
+        return runtime_status(
+            StatusCode::InvalidState, "Source registration requires an available Plugin");
     }
     for (SourceHandle existing : source_handles_) {
         const SourceEntry* entry = sources_.find(existing);
         if (entry != nullptr && bytes_equal(entry->source_id, source_id, source_id_size)) {
             if (entry->plugin_index != plugin_index) {
-                return nonstd::make_unexpected(runtime_error(
-                    ErrorCode::Conflict, "Source identity belongs to another Plugin"));
+                return runtime_status(
+                    StatusCode::Conflict, "Source identity belongs to another Plugin");
             }
             handle = existing;
             return {};
@@ -1708,8 +1684,8 @@ Result<void> ActiveRuntimeState::register_source(
     auto inserted = sources_.insert(SourceEntry{
         copy_bytes(arena_->resource(), source_id, source_id_size), plugin_index,
         std::move(availability)});
-    if (!inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(inserted.error()));
+    if (!inserted.ok()) {
+        return std::move(inserted).status();
     }
     source_handles_.push_back(inserted.value());
     handle = inserted.value();
@@ -1720,8 +1696,7 @@ Result<void> ActiveRuntimeState::register_clock(
     std::size_t plugin_index, const rodaq_clock_registration& request, ClockHandle& handle) {
     if (!rodaq::plugin::is_valid_clock_registration(request) ||
         plugin_index >= options_.acquisitions.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Clock registration is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Clock registration is invalid");
     }
     std::string_view origin;
     static_cast<void>(parse_abi_string(request.origin, &origin));
@@ -1730,13 +1705,12 @@ Result<void> ActiveRuntimeState::register_clock(
     std::lock_guard<std::mutex> lock(control_mutex_);
     const RuntimeState current_state = state_.load();
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Clock registration is not allowed"));
+        return runtime_status(StatusCode::InvalidState, "Clock registration is not allowed");
     }
     if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
         RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidState, "Clock registration requires an available Plugin"));
+        return runtime_status(
+            StatusCode::InvalidState, "Clock registration requires an available Plugin");
     }
     for (ClockHandle existing : clock_handles_) {
         const ClockEntry* entry = clocks_.find(existing);
@@ -1747,8 +1721,7 @@ Result<void> ActiveRuntimeState::register_clock(
         if (entry->resolution_numerator != request.resolution_numerator ||
             entry->resolution_denominator != request.resolution_denominator ||
             !strings_equal(entry->origin, origin)) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::Conflict, "Clock registration facts conflict"));
+            return runtime_status(StatusCode::Conflict, "Clock registration facts conflict");
         }
         handle = existing;
         return {};
@@ -1763,8 +1736,8 @@ Result<void> ActiveRuntimeState::register_clock(
         copy_string(arena_->resource(), origin),
         plugin_index,
     });
-    if (!inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(inserted.error()));
+    if (!inserted.ok()) {
+        return std::move(inserted).status();
     }
     clock_handles_.push_back(inserted.value());
     handle = inserted.value();
@@ -1775,8 +1748,7 @@ Result<void> ActiveRuntimeState::register_schema(
     std::size_t plugin_index, const rodaq_schema_registration& request, SchemaHandle& handle) {
     if (!rodaq::plugin::is_valid_schema_registration(request) ||
         plugin_index >= acquisition_health_.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Schema registration is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Schema registration is invalid");
     }
     std::string_view format;
     std::string_view type_identifier;
@@ -1789,13 +1761,12 @@ Result<void> ActiveRuntimeState::register_schema(
     std::lock_guard<std::mutex> lock(control_mutex_);
     const RuntimeState current_state = state_.load();
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Schema registration is not allowed"));
+        return runtime_status(StatusCode::InvalidState, "Schema registration is not allowed");
     }
     if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
         RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidState, "Schema registration requires an available Plugin"));
+        return runtime_status(
+            StatusCode::InvalidState, "Schema registration requires an available Plugin");
     }
     for (SchemaHandle existing : schema_handles_) {
         const SchemaEntry* entry = schemas_.find(existing);
@@ -1817,8 +1788,8 @@ Result<void> ActiveRuntimeState::register_schema(
         copy_string(arena_->resource(), type_identifier),
         copy_bytes(arena_->resource(), request.representation.data, representation_size),
     });
-    if (!inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(inserted.error()));
+    if (!inserted.ok()) {
+        return std::move(inserted).status();
     }
     schema_handles_.push_back(inserted.value());
     handle = inserted.value();
@@ -1829,21 +1800,19 @@ Result<void> ActiveRuntimeState::register_stream(
     std::size_t plugin_index, const rodaq_stream_registration& request, StreamHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_registration(request) ||
         plugin_index >= options_.acquisitions.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Stream registration is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Stream registration is invalid");
     }
     const std::size_t native_size = static_cast<std::size_t>(request.native_id.size);
 
     std::lock_guard<std::mutex> lock(control_mutex_);
     const RuntimeState current_state = state_.load();
     if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Stream registration is not allowed"));
+        return runtime_status(StatusCode::InvalidState, "Stream registration is not allowed");
     }
     if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
         RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
-        return nonstd::make_unexpected(runtime_error(
-            ErrorCode::InvalidState, "Stream registration requires an available Plugin"));
+        return runtime_status(
+            StatusCode::InvalidState, "Stream registration requires an available Plugin");
     }
     for (StreamHandle existing : stream_handles_) {
         const StreamEntry* entry = streams_.find(existing);
@@ -1870,8 +1839,8 @@ Result<void> ActiveRuntimeState::register_stream(
         std::move(binding_transition_condition),
         false,
     });
-    if (!inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(inserted.error()));
+    if (!inserted.ok()) {
+        return std::move(inserted).status();
     }
     stream_handles_.push_back(inserted.value());
     handle = inserted.value();
@@ -1883,8 +1852,8 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
     StreamDescriptorHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_descriptor_registration(request) ||
         plugin_index >= options_.acquisitions.size()) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "StreamDescriptor publication is invalid"));
+        return runtime_status(
+            StatusCode::InvalidArgument, "StreamDescriptor publication is invalid");
     }
     std::string_view name;
     std::string_view payload_encoding;
@@ -1896,24 +1865,23 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
         std::lock_guard<std::mutex> lock(control_mutex_);
         const RuntimeState current_state = state_.load();
         if (current_state != RuntimeState::Starting && current_state != RuntimeState::Running) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Descriptor publication is not allowed"));
+            return runtime_status(
+                StatusCode::InvalidState, "Descriptor publication is not allowed");
         }
         if (acquisition_health_[plugin_index]->load(std::memory_order_acquire) !=
             RODAQ_ACQUISITION_PLUGIN_AVAILABLE) {
-            return nonstd::make_unexpected(runtime_error(
-                ErrorCode::InvalidState, "Descriptor publication requires an available Plugin"));
+            return runtime_status(
+                StatusCode::InvalidState, "Descriptor publication requires an available Plugin");
         }
         critical_for_start = current_state == RuntimeState::Starting;
         const StreamHandle stream_handle = StreamHandle::from_raw(request.stream.value);
         StreamEntry* stream = streams_.find(stream_handle);
         if (stream == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Descriptor Stream is unknown"));
+            return runtime_status(StatusCode::NotFound, "Descriptor Stream is unknown");
         }
         if (stream->plugin_index != plugin_index) {
-            return nonstd::make_unexpected(runtime_error(
-                ErrorCode::InvalidState, "Descriptor Stream belongs to another Plugin"));
+            return runtime_status(
+                StatusCode::InvalidState, "Descriptor Stream belongs to another Plugin");
         }
 
         std::pmr::vector<TimestampKeyRecord> keys(arena_->resource());
@@ -1929,28 +1897,26 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
             const rodaq_timestamp_key& key = request.timestamp_keys[index];
             std::string_view role;
             if (!parse_abi_string(key.role, &role)) {
-                return nonstd::make_unexpected(
-                    runtime_error(ErrorCode::InvalidArgument, "Timestamp role is invalid"));
+                return runtime_status(StatusCode::InvalidArgument, "Timestamp role is invalid");
             }
             if (role == kIngressTimestampRole) {
-                return nonstd::make_unexpected(runtime_error(
-                    ErrorCode::InvalidArgument,
-                    "Acquisition Plugins must not publish the Runtime ingress timestamp role"));
+                return runtime_status(
+                    StatusCode::InvalidArgument,
+                    "Acquisition Plugins must not publish the Runtime ingress timestamp role");
             }
             const ClockHandle clock = ClockHandle::from_raw(key.clock.value);
             const ClockEntry* clock_entry = clocks_.find(clock);
             if (clock_entry == nullptr) {
-                return nonstd::make_unexpected(
-                    runtime_error(ErrorCode::NotFound, "Timestamp Clock is unknown"));
+                return runtime_status(StatusCode::NotFound, "Timestamp Clock is unknown");
             }
             if (clock_entry->plugin_index != plugin_index) {
-                return nonstd::make_unexpected(runtime_error(
-                    ErrorCode::InvalidState, "Timestamp Clock belongs to another owner"));
+                return runtime_status(
+                    StatusCode::InvalidState, "Timestamp Clock belongs to another owner");
             }
             for (std::size_t existing = 1; existing < keys.size(); ++existing) {
                 if (keys[existing].clock == clock && strings_equal(keys[existing].role, role)) {
-                    return nonstd::make_unexpected(runtime_error(
-                        ErrorCode::InvalidArgument, "TimestampKeySet contains a duplicate key"));
+                    return runtime_status(
+                        StatusCode::InvalidArgument, "TimestampKeySet contains a duplicate key");
                 }
             }
             keys.push_back(TimestampKeyRecord{copy_string(arena_->resource(), role), clock});
@@ -1991,16 +1957,15 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
                 std::move(abi_keys),
             };
             auto inserted = timestamp_key_sets_.insert(std::move(entry));
-            if (!inserted.has_value()) {
-                return nonstd::make_unexpected(std::move(inserted.error()));
+            if (!inserted.ok()) {
+                return std::move(inserted).status();
             }
             key_set_handle = inserted.value();
             timestamp_key_set_handles_.push_back(key_set_handle);
         }
         TimestampKeySetEntry* key_set = timestamp_key_sets_.find(key_set_handle);
         if (key_set == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InternalError, "TimestampKeySet publication failed"));
+            return runtime_status(StatusCode::InternalError, "TimestampKeySet publication failed");
         }
         key_set_id = key_set->timestamp_key_set_id;
         if (key_set->abi_keys.size() != key_set->keys.size()) {
@@ -2029,8 +1994,7 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
         if (descriptor_entry.schema_present) {
             const SchemaEntry* schema = schemas_.find(descriptor_entry.schema);
             if (schema == nullptr) {
-                return nonstd::make_unexpected(
-                    runtime_error(ErrorCode::NotFound, "Descriptor Schema is unknown"));
+                return runtime_status(StatusCode::NotFound, "Descriptor Schema is unknown");
             }
             descriptor_entry.schema_id = schema->schema_id;
         }
@@ -2038,19 +2002,19 @@ Result<void> ActiveRuntimeState::publish_stream_descriptor(
             key_set->abi_keys.begin(), key_set->abi_keys.end());
 
         auto descriptor_inserted = descriptors_.insert(std::move(descriptor_entry));
-        if (!descriptor_inserted.has_value()) {
-            return nonstd::make_unexpected(std::move(descriptor_inserted.error()));
+        if (!descriptor_inserted.ok()) {
+            return std::move(descriptor_inserted).status();
         }
         handle = descriptor_inserted.value();
         descriptor_handles_.push_back(handle);
     }
 
     auto requested = request_descriptor_reconciliation(handle, critical_for_start);
-    if (!requested.has_value()) {
-        if (requested.error().code() == ErrorCode::ResourceExhausted) {
-            request_failure(requested.error());
+    if (!requested.ok()) {
+        if (requested.status().status_code() == StatusCode::ResourceExhausted) {
+            request_failure(requested.status());
         }
-        return nonstd::make_unexpected(std::move(requested.error()));
+        return requested;
     }
     return {};
 }
@@ -2064,8 +2028,7 @@ Result<bool> ActiveRuntimeState::reconcile_descriptor(StreamDescriptorHandle des
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamDescriptorEntry* entry = descriptors_.find(descriptor);
             if (entry == nullptr) {
-                return nonstd::make_unexpected(
-                    runtime_error(ErrorCode::NotFound, "Descriptor is not published"));
+                return runtime_status(StatusCode::NotFound, "Descriptor is not published");
             }
             if (entry->lifecycle == DescriptorLifecycle::Active) {
                 return true;
@@ -2092,15 +2055,15 @@ Result<bool> ActiveRuntimeState::reconcile_descriptor(StreamDescriptorHandle des
                 !acquisition_controls_[plugin_index].has_value()) {
                 entry->reconciliation_running = false;
                 entry->lifecycle = DescriptorLifecycle::Failed;
-                return nonstd::make_unexpected(runtime_error(
-                    ErrorCode::InvalidState, "Acquisition control interface is unavailable"));
+                return runtime_status(
+                    StatusCode::InvalidState, "Acquisition control interface is unavailable");
             }
             control = acquisition_controls_[plugin_index].value();
         }
 
         auto readiness = ensure_descriptor_ready(descriptor);
         bool retry = false;
-        if (!readiness.has_value()) {
+        if (!readiness.ok()) {
             {
                 std::lock_guard<std::mutex> lock(control_mutex_);
                 StreamDescriptorEntry* entry = descriptors_.find(descriptor);
@@ -2111,8 +2074,8 @@ Result<bool> ActiveRuntimeState::reconcile_descriptor(StreamDescriptorHandle des
                     entry->reconciliation_retry_requested = false;
                 }
             }
-            request_failure(readiness.error());
-            return nonstd::make_unexpected(std::move(readiness.error()));
+            request_failure(readiness.status());
+            return std::move(readiness).status();
         }
         if (readiness.value() != DescriptorReadiness::Ready) {
             {
@@ -2157,8 +2120,8 @@ Result<bool> ActiveRuntimeState::reconcile_descriptor(StreamDescriptorHandle des
                 entry->reconciliation_retry_requested = false;
             }
         }
-        if (!activated.has_value()) {
-            return nonstd::make_unexpected(std::move(activated.error()));
+        if (!activated.ok()) {
+            return (activated).status();
         }
         return true;
     }
@@ -2172,8 +2135,7 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
         std::lock_guard<std::mutex> lock(control_mutex_);
         stream = streams_.find(stream_handle);
         if (stream == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Descriptor Stream is unavailable"));
+            return runtime_status(StatusCode::NotFound, "Descriptor Stream is unavailable");
         }
     }
 
@@ -2209,8 +2171,7 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
         if (descriptor_entry == nullptr || current_stream == nullptr ||
             descriptor_entry->lifecycle != DescriptorLifecycle::Ready ||
             (current_state != RuntimeState::Starting && current_state != RuntimeState::Running)) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Descriptor is no longer ready"));
+            return runtime_status(StatusCode::InvalidState, "Descriptor is no longer ready");
         }
         descriptor_generation = descriptor_entry->stream_descriptor_id;
         old_binding_value = current_stream->current_binding->load(std::memory_order_acquire);
@@ -2234,9 +2195,9 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
         }
         auto created = create_binding_locked(
             plugin_index, stream_handle, descriptor, BindingLifecycle::Prepared);
-        if (!created.has_value()) {
+        if (!created.ok()) {
             descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
-            return nonstd::make_unexpected(std::move(created.error()));
+            return std::move(created).status();
         }
         candidate = created.value();
         descriptor_entry->lifecycle = DescriptorLifecycle::BindingPrepared;
@@ -2249,8 +2210,8 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
 
     const auto* table = static_cast<const rodaq_acquisition_control_v1*>(control.vtable);
     auto control_state = shared_from_this();
-    auto prepare_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
-    auto prepare_error = std::make_shared<rodaq_error>();
+    auto prepare_status = std::make_shared<rodaq_status_code>(RODAQ_STATUS_INTERNAL_ERROR);
+    auto prepare_error = std::make_shared<rodaq_status>();
     auto prepared_control = supervise_binding_control(
         [control_state, table, control, transition, stream_handle, old_descriptor, descriptor,
          prepare_status, prepare_error]() -> Result<void> {
@@ -2262,7 +2223,7 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
             return {};
         },
         "Acquisition Binding prepare");
-    if (!prepared_control.has_value()) {
+    if (!prepared_control.ok()) {
         std::lock_guard<std::mutex> lock(control_mutex_);
         BindingEntry* prepared = bindings_.find(candidate);
         if (prepared != nullptr) {
@@ -2272,7 +2233,7 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
         if (descriptor_entry != nullptr) {
             descriptor_entry->lifecycle = DescriptorLifecycle::Failed;
         }
-        return nonstd::make_unexpected(std::move(prepared_control.error()));
+        return prepared_control;
     }
     if (*prepare_status != RODAQ_STATUS_OK) {
         bool resume_old = false;
@@ -2286,8 +2247,8 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
                              old_binding_value &&
                          current_stream->availability->load() == RODAQ_AVAILABILITY_AVAILABLE;
         }
-        auto abort_error = std::make_shared<rodaq_error>();
-        auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
+        auto abort_error = std::make_shared<rodaq_status>();
+        auto abort_status = std::make_shared<rodaq_status_code>(RODAQ_STATUS_INTERNAL_ERROR);
         auto aborted = supervise_binding_control(
             [control_state, table, control, transition, resume_old, abort_status, abort_error]() {
                 static_cast<void>(control_state);
@@ -2313,16 +2274,15 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
                 current_stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             }
         }
-        if (!aborted.has_value()) {
-            request_failure(std::move(aborted.error()));
+        if (!aborted.ok()) {
+            request_failure(std::move(aborted).status());
         } else if (*abort_status != RODAQ_STATUS_OK) {
-            request_failure(runtime_error(
-                ErrorCode::InternalError, "Binding abort after prepare failure also failed"));
+            request_failure(runtime_status(
+                StatusCode::InternalError, "Binding abort after prepare failure also failed"));
         }
-        auto converted = result_from_status(*prepare_status, prepare_error.get(), "acquisition");
-        return converted.has_value() ? nonstd::make_unexpected(runtime_error(
-                                           ErrorCode::Unavailable, "Binding prepare failed"))
-                                     : nonstd::make_unexpected(std::move(converted.error()));
+        auto converted = status_from_abi(*prepare_status, prepare_error.get(), "acquisition");
+        return converted.ok() ? runtime_status(StatusCode::Unavailable, "Binding prepare failed")
+                              : std::move(converted);
     }
 
     bool transition_stale = false;
@@ -2376,8 +2336,8 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
             old_binding.valid() && state_.load() == RuntimeState::Running
                 ? RODAQ_BINDING_ABORT_RESUME_OLD
                 : RODAQ_BINDING_ABORT_KEEP_PAUSED;
-        auto abort_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
-        auto abort_error = std::make_shared<rodaq_error>();
+        auto abort_status = std::make_shared<rodaq_status_code>(RODAQ_STATUS_INTERNAL_ERROR);
+        auto abort_error = std::make_shared<rodaq_status>();
         auto aborted = supervise_binding_control(
             [control_state, table, control, transition, disposition, abort_status, abort_error]() {
                 static_cast<void>(control_state);
@@ -2386,18 +2346,17 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
                 return Result<void>();
             },
             "Acquisition Binding stale-transition abort");
-        if (!aborted.has_value() || *abort_status != RODAQ_STATUS_OK) {
+        if (!aborted.ok() || *abort_status != RODAQ_STATUS_OK) {
             request_failure(
-                aborted.has_value()
-                    ? runtime_error(ErrorCode::Unavailable, "Binding stale-transition abort failed")
-                    : aborted.error());
+                aborted.ok() ? runtime_status(
+                                   StatusCode::Unavailable, "Binding stale-transition abort failed")
+                             : aborted.status());
         }
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidState, "Binding transition became stale"));
+        return runtime_status(StatusCode::InvalidState, "Binding transition became stale");
     }
 
-    auto commit_status = std::make_shared<rodaq_status>(RODAQ_STATUS_INTERNAL_ERROR);
-    auto commit_error = std::make_shared<rodaq_error>();
+    auto commit_status = std::make_shared<rodaq_status_code>(RODAQ_STATUS_INTERNAL_ERROR);
+    auto commit_error = std::make_shared<rodaq_status>();
     auto committed = supervise_binding_control(
         [control_state, table, control, transition, commit_status, commit_error]() {
             static_cast<void>(control_state);
@@ -2406,7 +2365,7 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
             return Result<void>();
         },
         "Acquisition Binding commit");
-    if (!committed.has_value() || *commit_status != RODAQ_STATUS_OK) {
+    if (!committed.ok() || *commit_status != RODAQ_STATUS_OK) {
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
             StreamEntry* current_stream = streams_.find(stream_handle);
@@ -2415,16 +2374,15 @@ Result<void> ActiveRuntimeState::activate_descriptor_binding(
             }
         }
         request_failure(
-            committed.has_value()
-                ? runtime_error(
-                      ErrorCode::Unavailable, "Binding commit failed after Runtime publication")
-                : committed.error());
-        auto converted = committed.has_value()
-                             ? result_from_status(*commit_status, commit_error.get(), "acquisition")
-                             : Result<void>(nonstd::make_unexpected(committed.error()));
-        return converted.has_value() ? nonstd::make_unexpected(runtime_error(
-                                           ErrorCode::Unavailable, "Binding commit failed"))
-                                     : nonstd::make_unexpected(std::move(converted.error()));
+            committed.ok()
+                ? runtime_status(
+                      StatusCode::Unavailable, "Binding commit failed after Runtime publication")
+                : committed.status());
+        auto converted = committed.ok()
+                             ? status_from_abi(*commit_status, commit_error.get(), "acquisition")
+                             : committed.status();
+        return converted.ok() ? runtime_status(StatusCode::Unavailable, "Binding commit failed")
+                              : std::move(converted);
     }
     if (old_binding.valid()) {
         std::lock_guard<std::mutex> lock(control_mutex_);
@@ -2462,16 +2420,16 @@ void ActiveRuntimeState::on_projection_registered(
             critical_for_start = current_state == RuntimeState::Starting;
         }
         auto result = request_descriptor_reconciliation(descriptor, critical_for_start);
-        if (!result.has_value()) {
-            if (result.error().code() == ErrorCode::ResourceExhausted) {
-                request_failure(result.error());
+        if (!result.ok()) {
+            if (result.status().status_code() == StatusCode::ResourceExhausted) {
+                request_failure(result.status());
             }
         }
     } catch (const std::exception& error) {
-        request_failure(runtime_error(ErrorCode::InternalError, error.what()));
+        request_failure(runtime_status(StatusCode::InternalError, error.what()));
     } catch (...) {
         request_failure(
-            runtime_error(ErrorCode::InternalError, "Descriptor reconciliation failed"));
+            runtime_status(StatusCode::InternalError, "Descriptor reconciliation failed"));
     }
 }
 
@@ -2486,8 +2444,8 @@ Result<BindingHandle> ActiveRuntimeState::create_binding_locked(
         std::make_unique<std::atomic<std::uint64_t>>(0),
     };
     auto inserted = bindings_.insert(std::move(entry));
-    if (!inserted.has_value()) {
-        return nonstd::make_unexpected(std::move(inserted.error()));
+    if (!inserted.ok()) {
+        return std::move(inserted).status();
     }
     binding_handles_.push_back(inserted.value());
     return inserted.value();
@@ -2516,17 +2474,14 @@ Result<void> ActiveRuntimeState::report_source_availability(
         std::lock_guard<std::mutex> lock(control_mutex_);
         SourceEntry* entry = sources_.find(source);
         if (entry == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Source handle is unknown"));
+            return runtime_status(StatusCode::NotFound, "Source handle is unknown");
         }
         if (entry->plugin_index != plugin_index) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Source belongs to another Plugin"));
+            return runtime_status(StatusCode::InvalidState, "Source belongs to another Plugin");
         }
         if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
             availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidArgument, "Source availability is invalid"));
+            return runtime_status(StatusCode::InvalidArgument, "Source availability is invalid");
         }
         entry->availability->store(availability);
     }
@@ -2540,17 +2495,14 @@ Result<void> ActiveRuntimeState::report_stream_availability(
         std::lock_guard<std::mutex> lock(control_mutex_);
         StreamEntry* entry = streams_.find(stream);
         if (entry == nullptr) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::NotFound, "Stream handle is unknown"));
+            return runtime_status(StatusCode::NotFound, "Stream handle is unknown");
         }
         if (entry->plugin_index != plugin_index) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Stream belongs to another Plugin"));
+            return runtime_status(StatusCode::InvalidState, "Stream belongs to another Plugin");
         }
         if (availability != RODAQ_AVAILABILITY_AVAILABLE &&
             availability != RODAQ_AVAILABILITY_UNAVAILABLE) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidArgument, "Stream availability is invalid"));
+            return runtime_status(StatusCode::InvalidArgument, "Stream availability is invalid");
         }
         entry->availability->store(availability);
     }
@@ -2560,13 +2512,12 @@ Result<void> ActiveRuntimeState::report_stream_availability(
 
 Result<void> ActiveRuntimeState::report_plugin_state(
     std::size_t plugin_index, rodaq_acquisition_plugin_state plugin_state,
-    const rodaq_error* diagnostic) {
+    const rodaq_status* diagnostic) {
     if (plugin_index >= acquisition_health_.size() ||
         (plugin_state != RODAQ_ACQUISITION_PLUGIN_AVAILABLE &&
          plugin_state != RODAQ_ACQUISITION_PLUGIN_RECOVERABLE_FAILURE &&
          plugin_state != RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE)) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::InvalidArgument, "Plugin state is invalid"));
+        return runtime_status(StatusCode::InvalidArgument, "Plugin state is invalid");
     }
 
     bool notify_eligibility = false;
@@ -2576,8 +2527,8 @@ Result<void> ActiveRuntimeState::report_plugin_state(
             acquisition_health_[plugin_index]->load(std::memory_order_acquire);
         if (previous == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE &&
             plugin_state != RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE) {
-            return nonstd::make_unexpected(
-                runtime_error(ErrorCode::InvalidState, "Terminal Plugin failure cannot recover"));
+            return runtime_status(
+                StatusCode::InvalidState, "Terminal Plugin failure cannot recover");
         }
         acquisition_health_[plugin_index]->store(plugin_state, std::memory_order_release);
 
@@ -2621,9 +2572,9 @@ Result<void> ActiveRuntimeState::report_plugin_state(
     if (plugin_state == RODAQ_ACQUISITION_PLUGIN_TERMINAL_FAILURE) {
         request_failure(
             diagnostic == nullptr
-                ? runtime_error(
-                      ErrorCode::Unavailable, "Acquisition Plugin reported terminal failure")
-                : from_abi_error(*diagnostic));
+                ? runtime_status(
+                      StatusCode::Unavailable, "Acquisition Plugin reported terminal failure")
+                : status_from_abi_diagnostic(*diagnostic));
     }
     return {};
 }
@@ -2632,8 +2583,7 @@ Result<void> ActiveRuntimeState::get_source(SourceHandle handle, rodaq_source_vi
     std::lock_guard<std::mutex> lock(control_mutex_);
     const SourceEntry* entry = sources_.find(handle);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Source handle was not found"));
+        return runtime_status(StatusCode::NotFound, "Source handle was not found");
     }
     view.struct_size = sizeof(view);
     view.handle = rodaq_source_handle{handle.value()};
@@ -2645,8 +2595,7 @@ Result<void> ActiveRuntimeState::get_clock(ClockHandle handle, rodaq_clock_view&
     std::lock_guard<std::mutex> lock(control_mutex_);
     const ClockEntry* entry = clocks_.find(handle);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Clock handle was not found"));
+        return runtime_status(StatusCode::NotFound, "Clock handle was not found");
     }
     view.struct_size = sizeof(view);
     view.handle = rodaq_clock_handle{handle.value()};
@@ -2661,8 +2610,7 @@ Result<void> ActiveRuntimeState::get_schema(SchemaHandle handle, rodaq_schema_vi
     std::lock_guard<std::mutex> lock(control_mutex_);
     const SchemaEntry* entry = schemas_.find(handle);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Schema handle was not found"));
+        return runtime_status(StatusCode::NotFound, "Schema handle was not found");
     }
     view.struct_size = sizeof(view);
     view.type_identifier_present = entry->type_identifier_present ? RODAQ_TRUE : RODAQ_FALSE;
@@ -2690,16 +2638,14 @@ Result<void> ActiveRuntimeState::get_timestamp_key_set(
         view.key_count = static_cast<std::uint32_t>(entry->abi_keys.size());
         return {};
     }
-    return nonstd::make_unexpected(
-        runtime_error(ErrorCode::NotFound, "TimestampKeySet was not found"));
+    return runtime_status(StatusCode::NotFound, "TimestampKeySet was not found");
 }
 
 Result<void> ActiveRuntimeState::get_stream(StreamHandle handle, rodaq_stream_view& view) const {
     std::lock_guard<std::mutex> lock(control_mutex_);
     const StreamEntry* entry = streams_.find(handle);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "Stream handle was not found"));
+        return runtime_status(StatusCode::NotFound, "Stream handle was not found");
     }
     view.struct_size = sizeof(view);
     view.handle = rodaq_stream_handle{handle.value()};
@@ -2712,8 +2658,7 @@ Result<void> ActiveRuntimeState::get_stream_descriptor(
     std::lock_guard<std::mutex> lock(control_mutex_);
     const StreamDescriptorEntry* entry = descriptors_.find(handle);
     if (entry == nullptr) {
-        return nonstd::make_unexpected(
-            runtime_error(ErrorCode::NotFound, "StreamDescriptor handle was not found"));
+        return runtime_status(StatusCode::NotFound, "StreamDescriptor handle was not found");
     }
     view.struct_size = sizeof(view);
     view.schema_present = entry->schema_present ? RODAQ_TRUE : RODAQ_FALSE;
@@ -2852,20 +2797,20 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
 
     TimestampState timestamps;
     auto ingress_reading = capture_ingress_reading();
-    if (!ingress_reading.has_value()) {
-        request_failure(ingress_reading.error());
-        return nonstd::make_unexpected(std::move(ingress_reading.error()));
+    if (!ingress_reading.ok()) {
+        request_failure(ingress_reading.status());
+        return std::move(ingress_reading).status();
     }
     auto ingress_set = timestamps.set(0, ingress_reading.value());
-    if (!ingress_set.has_value()) {
-        request_failure(ingress_set.error());
-        return nonstd::make_unexpected(std::move(ingress_set.error()));
+    if (!ingress_set.ok()) {
+        request_failure(ingress_set.status());
+        return (ingress_set).status();
     }
     for (std::size_t slot = 0; slot < descriptor->transport_timestamp_keys.size(); ++slot) {
         const rodaq_timestamp_value& value = submission.timestamp_values[slot];
         if (value.present == RODAQ_TRUE) {
             const auto set = timestamps.set(slot + 1U, value.reading);
-            if (!set.has_value()) {
+            if (!set.ok()) {
                 return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
             }
         }
@@ -2884,8 +2829,8 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
     record_admission_wait(
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - admission_wait_started)
             .count());
-    if (!acquired.has_value()) {
-        return nonstd::make_unexpected(std::move(acquired.error()));
+    if (!acquired.ok()) {
+        return std::move(acquired).status();
     }
     switch (acquired.value().outcome) {
         case PreGateAcquireOutcome::GateClosed:
@@ -2926,10 +2871,10 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
     if (payload_mode == RODAQ_PAYLOAD_COPY) {
         auto copied =
             payload_pool_.materialize(reservation.take_payload_pool_reservation(), payload_view);
-        if (!copied.has_value()) {
+        if (!copied.ok()) {
             return pre_rejected(
                 *this,
-                copied.error().code() == ErrorCode::ResourceExhausted
+                copied.status().status_code() == StatusCode::ResourceExhausted
                     ? RODAQ_REJECTION_RESOURCE_UNAVAILABLE
                     : RODAQ_REJECTION_PAYLOAD_INVALID,
                 disposition);
@@ -2942,7 +2887,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
         }
         auto adopted = Payload::adopt(
             payload_view, submission.payload.owner_context, submission.payload.release);
-        if (!adopted.has_value()) {
+        if (!adopted.ok()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(adopted.value());
@@ -2956,7 +2901,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
         }
         auto retained = Payload::retain(
             payload_view, submission.payload.owner_context, submission.payload.release);
-        if (!retained.has_value()) {
+        if (!retained.ok()) {
             return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_INVALID, disposition);
         }
         payload = std::move(retained.value());
@@ -2967,7 +2912,7 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
 
     bool admission_failure = false;
     bool retire_binding = false;
-    std::optional<Error> deferred_failure;
+    Status deferred_failure;
     std::optional<rodaq_acquisition_submit_result> deferred_result;
     {
         std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
@@ -3009,19 +2954,19 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
             return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
         }
         if (admission_failure) {
-            deferred_failure.emplace(runtime_error(
-                ErrorCode::InvalidState, "Global Gate and Storage admission state disagree"));
+            deferred_failure = runtime_status(
+                StatusCode::InvalidState, "Global Gate and Storage admission state disagree");
             deferred_result.emplace(
                 pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
         } else {
             ++admission_inflight_;
             final_binding_entry->admission_inflight->fetch_add(1);
             auto sequence = sequences_.allocate(stream_handle);
-            if (!sequence.has_value()) {
+            if (!sequence.ok()) {
                 --admission_inflight_;
                 final_binding_entry->admission_inflight->fetch_sub(1);
                 admission_condition_.notify_all();
-                deferred_failure.emplace(sequence.error());
+                deferred_failure = sequence.status();
                 deferred_result.emplace(submit_result(
                     RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
             } else {
@@ -3033,12 +2978,12 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
                     final_binding, sequence.value(), source, source_sequence, timestamps,
                     std::move(payload), reservation.take_record_reservation(),
                     accepted_steady_time_ns);
-                if (!record.has_value()) {
+                if (!record.ok()) {
                     --admission_inflight_;
                     final_binding_entry->admission_inflight->fetch_sub(1);
                     admission_condition_.notify_all();
                     stats_.record_rejected();
-                    deferred_failure.emplace(record.error());
+                    deferred_failure = record.status();
                     deferred_result.emplace(submit_result(
                         RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
                 } else {
@@ -3056,8 +3001,8 @@ Result<rodaq_acquisition_submit_result> ActiveRuntimeState::submit(
             }
         }
     }
-    if (deferred_failure.has_value()) {
-        request_failure(std::move(deferred_failure.value()));
+    if (!deferred_failure.ok()) {
+        request_failure(std::move(deferred_failure));
     }
     if (retire_binding) {
         retire_draining_binding(current_binding);

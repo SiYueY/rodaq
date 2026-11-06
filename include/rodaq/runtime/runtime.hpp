@@ -41,8 +41,9 @@ public:
 
     RuntimeState state() const noexcept;
     Result<rodaq_runtime_lifecycle_snapshot> lifecycle_snapshot() const;
-    Result<Error> primary_failure() const;
-    Result<std::vector<Error>> secondary_failures() const;
+    // OK means no primary failure has been recorded.
+    Status primary_failure() const;
+    Result<std::vector<Status>> secondary_failures() const;
     std::uint64_t secondary_failure_overflow_count() const noexcept;
     Result<RuntimeStatsSnapshot> stats() const;
     Result<PayloadPoolStats> payload_stats() const;

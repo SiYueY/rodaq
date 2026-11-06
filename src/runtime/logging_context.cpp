@@ -56,8 +56,7 @@ Result<std::unique_ptr<LoggingContext>> LoggingContext::create(
     if (config.queue_records == 0 || config.queue_bytes == 0 || config.flush_timeout.count() <= 0 ||
         config.shutdown_timeout.count() <= 0 || !is_log_level_valid(config.level) ||
         backend == nullptr) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::InvalidArgument, "logging configuration is invalid"));
+        return rodaq::Status(StatusCode::InvalidArgument, "logging configuration is invalid");
     }
     try {
         auto context =
@@ -66,12 +65,12 @@ Result<std::unique_ptr<LoggingContext>> LoggingContext::create(
             [state = context->state_]() mutable { LoggingContext::worker_loop(std::move(state)); });
         return context;
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "logging initialization exhausted memory"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "logging initialization exhausted memory");
     } catch (const std::exception& error) {
-        return nonstd::make_unexpected(Error(
-            ErrorCode::Unavailable,
-            "logging worker failed to start: " + std::string(error.what())));
+        return rodaq::Status(
+            StatusCode::Unavailable,
+            "logging worker failed to start: " + std::string(error.what()));
     }
 }
 
@@ -176,7 +175,7 @@ void LoggingContext::worker_loop(std::shared_ptr<State> state) noexcept {
         if (!backend_failed) {
             LoggingReentryGuard guard(state.get(), active_logging_state);
             try {
-                written = state->backend->write(record).has_value();
+                written = state->backend->write(record).ok();
             } catch (...) {
                 written = false;
             }
@@ -214,7 +213,7 @@ bool LoggingContext::flush(std::chrono::steady_clock::time_point deadline) noexc
     }
     try {
         auto flushed = state_->backend->flush();
-        if (!flushed.has_value()) {
+        if (!flushed.ok()) {
             std::lock_guard<std::mutex> lock(state_->mutex);
             ++state_->stats.backend_failures;
             state_->backend_failed = true;
@@ -247,7 +246,7 @@ bool LoggingContext::shutdown(std::chrono::steady_clock::time_point deadline) no
     }
     try {
         auto shutdown = state_->backend->shutdown();
-        if (!shutdown.has_value()) {
+        if (!shutdown.ok()) {
             std::lock_guard<std::mutex> lock(state_->mutex);
             ++state_->stats.backend_failures;
             return false;

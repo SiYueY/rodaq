@@ -14,8 +14,8 @@
 namespace rodaq {
 namespace {
 
-Error config_error(ErrorCode code, std::string message) {
-    return Error(code, "config", 0, std::move(message));
+Status config_status(StatusCode status_code, std::string message) {
+    return Status(status_code, "config", 0, std::move(message));
 }
 
 bool parse_bool(std::string_view text, bool* output) noexcept {
@@ -59,12 +59,11 @@ Result<ConfigTree> convert_node(
     const YAML::Node& node, const YamlConfigLimits& limits, std::size_t depth,
     std::size_t& node_count) {
     if (depth > limits.max_depth) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::ResourceExhausted, "YAML config exceeds maximum depth"));
+        return config_status(StatusCode::ResourceExhausted, "YAML config exceeds maximum depth");
     }
     if (++node_count > limits.max_nodes) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::ResourceExhausted, "YAML config exceeds maximum node count"));
+        return config_status(
+            StatusCode::ResourceExhausted, "YAML config exceeds maximum node count");
     }
     if (!node || node.IsNull()) {
         return ConfigTree::null();
@@ -74,8 +73,8 @@ Result<ConfigTree> convert_node(
         items.reserve(node.size());
         for (const YAML::Node& item : node) {
             auto converted = convert_node(item, limits, depth + 1U, node_count);
-            if (!converted.has_value()) {
-                return nonstd::make_unexpected(std::move(converted.error()));
+            if (!converted.ok()) {
+                return std::move(converted).status();
             }
             items.push_back(std::move(converted.value()));
         }
@@ -86,20 +85,18 @@ Result<ConfigTree> convert_node(
         entries.reserve(node.size());
         for (const auto& item : node) {
             if (!item.first.IsScalar()) {
-                return nonstd::make_unexpected(
-                    config_error(ErrorCode::InvalidArgument, "YAML map key must be a scalar"));
+                return config_status(StatusCode::InvalidArgument, "YAML map key must be a scalar");
             }
             auto converted = convert_node(item.second, limits, depth + 1U, node_count);
-            if (!converted.has_value()) {
-                return nonstd::make_unexpected(std::move(converted.error()));
+            if (!converted.ok()) {
+                return std::move(converted).status();
             }
             entries.emplace_back(item.first.Scalar(), std::move(converted.value()));
         }
         return ConfigTree::map(std::move(entries));
     }
     if (!node.IsScalar()) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::InvalidArgument, "YAML node kind is unsupported"));
+        return config_status(StatusCode::InvalidArgument, "YAML node kind is unsupported");
     }
 
     const std::string scalar = node.Scalar();
@@ -107,8 +104,7 @@ Result<ConfigTree> convert_node(
     bool bool_value = false;
     if (tag == "tag:yaml.org,2002:bool" || (tag == "?" && parse_bool(scalar, &bool_value))) {
         if (!parse_bool(scalar, &bool_value)) {
-            return nonstd::make_unexpected(
-                config_error(ErrorCode::InvalidArgument, "YAML boolean scalar is invalid"));
+            return config_status(StatusCode::InvalidArgument, "YAML boolean scalar is invalid");
         }
         return ConfigTree::boolean(bool_value);
     }
@@ -122,8 +118,7 @@ Result<ConfigTree> convert_node(
             }
             return ConfigTree::int64(static_cast<std::int64_t>(value));
         } catch (const std::exception&) {
-            return nonstd::make_unexpected(
-                config_error(ErrorCode::InvalidArgument, "YAML integer scalar is invalid"));
+            return config_status(StatusCode::InvalidArgument, "YAML integer scalar is invalid");
         }
     }
     if (tag == "tag:yaml.org,2002:float" || (tag == "?" && looks_like_float(scalar))) {
@@ -136,8 +131,7 @@ Result<ConfigTree> convert_node(
             return ConfigTree::float64(value);
         } catch (const std::exception&) {
             if (tag != "?") {
-                return nonstd::make_unexpected(
-                    config_error(ErrorCode::InvalidArgument, "YAML float scalar is invalid"));
+                return config_status(StatusCode::InvalidArgument, "YAML float scalar is invalid");
             }
         }
     }
@@ -149,48 +143,42 @@ Result<ConfigTree> convert_node(
 Result<ConfigTree> load_yaml_config(std::string_view input, const YamlConfigLimits& limits) {
     if (limits.max_file_bytes == 0 || limits.max_nodes == 0 || limits.max_depth == 0 ||
         input.size() > limits.max_file_bytes) {
-        return nonstd::make_unexpected(
-            Error(ErrorCode::ResourceExhausted, "config", 0, "YAML file size limit is exceeded"));
+        return rodaq::Status(
+            StatusCode::ResourceExhausted, "config", 0, "YAML file size limit is exceeded");
     }
     try {
         const YAML::Node root = YAML::Load(std::string(input));
         std::size_t node_count = 0;
         return convert_node(root, limits, 0, node_count);
     } catch (const YAML::Exception& error) {
-        return nonstd::make_unexpected(config_error(
-            ErrorCode::InvalidArgument, std::string("YAML parse failed: ") + error.what()));
+        return config_status(
+            StatusCode::InvalidArgument, std::string("YAML parse failed: ") + error.what());
     } catch (const std::bad_alloc&) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::ResourceExhausted, "YAML config exhausted memory"));
+        return config_status(StatusCode::ResourceExhausted, "YAML config exhausted memory");
     }
 }
 
 Result<ConfigTree> load_yaml_config_file(
     const std::filesystem::path& path, const YamlConfigLimits& limits) {
     if (path.empty()) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::InvalidArgument, "YAML config path is empty"));
+        return config_status(StatusCode::InvalidArgument, "YAML config path is empty");
     }
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
     if (error) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::NotFound, "YAML config file is unavailable"));
+        return config_status(StatusCode::NotFound, "YAML config file is unavailable");
     }
     if (size > limits.max_file_bytes) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::ResourceExhausted, "YAML config file exceeds size limit"));
+        return config_status(StatusCode::ResourceExhausted, "YAML config file exceeds size limit");
     }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::Unavailable, "failed to open YAML config file"));
+        return config_status(StatusCode::Unavailable, "failed to open YAML config file");
     }
     std::ostringstream contents;
     contents << input.rdbuf();
     if (!input.good() && !input.eof()) {
-        return nonstd::make_unexpected(
-            config_error(ErrorCode::Unavailable, "failed to read YAML config file"));
+        return config_status(StatusCode::Unavailable, "failed to read YAML config file");
     }
     return load_yaml_config(contents.str(), limits);
 }

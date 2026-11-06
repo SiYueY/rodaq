@@ -51,5 +51,5 @@ public:
 int main() {
     rodaq::ConfigView config;
     rodaq::ServiceRegistryView registry;
-    return config.find("key").has_value() || registry.query("service").has_value() ? 1 : 0;
+    return config.find("key").ok() || registry.query("service").ok() ? 1 : 0;
 }
