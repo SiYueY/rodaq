@@ -18,13 +18,13 @@
         sizeof(std::declval<Baseline&>().field) == sizeof(std::declval<Current&>().field),  \
         #field " width")
 
-static_assert(sizeof(baseline_projection_view) <= sizeof(rodaq_projection_view));
-static_assert(alignof(baseline_projection_view) == alignof(rodaq_projection_view));
-RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, struct_size);
-RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, reserved);
-RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, descriptor);
-RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, projection_id);
-RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_view, payload);
+static_assert(sizeof(baseline_projection_view) <= sizeof(rodaq_projection_info));
+static_assert(alignof(baseline_projection_view) == alignof(rodaq_projection_info));
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_info, struct_size);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_info, reserved);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_info, descriptor);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_info, projection_id);
+RODAQ_ASSERT_BASELINE_PREFIX_FIELD(baseline_projection_view, rodaq_projection_info, payload);
 
 static_assert(sizeof(baseline_clock_anchor) <= sizeof(rodaq_unix_epoch_clock_anchor));
 static_assert(alignof(baseline_clock_anchor) == alignof(rodaq_unix_epoch_clock_anchor));
@@ -217,16 +217,16 @@ TEST(BaselineOutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
         projection->get_projection(
             interface.context, rodaq_stream_descriptor_handle{7},
             rodaq_string_view{"rodaq.test.projection", 21},
-            reinterpret_cast<rodaq_projection_view*>(&projection_buffer.value), &error));
+            reinterpret_cast<rodaq_projection_info*>(&projection_buffer.value), &error));
     EXPECT_EQ(
-        expected_initialized_prefix<rodaq_projection_view>(frozen_projection_capacity),
+        expected_initialized_prefix<rodaq_projection_info>(frozen_projection_capacity),
         projection_buffer.value.struct_size);
     EXPECT_EQ(0U, projection_buffer.value.reserved);
     expect_canary(projection_buffer.canary, sizeof(projection_buffer.canary));
 
     {
         struct {
-            rodaq_projection_view value;
+            rodaq_projection_info value;
             std::uint8_t canary[32];
         } current{};
         fill_canary(current.canary, sizeof(current.canary));
@@ -238,7 +238,7 @@ TEST(BaselineOutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
                 interface.context, rodaq_stream_descriptor_handle{7},
                 rodaq_string_view{"rodaq.test.projection", 21}, &current.value, &error));
         EXPECT_EQ(
-            expected_initialized_prefix<rodaq_projection_view>(current_capacity),
+            expected_initialized_prefix<rodaq_projection_info>(current_capacity),
             current.value.struct_size);
         expect_canary(current.canary, sizeof(current.canary));
     }
@@ -249,19 +249,19 @@ TEST(BaselineOutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
             std::uint8_t canary[16];
         } too_small{};
         fill_canary(too_small.canary, sizeof(too_small.canary));
-        too_small.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE - 1;
+        too_small.struct_size = RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE - 1;
         EXPECT_EQ(
             RODAQ_STATUS_INVALID_ARGUMENT,
             projection->get_projection(
                 interface.context, rodaq_stream_descriptor_handle{7},
                 rodaq_string_view{"rodaq.test.projection", 21},
-                reinterpret_cast<rodaq_projection_view*>(&too_small), &error));
+                reinterpret_cast<rodaq_projection_info*>(&too_small), &error));
         expect_canary(too_small.canary, sizeof(too_small.canary));
     }
 
     {
         struct {
-            rodaq_projection_view value;
+            rodaq_projection_info value;
             std::uint8_t canary[32];
         } larger{};
         fill_canary(larger.canary, sizeof(larger.canary));
@@ -273,7 +273,7 @@ TEST(BaselineOutputCompatibility, ProjectionAndClockRespectOldCallerCapacity) {
                 interface.context, rodaq_stream_descriptor_handle{7},
                 rodaq_string_view{"rodaq.test.projection", 21}, &larger.value, &error));
         EXPECT_EQ(
-            expected_initialized_prefix<rodaq_projection_view>(larger_capacity),
+            expected_initialized_prefix<rodaq_projection_info>(larger_capacity),
             larger.value.struct_size);
         expect_canary(larger.canary, sizeof(larger.canary));
     }

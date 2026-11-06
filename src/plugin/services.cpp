@@ -6,7 +6,7 @@ namespace rodaq::plugin {
 
 bool CommonService::valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
 
-Result<CommonService> CommonService::from(InterfaceView interface) {
+Result<CommonService> CommonService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Common DAQ interface is incomplete");
@@ -67,7 +67,7 @@ CommonService::CommonService(void* context, const rodaq_runtime_common* table) n
 
 bool CanonicalService::valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
 
-Result<CanonicalService> CanonicalService::from(InterfaceView interface) {
+Result<CanonicalService> CanonicalService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Canonical DAQ interface is incomplete");
@@ -84,12 +84,12 @@ Result<CanonicalService> CanonicalService::from(InterfaceView interface) {
     return CanonicalService(interface.context(), table);
 }
 
-Result<rodaq_timestamp_key_set_view> CanonicalService::get_timestamp_key_set(
+Result<rodaq_timestamp_key_set_info> CanonicalService::get_timestamp_key_set(
     std::uint64_t id) const {
     if (!valid()) {
         return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Canonical service is invalid");
     }
-    rodaq_timestamp_key_set_view key_set{};
+    rodaq_timestamp_key_set_info key_set{};
     key_set.struct_size = sizeof(key_set);
     rodaq_status error{};
     const rodaq_status_code status = table_->get_timestamp_key_set(context_, id, &key_set, &error);
@@ -104,7 +104,7 @@ CanonicalService::CanonicalService(void* context, const rodaq_runtime_canonical*
 
 bool ProjectionService::valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
 
-Result<ProjectionService> ProjectionService::from(InterfaceView interface) {
+Result<ProjectionService> ProjectionService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Projection interface is incomplete");
@@ -138,7 +138,7 @@ Result<void> ProjectionService::register_entry(
     return runtime_result(table_->register_projection(context_, &request, &error), error);
 }
 
-Result<rodaq_projection_view> ProjectionService::get(
+Result<rodaq_projection_info> ProjectionService::get(
     rodaq_stream_descriptor_handle descriptor, std::string_view id) const {
     if (!valid()) {
         return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "Projection service is invalid");
@@ -147,7 +147,7 @@ Result<rodaq_projection_view> ProjectionService::get(
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Projection lookup key is invalid");
     }
-    rodaq_projection_view projection{};
+    rodaq_projection_info projection{};
     projection.struct_size = sizeof(projection);
     rodaq_status error{};
     const rodaq_status_code status = table_->get_projection(
@@ -165,7 +165,7 @@ bool ClockCorrelationService::valid() const noexcept {
     return context_ != nullptr && table_ != nullptr;
 }
 
-Result<ClockCorrelationService> ClockCorrelationService::from(InterfaceView interface) {
+Result<ClockCorrelationService> ClockCorrelationService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Clock-correlation interface is incomplete");
@@ -201,7 +201,7 @@ ClockCorrelationService::ClockCorrelationService(
 
 bool AcquisitionService::valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
 
-Result<AcquisitionService> AcquisitionService::from(InterfaceView interface) {
+Result<AcquisitionService> AcquisitionService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Acquisition DAQ interface is incomplete");
@@ -278,7 +278,7 @@ AcquisitionService::AcquisitionService(
 
 bool StorageService::valid() const noexcept { return context_ != nullptr && table_ != nullptr; }
 
-Result<StorageService> StorageService::from(InterfaceView interface) {
+Result<StorageService> StorageService::from(InterfaceRef interface) {
     if (!interface.valid()) {
         return rodaq::Status(
             StatusCode::InvalidArgument, "sdk", 0, "Storage DAQ interface is incomplete");
@@ -320,8 +320,8 @@ void StorageService::report_failure(const rodaq_status* error) const {
 StorageService::StorageService(void* context, const rodaq_runtime_storage* table) noexcept
 : context_(context), table_(table) {}
 
-Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryView services) {
-    Result<InterfaceView> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
+Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryRef services) {
+    Result<InterfaceRef> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
     if (!common_interface.ok()) {
         return std::move(common_interface).status();
     }
@@ -329,7 +329,7 @@ Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryView services
     if (!common.ok()) {
         return std::move(common).status();
     }
-    Result<InterfaceView> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
+    Result<InterfaceRef> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
     if (!canonical_interface.ok()) {
         return std::move(canonical_interface).status();
     }
@@ -337,8 +337,7 @@ Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryView services
     if (!canonical.ok()) {
         return std::move(canonical).status();
     }
-    Result<InterfaceView> projection_interface =
-        services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
+    Result<InterfaceRef> projection_interface = services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
     if (!projection_interface.ok()) {
         return std::move(projection_interface).status();
     }
@@ -346,7 +345,7 @@ Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryView services
     if (!projection.ok()) {
         return std::move(projection).status();
     }
-    Result<InterfaceView> acquisition_interface =
+    Result<InterfaceRef> acquisition_interface =
         services.query(RODAQ_RUNTIME_ACQUISITION_SERVICE_ID);
     if (!acquisition_interface.ok()) {
         return std::move(acquisition_interface).status();
@@ -363,8 +362,8 @@ Result<AcquisitionContext> AcquisitionContext::bind(ServiceRegistryView services
     };
 }
 
-Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
-    Result<InterfaceView> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
+Result<StorageContext> StorageContext::bind(ServiceRegistryRef services) {
+    Result<InterfaceRef> common_interface = services.query(RODAQ_RUNTIME_COMMON_SERVICE_ID);
     if (!common_interface.ok()) {
         return std::move(common_interface).status();
     }
@@ -372,7 +371,7 @@ Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
     if (!common.ok()) {
         return std::move(common).status();
     }
-    Result<InterfaceView> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
+    Result<InterfaceRef> canonical_interface = services.query(RODAQ_RUNTIME_CANONICAL_SERVICE_ID);
     if (!canonical_interface.ok()) {
         return std::move(canonical_interface).status();
     }
@@ -380,8 +379,7 @@ Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
     if (!canonical.ok()) {
         return std::move(canonical).status();
     }
-    Result<InterfaceView> projection_interface =
-        services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
+    Result<InterfaceRef> projection_interface = services.query(RODAQ_RUNTIME_PROJECTION_SERVICE_ID);
     if (!projection_interface.ok()) {
         return std::move(projection_interface).status();
     }
@@ -389,7 +387,7 @@ Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
     if (!projection.ok()) {
         return std::move(projection).status();
     }
-    Result<InterfaceView> clock_interface =
+    Result<InterfaceRef> clock_interface =
         services.query(RODAQ_RUNTIME_CLOCK_CORRELATION_SERVICE_ID);
     if (!clock_interface.ok()) {
         return std::move(clock_interface).status();
@@ -398,7 +396,7 @@ Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
     if (!clock.ok()) {
         return std::move(clock).status();
     }
-    Result<InterfaceView> storage_interface = services.query(RODAQ_RUNTIME_STORAGE_SERVICE_ID);
+    Result<InterfaceRef> storage_interface = services.query(RODAQ_RUNTIME_STORAGE_SERVICE_ID);
     if (!storage_interface.ok()) {
         return std::move(storage_interface).status();
     }
@@ -428,12 +426,12 @@ Result<StorageContext> StorageContext::bind(ServiceRegistryView services) {
         return value;                                                                      \
     }
 
-RODAQ_SDK_CANONICAL_GETTER(get_source, rodaq_source_handle, rodaq_source_view)
-RODAQ_SDK_CANONICAL_GETTER(get_clock, rodaq_clock_handle, rodaq_clock_view)
-RODAQ_SDK_CANONICAL_GETTER(get_schema, rodaq_schema_handle, rodaq_schema_view)
-RODAQ_SDK_CANONICAL_GETTER(get_stream, rodaq_stream_handle, rodaq_stream_view)
+RODAQ_SDK_CANONICAL_GETTER(get_source, rodaq_source_handle, rodaq_source_info)
+RODAQ_SDK_CANONICAL_GETTER(get_clock, rodaq_clock_handle, rodaq_clock_info)
+RODAQ_SDK_CANONICAL_GETTER(get_schema, rodaq_schema_handle, rodaq_schema_info)
+RODAQ_SDK_CANONICAL_GETTER(get_stream, rodaq_stream_handle, rodaq_stream_info)
 RODAQ_SDK_CANONICAL_GETTER(
-    get_stream_descriptor, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_view)
+    get_stream_descriptor, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_info)
 #undef RODAQ_SDK_CANONICAL_GETTER
 
 #define RODAQ_SDK_ACQ_REGISTER(method, abi_method, request_type, handle_type, validator)          \

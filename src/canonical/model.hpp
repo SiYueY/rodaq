@@ -5,12 +5,10 @@
 #include <canonical/handle.hpp>
 
 #include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -58,12 +56,6 @@ struct StreamEntry {
     std::size_t plugin_index = 0;
     ArenaBytes native_id;
     std::unique_ptr<std::atomic<std::uint32_t>> availability;
-    std::unique_ptr<std::atomic<std::uint64_t>> current_binding;
-    std::unique_ptr<std::mutex> admission_mutex;
-    std::unique_ptr<std::mutex> binding_transition_mutex;
-    std::unique_ptr<std::condition_variable> binding_transition_condition;
-    bool binding_transition_active = false;
-    std::uint64_t binding_transition_token = 0;
 };
 
 enum class DescriptorLifecycle : std::uint32_t {

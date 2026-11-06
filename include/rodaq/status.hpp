@@ -1,6 +1,8 @@
 #ifndef RODAQ_STATUS_HPP_
 #define RODAQ_STATUS_HPP_
 
+#include <rodaq/export.hpp>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -25,7 +27,7 @@ enum class StatusCode : std::uint32_t {
 /// Operation status with optional failure diagnostics.
 /// Borrowed string views remain valid until assignment, movement or destruction.
 /// OK always has empty diagnostics; unknown codes become UnknownError.
-class Status final {
+class RODAQ_EXPORT Status final {
 public:
     Status() noexcept = default;
     Status(StatusCode status_code, std::string message);

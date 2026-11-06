@@ -1,5 +1,5 @@
 #include "plugin/acquisition_plugin_instance.hpp"
-#include "config/config_internal.hpp"
+#include "config/abi_bridge.hpp"
 #include "plugin/config_view.hpp"
 #include "plugin/plugin_manager.hpp"
 #include "plugin/service_registry.hpp"
@@ -62,50 +62,50 @@ void report_diagnostic(
     void*, rodaq_diagnostic_severity, rodaq_string_view, rodaq_string_view) noexcept {}
 
 rodaq_status_code get_source(
-    void*, rodaq_source_handle, rodaq_source_view* out_view, rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    void*, rodaq_source_handle, rodaq_source_info* out_info, rodaq_status*) noexcept {
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
 
 rodaq_status_code get_clock(
-    void*, rodaq_clock_handle, rodaq_clock_view* out_view, rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    void*, rodaq_clock_handle, rodaq_clock_info* out_info, rodaq_status*) noexcept {
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
 
 rodaq_status_code get_schema(
-    void*, rodaq_schema_handle, rodaq_schema_view* out_view, rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    void*, rodaq_schema_handle, rodaq_schema_info* out_info, rodaq_status*) noexcept {
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
 
 rodaq_status_code get_timestamp_key_set(
-    void*, std::uint64_t, rodaq_timestamp_key_set_view* out_view, rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    void*, std::uint64_t, rodaq_timestamp_key_set_info* out_info, rodaq_status*) noexcept {
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
 
 rodaq_status_code get_stream(
-    void*, rodaq_stream_handle, rodaq_stream_view* out_view, rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    void*, rodaq_stream_handle, rodaq_stream_info* out_info, rodaq_status*) noexcept {
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
 
 rodaq_status_code get_stream_descriptor(
-    void*, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_view* out_view,
+    void*, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_info* out_info,
     rodaq_status*) noexcept {
-    if (out_view != nullptr) {
-        *out_view = {};
+    if (out_info != nullptr) {
+        *out_info = {};
     }
     return RODAQ_STATUS_NOT_FOUND;
 }
@@ -422,9 +422,9 @@ TEST(PluginServiceIntegrationTest, FakePluginsBindConfigureAndExchangeDAQData) {
             take(manager.load_library(plugin_path("RODAQ_TEST_STORAGE_PLUGIN")))));
 
         ASSERT_TRUE(acquisition.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(acquisition.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(acquisition.configure(rodaq::config_abi_view(config.root())).ok());
         ASSERT_TRUE(storage.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(storage.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(storage.configure(rodaq::config_abi_view(config.root())).ok());
         acquisition.destroy();
         storage.destroy();
     }
@@ -555,7 +555,7 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         EXPECT_NE(nullptr, vtable->abort_binding_switch);
         EXPECT_NE(nullptr, vtable->quiesce_stream);
         EXPECT_NE(nullptr, vtable->quiesce_plugin);
-        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
 
         const auto unknown = instance.query_interface("rodaq.test.unknown");
         ASSERT_FALSE(unknown.ok());
@@ -578,7 +578,7 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
         EXPECT_GE(vtable->struct_size, RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE);
         EXPECT_NE(nullptr, vtable->get_capabilities);
         EXPECT_NE(nullptr, vtable->ensure_descriptor_ready);
-        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        EXPECT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         instance.destroy();
     }
 }
@@ -617,7 +617,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_ACQUISITION")))));
         EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         ASSERT_TRUE(instance.start().ok());
         EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
 
@@ -641,7 +641,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_STORAGE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
 
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
@@ -702,7 +702,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_EXCEPTION")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         const auto result = instance.start();
         ASSERT_FALSE(result.ok());
         EXPECT_EQ(rodaq::StatusCode::InternalError, result.status().status_code());
@@ -717,7 +717,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_OPEN_FAILURE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         rodaq_storage_open_request open{};
         open.struct_size = RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE;
         const auto result = instance.open(open);
@@ -737,7 +737,7 @@ TEST(PluginServiceIntegrationTest, IndependentCurrentAbiPluginsLoadInCurrentHost
         AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_CURRENT_ABI_ACQUISITION")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         EXPECT_TRUE(instance.required_control_interface().ok());
         instance.destroy();
     }
@@ -748,7 +748,7 @@ TEST(PluginServiceIntegrationTest, IndependentCurrentAbiPluginsLoadInCurrentHost
         StoragePluginInstance instance = take(manager.create_storage_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_CURRENT_ABI_STORAGE")))));
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
-        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.view())).ok());
+        ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         EXPECT_TRUE(instance.required_control_interface().ok());
         instance.destroy();
     }

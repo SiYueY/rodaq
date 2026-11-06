@@ -551,8 +551,8 @@ rodaq_status_code fixture_storage_bind(
     }
     if (status == RODAQ_STATUS_OK) {
         const auto* projection = static_cast<const rodaq_runtime_projection*>(service.vtable);
-        rodaq_projection_view projection_view{};
-        projection_view.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE;
+        rodaq_projection_info projection_view{};
+        projection_view.struct_size = RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE;
         const char id[] = "rodaq.test.projection";
         status = projection->get_projection(
             service.context, rodaq_stream_descriptor_handle{42},

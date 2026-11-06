@@ -1,10 +1,16 @@
-#include "activation/activation_internal.hpp"
+#include "activation/activation_error.hpp"
+#include "activation/activation_state.hpp"
+#include "canonical/model_ops.hpp"
+#include "clock/ingress_time.hpp"
+#include "plugin/abi_conversion.hpp"
 #include "plugin/acquisition_plugin_instance.hpp"
 #include "plugin/plugin_quarantine.hpp"
 #include "plugin/storage_plugin_instance.hpp"
 #include <rodaq/plugin/services.hpp>
 
 namespace rodaq {
+
+using Clock = std::chrono::steady_clock;
 
 Result<ActivationState::DescriptorReadiness> ActivationState::ensure_descriptor_ready(
     StreamDescriptorHandle descriptor) {
@@ -64,7 +70,7 @@ Result<ActivationState::DescriptorReadiness> ActivationState::ensure_descriptor_
             }
             return {};
         },
-        Clock::now() + descriptor_progress_timeout_, "Descriptor readiness");
+        Clock::now() + limits_.descriptor_progress_timeout, "Descriptor readiness");
     if (!outcome.ok()) {
         return std::move(outcome).status();
     }
@@ -222,7 +228,7 @@ void ActivationState::run_descriptor_reconciliation() noexcept {
         {
             std::lock_guard<std::mutex> lock(descriptor_worker_mutex_);
             if (!failure.ok() && (request.critical_for_start || requires_quarantine() ||
-                                  state_.load() == DAQState::Failed)) {
+                                  phase_.load() == ActivationPhase::Failed)) {
                 descriptor_worker_failure_ = failure;
                 descriptor_worker_closing_ = true;
                 descriptor_worker_count_ = 0;
@@ -253,7 +259,7 @@ Result<void> ActivationState::publish_stream_descriptor(
     std::size_t plugin_index, const rodaq_stream_descriptor_registration& request,
     StreamDescriptorHandle& handle) {
     if (!rodaq::plugin::is_valid_stream_descriptor_registration(request) ||
-        plugin_index >= options_.acquisitions.size()) {
+        plugin_index >= config_.acquisitions.size()) {
         return activation_status(
             StatusCode::InvalidArgument, "StreamDescriptor publication is invalid");
     }
@@ -265,8 +271,9 @@ Result<void> ActivationState::publish_stream_descriptor(
     bool critical_for_start = false;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        const DAQState current_state = state_.load();
-        if (current_state != DAQState::Starting && current_state != DAQState::Running) {
+        const ActivationPhase current_state = phase_.load();
+        if (current_state != ActivationPhase::Starting &&
+            current_state != ActivationPhase::Running) {
             return activation_status(
                 StatusCode::InvalidState, "Descriptor publication is not allowed");
         }
@@ -275,9 +282,9 @@ Result<void> ActivationState::publish_stream_descriptor(
             return activation_status(
                 StatusCode::InvalidState, "Descriptor publication requires an available Plugin");
         }
-        critical_for_start = current_state == DAQState::Starting;
+        critical_for_start = current_state == ActivationPhase::Starting;
         const StreamHandle stream_handle = StreamHandle::from_raw(request.stream.value);
-        StreamEntry* stream = streams_.find(stream_handle);
+        StreamEntry* stream = canonical_.streams().find(stream_handle);
         if (stream == nullptr) {
             return activation_status(StatusCode::NotFound, "Descriptor Stream is unknown");
         }
@@ -307,7 +314,7 @@ Result<void> ActivationState::publish_stream_descriptor(
                     "Acquisition Plugins must not publish the DAQ ingress timestamp role");
             }
             const ClockHandle clock = ClockHandle::from_raw(key.clock.value);
-            const ClockEntry* clock_entry = clocks_.find(clock);
+            const ClockEntry* clock_entry = canonical_.clocks().find(clock);
             if (clock_entry == nullptr) {
                 return activation_status(StatusCode::NotFound, "Timestamp Clock is unknown");
             }
@@ -330,8 +337,8 @@ Result<void> ActivationState::publish_stream_descriptor(
 
         TimestampKeySetHandle key_set_handle;
         bool found_key_set = false;
-        for (TimestampKeySetHandle existing : timestamp_key_set_handles_) {
-            const TimestampKeySetEntry* entry = timestamp_key_sets_.find(existing);
+        for (TimestampKeySetHandle existing : canonical_.timestamp_key_set_handles()) {
+            const TimestampKeySetEntry* entry = canonical_.timestamp_key_sets().find(existing);
             if (entry == nullptr || entry->keys.size() != keys.size()) {
                 continue;
             }
@@ -352,20 +359,20 @@ Result<void> ActivationState::publish_stream_descriptor(
 
         std::uint64_t key_set_id = 0;
         if (!found_key_set) {
-            key_set_id = next_timestamp_key_set_id_++;
+            key_set_id = canonical_.allocate_timestamp_key_set_id();
             TimestampKeySetEntry entry{
                 key_set_id,
                 std::move(keys),
                 std::move(abi_keys),
             };
-            auto inserted = timestamp_key_sets_.insert(std::move(entry));
+            auto inserted = canonical_.timestamp_key_sets().insert(std::move(entry));
             if (!inserted.ok()) {
                 return std::move(inserted).status();
             }
             key_set_handle = inserted.value();
-            timestamp_key_set_handles_.push_back(key_set_handle);
+            canonical_.timestamp_key_set_handles().push_back(key_set_handle);
         }
-        TimestampKeySetEntry* key_set = timestamp_key_sets_.find(key_set_handle);
+        TimestampKeySetEntry* key_set = canonical_.timestamp_key_sets().find(key_set_handle);
         if (key_set == nullptr) {
             return activation_status(
                 StatusCode::InternalError, "TimestampKeySet publication failed");
@@ -382,7 +389,7 @@ Result<void> ActivationState::publish_stream_descriptor(
         }
 
         StreamDescriptorEntry descriptor_entry{
-            next_descriptor_id_++,
+            canonical_.allocate_descriptor_id(),
             stream_handle,
             request.schema_present == RODAQ_TRUE,
             SchemaHandle::from_raw(request.schema.value),
@@ -395,7 +402,7 @@ Result<void> ActivationState::publish_stream_descriptor(
             plugin_index,
         };
         if (descriptor_entry.schema_present) {
-            const SchemaEntry* schema = schemas_.find(descriptor_entry.schema);
+            const SchemaEntry* schema = canonical_.schemas().find(descriptor_entry.schema);
             if (schema == nullptr) {
                 return activation_status(StatusCode::NotFound, "Descriptor Schema is unknown");
             }
@@ -404,12 +411,12 @@ Result<void> ActivationState::publish_stream_descriptor(
         descriptor_entry.canonical_timestamp_keys.assign(
             key_set->abi_keys.begin(), key_set->abi_keys.end());
 
-        auto descriptor_inserted = descriptors_.insert(std::move(descriptor_entry));
+        auto descriptor_inserted = canonical_.descriptors().insert(std::move(descriptor_entry));
         if (!descriptor_inserted.ok()) {
             return std::move(descriptor_inserted).status();
         }
         handle = descriptor_inserted.value();
-        descriptor_handles_.push_back(handle);
+        canonical_.descriptor_handles().push_back(handle);
     }
 
     auto requested = request_descriptor_reconciliation(handle, critical_for_start);
@@ -429,7 +436,7 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
         rodaq_interface control{};
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
+            StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
             if (entry == nullptr) {
                 return activation_status(StatusCode::NotFound, "Descriptor is not published");
             }
@@ -440,8 +447,9 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
                 entry->lifecycle == DescriptorLifecycle::Superseded) {
                 return false;
             }
-            const DAQState current_state = state_.load();
-            if (current_state != DAQState::Starting && current_state != DAQState::Running) {
+            const ActivationPhase current_state = phase_.load();
+            if (current_state != ActivationPhase::Starting &&
+                current_state != ActivationPhase::Running) {
                 entry->reconciliation_running = false;
                 return false;
             }
@@ -469,7 +477,7 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
         if (!readiness.ok()) {
             {
                 std::lock_guard<std::mutex> lock(control_mutex_);
-                StreamDescriptorEntry* entry = descriptors_.find(descriptor);
+                StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
                 if (entry != nullptr) {
                     entry->reconciliation_running = false;
                     entry->lifecycle = DescriptorLifecycle::Failed;
@@ -483,14 +491,15 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
         if (readiness.value() != DescriptorReadiness::Ready) {
             {
                 std::lock_guard<std::mutex> lock(control_mutex_);
-                StreamDescriptorEntry* entry = descriptors_.find(descriptor);
+                StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
                 if (entry != nullptr) {
                     entry->reconciliation_running = false;
                     entry->lifecycle = DescriptorLifecycle::Unsupported;
                     retry = entry->reconciliation_retry_requested;
                     entry->reconciliation_retry_requested = false;
-                    StreamEntry* stream_entry = streams_.find(entry->stream);
-                    if (stream_entry != nullptr && stream_entry->current_binding->load() == 0) {
+                    StreamEntry* stream_entry = canonical_.streams().find(entry->stream);
+                    if (stream_entry != nullptr &&
+                        !bindings_.current_binding(entry->stream).valid()) {
                         stream_entry->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
                     }
                 }
@@ -503,10 +512,10 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
 
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
-            const DAQState current_state = state_.load();
-            if (entry == nullptr ||
-                (current_state != DAQState::Starting && current_state != DAQState::Running)) {
+            StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
+            const ActivationPhase current_state = phase_.load();
+            if (entry == nullptr || (current_state != ActivationPhase::Starting &&
+                                     current_state != ActivationPhase::Running)) {
                 if (entry != nullptr) {
                     entry->reconciliation_running = false;
                 }
@@ -517,7 +526,7 @@ Result<bool> ActivationState::reconcile_descriptor(StreamDescriptorHandle descri
         auto activated = activate_descriptor_binding(descriptor, stream, plugin_index, control);
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
+            StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
             if (entry != nullptr) {
                 entry->reconciliation_running = false;
                 entry->reconciliation_retry_requested = false;
@@ -538,7 +547,7 @@ void ActivationState::on_projection_registered(
         bool critical_for_start = false;
         {
             std::lock_guard<std::mutex> lock(control_mutex_);
-            StreamDescriptorEntry* entry = descriptors_.find(descriptor);
+            StreamDescriptorEntry* entry = canonical_.descriptors().find(descriptor);
             if (entry == nullptr) {
                 return;
             }
@@ -549,11 +558,12 @@ void ActivationState::on_projection_registered(
             if (entry->lifecycle == DescriptorLifecycle::Active) {
                 return;
             }
-            const DAQState current_state = state_.load();
-            if (current_state != DAQState::Starting && current_state != DAQState::Running) {
+            const ActivationPhase current_state = phase_.load();
+            if (current_state != ActivationPhase::Starting &&
+                current_state != ActivationPhase::Running) {
                 return;
             }
-            critical_for_start = current_state == DAQState::Starting;
+            critical_for_start = current_state == ActivationPhase::Starting;
         }
         auto result = request_descriptor_reconciliation(descriptor, critical_for_start);
         if (!result.ok()) {

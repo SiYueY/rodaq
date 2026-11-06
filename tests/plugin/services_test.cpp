@@ -77,32 +77,32 @@ rodaq_status_code complete_canonical_view(View* output) noexcept {
 }
 
 rodaq_status_code get_source(
-    void*, rodaq_source_handle, rodaq_source_view* output, rodaq_status*) noexcept {
+    void*, rodaq_source_handle, rodaq_source_info* output, rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
 
 rodaq_status_code get_clock(
-    void*, rodaq_clock_handle, rodaq_clock_view* output, rodaq_status*) noexcept {
+    void*, rodaq_clock_handle, rodaq_clock_info* output, rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
 
 rodaq_status_code get_schema(
-    void*, rodaq_schema_handle, rodaq_schema_view* output, rodaq_status*) noexcept {
+    void*, rodaq_schema_handle, rodaq_schema_info* output, rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
 
 rodaq_status_code get_timestamp_key_set(
-    void*, std::uint64_t, rodaq_timestamp_key_set_view* output, rodaq_status*) noexcept {
+    void*, std::uint64_t, rodaq_timestamp_key_set_info* output, rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
 
 rodaq_status_code get_stream(
-    void*, rodaq_stream_handle, rodaq_stream_view* output, rodaq_status*) noexcept {
+    void*, rodaq_stream_handle, rodaq_stream_info* output, rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
 
 rodaq_status_code get_stream_descriptor(
-    void*, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_view* output,
+    void*, rodaq_stream_descriptor_handle, rodaq_stream_descriptor_info* output,
     rodaq_status*) noexcept {
     return complete_canonical_view(output);
 }
@@ -125,7 +125,7 @@ rodaq_status_code register_projection(
 }
 
 rodaq_status_code get_projection(
-    void*, rodaq_stream_descriptor_handle, rodaq_string_view, rodaq_projection_view* output,
+    void*, rodaq_stream_descriptor_handle, rodaq_string_view, rodaq_projection_info* output,
     rodaq_status*) noexcept {
     ++counts.projection;
     if (output == nullptr) {
@@ -342,7 +342,7 @@ TEST(PluginServicesTest, DefaultWrappersAreSafeAndResultApisReportInvalidState) 
     rodaq::plugin::AcquisitionService acquisition;
     rodaq::plugin::StorageService storage;
     rodaq::plugin::ConfigView config;
-    rodaq::plugin::ServiceRegistryView registry;
+    rodaq::plugin::ServiceRegistryRef registry;
 
     EXPECT_FALSE(common.valid());
     EXPECT_EQ(rodaq::StatusCode::InvalidState, common.monotonic_time_ns().status().status_code());
@@ -442,17 +442,17 @@ TEST(PluginServicesTest, ValidWrappersForwardEveryPublicOperation) {
     counts = {};
     int context = 0;
     auto common = take(rodaq::plugin::CommonService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &common_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &common_vtable}}));
     auto canonical = take(rodaq::plugin::CanonicalService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &canonical_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &canonical_vtable}}));
     auto projection = take(rodaq::plugin::ProjectionService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &projection_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &projection_vtable}}));
     auto clock = take(rodaq::plugin::ClockCorrelationService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &clock_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &clock_vtable}}));
     auto acquisition = take(rodaq::plugin::AcquisitionService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &acquisition_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &acquisition_vtable}}));
     auto storage = take(rodaq::plugin::StorageService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &storage_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &storage_vtable}}));
 
     common.log(RODAQ_LOG_INFO, "category", "message");
     const auto monotonic = common.monotonic_time_ns();
@@ -506,7 +506,7 @@ TEST(PluginServicesTest, ValidWrappersForwardEveryPublicOperation) {
 TEST(PluginServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachDAQ) {
     int context = 0;
     auto acquisition = take(rodaq::plugin::AcquisitionService::from(
-        rodaq::plugin::InterfaceView{rodaq_interface{&context, &acquisition_vtable}}));
+        rodaq::plugin::InterfaceRef{rodaq_interface{&context, &acquisition_vtable}}));
     counts = {};
 
     auto source = valid_source();

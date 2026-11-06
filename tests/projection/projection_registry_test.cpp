@@ -173,19 +173,19 @@ TEST(InteropProjectionRegistryTest, AbiAdapterUsesCallerOwnedAppendableOutput) {
     ASSERT_EQ(
         RODAQ_STATUS_OK, vtable->register_projection(interface.context, &registration, &error));
 
-    rodaq_projection_view output{};
-    output.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE;
+    rodaq_projection_info output{};
+    output.struct_size = RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE;
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         vtable->get_projection(
             interface.context, descriptor(9), registration.projection_id, &output, &error));
-    EXPECT_EQ(sizeof(rodaq_projection_view), output.struct_size);
+    EXPECT_EQ(sizeof(rodaq_projection_info), output.struct_size);
     EXPECT_EQ(0U, output.reserved);
     EXPECT_EQ(9U, output.descriptor.value);
     EXPECT_EQ(3U, output.payload.size);
     EXPECT_EQ(0, std::memcmp(output.payload.data, payload, sizeof(payload) - 1));
 
-    output.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE - 1;
+    output.struct_size = RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE - 1;
     EXPECT_EQ(
         RODAQ_STATUS_INVALID_ARGUMENT,
         vtable->get_projection(
@@ -199,11 +199,11 @@ TEST(InteropProjectionRegistryTest, AbiAdapterUsesCallerOwnedAppendableOutput) {
     EXPECT_NE(0U, error.message_size);
 
     struct GuardedOutput {
-        rodaq_projection_view value;
+        rodaq_projection_info value;
         std::uint8_t canary[32];
     } guarded{};
     std::memset(guarded.canary, 0xA5, sizeof(guarded.canary));
-    guarded.value.struct_size = RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE;
+    guarded.value.struct_size = RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE;
     ASSERT_EQ(
         RODAQ_STATUS_OK,
         vtable->get_projection(
@@ -229,7 +229,7 @@ TEST(InteropProjectionRegistryTest, SupportsConcurrentReadersWithSerializedWrite
     });
     std::vector<std::thread> readers;
     for (int reader_index = 0; reader_index < 4; ++reader_index) {
-        readers.emplace_back([&registry, &baseline, &failed] {
+        readers.emplace_back([&registry, &failed] {
             for (int iteration = 0; iteration < 500; ++iteration) {
                 const auto current = registry.get(descriptor(1), "base");
                 if (!current.ok() || current.value().projection_id != "base" ||

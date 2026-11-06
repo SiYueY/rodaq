@@ -7,7 +7,7 @@
 namespace rodaq {
 
 Status daq_status(StatusCode status_code, std::string message) {
-    return Status(status_code, "runtime", 0, std::move(message));
+    return Status(status_code, "daq", 0, std::move(message));
 }
 
 DAQ::DAQ(DAQConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
@@ -53,7 +53,7 @@ DAQ::Impl::LifecycleOwner::~LifecycleOwner() {
 
 DAQState DAQ::Impl::state() const noexcept {
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-    if (active_ != nullptr && active_->state() == DAQState::Failed) {
+    if (active_ != nullptr && active_->phase() == ActivationPhase::Failed) {
         return DAQState::Failed;
     }
     return state_;

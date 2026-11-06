@@ -1,4 +1,5 @@
-#include "activation/activation_internal.hpp"
+#include "activation/activation_error.hpp"
+#include "activation/activation_state.hpp"
 #include "plugin/plugin_status.hpp"
 #include "plugin/plugin_quarantine.hpp"
 #include "logging/spdlog_backend.hpp"
@@ -21,6 +22,8 @@
 
 namespace rodaq {
 
+using Clock = std::chrono::steady_clock;
+
 Result<std::unique_ptr<ActivationState>> ActivationState::create(
     DAQConfig config, std::uint64_t activation_generation) {
     try {
@@ -36,68 +39,49 @@ Result<std::unique_ptr<ActivationState>> ActivationState::create(
 }
 
 ActivationState::ActivationState(DAQConfig config, std::uint64_t activation_generation)
-: options_(std::move(config)),
+: config_(std::move(config)),
+  limits_{
+      config_.resources.max_single_payload_bytes,
+      config_.resources.dispatch_capacity,
+      config_.resources.operation_capacity,
+      config_.resources.completion_capacity,
+      config_.stop_progress_timeout,
+      config_.stop_progress_timeout,
+      config_.stop_progress_timeout,
+      config_.stop_progress_timeout,
+      config_.stop_progress_timeout,
+  },
   activation_generation_(activation_generation),
   arena_([this] {
-      auto result = StructuralArena::create(options_.resources.structural_arena_bytes);
+      auto result = StructuralArena::create(config_.resources.structural_arena_bytes);
       if (!result.ok()) {
           throw std::runtime_error(std::string(result.status().message()));
       }
       return std::move(result.value());
   }()),
-  sources_(make_registry<SourceEntry, SourceHandle>(
-      options_.resources.max_sources, registry_generation(activation_generation))),
-  clocks_(make_registry<ClockEntry, ClockHandle>(
-      options_.resources.max_clocks, registry_generation(activation_generation))),
-  schemas_(make_registry<SchemaEntry, SchemaHandle>(
-      options_.resources.max_schemas, registry_generation(activation_generation))),
-  timestamp_key_sets_(make_registry<TimestampKeySetEntry, TimestampKeySetHandle>(
-      options_.resources.max_timestamp_key_sets, registry_generation(activation_generation))),
-  streams_(make_registry<StreamEntry, StreamHandle>(
-      options_.resources.max_streams, registry_generation(activation_generation))),
-  descriptors_(make_registry<StreamDescriptorEntry, StreamDescriptorHandle>(
-      options_.resources.max_stream_descriptors, registry_generation(activation_generation))),
-  bindings_(make_registry<BindingEntry, BindingHandle>(
-      options_.resources.max_bindings, registry_generation(activation_generation))),
-  sequences_([this] {
-      auto result = AcceptanceSequenceAllocator::create(options_.resources.max_streams);
-      if (!result.ok()) {
-          throw std::runtime_error(std::string(result.status().message()));
-      }
-      return std::move(result.value());
-  }()),
+  canonical_(config_, activation_generation, arena_->resource()),
+  bindings_(config_, activation_generation),
+  admission_(config_),
   payload_pool_([this] {
-      auto result = PayloadPool::create(options_.resources.payload_pool);
+      auto result = PayloadPool::create(config_.resources.payload_pool);
       if (!result.ok()) {
           throw std::runtime_error(std::string(result.status().message()));
       }
       return std::move(result.value());
   }()),
   projections_(ProjectionLimits{128, 8, 1024U * 1024U, 8U * 1024U * 1024U}),
-  state_(DAQState::Starting),
-  admission_wait_latency_(make_latency_histogram()),
-  storage_handoff_latency_(make_latency_histogram()),
-  payload_consumed_latency_(make_latency_histogram()),
-  persistence_latency_(make_latency_histogram()),
-  stop_latency_(make_latency_histogram()) {
-    source_handles_.reserve(options_.resources.max_sources);
-    clock_handles_.reserve(options_.resources.max_clocks);
-    schema_handles_.reserve(options_.resources.max_schemas);
-    timestamp_key_set_handles_.reserve(options_.resources.max_timestamp_key_sets);
-    stream_handles_.reserve(options_.resources.max_streams);
-    descriptor_handles_.reserve(options_.resources.max_stream_descriptors);
-    binding_handles_.reserve(options_.resources.max_bindings);
+  phase_(ActivationPhase::Starting) {
     secondary_failures_.reserve(kMaxSecondaryFailures);
-    descriptor_worker_requests_.resize(options_.resources.max_stream_descriptors);
-    acquisition_controls_.resize(options_.acquisitions.size());
-    acquisition_instances_.resize(options_.acquisitions.size());
-    acquisition_health_.reserve(options_.acquisitions.size());
-    for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+    descriptor_worker_requests_.resize(config_.resources.max_stream_descriptors);
+    acquisition_controls_.resize(config_.acquisitions.size());
+    acquisition_instances_.resize(config_.acquisitions.size());
+    acquisition_health_.reserve(config_.acquisitions.size());
+    for (std::size_t index = 0; index < config_.acquisitions.size(); ++index) {
         acquisition_health_.push_back(
             std::make_unique<std::atomic<std::uint32_t>>(RODAQ_ACQUISITION_PLUGIN_AVAILABLE));
     }
-    acquisition_contexts_.reserve(options_.acquisitions.size());
-    for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
+    acquisition_contexts_.reserve(config_.acquisitions.size());
+    for (std::size_t index = 0; index < config_.acquisitions.size(); ++index) {
         auto context = std::make_unique<plugin::AcquisitionServiceContext>();
         context->state = this;
         context->plugin_index = index;
@@ -105,7 +89,7 @@ ActivationState::ActivationState(DAQConfig config, std::uint64_t activation_gene
     }
     storage_context_ = std::make_unique<plugin::StorageServiceContext>();
     storage_context_->state = this;
-    auto logging = LoggingContext::create(options_.logging, std::make_shared<SpdlogBackend>());
+    auto logging = LoggingContext::create(config_.logging, std::make_shared<SpdlogBackend>());
     if (!logging.ok()) {
         throw std::runtime_error(std::string(logging.status().message()));
     }
@@ -179,16 +163,6 @@ Result<rodaq_storage_capabilities> ActivationState::storage_capabilities() const
     return capabilities;
 }
 
-void ActivationState::set_descriptor_progress_timeout(std::chrono::nanoseconds timeout) {
-    std::lock_guard<std::mutex> lock(control_mutex_);
-    descriptor_progress_timeout_ = timeout;
-}
-
-void ActivationState::set_binding_progress_timeout(std::chrono::nanoseconds timeout) {
-    std::lock_guard<std::mutex> lock(control_mutex_);
-    binding_progress_timeout_ = timeout;
-}
-
 std::shared_ptr<void> ActivationState::track_control_call() {
     auto state = shared_from_this();
     // shared_ptr invokes its deleter if control-block allocation fails too.
@@ -219,7 +193,7 @@ Result<void> ActivationState::initialize_pipeline(
     if (pipeline_ != nullptr) {
         return activation_status(StatusCode::InvalidState, "DAQ pipeline is already initialized");
     }
-    const PayloadPoolConfig& pool_config = options_.resources.payload_pool;
+    const PayloadPoolConfig& pool_config = config_.resources.payload_pool;
     if (effective_payload_limit == 0 || pool_config.classes.empty() ||
         pool_config.classes.back().max_payload_bytes < effective_payload_limit) {
         return activation_status(
@@ -228,19 +202,19 @@ Result<void> ActivationState::initialize_pipeline(
     }
     try {
         pipeline_ = std::make_unique<StoragePipeline>(
-            options_.resources.operation_capacity, options_.resources.completion_capacity,
-            effective_payload_limit, maximum_payload_inflight_bytes, storage, progress_timeout,
-            options_.resources.payload_release_workers,
+            limits_.operation_capacity, limits_.completion_capacity, effective_payload_limit,
+            maximum_payload_inflight_bytes, storage, progress_timeout,
+            config_.resources.payload_release_workers,
             [this](Status error) { request_failure(std::move(error)); },
             [this](std::size_t bytes) noexcept {
-                if (!stats_.record_payload_released(bytes)) {
+                if (!metrics_.record_payload_released(bytes)) {
                     request_failure(activation_status(
                         StatusCode::InternalError, "DAQ inflight byte accounting underflowed"));
                 }
             },
             [this](rodaq_storage_persistence_state persistence) noexcept {
-                stats_.record_persistence(persistence);
-                if (!stats_.record_operation_completed()) {
+                metrics_.record_persistence(persistence);
+                if (!metrics_.record_operation_completed()) {
                     request_failure(activation_status(
                         StatusCode::InternalError, "DAQ inflight record accounting underflowed"));
                 }
@@ -251,13 +225,13 @@ Result<void> ActivationState::initialize_pipeline(
             [this](
                 const AcceptedRecord& record, rodaq_storage_operation operation,
                 std::array<rodaq_timestamp_value, TimestampState::kMaxSlots>& values) {
-                const BindingEntry* binding = bindings_.find_stable(record.binding());
+                const BindingEntry* binding = bindings_.bindings().find_stable(record.binding());
                 if (binding == nullptr) {
                     return Result<rodaq_storage_submission>(activation_status(
                         StatusCode::InvalidState, "Record Binding is unavailable"));
                 }
                 const StreamDescriptorEntry* descriptor =
-                    descriptors_.find_stable(binding->descriptor);
+                    canonical_.descriptors().find_stable(binding->descriptor);
                 if (descriptor == nullptr) {
                     return Result<rodaq_storage_submission>(activation_status(
                         StatusCode::InvalidState, "Record Descriptor is unavailable"));
@@ -307,75 +281,62 @@ Result<void> ActivationState::initialize_pipeline(
 
 bool ActivationState::mark_running() noexcept {
     std::lock_guard<std::mutex> control_lock(control_mutex_);
-    std::lock_guard<std::mutex> admission_lock(admission_mutex_);
-    if (state_.load() != DAQState::Starting) {
+    if (phase_.load() != ActivationPhase::Starting) {
         return false;
     }
     if (pipeline_ != nullptr) {
         pipeline_->open_admission();
     }
-    gate_open_ = pipeline_ != nullptr;
-    state_.store(DAQState::Running);
-    admission_condition_.notify_all();
+    if (pipeline_ != nullptr) {
+        admission_.open_gate();
+    } else {
+        admission_.close_gate();
+    }
+    phase_.store(ActivationPhase::Running);
+    admission_.notify_all();
     return true;
 }
 
 void ActivationState::mark_stopping() noexcept {
-    if (!stop_started_valid_) {
-        stop_started_ = Clock::now();
-        stop_started_valid_ = true;
-    }
+    metrics_.mark_stop_started(Clock::now());
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        if (state_.load() != DAQState::Failed) {
-            state_.store(DAQState::Stopping);
+        if (phase_.load() != ActivationPhase::Failed) {
+            phase_.store(ActivationPhase::Stopping);
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        if (state_.load() != DAQState::Failed) {
-            state_.store(DAQState::Stopping);
-        }
-        gate_open_ = false;
-    }
+    admission_.close_gate();
     if (pipeline_ != nullptr) {
         pipeline_->close_admission();
     }
-    admission_condition_.notify_all();
+    admission_.notify_all();
 }
 
 void ActivationState::mark_stopped() noexcept {
-    record_stop_latency();
+    metrics_.record_stop_latency();
     {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        if (state_.load() != DAQState::Failed) {
-            state_.store(DAQState::Stopped);
+        if (phase_.load() != ActivationPhase::Failed) {
+            phase_.store(ActivationPhase::Stopped);
         }
-        gate_open_ = false;
     }
-    admission_condition_.notify_all();
+    admission_.close_gate();
+    admission_.notify_all();
 }
 
 void ActivationState::mark_failed() noexcept {
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        state_.store(DAQState::Failed);
+        phase_.store(ActivationPhase::Failed);
     }
-    {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        state_.store(DAQState::Failed);
-        gate_open_ = false;
-    }
+    phase_.store(ActivationPhase::Failed);
+    admission_.close_gate();
     if (pipeline_ != nullptr) {
         pipeline_->begin_failure_cutoff();
     }
-    admission_condition_.notify_all();
+    admission_.notify_all();
 }
 
-bool ActivationState::gate_open() const noexcept {
-    std::lock_guard<std::mutex> lock(admission_mutex_);
-    return gate_open_;
-}
+bool ActivationState::gate_open() const noexcept { return admission_.gate_open(); }
 
 void ActivationState::request_failure(Status error) noexcept {
     try {
@@ -434,15 +395,32 @@ std::uint64_t ActivationState::secondary_failure_overflow_count() const noexcept
 
 Result<DAQLifecycleSnapshot> ActivationState::lifecycle_snapshot() const {
     DAQLifecycleSnapshot snapshot;
-    const DAQState state = state_.load();
-    snapshot.state = state;
-    snapshot.normal_acquisition_allowed = state == DAQState::Running && gate_open();
+    const ActivationPhase phase = phase_.load();
+    switch (phase) {
+        case ActivationPhase::Starting:
+            snapshot.state = DAQState::Starting;
+            break;
+        case ActivationPhase::Running:
+            snapshot.state = DAQState::Running;
+            break;
+        case ActivationPhase::Stopping:
+            snapshot.state = DAQState::Stopping;
+            break;
+        case ActivationPhase::Stopped:
+            snapshot.state = DAQState::Stopped;
+            break;
+        case ActivationPhase::Failed:
+            snapshot.state = DAQState::Failed;
+            break;
+    }
+    snapshot.normal_acquisition_allowed = phase == ActivationPhase::Running && gate_open();
     snapshot.generation = activation_generation_;
     return snapshot;
 }
 
-DAQConfig& ActivationState::options() noexcept { return options_; }
-const DAQConfig& ActivationState::options() const noexcept { return options_; }
+const DAQConfig& ActivationState::config() const noexcept { return config_; }
+const ActivationLimits& ActivationState::limits() const noexcept { return limits_; }
+void ActivationState::apply_limits(const ActivationLimits& limits) noexcept { limits_ = limits; }
 std::uint64_t ActivationState::activation_generation() const noexcept {
     return activation_generation_;
 }
@@ -454,13 +432,82 @@ std::optional<plugin::AcquisitionPluginInstance>& ActivationState::acquisition_i
     std::size_t index) noexcept {
     return acquisition_instances_[index];
 }
-DAQState ActivationState::state() const noexcept { return state_.load(); }
+ActivationPhase ActivationState::phase() const noexcept { return phase_.load(); }
 bool ActivationState::requires_quarantine() const noexcept {
     return control_quarantine_required_.load(std::memory_order_acquire) &&
            active_control_calls_.load(std::memory_order_acquire) != 0;
 }
 void ActivationState::set_failure_signal(std::shared_ptr<FailureMailbox> signal) noexcept {
     failure_signal_ = std::move(signal);
+}
+
+Result<PayloadStats> ActivationState::payload_pool_statistics() const {
+    try {
+        return payload_pool_.stats();
+    } catch (const std::bad_alloc&) {
+        return activation_status(
+            StatusCode::ResourceExhausted, "Payload statistics allocation failed");
+    } catch (const std::exception& error) {
+        return activation_status(StatusCode::InternalError, error.what());
+    }
+}
+
+void ActivationState::record_storage_latency(
+    StorageLatencyKind kind, std::int64_t duration_ns) noexcept {
+    metrics_.record_storage_latency(kind, duration_ns);
+}
+
+void ActivationState::record_stop_latency() noexcept { metrics_.record_stop_latency(); }
+
+DAQStats ActivationState::stats() const noexcept {
+    return metrics_.snapshot(current_logging_stats());
+}
+
+void ActivationState::log(
+    LogLevel level, std::string_view category, std::string_view message) noexcept {
+    if (logging_context_ != nullptr) {
+        logging_context_->log(level, category, message);
+    }
+}
+
+void ActivationState::diagnostic(
+    rodaq_diagnostic_severity severity, std::string_view code, std::string_view message) noexcept {
+    LogLevel level = LogLevel::Off;
+    switch (severity) {
+        case RODAQ_DIAGNOSTIC_INFO:
+            level = LogLevel::Info;
+            break;
+        case RODAQ_DIAGNOSTIC_WARNING:
+            level = LogLevel::Warn;
+            break;
+        case RODAQ_DIAGNOSTIC_ERROR:
+            level = LogLevel::Error;
+            break;
+        case RODAQ_DIAGNOSTIC_FATAL:
+            level = LogLevel::Critical;
+            break;
+        default:
+            return;
+    }
+    try {
+        const std::string text = std::string(code) + ": " + std::string(message);
+        log(level, "rodaq.diagnostic", text);
+    } catch (...) {
+    }
+}
+
+bool ActivationState::shutdown_logging(std::chrono::steady_clock::time_point deadline) noexcept {
+    return logging_context_ == nullptr || logging_context_->shutdown(deadline);
+}
+
+void ActivationState::quarantine_logging(std::string reason) noexcept {
+    if (logging_context_ != nullptr) {
+        logging_context_->quarantine_worker(std::move(reason));
+    }
+}
+
+LoggingStats ActivationState::current_logging_stats() const noexcept {
+    return logging_context_ == nullptr ? LoggingStats{} : logging_context_->stats();
 }
 
 }  // namespace rodaq

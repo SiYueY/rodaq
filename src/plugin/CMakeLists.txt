@@ -19,7 +19,7 @@ target_include_directories(rodaq_plugin
 )
 target_link_libraries(rodaq_plugin
     PUBLIC
-        rodaq_api_support
+        rodaq_base
     PRIVATE
         rodaq_sdk
         ${CMAKE_DL_LIBS}

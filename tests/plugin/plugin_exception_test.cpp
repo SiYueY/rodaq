@@ -50,8 +50,8 @@ TEST(PluginExceptionTest, InterfaceTrampolineNeverReturnsOkWithNullInterface) {
     rodaq_interface interface {};
     rodaq_status error{};
     const rodaq_status_code status = rodaq::plugin::invoke_interface(
-        []() -> rodaq::Result<rodaq::plugin::InterfaceView> {
-            return rodaq::plugin::InterfaceView{};
+        []() -> rodaq::Result<rodaq::plugin::InterfaceRef> {
+            return rodaq::plugin::InterfaceRef{};
         },
         &interface, &error);
 

@@ -80,28 +80,28 @@ typedef struct rodaq_runtime_canonical {
     uint32_t struct_size;
 
     rodaq_status_code (*get_source)(
-        void* context, rodaq_source_handle handle, rodaq_source_view* out_view,
+        void* context, rodaq_source_handle handle, rodaq_source_info* out_info,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_clock)(
-        void* context, rodaq_clock_handle handle, rodaq_clock_view* out_view,
+        void* context, rodaq_clock_handle handle, rodaq_clock_info* out_info,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_schema)(
-        void* context, rodaq_schema_handle handle, rodaq_schema_view* out_view,
+        void* context, rodaq_schema_handle handle, rodaq_schema_info* out_info,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_timestamp_key_set)(
-        void* context, uint64_t timestamp_key_set_id, rodaq_timestamp_key_set_view* out_view,
+        void* context, uint64_t timestamp_key_set_id, rodaq_timestamp_key_set_info* out_info,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_stream)(
-        void* context, rodaq_stream_handle handle, rodaq_stream_view* out_view,
+        void* context, rodaq_stream_handle handle, rodaq_stream_info* out_info,
         rodaq_status* out_status) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_stream_descriptor)(
         void* context, rodaq_stream_descriptor_handle handle,
-        rodaq_stream_descriptor_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
+        rodaq_stream_descriptor_info* out_info, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_canonical;
 
 #define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
@@ -117,14 +117,14 @@ typedef struct rodaq_projection_registration {
 } rodaq_projection_registration;
 
 /* ABI-APPENDABLE: borrowed immutable projection data. */
-typedef struct rodaq_projection_view {
+typedef struct rodaq_projection_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_stream_descriptor_handle descriptor;
     rodaq_string_view projection_id;
     rodaq_bytes_view payload;
-} rodaq_projection_view;
+} rodaq_projection_info;
 
 /* ABI-APPENDABLE: projection DAQ service table. */
 typedef struct rodaq_runtime_projection {
@@ -137,7 +137,7 @@ typedef struct rodaq_runtime_projection {
 
     rodaq_status_code (*get_projection)(
         void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-        rodaq_projection_view* out_view, rodaq_status* out_status) RODAQ_NOEXCEPT;
+        rodaq_projection_info* out_info, rodaq_status* out_status) RODAQ_NOEXCEPT;
 } rodaq_runtime_projection;
 
 /* ABI-APPENDABLE: activation-scoped ingress Clock to Unix epoch correlation. */
@@ -234,9 +234,9 @@ typedef struct rodaq_runtime_storage {
     (offsetof(rodaq_projection_registration, payload) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_projection_registration, payload))
 
-#define RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE   \
-    (offsetof(rodaq_projection_view, payload) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_projection_view, payload))
+#define RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE   \
+    (offsetof(rodaq_projection_info, payload) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_projection_info, payload))
 
 #define RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE          \
     (offsetof(rodaq_runtime_projection, get_projection) + \

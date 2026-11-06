@@ -14,7 +14,7 @@
 
 namespace {
 
-const rodaq_plugin_descriptor descriptor = {
+[[maybe_unused]] const rodaq_plugin_descriptor descriptor = {
     RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE,
     0,
     RODAQ_FIXTURE_VIEW("rodaq.acquisition.provider"),
@@ -23,7 +23,7 @@ const rodaq_plugin_descriptor descriptor = {
     RODAQ_FIXTURE_VIEW(""),
 };
 
-const rodaq_acquisition_plugin plugin = {
+[[maybe_unused]] const rodaq_acquisition_plugin plugin = {
     RODAQ_ACQUISITION_PROTOCOL_VERSION,
     RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE,
     &descriptor,

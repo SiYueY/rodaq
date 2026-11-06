@@ -13,11 +13,11 @@
 #include <nonstd/expected.hpp>
 
 #if expected_lite_MAJOR != 0 || expected_lite_MINOR != 10 || expected_lite_PATCH != 0
-#error "RoDAQ V1 requires expected-lite 0.10.0"
+#error "RoDAQ requires expected-lite 0.10.0"
 #endif
 
 #if nsel_CONFIG_SELECT_EXPECTED != nsel_EXPECTED_NONSTD
-#error "RoDAQ V1 requires expected-lite's nonstd implementation"
+#error "RoDAQ requires expected-lite's nonstd implementation"
 #endif
 
 static_assert(!nsel_USES_STD_EXPECTED, "RoDAQ V1 must not silently switch Result to std::expected");

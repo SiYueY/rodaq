@@ -34,7 +34,7 @@ enum class ThrowMethod : int {
     DescriptorReady = 3,
 };
 
-[[noreturn]] void throw_storage_exception() {
+[[noreturn, maybe_unused]] void throw_storage_exception() {
 #if RODAQ_SDK_STORAGE_THROW_KIND == 1
     throw std::bad_alloc();
 #elif RODAQ_SDK_STORAGE_THROW_KIND == 2

@@ -3,13 +3,20 @@ set(RODAQ_SOURCES
     lifecycle.cpp
     recovery.cpp
     failure_mailbox.cpp
+    ../status.cpp
+    ../result.cpp
+    ../config/config.cpp
+    ../plugin/abi_support.cpp
     ../activation/activation_state.cpp
     ../activation/structural_arena.cpp
     ../admission/admission.cpp
+    ../admission/admission_state.cpp
     ../admission/acceptance_sequence.cpp
     ../admission/resource_budget.cpp
     ../admission/submission.cpp
     ../binding/binding.cpp
+    ../binding/binding_state.cpp
+    ../canonical/canonical_state.cpp
     ../canonical/registration.cpp
     ../canonical/descriptor.cpp
     ../canonical/availability.cpp
@@ -19,14 +26,19 @@ set(RODAQ_SOURCES
     ../payload/payload_pool.cpp
     ../storage/storage_pipeline.cpp
     ../clock/clock_correlation.cpp
+    ../config/yaml_config_loader.cpp
+    ../config/validation.cpp
     ../projection/projection_registry.cpp
     ../logging/logging_context.cpp
     ../logging/logger.cpp
     ../logging/spdlog_backend.cpp
-    ../logging/activation_logging.cpp
     ../metrics/latency_histogram.cpp
     ../metrics/stats_accumulator.cpp
     ../metrics/activation_metrics.cpp
+    ../plugin/common_service_adapter.cpp
+    ../plugin/canonical_service_adapter.cpp
+    ../plugin/acquisition_service_adapter.cpp
+    ../plugin/storage_service_adapter.cpp
     ../plugin/activation_services.cpp
 )
 
@@ -40,10 +52,11 @@ target_include_directories(rodaq_objects
 )
 target_link_libraries(rodaq_objects
     PUBLIC
-        rodaq_api_support
+        rodaq_public_api
     PRIVATE
         rodaq_plugin
         rodaq_sdk
+        yaml-cpp::yaml-cpp
         fmt::fmt
         hdr_histogram::hdr_histogram_core_static
         spdlog::spdlog
@@ -73,11 +86,10 @@ target_include_directories(rodaq
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_link_libraries(rodaq
-    PUBLIC
-        rodaq_api_support
     PRIVATE
         rodaq_plugin
         rodaq_sdk
+        yaml-cpp::yaml-cpp
         fmt::fmt
         hdr_histogram::hdr_histogram_core_static
         spdlog::spdlog
@@ -107,7 +119,7 @@ if((BUILD_TESTING AND RODAQ_BUILD_TESTS) OR RODAQ_BUILD_BENCHMARKS)
             rodaq_plugin
             rodaq_sdk
         PRIVATE
-            rodaq_api_support
+            yaml-cpp::yaml-cpp
             fmt::fmt
             hdr_histogram::hdr_histogram_core_static
             spdlog::spdlog

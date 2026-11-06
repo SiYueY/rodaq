@@ -1,6 +1,7 @@
 #ifndef RODAQ_CONFIG_CONFIG_HPP_
 #define RODAQ_CONFIG_CONFIG_HPP_
 
+#include <rodaq/export.hpp>
 #include <rodaq/result.hpp>
 
 #include <cstddef>
@@ -27,15 +28,15 @@ class ConfigNode;
 class ConfigTree;
 class ConfigNodeAccess;
 
-class ConfigNodeView final {
+class RODAQ_EXPORT ConfigNodeRef final {
 public:
-    ConfigNodeView() = default;
+    ConfigNodeRef() = default;
 
     ConfigKind kind() const noexcept;
     std::size_t size() const noexcept;
 
-    Result<ConfigNodeView> find(std::string_view key) const;
-    Result<ConfigNodeView> at(std::uint64_t index) const;
+    Result<ConfigNodeRef> find(std::string_view key) const;
+    Result<ConfigNodeRef> at(std::uint64_t index) const;
     Result<std::string_view> key_at(std::uint64_t index) const;
 
     Result<bool> as_bool() const;
@@ -44,7 +45,7 @@ public:
     Result<std::string_view> as_string() const;
 
 private:
-    explicit ConfigNodeView(std::shared_ptr<const ConfigNode> node);
+    explicit ConfigNodeRef(std::shared_ptr<const ConfigNode> node);
 
     std::shared_ptr<const ConfigNode> node_;
 
@@ -52,7 +53,7 @@ private:
     friend class ConfigNodeAccess;
 };
 
-class ConfigTree final {
+class RODAQ_EXPORT ConfigTree final {
 public:
     using MapEntry = std::pair<std::string, ConfigTree>;
 
@@ -66,14 +67,14 @@ public:
     static Result<ConfigTree> map(std::vector<MapEntry> entries);
     static Result<ConfigTree> list(std::vector<ConfigTree> items);
 
-    ConfigNodeView view() const noexcept;
+    ConfigNodeRef root() const noexcept;
 
 private:
     explicit ConfigTree(std::shared_ptr<const ConfigNode> root);
 
     std::shared_ptr<const ConfigNode> root_;
 
-    friend class ConfigNodeView;
+    friend class ConfigNodeRef;
 };
 
 }  // namespace rodaq

@@ -1,6 +1,6 @@
 {
   "id": "rodaq.storage.fake_runtime",
-  "name": "Fake Runtime Storage Plugin",
+  "name": "Fake DAQ Storage Plugin",
   "version": "1.0.0",
   "family": "storage",
   "description": "M2 Stable ABI storage qualification plugin"

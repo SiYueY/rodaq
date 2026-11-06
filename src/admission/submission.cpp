@@ -1,9 +1,14 @@
-#include "activation/activation_internal.hpp"
+#include "activation/activation_error.hpp"
+#include "activation/activation_state.hpp"
+#include "admission/submit_result.hpp"
+#include "clock/ingress_time.hpp"
 #include "plugin/acquisition_plugin_instance.hpp"
 #include "plugin/storage_plugin_instance.hpp"
 #include <rodaq/plugin/services.hpp>
 
 namespace rodaq {
+
+using Clock = std::chrono::steady_clock;
 
 namespace {
 
@@ -21,38 +26,21 @@ rodaq_acquisition_submit_result pre_rejected(
     rodaq_payload_disposition disposition, bool gate_closed = false,
     bool timeout = false) noexcept {
     state.record_pre_rejected(gate_closed, timeout);
-    return submit_result(RODAQ_ADMISSION_PRE_REJECTED, reason, disposition);
+    return make_submit_result(RODAQ_ADMISSION_PRE_REJECTED, reason, disposition);
 }
 
 }  // namespace
 
-bool ActivationState::begin_submission() noexcept {
-    {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        ++active_submission_calls_;
-    }
-    return true;
-}
+bool ActivationState::begin_submission() noexcept { return admission_.begin_submission(); }
 
-void ActivationState::end_submission() noexcept {
-    {
-        std::lock_guard<std::mutex> lock(admission_mutex_);
-        --active_submission_calls_;
-    }
-    admission_condition_.notify_all();
-}
+void ActivationState::end_submission() noexcept { admission_.end_submission(); }
 
 bool ActivationState::wait_for_admission_drain(std::chrono::steady_clock::time_point deadline) {
-    std::unique_lock<std::mutex> lock(admission_mutex_);
-    return admission_condition_.wait_until(lock, deadline, [this] {
-        return active_submission_calls_ == 0 && admission_inflight_ == 0;
-    });
+    return admission_.wait_for_drain(deadline);
 }
 
 bool ActivationState::wait_for_submissions(std::chrono::steady_clock::time_point deadline) {
-    std::unique_lock<std::mutex> lock(admission_mutex_);
-    return admission_condition_.wait_until(
-        lock, deadline, [this] { return active_submission_calls_ == 0; });
+    return admission_.wait_for_submissions(deadline);
 }
 
 Result<rodaq_acquisition_submit_result> ActivationState::submit(
@@ -72,7 +60,7 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
     const rodaq_payload_mode payload_mode = submission.payload.mode;
     disposition = payload_mode == RODAQ_PAYLOAD_COPY ? RODAQ_PAYLOAD_DISPOSITION_NOT_APPLICABLE
                                                      : RODAQ_PAYLOAD_DISPOSITION_CALLER_RESPONSIBLE;
-    if (state_.load() != DAQState::Running || !gate_open() || pipeline_ == nullptr) {
+    if (phase_.load() != ActivationPhase::Running || !gate_open() || pipeline_ == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_RUNTIME_NOT_RUNNING, disposition, true);
     }
     if (plugin_index >= acquisition_health_.size() ||
@@ -96,8 +84,8 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
     const StreamDescriptorEntry* descriptor = nullptr;
     const SourceEntry* source_entry = nullptr;
     BindingHandle current_binding;
-    stream = streams_.find_stable(stream_handle);
-    descriptor = descriptors_.find_stable(descriptor_handle);
+    stream = canonical_.streams().find_stable(stream_handle);
+    descriptor = canonical_.descriptors().find_stable(descriptor_handle);
     if (stream == nullptr || descriptor == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
     }
@@ -108,15 +96,14 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
         return pre_rejected(*this, RODAQ_REJECTION_INVALID_INPUT, disposition);
     }
     if (source.has_value()) {
-        source_entry = sources_.find_stable(*source);
+        source_entry = canonical_.sources().find_stable(*source);
         if (source_entry == nullptr || source_entry->plugin_index != plugin_index) {
             return pre_rejected(*this, RODAQ_REJECTION_STALE_HANDLE, disposition);
         }
     }
-    current_binding =
-        BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
+    current_binding = bindings_.current_binding(stream_handle);
     BindingEntry* binding =
-        current_binding.valid() ? bindings_.find_stable(current_binding) : nullptr;
+        current_binding.valid() ? bindings_.bindings().find_stable(current_binding) : nullptr;
     if (binding == nullptr) {
         return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_ACTIVE, disposition);
     }
@@ -142,7 +129,7 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
     }
 
     const std::size_t payload_size = static_cast<std::size_t>(submission.payload.size);
-    if (payload_size > options_.resources.max_single_payload_bytes) {
+    if (payload_size > limits_.maximum_payload_bytes) {
         return pre_rejected(*this, RODAQ_REJECTION_PAYLOAD_TOO_LARGE, disposition);
     }
     if (submission.payload.data == nullptr && payload_size != 0) {
@@ -170,16 +157,16 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
         }
     }
 
-    if (!sequences_.can_allocate(stream_handle)) {
+    if (!admission_.can_allocate(stream_handle)) {
         stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
         return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
     }
 
-    const auto deadline = Clock::now() + options_.submit_wait_timeout;
+    const auto deadline = Clock::now() + config_.submit_wait_timeout;
     const auto admission_wait_started = Clock::now();
     auto acquired = pipeline_->acquire_pre_gate(
-        payload_size, options_.admission_mode, &payload_pool_, payload_mode == RODAQ_PAYLOAD_COPY,
-        deadline, admission_eligibility_generation_);
+        payload_size, config_.admission_mode, &payload_pool_, payload_mode == RODAQ_PAYLOAD_COPY,
+        deadline, admission_.eligibility_generation());
     record_admission_wait(
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - admission_wait_started)
             .count());
@@ -194,13 +181,12 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
         case PreGateAcquireOutcome::ResourceUnavailable:
             return pre_rejected(*this, RODAQ_REJECTION_RESOURCE_UNAVAILABLE, disposition);
         case PreGateAcquireOutcome::EligibilityChanged: {
-            if (state_.load() != DAQState::Running || !gate_open()) {
+            if (phase_.load() != ActivationPhase::Running || !gate_open()) {
                 return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
             }
-            const BindingHandle binding_handle =
-                BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
+            const BindingHandle binding_handle = bindings_.current_binding(stream_handle);
             const BindingEntry* binding_entry =
-                binding_handle.valid() ? bindings_.find_stable(binding_handle) : nullptr;
+                binding_handle.valid() ? bindings_.bindings().find_stable(binding_handle) : nullptr;
             if (binding_entry == nullptr || binding_entry->descriptor != descriptor_handle) {
                 return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
             }
@@ -269,9 +255,9 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
     Status deferred_failure;
     std::optional<rodaq_acquisition_submit_result> deferred_result;
     {
-        std::lock_guard<std::mutex> stream_lock(*stream->admission_mutex);
-        std::lock_guard<std::mutex> gate_lock(admission_mutex_);
-        if (state_.load() != DAQState::Running || !gate_open_) {
+        std::lock_guard<std::mutex> stream_lock(admission_.stream_mutex(stream_handle));
+        std::lock_guard<std::mutex> gate_lock(admission_.mutex());
+        if (phase_.load() != ActivationPhase::Running || !admission_.gate_open_locked()) {
             return pre_rejected(*this, RODAQ_REJECTION_GATE_CLOSED, disposition, true);
         }
         if (plugin_index >= acquisition_health_.size() ||
@@ -282,10 +268,9 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
         if (!pipeline_->admission_open()) {
             admission_failure = true;
         }
-        const BindingHandle final_binding =
-            BindingHandle::from_raw(stream->current_binding->load(std::memory_order_acquire));
+        const BindingHandle final_binding = bindings_.current_binding(stream_handle);
         BindingEntry* final_binding_entry =
-            final_binding.valid() ? bindings_.find_stable(final_binding) : nullptr;
+            final_binding.valid() ? bindings_.bindings().find_stable(final_binding) : nullptr;
         if (final_binding_entry == nullptr ||
             final_binding_entry->descriptor != descriptor_handle) {
             return pre_rejected(*this, RODAQ_REJECTION_BINDING_NOT_CURRENT, disposition);
@@ -303,7 +288,7 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
                 return pre_rejected(*this, RODAQ_REJECTION_SOURCE_UNAVAILABLE, disposition);
             }
         }
-        if (!sequences_.can_allocate(stream_handle)) {
+        if (!admission_.can_allocate(stream_handle)) {
             stream->availability->store(RODAQ_AVAILABILITY_UNAVAILABLE);
             return pre_rejected(*this, RODAQ_REJECTION_SEQUENCE_EXHAUSTED, disposition);
         }
@@ -313,15 +298,14 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
             deferred_result.emplace(
                 pre_rejected(*this, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
         } else {
-            ++admission_inflight_;
+            admission_.record_inflight_acquired_locked();
             final_binding_entry->admission_inflight->fetch_add(1);
-            auto sequence = sequences_.allocate(stream_handle);
+            auto sequence = admission_.allocate(stream_handle);
             if (!sequence.ok()) {
-                --admission_inflight_;
+                admission_.record_inflight_released_locked();
                 final_binding_entry->admission_inflight->fetch_sub(1);
-                admission_condition_.notify_all();
                 deferred_failure = sequence.status();
-                deferred_result.emplace(submit_result(
+                deferred_result.emplace(make_submit_result(
                     RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
             } else {
                 const std::int64_t accepted_steady_time_ns =
@@ -333,21 +317,19 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
                     std::move(payload), reservation.take_record_reservation(),
                     accepted_steady_time_ns);
                 if (!record.ok()) {
-                    --admission_inflight_;
+                    admission_.record_inflight_released_locked();
                     final_binding_entry->admission_inflight->fetch_sub(1);
-                    admission_condition_.notify_all();
-                    stats_.record_rejected();
+                    metrics_.record_rejected();
                     deferred_failure = record.status();
-                    deferred_result.emplace(submit_result(
+                    deferred_result.emplace(make_submit_result(
                         RODAQ_ADMISSION_REJECTED, RODAQ_REJECTION_RUNTIME_FAILURE, disposition));
                 } else {
-                    stats_.record_inflight_acquired(static_cast<std::uint64_t>(payload_size));
+                    metrics_.record_inflight_acquired(static_cast<std::uint64_t>(payload_size));
                     pipeline_->publish(std::move(reservation), std::move(record.value()));
-                    stats_.record_accepted(payload_size);
-                    --admission_inflight_;
+                    metrics_.record_accepted(payload_size);
+                    admission_.record_inflight_released_locked();
                     const std::uint64_t binding_inflight =
                         final_binding_entry->admission_inflight->fetch_sub(1) - 1U;
-                    admission_condition_.notify_all();
                     retire_binding = binding_inflight == 0 &&
                                      final_binding_entry->lifecycle->load() ==
                                          static_cast<std::uint32_t>(BindingLifecycle::Draining);
@@ -364,23 +346,15 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
     if (deferred_result.has_value()) {
         return deferred_result.value();
     }
-    return submit_result(RODAQ_ADMISSION_ACCEPTED, RODAQ_REJECTION_NONE, disposition);
+    return make_submit_result(RODAQ_ADMISSION_ACCEPTED, RODAQ_REJECTION_NONE, disposition);
 }
 
 void ActivationState::record_pre_rejected(bool gate_closed, bool timeout) noexcept {
-    if (gate_closed) {
-        stats_.record_gate_closed();
-    } else if (timeout) {
-        stats_.record_timed_out();
-    } else {
-        stats_.record_rejected();
-    }
+    metrics_.record_pre_rejected(gate_closed, timeout);
 }
 
 void ActivationState::record_admission_wait(std::int64_t duration_ns) noexcept {
-    if (duration_ns >= 0 && admission_wait_latency_ != nullptr) {
-        static_cast<void>(admission_wait_latency_->record(duration_ns));
-    }
+    metrics_.record_admission_wait(duration_ns);
 }
 
 }  // namespace rodaq

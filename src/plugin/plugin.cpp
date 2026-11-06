@@ -12,13 +12,13 @@ rodaq_status_code invalid_input(const char* message, rodaq_status* out_status) n
 }  // namespace rodaq::plugin
 
 namespace rodaq::plugin {
-Result<InterfaceView> AcquisitionPlugin::query_interface(std::string_view interface_id) {
+Result<InterfaceRef> AcquisitionPlugin::query_interface(std::string_view interface_id) {
     static_cast<void>(interface_id);
     return rodaq::Status(
         StatusCode::NotFound, "sdk", 0, "Optional Plugin interface is unavailable");
 }
 
-Result<InterfaceView> StoragePlugin::query_interface(std::string_view interface_id) {
+Result<InterfaceRef> StoragePlugin::query_interface(std::string_view interface_id) {
     static_cast<void>(interface_id);
     return rodaq::Status(
         StatusCode::NotFound, "sdk", 0, "Optional Plugin interface is unavailable");

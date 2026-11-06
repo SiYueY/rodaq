@@ -9,10 +9,10 @@
 
 namespace rodaq::plugin {
 
-class InterfaceView final {
+class InterfaceRef final {
 public:
-    InterfaceView() = default;
-    explicit InterfaceView(rodaq_interface interface) noexcept;
+    InterfaceRef() = default;
+    explicit InterfaceRef(rodaq_interface interface) noexcept;
 
     void* context() const noexcept;
     const void* v_table() const noexcept;
@@ -23,15 +23,15 @@ private:
     rodaq_interface interface_{};
 };
 
-class ServiceRegistryView final {
+class ServiceRegistryRef final {
 public:
-    ServiceRegistryView() = default;
+    ServiceRegistryRef() = default;
 
-    static Result<ServiceRegistryView> from_abi(const rodaq_service_registry& registry);
-    Result<InterfaceView> query(std::string_view service_id) const;
+    static Result<ServiceRegistryRef> from_abi(const rodaq_service_registry& registry);
+    Result<InterfaceRef> query(std::string_view service_id) const;
 
 private:
-    explicit ServiceRegistryView(const rodaq_service_registry& registry) noexcept;
+    explicit ServiceRegistryRef(const rodaq_service_registry& registry) noexcept;
 
     rodaq_service_registry registry_{};
 };

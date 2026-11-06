@@ -50,6 +50,6 @@ public:
 
 int main() {
     rodaq::plugin::ConfigView config;
-    rodaq::plugin::ServiceRegistryView registry;
+    rodaq::plugin::ServiceRegistryRef registry;
     return config.find("key").ok() || registry.query("service").ok() ? 1 : 0;
 }

@@ -44,13 +44,8 @@ install(
 )
 
 install(TARGETS
-    rodaq_headers
-    rodaq_public_api
-    rodaq_expected_lite
-    rodaq_api_support
     rodaq
     rodaq_sdk
-    yaml-cpp
     EXPORT RoDAQTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"

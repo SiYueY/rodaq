@@ -55,14 +55,14 @@
 namespace {
 
 constexpr char kPluginId[] = RODAQ_FIXTURE_PLUGIN_ID;
-constexpr char kPluginName[] = RODAQ_FIXTURE_PLUGIN_NAME;
+[[maybe_unused]] constexpr char kPluginName[] = RODAQ_FIXTURE_PLUGIN_NAME;
 constexpr char kPluginVersion[] = RODAQ_FIXTURE_PLUGIN_VERSION;
 constexpr char kPluginDescription[] = "";
 
 #if defined(RODAQ_FIXTURE_INVALID_UTF8_NAME)
 constexpr char kInvalidName[] = {'b', 'a', 'd', static_cast<char>(0xFF)};
 
-const rodaq_plugin_descriptor descriptor = {
+[[maybe_unused]] const rodaq_plugin_descriptor descriptor = {
     RODAQ_FIXTURE_DESCRIPTOR_STRUCT_SIZE,
     0,
     {kPluginId, sizeof(kPluginId) - 1},
@@ -71,7 +71,7 @@ const rodaq_plugin_descriptor descriptor = {
     {kPluginDescription, sizeof(kPluginDescription) - 1},
 };
 #else
-const rodaq_plugin_descriptor descriptor = {
+[[maybe_unused]] const rodaq_plugin_descriptor descriptor = {
     RODAQ_FIXTURE_DESCRIPTOR_STRUCT_SIZE,
     0,
     {kPluginId, sizeof(kPluginId) - 1},

@@ -55,7 +55,7 @@ rodaq_status_code invoke_interface(
     }
     *out_interface = {};
     try {
-        Result<InterfaceView> result = std::forward<Function>(function)();
+        Result<InterfaceRef> result = std::forward<Function>(function)();
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
             return abi_status_from_status_code(result.status().status_code());
@@ -95,7 +95,8 @@ rodaq_status_code invoke_struct_output(
     }
     const std::uint32_t capacity = output->struct_size;
     if (capacity < minimum_size) {
-        return invalid_input("struct output capacity is below the V1 minimum", out_status);
+        return invalid_input(
+            "struct output capacity is below the minimum supported size", out_status);
     }
     try {
         auto result = std::forward<Function>(function)();

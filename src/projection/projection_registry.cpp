@@ -229,24 +229,24 @@ rodaq_status_code ProjectionRegistry::register_projection(
 
 rodaq_status_code ProjectionRegistry::get_projection(
     void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-    rodaq_projection_view* out_view, rodaq_status* out_status) noexcept {
-    if (out_view == nullptr) {
+    rodaq_projection_info* out_info, rodaq_status* out_status) noexcept {
+    if (out_info == nullptr) {
         assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
             "Projection query requires a non-null output view", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    const std::uint32_t capacity = out_view->struct_size;
-    if (capacity < RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE) {
-        out_view->struct_size = 0;
+    const std::uint32_t capacity = out_info->struct_size;
+    if (capacity < RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE) {
+        out_info->struct_size = 0;
         assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0,
-            "Projection output capacity is below the V1 minimum", out_status);
+            "Projection output capacity is below the minimum supported size", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t initialized =
-        rodaq::initialized_prefix_size<rodaq_projection_view>(capacity);
-    std::memset(out_view, 0, initialized);
+        rodaq::initialized_prefix_size<rodaq_projection_info>(capacity);
+    std::memset(out_info, 0, initialized);
     if (context == nullptr) {
         assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "projection", 0, "Projection query context is null",
@@ -270,17 +270,17 @@ rodaq_status_code ProjectionRegistry::get_projection(
             return abi_status_from_status_code(result.status().status_code());
         }
         const ProjectionView& view = result.value();
-        out_view->struct_size = initialized;
-        out_view->reserved = 0;
-        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, descriptor)) {
-            out_view->descriptor = descriptor;
+        out_info->struct_size = initialized;
+        out_info->reserved = 0;
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_info, capacity, descriptor)) {
+            out_info->descriptor = descriptor;
         }
-        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, projection_id)) {
-            out_view->projection_id =
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_info, capacity, projection_id)) {
+            out_info->projection_id =
                 rodaq_string_view{view.projection_id.data(), view.projection_id.size()};
         }
-        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_view, capacity, payload)) {
-            out_view->payload = rodaq_bytes_view{view.payload, view.payload_size};
+        if (RODAQ_HAS_FIELD_CAPACITY(rodaq_projection_info, capacity, payload)) {
+            out_info->payload = rodaq_bytes_view{view.payload, view.payload_size};
         }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {

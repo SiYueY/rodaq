@@ -23,7 +23,7 @@ public:
         const rodaq_storage_submission& submission) = 0;
     virtual Result<void> flush() = 0;
     virtual Result<void> close(rodaq_storage_close_disposition disposition) = 0;
-    virtual Result<InterfaceView> query_interface(std::string_view interface_id);
+    virtual Result<InterfaceRef> query_interface(std::string_view interface_id);
 };
 
 }  // namespace rodaq::plugin
@@ -91,7 +91,7 @@ void write_descriptor_readiness_result(
         }                                                                                          \
         return rodaq::plugin::invoke_void(                                                         \
             [instance, services]() -> rodaq::Result<void> {                                        \
-                auto registry = rodaq::plugin::ServiceRegistryView::from_abi(*services);           \
+                auto registry = rodaq::plugin::ServiceRegistryRef::from_abi(*services);            \
                 if (!registry.ok()) {                                                              \
                     return registry.status();                                                      \
                 }                                                                                  \
@@ -227,9 +227,8 @@ void write_descriptor_readiness_result(
         if (parsed_id == required) {                                                               \
             return rodaq::plugin::invoke_interface(                                                \
                 [instance] {                                                                       \
-                    return rodaq::Result<rodaq::plugin::InterfaceView>(                            \
-                        rodaq::plugin::InterfaceView(                                              \
-                            rodaq_interface{instance, &rodaq_sdk_storage_control}));               \
+                    return rodaq::Result<rodaq::plugin::InterfaceRef>(rodaq::plugin::InterfaceRef( \
+                        rodaq_interface{instance, &rodaq_sdk_storage_control}));                   \
                 },                                                                                 \
                 out_interface, out_status);                                                        \
         }                                                                                          \

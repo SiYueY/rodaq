@@ -1,5 +1,6 @@
 #include "daq/daq_impl.hpp"
-#include "config/config_internal.hpp"
+#include "config/abi_bridge.hpp"
+#include "config/validation.hpp"
 #include "plugin/acquisition_plugin_instance.hpp"
 #include "plugin/plugin_manager.hpp"
 #include "plugin/service_registry.hpp"
@@ -20,81 +21,9 @@
 namespace rodaq {
 namespace {
 using Clock = std::chrono::steady_clock;
-template <typename Config>
-Result<void> validate_plugin_options(const Config& options) {
-    std::error_code error;
-    if (options.path.empty() || !std::filesystem::is_regular_file(options.path, error)) {
-        return daq_status(StatusCode::NotFound, "DAQ Plugin path is missing");
-    }
-    const ConfigNodeView view = options.config.view();
-    if (config_abi_view(view).context == nullptr) {
-        return daq_status(StatusCode::InvalidArgument, "DAQ Plugin config is empty");
-    }
-    return {};
-}
-
-Result<void> validate_options(const DAQConfig& options) {
-    const ResourceConfig& resources = options.resources;
-    const PayloadPoolConfig& pool_config = resources.payload_pool;
-    if (resources.max_sources == 0 || resources.max_clocks == 0 || resources.max_schemas == 0 ||
-        resources.max_timestamp_key_sets == 0 || resources.max_streams == 0 ||
-        resources.max_stream_descriptors == 0 || resources.max_bindings == 0 ||
-        resources.structural_arena_bytes == 0 || resources.max_single_payload_bytes == 0 ||
-        resources.dispatch_capacity == 0 || resources.operation_capacity == 0 ||
-        resources.completion_capacity == 0 || resources.payload_release_workers == 0 ||
-        options.submit_wait_timeout.count() <= 0 || options.stop_progress_timeout.count() <= 0 ||
-        options.logging.queue_records == 0 || options.logging.queue_bytes == 0 ||
-        options.logging.flush_timeout.count() <= 0 ||
-        options.logging.shutdown_timeout.count() <= 0) {
-        return daq_status(StatusCode::InvalidArgument, "DAQ capacity configuration is invalid");
-    }
-    if (resources.dispatch_capacity != resources.operation_capacity) {
-        return daq_status(
-            StatusCode::InvalidArgument, "V1 requires equal dispatch and operation capacity");
-    }
-    if (pool_config.classes.empty()) {
-        return daq_status(
-            StatusCode::InvalidArgument, "PayloadPool configuration has no size classes");
-    }
-    std::size_t previous_class_size = 0;
-    for (const PayloadClassConfig& payload_class : pool_config.classes) {
-        if (payload_class.max_payload_bytes == 0 || payload_class.block_count == 0 ||
-            payload_class.max_payload_bytes <= previous_class_size ||
-            payload_class.max_payload_bytes >
-                std::numeric_limits<std::size_t>::max() / payload_class.block_count) {
-            return daq_status(
-                StatusCode::InvalidArgument, "PayloadPool size class configuration is invalid");
-        }
-        previous_class_size = payload_class.max_payload_bytes;
-    }
-    if (pool_config.classes.back().max_payload_bytes < resources.max_single_payload_bytes) {
-        return daq_status(
-            StatusCode::InvalidArgument,
-            "PayloadPool capacity is below the configured payload limit");
-    }
-    if (options.acquisition_id.empty() || options.target_uri.empty()) {
-        return daq_status(StatusCode::InvalidArgument, "Storage open configuration is empty");
-    }
-    if (options.acquisitions.empty()) {
-        return daq_status(
-            StatusCode::InvalidArgument, "At least one Acquisition Plugin is required");
-    }
-    auto storage = validate_plugin_options(options.storage);
-    if (!storage.ok()) {
-        return storage;
-    }
-    for (const AcquisitionPluginConfig& acquisition : options.acquisitions) {
-        auto validated = validate_plugin_options(acquisition);
-        if (!validated.ok()) {
-            return validated;
-        }
-    }
-    return {};
-}
-
 Status abi_failure_status(
     rodaq_status_code status, const rodaq_status& error, std::string_view fallback) {
-    auto converted = status_from_abi(status, &error, "runtime");
+    auto converted = status_from_abi(status, &error, "acquisition");
     if (!converted.ok()) {
         return converted;
     }
@@ -130,7 +59,7 @@ Result<void> DAQ::Impl::configure() {
     if (state_ != DAQState::Constructed) {
         return daq_status(StatusCode::InvalidState, "DAQ cannot be configured from its state");
     }
-    auto validated = validate_options(options_);
+    auto validated = validate_daq_config(options_);
     if (!validated.ok()) {
         return validated;
     }
@@ -330,9 +259,9 @@ Result<void> DAQ::Impl::stop_internal() {
     }
 
     if (storage_open_ && active_->storage_instance().has_value()) {
-        const rodaq_storage_close_disposition disposition = active_->state() == DAQState::Failed
-                                                                ? RODAQ_STORAGE_CLOSE_FAILURE
-                                                                : RODAQ_STORAGE_CLOSE_NORMAL;
+        const rodaq_storage_close_disposition disposition =
+            active_->phase() == ActivationPhase::Failed ? RODAQ_STORAGE_CLOSE_FAILURE
+                                                        : RODAQ_STORAGE_CLOSE_NORMAL;
         std::shared_ptr<ActivationState> state = active_;
         auto close = run_bounded_call(
             "close",
@@ -449,7 +378,8 @@ Result<void> DAQ::Impl::stop_internal() {
             daq_status(StatusCode::Timeout, "DAQ logging shutdown timed out"));
     }
 
-    const bool failed = active_->state() == DAQState::Failed || !active_->primary_failure().ok();
+    const bool failed =
+        active_->phase() == ActivationPhase::Failed || !active_->primary_failure().ok();
     active_->record_stop_latency();
     last_stats_ = active_->stats();
     auto payload_stats = active_->payload_pool_statistics();
@@ -525,7 +455,7 @@ Result<void> DAQ::Impl::start_activation() {
     active_->set_storage_control(control.value());
     auto storage_config = options_.storage.config;
     auto configured = supervise_start_call([state, storage_config]() mutable {
-        return state->storage_instance()->configure(config_abi_view(storage_config.view()));
+        return state->storage_instance()->configure(config_abi_view(storage_config.root()));
     });
     if (!configured.ok()) {
         return configured;
@@ -573,15 +503,21 @@ Result<void> DAQ::Impl::start_activation() {
     effective_storage_close_timeout_ = effective_control_timeout(
         options_.stop_progress_timeout, capabilities->close_progress_timeout_ns);
 
-    active_->options().resources.max_single_payload_bytes = effective_payload_limit;
-    active_->options().resources.dispatch_capacity = effective_capacity;
-    active_->options().resources.operation_capacity = effective_capacity;
-    active_->options().resources.completion_capacity = effective_completion_capacity;
-    active_->set_descriptor_progress_timeout(effective_descriptor_timeout);
-    active_->set_binding_progress_timeout(options_.stop_progress_timeout);
+    const ActivationLimits activation_limits{
+        effective_payload_limit,
+        effective_capacity,
+        effective_capacity,
+        effective_completion_capacity,
+        effective_storage_handoff_timeout_,
+        effective_descriptor_timeout,
+        options_.stop_progress_timeout,
+        effective_storage_flush_timeout_,
+        effective_storage_close_timeout_,
+    };
+    active_->apply_limits(activation_limits);
 
     auto opened = supervise_start_call([state]() {
-        const DAQConfig& active_options = state->options();
+        const DAQConfig& active_options = state->config();
         rodaq_storage_open_request open_request{};
         open_request.struct_size = sizeof(open_request);
         open_request.session_id = rodaq_string_view{
@@ -603,7 +539,7 @@ Result<void> DAQ::Impl::start_activation() {
         return pipeline;
     }
 
-    if (options_.acquisitions.size() != active_->options().acquisitions.size()) {
+    if (options_.acquisitions.size() != active_->config().acquisitions.size()) {
         return daq_status(StatusCode::InternalError, "Acquisition count changed during activation");
     }
     for (std::size_t index = 0; index < options_.acquisitions.size(); ++index) {
@@ -648,7 +584,7 @@ Result<void> DAQ::Impl::start_activation() {
         auto acquisition_configured = supervise_start_call(
             [state, acquisition_config = std::move(acquisition_config), index]() mutable {
                 return state->acquisition_instance(index)->configure(
-                    config_abi_view(acquisition_config.view()));
+                    config_abi_view(acquisition_config.root()));
             });
         if (!acquisition_configured.ok()) {
             return acquisition_configured;

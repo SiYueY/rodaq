@@ -11,7 +11,7 @@
 #define RODAQ_TEST_ALIGNOF(type) _Alignof(type)
 #endif
 
-RODAQ_TEST_STATIC_ASSERT(sizeof(void*) == 8, "V1 targets LP64 platforms");
+RODAQ_TEST_STATIC_ASSERT(sizeof(void*) == 8, "targets LP64 platforms");
 
 RODAQ_TEST_STATIC_ASSERT(sizeof(rodaq_string_view) == 16, "string view size");
 RODAQ_TEST_STATIC_ASSERT(RODAQ_TEST_ALIGNOF(rodaq_string_view) == 8, "string view align");

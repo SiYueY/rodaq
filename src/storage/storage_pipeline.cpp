@@ -209,7 +209,7 @@ StoragePipeline::~StoragePipeline() {
 Result<void> StoragePipeline::start() {
     if (started_) {
         return rodaq::Status(
-            StatusCode::InvalidState, "runtime", 0, "StoragePipeline is already started");
+            StatusCode::InvalidState, "storage", 0, "StoragePipeline is already started");
     }
     try {
         watchdog_thread_ = std::thread([this] {
@@ -254,7 +254,7 @@ Result<void> StoragePipeline::start() {
             watchdog_thread_.join();
         }
         return rodaq::Status(
-            StatusCode::Unavailable, "runtime", 0,
+            StatusCode::Unavailable, "storage", 0,
             std::string("Failed to start Storage pipeline workers: ") + error.what());
     }
 }
@@ -285,7 +285,7 @@ Result<PreGateAcquireResult> StoragePipeline::acquire_pre_gate(
     const std::atomic<std::uint64_t>& eligibility_generation) {
     if (payload_bytes > maximum_payload_bytes_) {
         return rodaq::Status(
-            StatusCode::InvalidArgument, "runtime", 0, "Payload exceeds runtime limit");
+            StatusCode::InvalidArgument, "storage", 0, "Payload exceeds configured limit");
     }
 
     std::unique_lock<std::mutex> lock(mutex_);
@@ -313,7 +313,7 @@ Result<PreGateAcquireResult> StoragePipeline::acquire_pre_gate(
                 payload_bytes != 0) {
                 if (copy_pool == nullptr) {
                     return rodaq::Status(
-                        StatusCode::InvalidState, "runtime", 0,
+                        StatusCode::InvalidState, "storage", 0,
                         "Copy Payload requires a PayloadPool");
                 }
                 auto reserved = copy_pool->try_reserve(payload_bytes);

@@ -2,6 +2,14 @@
     global:
         _ZN5rodaq3DAQ*;
         _ZNK5rodaq3DAQ*;
+        _ZN5rodaq6Status*;
+        _ZNK5rodaq6Status*;
+        _ZN5rodaq10ConfigTree*;
+        _ZNK5rodaq10ConfigTree*;
+        _ZN5rodaq13ConfigNodeRef*;
+        _ZNK5rodaq13ConfigNodeRef*;
+        _ZN5rodaq16load_yaml_config*;
+        _ZN5rodaq21load_yaml_config_file*;
     local:
         *;
 };

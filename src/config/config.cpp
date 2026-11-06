@@ -327,9 +327,9 @@ rodaq_config_view make_abi_view(const ConfigNode* node) noexcept {
 
 }  // namespace
 
-ConfigNodeView::ConfigNodeView(std::shared_ptr<const ConfigNode> node) : node_(std::move(node)) {}
+ConfigNodeRef::ConfigNodeRef(std::shared_ptr<const ConfigNode> node) : node_(std::move(node)) {}
 
-ConfigKind ConfigNodeView::kind() const noexcept {
+ConfigKind ConfigNodeRef::kind() const noexcept {
     if (node_ == nullptr) {
         return ConfigKind::Null;
     }
@@ -352,7 +352,7 @@ ConfigKind ConfigNodeView::kind() const noexcept {
     return ConfigKind::Null;
 }
 
-std::size_t ConfigNodeView::size() const noexcept {
+std::size_t ConfigNodeRef::size() const noexcept {
     const std::uint64_t value = abi_size(node_.get());
     if (value > std::numeric_limits<std::size_t>::max()) {
         return std::numeric_limits<std::size_t>::max();
@@ -360,7 +360,7 @@ std::size_t ConfigNodeView::size() const noexcept {
     return static_cast<std::size_t>(value);
 }
 
-Result<ConfigNodeView> ConfigNodeView::find(std::string_view key) const {
+Result<ConfigNodeRef> ConfigNodeRef::find(std::string_view key) const {
     if (node_ == nullptr) {
         return config_status(StatusCode::InvalidState, "Config view is empty");
     }
@@ -377,10 +377,10 @@ Result<ConfigNodeView> ConfigNodeView::find(std::string_view key) const {
     if (found == entries->end()) {
         return config_status(StatusCode::NotFound, "Config MAP key was not found");
     }
-    return ConfigNodeView(found->value);
+    return ConfigNodeRef(found->value);
 }
 
-Result<ConfigNodeView> ConfigNodeView::at(std::uint64_t index) const {
+Result<ConfigNodeRef> ConfigNodeRef::at(std::uint64_t index) const {
     if (node_ == nullptr) {
         return config_status(StatusCode::InvalidState, "Config view is empty");
     }
@@ -392,10 +392,10 @@ Result<ConfigNodeView> ConfigNodeView::at(std::uint64_t index) const {
     if (child == nullptr) {
         return config_status(StatusCode::NotFound, "Config index is out of range");
     }
-    return ConfigNodeView(std::shared_ptr<const ConfigNode>(node_, child));
+    return ConfigNodeRef(std::shared_ptr<const ConfigNode>(node_, child));
 }
 
-Result<std::string_view> ConfigNodeView::key_at(std::uint64_t index) const {
+Result<std::string_view> ConfigNodeRef::key_at(std::uint64_t index) const {
     if (node_ == nullptr) {
         return config_status(StatusCode::InvalidState, "Config view is empty");
     }
@@ -409,7 +409,7 @@ Result<std::string_view> ConfigNodeView::key_at(std::uint64_t index) const {
     return std::string_view((*entries)[static_cast<std::size_t>(index)].key);
 }
 
-Result<bool> ConfigNodeView::as_bool() const {
+Result<bool> ConfigNodeRef::as_bool() const {
     const bool* value = node_ == nullptr ? nullptr : std::get_if<bool>(&node_->value);
     if (value == nullptr) {
         return config_status(StatusCode::InvalidState, "Config value is not BOOL");
@@ -417,7 +417,7 @@ Result<bool> ConfigNodeView::as_bool() const {
     return *value;
 }
 
-Result<std::int64_t> ConfigNodeView::as_int64() const {
+Result<std::int64_t> ConfigNodeRef::as_int64() const {
     const std::int64_t* value =
         node_ == nullptr ? nullptr : std::get_if<std::int64_t>(&node_->value);
     if (value == nullptr) {
@@ -426,7 +426,7 @@ Result<std::int64_t> ConfigNodeView::as_int64() const {
     return *value;
 }
 
-Result<double> ConfigNodeView::as_double() const {
+Result<double> ConfigNodeRef::as_double() const {
     const double* value = node_ == nullptr ? nullptr : std::get_if<double>(&node_->value);
     if (value == nullptr) {
         return config_status(StatusCode::InvalidState, "Config value is not DOUBLE");
@@ -434,7 +434,7 @@ Result<double> ConfigNodeView::as_double() const {
     return *value;
 }
 
-Result<std::string_view> ConfigNodeView::as_string() const {
+Result<std::string_view> ConfigNodeRef::as_string() const {
     const std::string* value = node_ == nullptr ? nullptr : std::get_if<std::string>(&node_->value);
     if (value == nullptr) {
         return config_status(StatusCode::InvalidState, "Config value is not STRING");
@@ -444,10 +444,10 @@ Result<std::string_view> ConfigNodeView::as_string() const {
 
 class ConfigNodeAccess final {
 public:
-    static const ConfigNode* get(const ConfigNodeView& view) noexcept { return view.node_.get(); }
+    static const ConfigNode* get(const ConfigNodeRef& view) noexcept { return view.node_.get(); }
 };
 
-rodaq_config_view config_abi_view(const ConfigNodeView& view) noexcept {
+rodaq_config_view config_abi_view(const ConfigNodeRef& view) noexcept {
     return make_abi_view(ConfigNodeAccess::get(view));
 }
 
@@ -497,6 +497,6 @@ Result<ConfigTree> ConfigTree::list(std::vector<ConfigTree> items) {
     return ConfigTree(make_node(std::move(node_items)));
 }
 
-ConfigNodeView ConfigTree::view() const noexcept { return ConfigNodeView(root_); }
+ConfigNodeRef ConfigTree::root() const noexcept { return ConfigNodeRef(root_); }
 
 }  // namespace rodaq

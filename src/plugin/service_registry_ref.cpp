@@ -2,18 +2,18 @@
 
 namespace rodaq::plugin {
 
-InterfaceView::InterfaceView(rodaq_interface interface) noexcept : interface_(interface) {}
-void* InterfaceView::context() const noexcept { return interface_.context; }
-const void* InterfaceView::v_table() const noexcept { return interface_.vtable; }
-bool InterfaceView::valid() const noexcept {
+InterfaceRef::InterfaceRef(rodaq_interface interface) noexcept : interface_(interface) {}
+void* InterfaceRef::context() const noexcept { return interface_.context; }
+const void* InterfaceRef::v_table() const noexcept { return interface_.vtable; }
+bool InterfaceRef::valid() const noexcept {
     return interface_.context != nullptr && interface_.vtable != nullptr;
 }
-rodaq_interface InterfaceView::abi() const noexcept { return interface_; }
+rodaq_interface InterfaceRef::abi() const noexcept { return interface_; }
 
-ServiceRegistryView::ServiceRegistryView(const rodaq_service_registry& registry) noexcept
+ServiceRegistryRef::ServiceRegistryRef(const rodaq_service_registry& registry) noexcept
 : registry_(registry) {}
 
-Result<ServiceRegistryView> ServiceRegistryView::from_abi(const rodaq_service_registry& registry) {
+Result<ServiceRegistryRef> ServiceRegistryRef::from_abi(const rodaq_service_registry& registry) {
     if (registry.context == nullptr || registry.vtable == nullptr ||
         registry.vtable->protocol_version != RODAQ_SERVICE_REGISTRY_PROTOCOL_VERSION ||
         registry.vtable->struct_size < RODAQ_SERVICE_REGISTRY_VTABLE_MIN_STRUCT_SIZE ||
@@ -22,11 +22,11 @@ Result<ServiceRegistryView> ServiceRegistryView::from_abi(const rodaq_service_re
             StatusCode::InvalidArgument, "sdk", 0,
             "Service Registry ABI is incomplete or incompatible");
     }
-    return ServiceRegistryView(registry);
+    return ServiceRegistryRef(registry);
 }
-Result<InterfaceView> ServiceRegistryView::query(std::string_view service_id) const {
+Result<InterfaceRef> ServiceRegistryRef::query(std::string_view service_id) const {
     if (registry_.context == nullptr || registry_.vtable == nullptr) {
-        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "ServiceRegistryView is invalid");
+        return rodaq::Status(StatusCode::InvalidState, "sdk", 0, "ServiceRegistryRef is invalid");
     }
     rodaq_interface interface {};
     rodaq_status error{};
@@ -41,7 +41,7 @@ Result<InterfaceView> ServiceRegistryView::query(std::string_view service_id) co
             StatusCode::InvalidArgument, "sdk", 0,
             "Service Registry returned an incomplete interface");
     }
-    return InterfaceView(interface);
+    return InterfaceRef(interface);
 }
 
 }  // namespace rodaq::plugin

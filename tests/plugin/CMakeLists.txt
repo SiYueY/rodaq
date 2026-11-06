@@ -453,6 +453,7 @@ target_link_libraries(rodaq_config_view_test
     PRIVATE
         GTest::gtest_main
         rodaq_plugin
+        rodaq::sdk
 )
 rodaq_enable_warnings(rodaq_config_view_test)
 rodaq_enable_sanitizers(rodaq_config_view_test)
@@ -592,7 +593,11 @@ set_tests_properties(
 )
 
 add_executable(rodaq_raw_noexcept_probe raw_noexcept_probe.cpp)
-target_compile_options(rodaq_raw_noexcept_probe PRIVATE -Wno-terminate)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(rodaq_raw_noexcept_probe PRIVATE -Wno-terminate)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(rodaq_raw_noexcept_probe PRIVATE -Wno-exceptions)
+endif()
 rodaq_enable_warnings(rodaq_raw_noexcept_probe)
 rodaq_enable_sanitizers(rodaq_raw_noexcept_probe)
 add_test(

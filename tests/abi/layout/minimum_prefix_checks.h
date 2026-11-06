@@ -31,14 +31,14 @@ RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_record_submission, struct_size) == 0, "record submission size slot");
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_acquisition_submit_result, struct_size) == 0, "acquisition result size slot");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_source_view, struct_size) == 0, "source view size slot");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_clock_view, struct_size) == 0, "clock view size slot");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_schema_view, struct_size) == 0, "schema view size slot");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_source_info, struct_size) == 0, "source view size slot");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_clock_info, struct_size) == 0, "clock view size slot");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_schema_info, struct_size) == 0, "schema view size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_timestamp_key_set_view, struct_size) == 0, "timestamp view size slot");
-RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_stream_view, struct_size) == 0, "stream view size slot");
+    offsetof(rodaq_timestamp_key_set_info, struct_size) == 0, "timestamp view size slot");
+RODAQ_TEST_STATIC_ASSERT(offsetof(rodaq_stream_info, struct_size) == 0, "stream view size slot");
 RODAQ_TEST_STATIC_ASSERT(
-    offsetof(rodaq_stream_descriptor_view, struct_size) == 0, "descriptor view size slot");
+    offsetof(rodaq_stream_descriptor_info, struct_size) == 0, "descriptor view size slot");
 RODAQ_TEST_STATIC_ASSERT(
     offsetof(rodaq_storage_capabilities, struct_size) == 0, "capabilities size slot");
 RODAQ_TEST_STATIC_ASSERT(
@@ -114,22 +114,22 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_runtime_acquisition, submit, 72, 80, RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_source_view, source_id, 16, 32, RODAQ_SOURCE_VIEW_MIN_STRUCT_SIZE);
+    rodaq_source_info, source_id, 16, 32, RODAQ_SOURCE_INFO_MIN_STRUCT_SIZE);
 
-RODAQ_EXPECT_MINIMUM_PREFIX(rodaq_clock_view, origin, 40, 56, RODAQ_CLOCK_VIEW_MIN_STRUCT_SIZE);
-
-RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_schema_view, representation, 64, 80, RODAQ_SCHEMA_VIEW_MIN_STRUCT_SIZE);
+RODAQ_EXPECT_MINIMUM_PREFIX(rodaq_clock_info, origin, 40, 56, RODAQ_CLOCK_INFO_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_timestamp_key_set_view, key_count, 24, 28, RODAQ_TIMESTAMP_KEY_SET_VIEW_MIN_STRUCT_SIZE);
+    rodaq_schema_info, representation, 64, 80, RODAQ_SCHEMA_INFO_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_stream_view, stream_id, 16, 24, RODAQ_STREAM_VIEW_MIN_STRUCT_SIZE);
+    rodaq_timestamp_key_set_info, key_count, 24, 28, RODAQ_TIMESTAMP_KEY_SET_INFO_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_stream_descriptor_view, transport_timestamp_key_count, 112, 116,
-    RODAQ_STREAM_DESCRIPTOR_VIEW_MIN_STRUCT_SIZE);
+    rodaq_stream_info, stream_id, 16, 24, RODAQ_STREAM_INFO_MIN_STRUCT_SIZE);
+
+RODAQ_EXPECT_MINIMUM_PREFIX(
+    rodaq_stream_descriptor_info, transport_timestamp_key_count, 112, 116,
+    RODAQ_STREAM_DESCRIPTOR_INFO_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_runtime_canonical, get_stream_descriptor, 48, 56,
@@ -139,7 +139,7 @@ RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_projection_registration, payload, 32, 48, RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
-    rodaq_projection_view, payload, 32, 48, RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE);
+    rodaq_projection_info, payload, 32, 48, RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE);
 
 RODAQ_EXPECT_MINIMUM_PREFIX(
     rodaq_runtime_projection, get_projection, 16, 24, RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE);

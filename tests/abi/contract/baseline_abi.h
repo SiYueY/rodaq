@@ -36,7 +36,7 @@ typedef struct {
     rodaq_stream_descriptor_handle_frozen descriptor;
     rodaq_string_view projection_id;
     rodaq_bytes_view payload;
-} rodaq_projection_view_frozen;
+} rodaq_projection_info_frozen;
 
 typedef struct {
     uint32_t struct_size;

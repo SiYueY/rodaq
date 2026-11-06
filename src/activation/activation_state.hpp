@@ -3,7 +3,11 @@
 
 #include "daq/failure_mailbox.hpp"
 
+#include "activation/activation_limits.hpp"
+#include "activation/activation_phase.hpp"
+#include "admission/admission_state.hpp"
 #include "binding/binding_state.hpp"
+#include "canonical/canonical_state.hpp"
 #include "canonical/model.hpp"
 #include "canonical/timestamp_state.hpp"
 #include "plugin/service_registry.hpp"
@@ -14,6 +18,7 @@
 #include "clock/clock_correlation.hpp"
 #include "projection/projection_registry.hpp"
 #include "logging/logging_context.hpp"
+#include "metrics/activation_metrics.hpp"
 #include <rodaq/daq.hpp>
 #include "metrics/stats_accumulator.hpp"
 #include "storage/storage_pipeline.hpp"
@@ -56,14 +61,13 @@ public:
     ActivationState& operator=(ActivationState&&) = delete;
     ~ActivationState() noexcept;
 
-    DAQConfig& options() noexcept;
-    const DAQConfig& options() const noexcept;
+    const DAQConfig& config() const noexcept;
+    const ActivationLimits& limits() const noexcept;
+    void apply_limits(const ActivationLimits& limits) noexcept;
     std::uint64_t activation_generation() const noexcept;
 
     void set_acquisition_control(std::size_t plugin_index, rodaq_interface control);
     void set_storage_control(rodaq_interface control);
-    void set_descriptor_progress_timeout(std::chrono::nanoseconds timeout);
-    void set_binding_progress_timeout(std::chrono::nanoseconds timeout);
     Result<rodaq_storage_capabilities> storage_capabilities() const;
 
     Result<void> initialize_pipeline(
@@ -82,7 +86,7 @@ public:
     void mark_stopping() noexcept;
     void mark_stopped() noexcept;
     void mark_failed() noexcept;
-    DAQState state() const noexcept;
+    ActivationPhase phase() const noexcept;
     bool gate_open() const noexcept;
     bool requires_quarantine() const noexcept;
 
@@ -147,13 +151,13 @@ public:
         std::size_t plugin_index, rodaq_acquisition_plugin_state state,
         const rodaq_status* diagnostic);
 
-    Result<void> get_source(SourceHandle handle, rodaq_source_view& view) const;
-    Result<void> get_clock(ClockHandle handle, rodaq_clock_view& view) const;
-    Result<void> get_schema(SchemaHandle handle, rodaq_schema_view& view) const;
-    Result<void> get_timestamp_key_set(std::uint64_t id, rodaq_timestamp_key_set_view& view) const;
-    Result<void> get_stream(StreamHandle handle, rodaq_stream_view& view) const;
+    Result<void> get_source(SourceHandle handle, rodaq_source_info& view) const;
+    Result<void> get_clock(ClockHandle handle, rodaq_clock_info& view) const;
+    Result<void> get_schema(SchemaHandle handle, rodaq_schema_info& view) const;
+    Result<void> get_timestamp_key_set(std::uint64_t id, rodaq_timestamp_key_set_info& view) const;
+    Result<void> get_stream(StreamHandle handle, rodaq_stream_info& view) const;
     Result<void> get_stream_descriptor(
-        StreamDescriptorHandle handle, rodaq_stream_descriptor_view& view) const;
+        StreamDescriptorHandle handle, rodaq_stream_descriptor_info& view) const;
 
     void retire_draining_binding(BindingHandle binding) noexcept;
     void notify_admission_eligibility_changed() noexcept;
@@ -186,25 +190,19 @@ private:
         rodaq_interface control);
     void on_projection_registered(
         rodaq_stream_descriptor_handle descriptor, std::string_view projection_id) noexcept;
-    Result<BindingHandle> create_binding_locked(
-        std::size_t plugin_index, StreamHandle stream, StreamDescriptorHandle descriptor,
-        BindingLifecycle lifecycle);
     Result<void> initialize_ingress_clock();
     void fill_latency_stats(DAQStats& snapshot) const noexcept;
     Result<void> supervise_binding_control(
         std::function<Result<void>()> operation, const char* reason);
 
-    DAQConfig options_;
+    const DAQConfig config_;
+    ActivationLimits limits_;
     const std::uint64_t activation_generation_;
     std::unique_ptr<StructuralArena> arena_;
-    Registry<SourceEntry, SourceHandle> sources_;
-    Registry<ClockEntry, ClockHandle> clocks_;
-    Registry<SchemaEntry, SchemaHandle> schemas_;
-    Registry<TimestampKeySetEntry, TimestampKeySetHandle> timestamp_key_sets_;
-    Registry<StreamEntry, StreamHandle> streams_;
-    Registry<StreamDescriptorEntry, StreamDescriptorHandle> descriptors_;
-    Registry<BindingEntry, BindingHandle> bindings_;
-    AcceptanceSequenceAllocator sequences_;
+    CanonicalState canonical_;
+    BindingState bindings_;
+    AdmissionState admission_;
+    ActivationMetrics metrics_;
     PayloadPool payload_pool_;
     std::unique_ptr<StoragePipeline> pipeline_;
     std::unique_ptr<LoggingContext> logging_context_;
@@ -213,25 +211,8 @@ private:
     std::vector<std::unique_ptr<std::atomic<std::uint32_t>>> acquisition_health_;
 
     mutable std::mutex control_mutex_;
-    std::vector<SourceHandle> source_handles_;
-    std::vector<ClockHandle> clock_handles_;
-    std::vector<SchemaHandle> schema_handles_;
-    std::vector<TimestampKeySetHandle> timestamp_key_set_handles_;
-    std::vector<StreamHandle> stream_handles_;
-    std::vector<StreamDescriptorHandle> descriptor_handles_;
-    std::vector<BindingHandle> binding_handles_;
-
-    std::uint64_t next_clock_id_ = 1;
-    std::uint64_t next_schema_id_ = 1;
-    std::uint64_t next_timestamp_key_set_id_ = 1;
-    std::uint64_t next_stream_id_ = 1;
-    std::uint64_t next_descriptor_id_ = 1;
-    std::uint64_t next_transition_id_ = 1;
-
     std::vector<std::optional<rodaq_interface>> acquisition_controls_;
     std::optional<rodaq_interface> storage_control_;
-    std::chrono::nanoseconds descriptor_progress_timeout_{};
-    std::chrono::nanoseconds binding_progress_timeout_{};
     std::vector<std::unique_ptr<plugin::AcquisitionServiceContext>> acquisition_contexts_;
     std::unique_ptr<plugin::StorageServiceContext> storage_context_;
     ProjectionRegistry projections_;
@@ -254,13 +235,7 @@ private:
     Status descriptor_worker_failure_;
     std::thread descriptor_worker_;
 
-    std::atomic<DAQState> state_{DAQState::Constructed};
-    mutable std::mutex admission_mutex_;
-    std::condition_variable admission_condition_;
-    bool gate_open_ = false;
-    std::atomic<std::uint64_t> admission_eligibility_generation_{0};
-    std::uint64_t active_submission_calls_ = 0;
-    std::uint64_t admission_inflight_ = 0;
+    std::atomic<ActivationPhase> phase_{ActivationPhase::Starting};
     std::atomic<std::size_t> active_control_calls_{0};
     std::shared_ptr<FailureMailbox> failure_signal_;
     std::atomic<bool> control_quarantine_required_{false};
@@ -269,14 +244,6 @@ private:
     Status primary_failure_;
     std::vector<Status> secondary_failures_;
     std::uint64_t secondary_overflow_count_ = 0;
-    StatsAccumulator stats_;
-    std::unique_ptr<LatencyHistogram> admission_wait_latency_;
-    std::unique_ptr<LatencyHistogram> storage_handoff_latency_;
-    std::unique_ptr<LatencyHistogram> payload_consumed_latency_;
-    std::unique_ptr<LatencyHistogram> persistence_latency_;
-    std::unique_ptr<LatencyHistogram> stop_latency_;
-    std::chrono::steady_clock::time_point stop_started_{};
-    bool stop_started_valid_ = false;
 };
 
 }  // namespace rodaq

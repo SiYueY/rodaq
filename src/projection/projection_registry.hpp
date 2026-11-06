@@ -64,7 +64,7 @@ private:
 
     static rodaq_status_code get_projection(
         void* context, rodaq_stream_descriptor_handle descriptor, rodaq_string_view projection_id,
-        rodaq_projection_view* out_view, rodaq_status* out_status) noexcept;
+        rodaq_projection_info* out_info, rodaq_status* out_status) noexcept;
 
     static const rodaq_runtime_projection kProjectionVtable;
 

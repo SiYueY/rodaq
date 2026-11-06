@@ -193,7 +193,8 @@ bool is_valid_utf8_without_nul(std::string_view value) noexcept {
 
 Result<PluginMetadata> validate_plugin_descriptor(const rodaq_plugin_descriptor& descriptor) {
     if (descriptor.struct_size < RODAQ_PLUGIN_DESCRIPTOR_MIN_STRUCT_SIZE) {
-        return invalid_argument_status("Plugin descriptor struct_size is below the V1 minimum");
+        return invalid_argument_status(
+            "Plugin descriptor struct_size is below the minimum supported size");
     }
     if (descriptor.reserved != 0) {
         return invalid_argument_status("Plugin descriptor reserved field is non-zero");
@@ -245,7 +246,8 @@ Result<void> validate_acquisition_protocol(const rodaq_acquisition_plugin& proto
         return invalid_argument_status("Unsupported Acquisition family protocol version");
     }
     if (protocol.struct_size < RODAQ_ACQUISITION_PLUGIN_MIN_STRUCT_SIZE) {
-        return invalid_argument_status("Acquisition family struct_size is below the V1 minimum");
+        return invalid_argument_status(
+            "Acquisition family struct_size is below the minimum supported size");
     }
     return validate_required_callbacks(protocol);
 }
@@ -255,7 +257,8 @@ Result<void> validate_storage_protocol(const rodaq_storage_plugin& protocol) {
         return invalid_argument_status("Unsupported Storage family protocol version");
     }
     if (protocol.struct_size < RODAQ_STORAGE_PLUGIN_MIN_STRUCT_SIZE) {
-        return invalid_argument_status("Storage family struct_size is below the V1 minimum");
+        return invalid_argument_status(
+            "Storage family struct_size is below the minimum supported size");
     }
     return validate_required_callbacks(protocol);
 }
@@ -271,7 +274,7 @@ Result<rodaq_interface> validate_acquisition_control_interface(rodaq_interface i
     }
     if (control->struct_size < RODAQ_ACQUISITION_CONTROL_MIN_STRUCT_SIZE) {
         return invalid_argument_status(
-            "Acquisition control interface struct_size is below the V1 minimum");
+            "Acquisition control interface struct_size is below the minimum supported size");
     }
     if (control->prepare_binding_switch == nullptr || control->commit_binding_switch == nullptr ||
         control->abort_binding_switch == nullptr || control->quiesce_stream == nullptr ||
@@ -291,7 +294,7 @@ Result<rodaq_interface> validate_storage_control_interface(rodaq_interface inter
     }
     if (control->struct_size < RODAQ_STORAGE_CONTROL_MIN_STRUCT_SIZE) {
         return invalid_argument_status(
-            "Storage control interface struct_size is below the V1 minimum");
+            "Storage control interface struct_size is below the minimum supported size");
     }
     if (control->get_capabilities == nullptr || control->ensure_descriptor_ready == nullptr) {
         return invalid_argument_status("Storage control interface has a null required slot");

@@ -44,20 +44,20 @@ TEST(TailFieldTest, GatingCoversAllV1AppendableMinimumPrefixes) {
         RODAQ_ACQUISITION_SUBMIT_RESULT_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_runtime_acquisition, submit, RODAQ_RUNTIME_ACQUISITION_MIN_STRUCT_SIZE);
-    RODAQ_CHECK_TAIL_FIELD(rodaq_source_view, source_id, RODAQ_SOURCE_VIEW_MIN_STRUCT_SIZE);
-    RODAQ_CHECK_TAIL_FIELD(rodaq_clock_view, origin, RODAQ_CLOCK_VIEW_MIN_STRUCT_SIZE);
-    RODAQ_CHECK_TAIL_FIELD(rodaq_schema_view, representation, RODAQ_SCHEMA_VIEW_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_source_info, source_id, RODAQ_SOURCE_INFO_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_clock_info, origin, RODAQ_CLOCK_INFO_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_schema_info, representation, RODAQ_SCHEMA_INFO_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_timestamp_key_set_view, key_count, RODAQ_TIMESTAMP_KEY_SET_VIEW_MIN_STRUCT_SIZE);
-    RODAQ_CHECK_TAIL_FIELD(rodaq_stream_view, stream_id, RODAQ_STREAM_VIEW_MIN_STRUCT_SIZE);
+        rodaq_timestamp_key_set_info, key_count, RODAQ_TIMESTAMP_KEY_SET_INFO_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_stream_info, stream_id, RODAQ_STREAM_INFO_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
-        rodaq_stream_descriptor_view, transport_timestamp_key_count,
-        RODAQ_STREAM_DESCRIPTOR_VIEW_MIN_STRUCT_SIZE);
+        rodaq_stream_descriptor_info, transport_timestamp_key_count,
+        RODAQ_STREAM_DESCRIPTOR_INFO_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_runtime_canonical, get_stream_descriptor, RODAQ_RUNTIME_CANONICAL_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_projection_registration, payload, RODAQ_PROJECTION_REGISTRATION_MIN_STRUCT_SIZE);
-    RODAQ_CHECK_TAIL_FIELD(rodaq_projection_view, payload, RODAQ_PROJECTION_VIEW_MIN_STRUCT_SIZE);
+    RODAQ_CHECK_TAIL_FIELD(rodaq_projection_info, payload, RODAQ_PROJECTION_INFO_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(
         rodaq_runtime_projection, get_projection, RODAQ_RUNTIME_PROJECTION_MIN_STRUCT_SIZE);
     RODAQ_CHECK_TAIL_FIELD(

@@ -147,7 +147,7 @@ rodaq_status_code ClockCorrelation::get_unix_epoch_anchor(
         out_anchor->struct_size = 0;
         assign_abi_status(
             RODAQ_STATUS_INVALID_ARGUMENT, "clock_correlation", 0,
-            "Clock anchor output capacity is below the V1 minimum", out_status);
+            "Clock anchor output capacity is below the minimum supported size", out_status);
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
     const std::uint32_t initialized =

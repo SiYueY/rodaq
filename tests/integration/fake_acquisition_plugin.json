@@ -1,6 +1,6 @@
 {
   "id": "rodaq.acquisition.fake_runtime",
-  "name": "Fake Runtime Acquisition Plugin",
+  "name": "Fake DAQ Acquisition Plugin",
   "version": "1.0.0",
   "family": "acquisition",
   "description": "M2 Stable ABI acquisition qualification plugin"

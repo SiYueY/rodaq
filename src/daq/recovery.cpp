@@ -18,7 +18,7 @@ using Clock = std::chrono::steady_clock;
 
 Status abi_failure_status(
     rodaq_status_code status, const rodaq_status& error, std::string_view fallback) {
-    auto converted = status_from_abi(status, &error, "runtime");
+    auto converted = status_from_abi(status, &error, "storage");
     if (!converted.ok()) {
         return converted;
     }

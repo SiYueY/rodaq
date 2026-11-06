@@ -20,7 +20,7 @@ runtime:
   values: [1, 2, 3]
 )");
     ASSERT_TRUE(config.ok()) << config.status().message();
-    const auto runtime = config.value().view().find("runtime");
+    const auto runtime = config.value().root().find("runtime");
     ASSERT_TRUE(runtime.ok());
     const auto enabled = runtime.value().find("enabled");
     ASSERT_TRUE(enabled.ok());
@@ -88,7 +88,7 @@ TEST(ConfigLoaderTest, LoadsFromFile) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
     ASSERT_TRUE(config.ok()) << config.status().message();
-    ASSERT_TRUE(config.value().view().find("session").ok());
+    ASSERT_TRUE(config.value().root().find("session").ok());
 }
 
 }  // namespace

@@ -108,17 +108,17 @@ typedef struct rodaq_stream_descriptor_registration {
 } rodaq_stream_descriptor_registration;
 
 /* ABI-APPENDABLE: caller-owned Source view. */
-typedef struct rodaq_source_view {
+typedef struct rodaq_source_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_source_handle handle;
 
     rodaq_bytes_view source_id;
-} rodaq_source_view;
+} rodaq_source_info;
 
 /* ABI-APPENDABLE: caller-owned Clock view. */
-typedef struct rodaq_clock_view {
+typedef struct rodaq_clock_info {
     uint32_t struct_size;
     uint32_t reserved;
 
@@ -130,10 +130,10 @@ typedef struct rodaq_clock_view {
     uint64_t resolution_denominator;
 
     rodaq_string_view origin;
-} rodaq_clock_view;
+} rodaq_clock_info;
 
 /* ABI-APPENDABLE: caller-owned Schema view. */
-typedef struct rodaq_schema_view {
+typedef struct rodaq_schema_info {
     uint32_t struct_size;
 
     rodaq_bool type_identifier_present;
@@ -146,10 +146,10 @@ typedef struct rodaq_schema_view {
     rodaq_string_view format;
     rodaq_string_view type_identifier;
     rodaq_bytes_view representation;
-} rodaq_schema_view;
+} rodaq_schema_info;
 
 /* ABI-APPENDABLE: caller-owned TimestampKeySet view. */
-typedef struct rodaq_timestamp_key_set_view {
+typedef struct rodaq_timestamp_key_set_info {
     uint32_t struct_size;
     uint32_t reserved;
 
@@ -158,20 +158,20 @@ typedef struct rodaq_timestamp_key_set_view {
     const rodaq_timestamp_key* keys;
     uint32_t key_count;
     uint32_t reserved2;
-} rodaq_timestamp_key_set_view;
+} rodaq_timestamp_key_set_info;
 
 /* ABI-APPENDABLE: caller-owned Stream view. */
-typedef struct rodaq_stream_view {
+typedef struct rodaq_stream_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_stream_handle handle;
 
     uint64_t stream_id;
-} rodaq_stream_view;
+} rodaq_stream_info;
 
 /* ABI-APPENDABLE: caller-owned StreamDescriptor view. */
-typedef struct rodaq_stream_descriptor_view {
+typedef struct rodaq_stream_descriptor_info {
     uint32_t struct_size;
 
     rodaq_bool schema_present;
@@ -195,7 +195,7 @@ typedef struct rodaq_stream_descriptor_view {
     const rodaq_timestamp_key* transport_timestamp_keys;
     uint32_t transport_timestamp_key_count;
     uint32_t reserved2;
-} rodaq_stream_descriptor_view;
+} rodaq_stream_descriptor_info;
 
 #define RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE     \
     (offsetof(rodaq_source_registration, source_id) + \
@@ -217,26 +217,26 @@ typedef struct rodaq_stream_descriptor_view {
     (offsetof(rodaq_stream_descriptor_registration, timestamp_key_count) + \
      RODAQ_ABI_FIELD_SIZE(rodaq_stream_descriptor_registration, timestamp_key_count))
 
-#define RODAQ_SOURCE_VIEW_MIN_STRUCT_SIZE \
-    (offsetof(rodaq_source_view, source_id) + RODAQ_ABI_FIELD_SIZE(rodaq_source_view, source_id))
+#define RODAQ_SOURCE_INFO_MIN_STRUCT_SIZE \
+    (offsetof(rodaq_source_info, source_id) + RODAQ_ABI_FIELD_SIZE(rodaq_source_info, source_id))
 
-#define RODAQ_CLOCK_VIEW_MIN_STRUCT_SIZE \
-    (offsetof(rodaq_clock_view, origin) + RODAQ_ABI_FIELD_SIZE(rodaq_clock_view, origin))
+#define RODAQ_CLOCK_INFO_MIN_STRUCT_SIZE \
+    (offsetof(rodaq_clock_info, origin) + RODAQ_ABI_FIELD_SIZE(rodaq_clock_info, origin))
 
-#define RODAQ_SCHEMA_VIEW_MIN_STRUCT_SIZE          \
-    (offsetof(rodaq_schema_view, representation) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_schema_view, representation))
+#define RODAQ_SCHEMA_INFO_MIN_STRUCT_SIZE          \
+    (offsetof(rodaq_schema_info, representation) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_schema_info, representation))
 
-#define RODAQ_TIMESTAMP_KEY_SET_VIEW_MIN_STRUCT_SIZE     \
-    (offsetof(rodaq_timestamp_key_set_view, key_count) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_timestamp_key_set_view, key_count))
+#define RODAQ_TIMESTAMP_KEY_SET_INFO_MIN_STRUCT_SIZE     \
+    (offsetof(rodaq_timestamp_key_set_info, key_count) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_timestamp_key_set_info, key_count))
 
-#define RODAQ_STREAM_VIEW_MIN_STRUCT_SIZE \
-    (offsetof(rodaq_stream_view, stream_id) + RODAQ_ABI_FIELD_SIZE(rodaq_stream_view, stream_id))
+#define RODAQ_STREAM_INFO_MIN_STRUCT_SIZE \
+    (offsetof(rodaq_stream_info, stream_id) + RODAQ_ABI_FIELD_SIZE(rodaq_stream_info, stream_id))
 
-#define RODAQ_STREAM_DESCRIPTOR_VIEW_MIN_STRUCT_SIZE                         \
-    (offsetof(rodaq_stream_descriptor_view, transport_timestamp_key_count) + \
-     RODAQ_ABI_FIELD_SIZE(rodaq_stream_descriptor_view, transport_timestamp_key_count))
+#define RODAQ_STREAM_DESCRIPTOR_INFO_MIN_STRUCT_SIZE                         \
+    (offsetof(rodaq_stream_descriptor_info, transport_timestamp_key_count) + \
+     RODAQ_ABI_FIELD_SIZE(rodaq_stream_descriptor_info, transport_timestamp_key_count))
 
 #ifdef __cplusplus
 }

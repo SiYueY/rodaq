@@ -6,7 +6,7 @@
 
 namespace rodaq {
 
-rodaq_config_view config_abi_view(const ConfigNodeView& view) noexcept;
+rodaq_config_view config_abi_view(const ConfigNodeRef& view) noexcept;
 
 }  // namespace rodaq
 

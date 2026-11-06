@@ -1,6 +1,7 @@
 #ifndef RODAQ_STORAGE_PIPELINE_HPP_
 #define RODAQ_STORAGE_PIPELINE_HPP_
 
+#include "storage/storage_latency.hpp"
 #include "plugin/storage_plugin_instance.hpp"
 
 #include <rodaq/result.hpp>
@@ -28,12 +29,6 @@ struct rodaq_status;
 namespace rodaq {
 
 class StoragePipeline;
-
-enum class StorageLatencyKind {
-    Handoff,
-    PayloadConsumed,
-    PersistenceCompleted,
-};
 
 enum class PreGateAcquireOutcome {
     Acquired,

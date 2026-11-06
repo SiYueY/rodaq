@@ -35,7 +35,7 @@ class CommonService final {
 public:
     CommonService() = default;
     bool valid() const noexcept;
-    static Result<CommonService> from(InterfaceView interface);
+    static Result<CommonService> from(InterfaceRef interface);
 
     void log(rodaq_log_level level, std::string_view category, std::string_view message) const;
     Result<std::uint64_t> monotonic_time_ns() const;
@@ -53,16 +53,16 @@ class CanonicalService final {
 public:
     CanonicalService() = default;
     bool valid() const noexcept;
-    static Result<CanonicalService> from(InterfaceView interface);
+    static Result<CanonicalService> from(InterfaceRef interface);
 
-    Result<rodaq_source_view> get_source(rodaq_source_handle handle) const;
-    Result<rodaq_clock_view> get_clock(rodaq_clock_handle handle) const;
-    Result<rodaq_schema_view> get_schema(rodaq_schema_handle handle) const;
-    Result<rodaq_stream_view> get_stream(rodaq_stream_handle handle) const;
-    Result<rodaq_stream_descriptor_view> get_stream_descriptor(
+    Result<rodaq_source_info> get_source(rodaq_source_handle handle) const;
+    Result<rodaq_clock_info> get_clock(rodaq_clock_handle handle) const;
+    Result<rodaq_schema_info> get_schema(rodaq_schema_handle handle) const;
+    Result<rodaq_stream_info> get_stream(rodaq_stream_handle handle) const;
+    Result<rodaq_stream_descriptor_info> get_stream_descriptor(
         rodaq_stream_descriptor_handle handle) const;
 
-    Result<rodaq_timestamp_key_set_view> get_timestamp_key_set(std::uint64_t id) const;
+    Result<rodaq_timestamp_key_set_info> get_timestamp_key_set(std::uint64_t id) const;
 
 private:
     CanonicalService(void* context, const rodaq_runtime_canonical* table) noexcept;
@@ -74,11 +74,11 @@ class ProjectionService final {
 public:
     ProjectionService() = default;
     bool valid() const noexcept;
-    static Result<ProjectionService> from(InterfaceView interface);
+    static Result<ProjectionService> from(InterfaceRef interface);
     Result<void> register_entry(
         rodaq_stream_descriptor_handle descriptor, std::string_view id, const std::uint8_t* data,
         std::size_t size) const;
-    Result<rodaq_projection_view> get(
+    Result<rodaq_projection_info> get(
         rodaq_stream_descriptor_handle descriptor, std::string_view id) const;
 
 private:
@@ -91,7 +91,7 @@ class ClockCorrelationService final {
 public:
     ClockCorrelationService() = default;
     bool valid() const noexcept;
-    static Result<ClockCorrelationService> from(InterfaceView interface);
+    static Result<ClockCorrelationService> from(InterfaceRef interface);
     Result<rodaq_unix_epoch_clock_anchor> anchor(rodaq_clock_handle clock) const;
 
 private:
@@ -104,7 +104,7 @@ class AcquisitionService final {
 public:
     AcquisitionService() = default;
     bool valid() const noexcept;
-    static Result<AcquisitionService> from(InterfaceView interface);
+    static Result<AcquisitionService> from(InterfaceRef interface);
 
     Result<rodaq_source_handle> register_source(const rodaq_source_registration& request) const;
     Result<rodaq_clock_handle> register_clock(const rodaq_clock_registration& request) const;
@@ -133,7 +133,7 @@ class StorageService final {
 public:
     StorageService() = default;
     bool valid() const noexcept;
-    static Result<StorageService> from(InterfaceView interface);
+    static Result<StorageService> from(InterfaceRef interface);
     void payload_consumed(rodaq_storage_operation operation) const;
     void persistence_completed(
         rodaq_storage_operation operation, rodaq_storage_persistence_state state,
@@ -152,7 +152,7 @@ struct AcquisitionContext {
     ProjectionService projection;
     AcquisitionService acquisition;
 
-    static Result<AcquisitionContext> bind(ServiceRegistryView services);
+    static Result<AcquisitionContext> bind(ServiceRegistryRef services);
 };
 
 struct StorageContext {
@@ -162,7 +162,7 @@ struct StorageContext {
     ClockCorrelationService clock_correlation;
     StorageService storage;
 
-    static Result<StorageContext> bind(ServiceRegistryView services);
+    static Result<StorageContext> bind(ServiceRegistryRef services);
 };
 
 }  // namespace rodaq::plugin
