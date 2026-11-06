@@ -1,2 +1,7 @@
 rodaq_add_test(rodaq_admission_test admission.admission admission_test.cpp)
+rodaq_add_test(
+    rodaq_submission_test
+    admission.submission
+    submission_test.cpp
+)
 rodaq_add_test(rodaq_resource_budget_test admission.resource_budget resource_budget_test.cpp)

@@ -1,1 +1,10 @@
-rodaq_add_test(rodaq_observability_test metrics.observability observability_test.cpp)
+rodaq_add_test(
+    rodaq_stats_accumulator_test
+    metrics.stats_accumulator
+    stats_accumulator_test.cpp
+)
+rodaq_add_test(
+    rodaq_latency_histogram_test
+    metrics.latency_histogram
+    latency_histogram_test.cpp
+)

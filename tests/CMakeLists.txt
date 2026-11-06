@@ -52,6 +52,15 @@ add_subdirectory(storage)
 add_subdirectory(integration)
 
 add_test(
+    NAME rodaq.compile.core_naming_residue
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DRODAQ_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_naming_residue.cmake"
+)
+
+add_test(
     NAME rodaq.cmake.plugin_manifest_matrix
     COMMAND
         "${CMAKE_COMMAND}"

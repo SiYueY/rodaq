@@ -136,14 +136,14 @@ rodaq_add_compile_fail_test(
     result_wrong_expected_version
     result_wrong_expected_version.cpp
     wrong_version
-    "RoDAQ V1 requires expected-lite 0.10.0"
+    "RoDAQ requires expected-lite 0.10.0"
 )
 
 rodaq_add_compile_fail_test(
     result_std_expected_selection
     result_std_expected_selection.cpp
     std_selection
-    "RoDAQ V1 requires expected-lite's nonstd implementation"
+    "RoDAQ requires expected-lite's nonstd implementation"
 )
 
 add_test(
@@ -161,6 +161,7 @@ add_test(
         "-DRODAQ_TEST_RESULT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/install/result_consumer.cpp"
         "-DRODAQ_TEST_SDK_PLUGIN_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/sdk_plugin_consumer"
         "-DRODAQ_TEST_DAQ_CONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/daq_consumer"
+        "-DRODAQ_TEST_COMBINED_CONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install/combined_consumer"
         "-DRODAQ_TEST_CONSUMER_SANITIZER_FLAGS=${RODAQ_CONSUMER_SANITIZER_FLAGS}"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/run_install_smoke.cmake"

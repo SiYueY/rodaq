@@ -27,6 +27,8 @@ set(runtime_header "${include_dir}/rodaq/daq.hpp")
 set(runtime_config_header "${include_dir}/rodaq/daq_config.hpp")
 set(dependency_inventory
     "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/sbom/rodaq-dependency-inventory.json")
+set(exported_targets
+    "${RODAQ_TEST_INSTALL_PREFIX}/lib/cmake/rodaq/RoDAQTargets.cmake")
 
 foreach(header_name common canonical service config runtime acquisition storage plugin)
     if(NOT EXISTS "${plugin_abi_dir}/${header_name}.h")
@@ -69,6 +71,28 @@ foreach(installed_file
     endif()
 endforeach()
 
+file(READ "${exported_targets}" exported_targets_text)
+if(NOT exported_targets_text MATCHES "add_library\\(rodaq::daq SHARED IMPORTED\\)")
+    message(FATAL_ERROR "RoDAQTargets does not export the DAQ shared target")
+endif()
+if(NOT exported_targets_text MATCHES "add_library\\(rodaq::sdk STATIC IMPORTED\\)")
+    message(FATAL_ERROR "RoDAQTargets does not export the SDK static target")
+endif()
+foreach(forbidden_target
+        "rodaq_headers"
+        "rodaq_public_api"
+        "rodaq_api_support"
+        "rodaq_expected_lite"
+        "yaml-cpp"
+        "rodaq_plugin"
+        "rodaq_objects"
+        "rodaq_testing")
+    if(exported_targets_text MATCHES "add_library\\([^\\n]*${forbidden_target}")
+        message(FATAL_ERROR
+            "Internal or third-party target escaped RoDAQTargets: ${forbidden_target}")
+    endif()
+endforeach()
+
 find_program(RODAQ_READELF_EXECUTABLE readelf)
 if(RODAQ_READELF_EXECUTABLE)
     set(installed_runtime
@@ -86,7 +110,7 @@ if(RODAQ_READELF_EXECUTABLE)
             "libfmt" "libspdlog" "libyaml-cpp" "libhdr_histogram")
         if(readelf_output MATCHES "${private_dependency}")
             message(FATAL_ERROR
-                "Private Runtime dependency escaped as DT_NEEDED: ${private_dependency}")
+                "Private DAQ dependency escaped as DT_NEEDED: ${private_dependency}")
         endif()
     endforeach()
 endif()
@@ -122,12 +146,32 @@ if(RODAQ_NM_EXECUTABLE)
             "rodaq::DAQ::start"
             "rodaq::DAQ::stop"
             "rodaq::DAQ::lifecycle_snapshot"
-            "rodaq::DAQ::stats")
+            "rodaq::DAQ::stats"
+            "rodaq::Status::ok"
+            "rodaq::ConfigTree::root"
+            "rodaq::ConfigNodeRef::find"
+            "rodaq::load_yaml_config"
+            "rodaq::load_yaml_config_file")
         if(NOT nm_output MATCHES "${public_symbol}")
             message(FATAL_ERROR
                 "Expected DAQ application symbol is missing: ${public_symbol}")
         endif()
     endforeach()
+
+    execute_process(
+        COMMAND "${RODAQ_NM_EXECUTABLE}" -u -C
+                "${RODAQ_TEST_INSTALL_PREFIX}/lib/librodaq_sdk.a"
+        RESULT_VARIABLE sdk_nm_result
+        OUTPUT_VARIABLE sdk_undefined_output
+        ERROR_VARIABLE sdk_nm_error
+    )
+    if(NOT sdk_nm_result EQUAL 0)
+        message(FATAL_ERROR "nm failed for installed SDK archive: ${sdk_nm_error}")
+    endif()
+    if(sdk_undefined_output MATCHES "YAML::|yaml-cpp|load_yaml_config|rodaq::DAQ|spdlog::|fmt::")
+        message(FATAL_ERROR
+            "Installed SDK archive depends on DAQ, YAML, fmt, or spdlog")
+    endif()
 endif()
 
 execute_process(
@@ -279,4 +323,50 @@ if(NOT runtime_run_result EQUAL 0)
     message(FATAL_ERROR
         "Installed DAQ consumer failed to run.\n"
         "${runtime_run_stdout}\n${runtime_run_stderr}")
+endif()
+
+execute_process(
+    COMMAND
+        "${RODAQ_TEST_CMAKE_COMMAND}"
+        -S
+        "${RODAQ_TEST_COMBINED_CONSUMER_SOURCE_DIR}"
+        -B
+        "${RODAQ_TEST_OBJECT_DIR}/combined-consumer"
+        "-DCMAKE_PREFIX_PATH=${RODAQ_TEST_INSTALL_PREFIX}"
+        "-DCMAKE_CXX_FLAGS=${RODAQ_TEST_CONSUMER_SANITIZER_FLAGS}"
+    RESULT_VARIABLE combined_configure_result
+    OUTPUT_VARIABLE combined_configure_stdout
+    ERROR_VARIABLE combined_configure_stderr
+)
+if(NOT combined_configure_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed combined DAQ and SDK consumer failed to configure.\n"
+        "${combined_configure_stdout}\n${combined_configure_stderr}")
+endif()
+
+execute_process(
+    COMMAND
+        "${RODAQ_TEST_CMAKE_COMMAND}"
+        --build
+        "${RODAQ_TEST_OBJECT_DIR}/combined-consumer"
+    RESULT_VARIABLE combined_build_result
+    OUTPUT_VARIABLE combined_build_stdout
+    ERROR_VARIABLE combined_build_stderr
+)
+if(NOT combined_build_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed combined DAQ and SDK consumer failed to build.\n"
+        "${combined_build_stdout}\n${combined_build_stderr}")
+endif()
+
+execute_process(
+    COMMAND "${RODAQ_TEST_OBJECT_DIR}/combined-consumer/rodaq_combined_consumer"
+    RESULT_VARIABLE combined_run_result
+    OUTPUT_VARIABLE combined_run_stdout
+    ERROR_VARIABLE combined_run_stderr
+)
+if(NOT combined_run_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed combined DAQ and SDK consumer failed to run.\n"
+        "${combined_run_stdout}\n${combined_run_stderr}")
 endif()
