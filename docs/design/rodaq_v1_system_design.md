@@ -844,9 +844,20 @@ plugin-independent Canonical/Runtime architecture
 
 ---
 
-## 1.4 推荐仓库目录结构
+## 1.4 仓库目录结构
 
 RoDAQ V1 在正式开发前应冻结顶层目录职责。后续可以增加私有文件，但不应频繁调整这些边界。
+
+> **2026-11-06 implementation amendment:** the tree below is the early
+> recommendation and is retained as design history. The current frozen source
+> layout uses `src/daq/`, `src/activation/`, `src/canonical/`,
+> `src/binding/`, `src/admission/`, `src/record/`, `src/payload/`,
+> `src/storage/`, `src/plugin/`, `src/clock/`, `src/projection/`,
+> `src/config/`, `src/logging/` and `src/metrics/`. It contains no
+> `src/runtime/`, `src/sdk/`, `include/rodaq/runtime/`,
+> `include/rodaq/plugin/detail/`, generalized `detail`/`internal`/`impl`
+> namespace, or compatibility forwarding headers. The installed Public CMake
+> surface is `rodaq::daq` and `rodaq::sdk`.
 
 推荐：
 
@@ -1429,16 +1440,18 @@ submodules: recursive
 建议：
 
 ```text
-RoDAQ::rodaq
-RoDAQ::plugin_sdk
+rodaq::daq
+rodaq::sdk
 ```
 
 内部可根据依赖边界拆分：
 
 ```text
-rodaq_canonical
-rodaq_runtime
+rodaq_base_objects
+rodaq_base
+rodaq_objects
 rodaq_plugin
+rodaq_testing
 ```
 
 不建议：
@@ -1512,9 +1525,13 @@ find_package(RoDAQ CONFIG REQUIRED)
 
 target_link_libraries(my_app
     PRIVATE
-        RoDAQ::rodaq
+        rodaq::daq
 )
 ```
+
+`rodaq::sdk` is a self-contained static Plugin authoring target. The installed
+target export contains only `rodaq::daq` and `rodaq::sdk`; implementation
+objects, Plugin Host, YAML and other third-party targets are not exported.
 
 源码树、安装树和 AppDir 应能够自然映射。
 

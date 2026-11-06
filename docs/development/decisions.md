@@ -1246,15 +1246,21 @@ rerun after the rename.
 
 The installed application target is `rodaq::daq` with file name
 `librodaq.so`. The installable Plugin SDK target is the static `rodaq::sdk`,
-which owns SDK wrappers and validation implementations. `rodaq_api_support`
-owns common out-of-line C++ API/ABI support and configuration code.
+which owns SDK wrappers, validation implementations, Config model access, and
+the common Status/ABI support required by Plugin authors.
 
 `rodaq_plugin`, `rodaq_objects` and `rodaq_testing` are internal. Plugin Host
 implementation is not installed as an independent product dependency. DAQ and
-Plugin Host targets never depend back on the application DAQ target.
+Plugin Host targets never depend back on the application DAQ target. The SDK
+does not depend on YAML parsing, the DAQ DSO, Plugin Host, fmt, or spdlog.
+
+Installed `RoDAQTargets.cmake` exposes only `rodaq::daq` and `rodaq::sdk`.
+Third-party and implementation-support targets are not exported. Public
+out-of-line symbols are explicit in `cmake/rodaq.map`; internal implementation
+symbols remain hidden.
 
 **Reference:** `src/CMakeLists.txt`, `src/plugin/CMakeLists.txt`,
-`src/daq/CMakeLists.txt`, `cmake/install.cmake`.
+`src/daq/CMakeLists.txt`, `cmake/install.cmake`, `cmake/rodaq.map`.
 
 ## D-062 — DAQ lifecycle and Application config are not ABI DTOs
 
@@ -1262,11 +1268,95 @@ Plugin Host targets never depend back on the application DAQ target.
 
 The DAQ application C++ API returns C++ lifecycle, stats and config DTOs. The
 Stable C ABI lifecycle/config views are adapted inside implementation units and
-the Plugin SDK. `ConfigNodeView` exposes RoDAQ `ConfigKind`; conversion to
-`rodaq_config_view` is an internal bridge used by DAQ and Plugin Host.
+the Plugin SDK. `ConfigNodeRef` exposes RoDAQ `ConfigKind`; conversion to
+`rodaq_config_view` is the `config/abi_bridge.hpp` adapter used by DAQ and
+Plugin Host.
 
 The frozen Storage ABI continues to use `session_id`; the DAQ application config
 field is `acquisition_id`, mapped explicitly when Storage Open is called.
 
 **Reference:** `include/rodaq/daq.hpp`, `include/rodaq/config/config.hpp`,
-`src/config/config_internal.hpp`, D-060.
+`src/config/abi_bridge.hpp`, D-060.
+
+## D-063 — View, Ref and Info have distinct long-term semantics
+
+**Status:** Accepted.
+
+`View` means borrowed, non-owning data or a proxy over existing data, such as
+`PayloadView`, `ConfigView`, `rodaq_string_view` and `rodaq_bytes_view`.
+
+`Ref` means a reference-like handle to an existing object or capability whose
+lifetime may be intentionally extended, such as `InterfaceRef`,
+`ServiceRegistryRef` and `ConfigNodeRef`.
+
+`Info` means caller-owned metadata output with borrowed fields, such as
+`rodaq_source_info`, `rodaq_clock_info`, `rodaq_schema_info`,
+`rodaq_stream_info`, `rodaq_stream_descriptor_info`,
+`rodaq_timestamp_key_set_info` and `rodaq_projection_info`.
+
+No compatibility alias is provided for the former `*View`/`*_view` source
+names. `ConfigTree::root()` replaces `ConfigTree::view()`.
+
+**Reference:** `docs/coding_guidelines/cpp_coding_guidelines.md`,
+`include/rodaq/plugin/`, `include/rodaq/plugin/abi/`.
+
+## D-064 — Activation composes domain state owners
+
+**Status:** Accepted.
+
+`ActivationState` is the activation lifecycle aggregate root. It composes:
+
+```text
+CanonicalState
+BindingState
+AdmissionState
+ActivationMetrics
+```
+
+`CanonicalState` owns Canonical registries, handles, ID allocators, registration
+interning, descriptor metadata lookup and availability state. `BindingState`
+owns Binding records, current Binding publication, lifecycle transitions and
+in-flight admission counts. `AdmissionState` owns the Gate, submission and
+admission in-flight accounting, eligibility generation and AcceptanceSequence
+allocation. `ActivationMetrics` owns counters and latency histograms.
+
+Activation retains lifecycle, failure cutoff, shutdown ordering, quarantine
+handoff, Descriptor reconciliation orchestration and cross-domain admission
+submission. Domain invariants are not delegated to a new Manager or Controller
+layer.
+
+**Reference:** `src/activation/`, `src/canonical/`, `src/binding/`,
+`src/admission/`, `src/metrics/`.
+
+## D-065 — Activation phase and effective limits are internal state
+
+**Status:** Accepted.
+
+Activation uses `ActivationPhase` (`Starting`, `Running`, `Stopping`, `Stopped`,
+`Failed`) rather than `DAQState` as its internal state machine. The DAQ
+application object maps its own public lifecycle state to
+`DAQLifecycleSnapshot`.
+
+`DAQConfig` is immutable for the activation lifetime. Resource values negotiated
+with Storage capabilities, including timeouts and capacities, are held in
+`ActivationLimits`; effective values never mutate the original configuration
+DTO.
+
+**Reference:** `src/activation/activation_phase.hpp`,
+`src/activation/activation_limits.hpp`, `src/daq/daq_impl.hpp`.
+
+## D-066 — Verification cadence is incremental until code freeze
+
+**Status:** Accepted.
+
+During refactoring, run only the affected compile targets and domain/integration
+tests. Do not rerun the full sanitizer, cross-platform, style or benchmark
+matrix after each structural edit.
+
+Run the complete Qualification matrix once after the implementation and tests
+are stable, and rerun only affected checks for later non-behavioral edits.
+This preserves correctness evidence without making the full matrix the normal
+edit loop.
+
+**Reference:** `docs/coding_guidelines/cpp_coding_guidelines.md §5.42`,
+`docs/development/plan.md`.

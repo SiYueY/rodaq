@@ -219,6 +219,29 @@ diagnostics, avoiding a new per-operation diagnostic-string allocation.
 | bm_runtime_pipeline_small_record_steady_state | 418,186 | 44,171.26 | 20,632 | 982 |
 | bm_storage_slot_terminalization100k | 453,695 | 46,989.31 | 28,302 | 866 |
 
+## 2026-11-06 Core Structure Closure qualification
+
+GCC 11.4.0 Release with warnings-as-errors ran all eight existing benchmark
+executables for three repetitions on Ubuntu 22.04.5. Workloads, capacity policy,
+acceptance gates, resource-return checks and Stop convergence checks were not
+changed. All executables passed.
+
+| Profile | Accepted Records/s | Accepted Bytes/s | Persistence p99 us | HWM Records | Stop us |
+|---|---:|---:|---:|---:|---:|
+| `bm_encoded_camera10x720p30` | 310.08 | 63.50 MB/s | 47.68 | 4 | 497.41 |
+| `bm_raw_camera10x720p30` | 309.15 | 854.74 MB/s | 234.50 | 5 | 663.55 |
+| `bm_per_joint100_streams1k_hz` | 99,967.12 | 79.97 MB/s | 3,352.58 | 462 | 2,422.78 |
+| `bm_aggregated_robot_state1k_hz` | 999.80 | 79.98 MB/s | 89.60 | 1 | 382.46 |
+| `run_encoded_aggregated` | 1,300.32 | 141.47 MB/s | 37.95 | 6 | 643.58 |
+| `run_raw_per_joint` | 100,026.65 | 906.96 MB/s | 81.79 | 105 | 2,002.94 |
+| `bm_daq_pipeline_small_record_steady_state` | 343,464.35 | 351.71 MB/s | 79,364.10 | 36,618 | 1,259.52 |
+| `bm_storage_slot_terminalization100k` | 427,569.22 | 6.84 MB/s | 82,771.97 | 48,188 | 1,329.15 |
+
+The PayloadClass and PayloadPool executables completed without benchmark errors.
+CPU frequency scaling and scheduling were not fixed, so these remain Fake Runtime
+capacity and comparative engineering evidence rather than a real-time SLA or
+MCAP/filesystem/NVMe production claim.
+
 Compared with the preceding declaration-separation run, per-joint acceptance
 was approximately 99,979 vs 99,975 Records/s, raw mixed 100,249 vs 100,211,
 and the small-record pipeline 418,186 vs 397,750. The host CPU frequency and

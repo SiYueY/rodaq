@@ -1166,15 +1166,15 @@ V1 当前每个 ABI-APPENDABLE type 的 minimum prefix 按“最后一个必须�
 | `rodaq_record_submission` | `payload` | all presence/count relationships valid |
 | `rodaq_acquisition_submit_result` | `payload_disposition` | reserved tail zero when present |
 | `rodaq_runtime_acquisition` | `submit` | all V1 registration/report/submit slots non-NULL |
-| `rodaq_source_view` | `source_id` | output prefix fully initialized |
-| `rodaq_clock_view` | `origin` | exact rational/origin fields available |
-| `rodaq_schema_view` | `representation` | exact representation available |
-| `rodaq_timestamp_key_set_view` | `key_count` | pointer/count valid |
-| `rodaq_stream_view` | `stream_id` | exact Canonical id available |
-| `rodaq_stream_descriptor_view` | `transport_timestamp_key_count` | complete descriptor projection available |
+| `rodaq_source_info` | `source_id` | output prefix fully initialized |
+| `rodaq_clock_info` | `origin` | exact rational/origin fields available |
+| `rodaq_schema_info` | `representation` | exact representation available |
+| `rodaq_timestamp_key_set_info` | `key_count` | pointer/count valid |
+| `rodaq_stream_info` | `stream_id` | exact Canonical id available |
+| `rodaq_stream_descriptor_info` | `transport_timestamp_key_count` | complete descriptor projection available |
 | `rodaq_runtime_canonical` | `get_stream_descriptor` | all V1 lookup slots non-NULL |
 | `rodaq_projection_registration` | `payload` | descriptor/id/payload relationships valid; reserved zero |
-| `rodaq_projection_view` | `payload` | immutable projection bytes available |
+| `rodaq_projection_info` | `payload` | immutable projection bytes available |
 | `rodaq_runtime_projection` | `get_projection` | register/get slots non-NULL for the caller role |
 | `rodaq_config_vtable` | `as_string` | all V1 ConfigView slots non-NULL |
 | `rodaq_acquisition_control` | `quiesce_plugin` | all V1 control slots non-NULL |
@@ -3335,14 +3335,14 @@ Canonical identity/content
 Source 当前没有冻结 SourceDescriptor；Canonical Source State 只有 optional non-empty opaque SourceId bytes。
 
 ```c
-typedef struct rodaq_source_view {
+typedef struct rodaq_source_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_source_handle handle;
 
     rodaq_bytes_view source_id;
-} rodaq_source_view;
+} rodaq_source_info;
 ```
 
 规则：
@@ -3360,7 +3360,7 @@ source_id
 ### Clock View
 
 ```c
-typedef struct rodaq_clock_view {
+typedef struct rodaq_clock_info {
     uint32_t struct_size;
     uint32_t reserved;
 
@@ -3372,7 +3372,7 @@ typedef struct rodaq_clock_view {
     uint64_t resolution_denominator;
 
     rodaq_string_view origin;
-} rodaq_clock_view;
+} rodaq_clock_info;
 ```
 
 其中：
@@ -3395,7 +3395,7 @@ View 不暴露 Plugin-local `native_id`，因为它不是 Canonical State。
 ### Schema View
 
 ```c
-typedef struct rodaq_schema_view {
+typedef struct rodaq_schema_info {
     uint32_t struct_size;
 
     rodaq_bool type_identifier_present;
@@ -3408,7 +3408,7 @@ typedef struct rodaq_schema_view {
     rodaq_string_view format;
     rodaq_string_view type_identifier;
     rodaq_bytes_view representation;
-} rodaq_schema_view;
+} rodaq_schema_info;
 ```
 
 规则：
@@ -3431,7 +3431,7 @@ representation
 ### TimestampKeySet View
 
 ```c
-typedef struct rodaq_timestamp_key_set_view {
+typedef struct rodaq_timestamp_key_set_info {
     uint32_t struct_size;
     uint32_t reserved;
 
@@ -3440,7 +3440,7 @@ typedef struct rodaq_timestamp_key_set_view {
     const rodaq_timestamp_key* keys;
     uint32_t key_count;
     uint32_t reserved2;
-} rodaq_timestamp_key_set_view;
+} rodaq_timestamp_key_set_info;
 ```
 
 `keys[]` 的顺序：
@@ -3462,14 +3462,14 @@ every TimestampKey content
 Canonical Stream 当前冻结的独立 State 只有 identity；StreamName 属于 StreamDescriptor interpretation contract。
 
 ```c
-typedef struct rodaq_stream_view {
+typedef struct rodaq_stream_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_stream_handle handle;
 
     uint64_t stream_id;
-} rodaq_stream_view;
+} rodaq_stream_info;
 ```
 
 `stream_id`：
@@ -3484,7 +3484,7 @@ Runtime Handle `0` 仍然只是 invalid Handle。
 ### StreamDescriptor View
 
 ```c
-typedef struct rodaq_stream_descriptor_view {
+typedef struct rodaq_stream_descriptor_info {
     uint32_t struct_size;
 
     rodaq_bool schema_present;
@@ -3508,7 +3508,7 @@ typedef struct rodaq_stream_descriptor_view {
     const rodaq_timestamp_key* transport_timestamp_keys;
     uint32_t transport_timestamp_key_count;
     uint32_t reserved2;
-} rodaq_stream_descriptor_view;
+} rodaq_stream_descriptor_info;
 ```
 
 说明：
@@ -3575,37 +3575,37 @@ typedef struct rodaq_runtime_canonical {
     rodaq_status_code (*get_source)(
         void* context,
         rodaq_source_handle handle,
-        rodaq_source_view* out_view,
+        rodaq_source_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_clock)(
         void* context,
         rodaq_clock_handle handle,
-        rodaq_clock_view* out_view,
+        rodaq_clock_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_schema)(
         void* context,
         rodaq_schema_handle handle,
-        rodaq_schema_view* out_view,
+        rodaq_schema_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_timestamp_key_set)(
         void* context,
         uint64_t timestamp_key_set_id,
-        rodaq_timestamp_key_set_view* out_view,
+        rodaq_timestamp_key_set_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_stream)(
         void* context,
         rodaq_stream_handle handle,
-        rodaq_stream_view* out_view,
+        rodaq_stream_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
     rodaq_status_code (*get_stream_descriptor)(
         void* context,
         rodaq_stream_descriptor_handle handle,
-        rodaq_stream_descriptor_view* out_view,
+        rodaq_stream_descriptor_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 
 } rodaq_runtime_canonical;
@@ -3661,14 +3661,14 @@ typedef struct rodaq_projection_registration {
     rodaq_bytes_view payload;
 } rodaq_projection_registration;
 
-typedef struct rodaq_projection_view {
+typedef struct rodaq_projection_info {
     uint32_t struct_size;
     uint32_t reserved;
 
     rodaq_stream_descriptor_handle descriptor;
     rodaq_string_view projection_id;
     rodaq_bytes_view payload;
-} rodaq_projection_view;
+} rodaq_projection_info;
 
 #define RODAQ_RUNTIME_PROJECTION_PROTOCOL_VERSION UINT32_C(1)
 
@@ -3685,7 +3685,7 @@ typedef struct rodaq_runtime_projection {
         void* context,
         rodaq_stream_descriptor_handle descriptor,
         rodaq_string_view projection_id,
-        rodaq_projection_view* out_view,
+        rodaq_projection_info* out_info,
         rodaq_status* out_error) RODAQ_NOEXCEPT;
 } rodaq_runtime_projection;
 ```
@@ -3710,7 +3710,7 @@ Therefore a required projection is never lazily created from the first Record. `
 
 Runtime copies the registered projection identifier and payload into Runtime-owned activation-lifetime storage. The caller may release its source buffer after `register_projection()` returns successfully.
 
-Returned `rodaq_projection_view` is：
+Returned `rodaq_projection_info` is：
 
 ```text
 immutable
@@ -5151,7 +5151,7 @@ for the Record's StreamDescriptor
 其 transport order 与：
 
 ```text
-rodaq_stream_descriptor_view.transport_timestamp_keys[]
+rodaq_stream_descriptor_info.transport_timestamp_keys[]
 ```
 
 完全一致。
@@ -6639,10 +6639,11 @@ include/rodaq/plugin/abi/
 
 直接开发。
 
-SDK 中不依赖模板实例化或常量求值的实现放在 `src/plugin/`，通过
-`rodaq::sdk` 所依赖的静态 foundation 库链接到 Plugin；模板、`constexpr`
-和必须在 Plugin 中展开的导出 / trampoline 代码保留在头文件。Plugin 不因此
-依赖 Runtime C++ 共享库，Stable C ABI 的符号与布局不变。
+SDK 中不依赖模板实例化或常量求值的实现放在 `src/plugin/` 与
+`src/config/config.cpp`，由自包含的静态 `rodaq::sdk` 链接到 Plugin；
+模板、`constexpr` 和必须在 Plugin 中展开的导出 / trampoline 代码保留在头文件。
+`rodaq::sdk` 不依赖 DAQ DSO、Plugin Host、YAML loader、fmt 或 spdlog。
+Plugin 不因此依赖 C++ 共享 Runtime，Stable C ABI 的符号与布局不变。
 
 ---
 

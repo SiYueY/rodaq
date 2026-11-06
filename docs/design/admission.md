@@ -3431,13 +3431,19 @@ DAQ::submit(...)
 配合：
 
 ```text
-StreamState
-Admission Gate state
-bounded resource counters
-bounded dispatch queue
+ActivationState::submit(...) orchestration
+AdmissionState
+BindingState
+bounded ResourceBudget / PayloadPool / StoragePipeline
 ```
 
 实现全部语义。
+
+`AdmissionState` 必须真正拥有 Global Gate、active submission calls、admission
+in-flight accounting、eligibility generation、Admission condition variable 与
+AcceptanceSequence allocator。`ActivationState` 可以编排跨 Canonical、Binding、
+Payload 与 Storage 的完整 Submit，但不得继续直接持有 Admission Gate internals
+或 AcceptanceSequence allocator。
 
 ---
 

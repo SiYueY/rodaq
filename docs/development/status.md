@@ -1,10 +1,12 @@
 # RoDAQ Development Status
 
-**Updated:** 2026-11-06
+**Updated:** 2026-11-07
 **Branch:** `develop`
 **M0 closure baseline:** `30163c8` — `fix: complete M0 closure repair`
 **M1 closure implementation baseline:** `eecd752` — `style: format runtime registry test`
 **Convergence implementation commit:** `dda407e` — `feat(runtime): converge V1 runtime foundation`
+**Core Structure Closure base:** `develop@9e60230`
+**Core Structure Closure implementation:** `850f339`, `d45a945`
 
 This file records factual current repository state. Keep it concise and update it after meaningful implementation or validation work.
 
@@ -12,7 +14,7 @@ This file records factual current repository state. Keep it concise and update i
 
 **M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **PASS — Result<void> operation migration locally qualified; new hosted CI pending**
+Status: **PASS — Core Structure Closure locally qualified and frozen; hosted CI pending**
 
 M0 historical qualification is **PASS**. D-058 replaces the earlier C/C++
 status source interfaces; applications and plugins must rebuild, and old hosted
@@ -34,9 +36,10 @@ The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition
 
 ## 2026-11-06 Core implementation structure and naming closure
 
-Status: **PASS — local Debug, Release, ASan/LSan, UBSan, Ubuntu 24.04, ABI,
-installation and capacity qualification complete. Hosted qualification is
-PENDING. M2 functional PASS remains valid. M3 is NOT STARTED.**
+Status: **PASS / FROZEN — local Debug, Release, ASan/LSan, UBSan, Clang TSan,
+Ubuntu 24.04, ABI, installation, symbol and capacity qualification complete.
+Hosted qualification is PENDING. M2 functional PASS remains valid. M3 is NOT
+STARTED.**
 
 The pre-M3 source-layout migration is implemented:
 
@@ -50,45 +53,60 @@ The pre-M3 source-layout migration is implemented:
   `impl` namespace exists.
 - `DAQ::Impl` is one private Pimpl type implemented by `daq.cpp`,
   `lifecycle.cpp` and `recovery.cpp`.
-- `ActivationState` is the approximately 460-line activation aggregate root;
-  Canonical registration/descriptor/availability, Binding, Admission submission,
-  Plugin service adaptation, Logging and Metrics implementations are in their
-  owning domain files.
+- `ActivationState` is the activation lifecycle aggregate root and composes
+  independently owned `CanonicalState`, `BindingState`, `AdmissionState` and
+  `ActivationMetrics`. Canonical registration/availability and descriptor lookup,
+  Binding lifecycle, Admission accounting and Metrics invariants are held by
+  their owning state objects.
 - `AcceptedRecord`, `TimestampState` and `AcceptanceSequenceAllocator` have
   Record, Canonical and Admission ownership respectively.
 - `src/runtime`, `include/rodaq/runtime`, `tests/runtime`, `src/sdk`, `failure`,
   `resource` and `observability` source-layout paths are removed.
-- Shared DAQ target is `rodaq::daq` / `librodaq.so`. `rodaq::sdk` is a real
-  static implementation target. `rodaq_plugin`, `rodaq_objects` and
-  `rodaq_testing` remain internal and are not installed.
+- Shared DAQ target is `rodaq::daq` / `librodaq.so`. `rodaq::sdk` is a
+  self-contained static authoring target without DAQ, YAML, Plugin Host, fmt or
+  spdlog dependencies. Installed CMake exports contain only those two public
+  targets; `rodaq_plugin`, `rodaq_objects` and `rodaq_testing` remain internal.
 - ABI type, macro and protocol source names no longer contain version suffixes;
   numeric protocol-version negotiation remains.
+- `View`, `Ref` and `Info` follow D-063; Canonical ABI metadata uses
+  `rodaq_*_info`, and the obsolete `*_view` source names have no aliases.
+- A naming/path residue check runs in CTest.
 
 Local evidence:
 
-- GCC 11.4.0 Debug with warnings-as-errors: full build PASS; **96/96 CTest
-  PASS**, including ABI layout/minimum-prefix/scalar/symbol, installed DAQ and
-  Plugin SDK consumers, Fake end-to-end pipeline, quarantine and stress coverage.
-- GCC 11.4.0 Release with tests and benchmarks enabled: full build PASS and
-  **96/96 CTest PASS**.
-- GCC 11.4.0 ASan+LSan and UBSan: **96/96 CTest PASS** in each build.
-- Clang 14 TSan selected concurrency suites: **10/10 CTest PASS**.
-- Ubuntu 24.04.4 / GCC 13.3 Release with warnings-as-errors: **96/96 CTest
+- GCC 11.4.0 Debug with warnings-as-errors: **105/105 CTest PASS**, including
+  ABI layout/minimum-prefix/scalar/symbol, installed DAQ, SDK and combined
+  consumers, Fake end-to-end pipeline, state-ownership tests, quarantine and
+  stress coverage.
+- GCC 11.4.0 Release with tests and benchmarks enabled: **105/105 CTest PASS**.
+- GCC 11.4.0 ASan+LSan and UBSan: **105/105 CTest PASS** in each build.
+- Clang 14 TSan selected concurrency/ownership suites: **16/16 CTest PASS**.
+  The host requires `setarch x86_64 -R` to avoid a container ASLR mapping
+  conflict with the Clang 14 TSan runtime.
+- Ubuntu 24.04.5 / GCC 13.3 Release with warnings-as-errors: **105/105 CTest
   PASS**, including installed consumers and DSO symbol closure.
 - Release camera, joint and mixed capacity profiles passed three repetitions.
-  Median per-joint acceptance is 99,970 Records/s, raw-camera bandwidth
-  854.9 MB/s, and raw mixed bandwidth 908.4 MB/s, with no resource or shutdown
+  Median per-joint acceptance is 99,967 Records/s, raw-camera bandwidth
+  854.7 MB/s, and raw mixed bandwidth 907.0 MB/s, with no resource or shutdown
   gate regression. Details are recorded in `capacity_qualification.md`.
-- The project clang-format and clang-tidy check covers 211 files, 131
+- After the final BindingState accessor consolidation, Admission, Binding and
+  Fake Runtime pipeline tests were rerun in Debug, ASan/LSan, UBSan and TSan;
+  the installed consumer/symbol and residue checks were rerun from Release.
+  All PASS.
+- The project clang-format and clang-tidy check covers 238 files, 146
   translation units, all public headers and installed consumers: PASS.
-- `nm -D -C` audit and a linker export map show only `rodaq::DAQ` application
-  methods exported; `DAQ::Impl`, Activation, Registry, PayloadPool,
-  StoragePipeline, fmt/spdlog/yaml/HdrHistogram symbols remain hidden.
+- `nm -D -C` audit and a linker export map export the required `DAQ`, `Status`,
+  Config model and YAML loader symbols; `DAQ::Impl`, Activation, Registry,
+  PayloadPool, StoragePipeline, fmt/spdlog/yaml implementation and HdrHistogram
+  symbols remain hidden.
 - Dependency inventory has seven pinned submodules, no unselected oneTBB or
   mimalloc checkout, and no third-party include in installed headers.
+- `BUILD_TESTING=OFF`, `RODAQ_BUILD_TESTS=OFF` and
+  `RODAQ_BUILD_BENCHMARKS=OFF` Release configuration/build PASS.
 
-The pre-M3 structural closure is locally complete. Hosted CI must rerun before
-it is cited as externally qualified. M3 remains NOT STARTED.
+The pre-M3 structural closure is locally complete and frozen. Hosted CI must
+rerun before it is cited as externally qualified. M3 remains NOT STARTED until
+separately authorized.
 
 ## Current repository state
 
@@ -1010,7 +1028,8 @@ qualification is PENDING**. Native arm64 remains DEFERRED under D-034.
 
 After the C++ naming review, non-template SDK service, configuration and
 validation implementations were moved to `src/plugin/` and linked through the
-existing static `rodaq_api_support` dependency of `rodaq::sdk`. Selected internal
+then-existing static `rodaq_api_support` dependency of `rodaq::sdk`. That support
+target was removed by the later Core Structure Closure. Selected internal
 Runtime definitions were moved to their corresponding `.cpp` files. Templates,
 `constexpr`, Plugin entrypoint/trampoline definitions and public Runtime inline
 accessors needed for the existing hidden-visibility linking contract remain in

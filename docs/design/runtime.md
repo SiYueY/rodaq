@@ -168,7 +168,7 @@ Runtime Binding
 Admission Gate
 Storage Dispatch
 Storage Completion Domain
-Active Runtime State
+Activation State
 ```
 
 等逻辑责任。
@@ -397,7 +397,7 @@ V1 不提供 activation 间 Identity Scope reuse。
 `Starting` 至少建立：
 
 ```text
-Active Runtime State
+Activation State
 Identity Scope
 Canonical ID allocators
 Canonical registries
@@ -831,30 +831,26 @@ caller-thread serialization
 
 ---
 
-# 3. Active Runtime State 与 Canonical Infrastructure
+# 3. Activation State 与 Canonical Infrastructure
 
-## 3.1 Active Runtime State
+## 3.1 Activation State Ownership
 
 一次 activation 的运行时状态逻辑上组成：
 
 ```text
 ActivationState
-├── IdentityScope
-├── CanonicalIdAuthority
-├── CanonicalRegistry
-├── InteropProjectionRegistry
-├── IngressClock
-├── ReplayTimeCorrelation
-├── StreamTable
-├── SourceTable
-├── BindingTable
-├── SubmissionActivityState
+├── const DAQConfig
+├── ActivationLimits
+├── StructuralArena
+├── CanonicalState
+├── BindingState
 ├── AdmissionState
-├── StorageDispatchState
-├── StorageCompletionState
-├── EffectiveLimits
-├── TerminalDisposition
-└── OperationalState
+├── PayloadPool
+├── StoragePipeline
+├── Plugin resources
+├── LoggingContext
+├── ActivationMetrics
+└── Activation failure/lifecycle state
 ```
 
 `ActivationState` 是实现内部生命周期概念。
@@ -865,6 +861,47 @@ ActivationState
 - 不是 Session；
 - 不需要公开为 API 类型；
 - 不持久化。
+
+状态所有权边界为：
+
+```text
+CanonicalState
+    Canonical registries, handles, ID allocators,
+    registration interning, descriptor metadata lookup,
+    Source/Stream availability
+
+BindingState
+    Binding registry, per-Stream current Binding,
+    Prepared/Active/Draining/Retired transitions,
+    Binding admission in-flight accounting
+
+AdmissionState
+    Global Gate, submission-call accounting,
+    admission in-flight accounting,
+    eligibility generation, AcceptanceSequence allocation
+
+ActivationMetrics
+    counters, high-water marks and latency histograms
+```
+
+`ActivationState` 只保留 activation lifecycle、failure cutoff、shutdown
+ordering、quarantine handoff、Descriptor reconciliation orchestration 与跨领域
+submission orchestration。不得重新直接持有 Canonical/Binding Registry、
+AcceptanceSequence allocator 或 Admission Gate internals。
+
+Activation 使用内部 `ActivationPhase`：
+
+```text
+Starting
+Running
+Stopping
+Stopped
+Failed
+```
+
+`DAQState` 只属于 application-facing DAQ lifecycle。`DAQConfig` 在 activation
+lifetime 内不可变；Storage capability negotiation 生成独立的
+`ActivationLimits`，不修改原始配置 DTO。
 
 其 lifetime：
 
@@ -7119,7 +7156,7 @@ Runtime
 │   ├── Stopped
 │   └── Failed
 │
-├── Active Runtime State
+├── Activation State
 │   ├── Identity Scope
 │   ├── Canonical ID Authority
 │   ├── Canonical Registry

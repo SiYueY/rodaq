@@ -12,6 +12,32 @@ This plan is the implementation input for the V1 Runtime Foundation
 Convergence. It does not itself change code, tests, CMake, Stable ABI, or
 milestone status.
 
+## 2026-11-06 Pre-M3 Core Structure Closure
+
+The user-authorized Core Structure Closure has been implemented on top of the
+converged M2 foundation:
+
+- `CanonicalState`, `BindingState`, `AdmissionState` and `ActivationMetrics`
+  now own their corresponding state and invariants; `ActivationState` retains
+  lifecycle and cross-domain orchestration.
+- Activation uses internal `ActivationPhase` and immutable `DAQConfig` plus
+  negotiated `ActivationLimits`.
+- Plugin service adapters are split by protocol; the thin activation Logging
+  wrapper is removed; configuration validation is owned by `config/validation`.
+- View/Ref/Info naming and Canonical `*_info` C ABI source names are closed
+  without compatibility aliases.
+- Installed CMake exports only `rodaq::daq` and `rodaq::sdk`; the SDK is
+  independent of DAQ, YAML, Plugin Host, fmt and spdlog.
+- A combined DAQ+SDK consumer, complete public symbol allowlist and automated
+  naming/path residue check are present.
+
+Local qualification is recorded in `status.md` and
+`capacity_qualification.md`: Debug, Release, ASan/LSan and UBSan are
+**105/105 PASS**; Ubuntu 24.04/GCC 13 is **105/105 PASS**; Clang 14 TSan
+selected suites are **16/16 PASS**; style and all eight Release benchmarks pass.
+Hosted CI remains PENDING. The core structure is locally FROZEN; M3 remains
+NOT STARTED.
+
 The plan incorporates the R1 review corrections:
 
 - Copy Payload materialization occurs before Gate Pass.

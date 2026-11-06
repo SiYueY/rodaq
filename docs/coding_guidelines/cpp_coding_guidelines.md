@@ -927,6 +927,18 @@ Private snake_case
 
 两套体系。
 
+Type suffix semantics are fixed:
+
+| Suffix | Meaning | Examples |
+|---|---|---|
+| `View` | Borrowed/non-owning data or proxy over existing data | `PayloadView`, `ConfigView`, `rodaq_string_view` |
+| `Ref` | Reference-like object or capability handle with explicit lifetime rules | `InterfaceRef`, `ServiceRegistryRef`, `ConfigNodeRef` |
+| `Info` | Object metadata description; caller-owned output may contain borrowed fields | `rodaq_source_info`, `rodaq_stream_info` |
+| `Snapshot` | Copied point-in-time state | `DAQLifecycleSnapshot` |
+| `Handle` | Opaque stable identity | `StreamHandle` |
+
+Do not use `View` merely because a wrapper does not own the underlying resource.
+
 ---
 
 ## 2.2 Namespace
@@ -951,6 +963,19 @@ namespace data_transport {
 ```
 
 Namespace 应表达真实领域。
+
+RoDAQ defaults to:
+
+```cpp
+namespace rodaq {
+}
+```
+
+`namespace rodaq::plugin` is reserved for the long-lived Plugin subsystem
+boundary. RoDAQ does not use `rodaq::detail`, `rodaq::internal` or
+`rodaq::impl`. `DAQ::Impl` is a Pimpl type, not a namespace, and remains valid.
+Public/private separation is enforced through installed headers, CMake target
+ownership and symbol visibility.
 
 优先：
 
@@ -1893,7 +1918,8 @@ scheduler
 
 ## 2.31 `detail` / `internal` / `impl`
 
-通用规范不绝对禁止。
+The general C++ ecosystem permits these namespaces for mechanisms such as a
+header-only template library:
 
 例如 header-only template library：
 
@@ -1904,9 +1930,16 @@ namespace library::detail {
 
 隐藏模板实现是合理的。
 
-但原则是：
+For RoDAQ, these generalized namespaces are forbidden:
 
-> **不能把 `detail` / `internal` / `impl` 当成缺乏领域建模时的默认垃圾桶。**
+```text
+rodaq::detail
+rodaq::internal
+rodaq::impl
+```
+
+Do not replace them with `utils`, `common`, `helpers` or `support` garbage-bag
+namespaces/files either.
 
 如果一个 private 类型实际是：
 

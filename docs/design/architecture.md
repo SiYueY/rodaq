@@ -847,6 +847,13 @@ TimestampKeySetId
 
 SourceId 的 source-specific canonicalization 由 Acquisition Plugin / Contract 负责。
 
+Implementation ownership follows D-064: the activation aggregate composes
+`CanonicalState`, `BindingState`, `AdmissionState` and `ActivationMetrics`.
+Canonical identity/publication belongs to `CanonicalState`; current Binding and
+its lifecycle belong to `BindingState`; Gate/submission/sequence state belongs
+to `AdmissionState`. Activation retains lifecycle, failure cutoff and
+cross-domain coordination.
+
 ---
 
 ### Control Plane Coordination

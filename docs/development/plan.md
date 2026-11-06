@@ -52,23 +52,40 @@ backend functionality or change Runtime data-path semantics.
   uses `rodaq::plugin`; no `detail`, `internal` or `impl` namespace is used.
 - [x] `DAQ::Impl` is one private type split across `daq.cpp`, `lifecycle.cpp` and
   `recovery.cpp`.
-- [x] `ActivationState` remains the aggregate root while Canonical, Binding,
-  Admission submission, Plugin service adaptation, Logging and Metrics behavior
-  live in their owning domain implementation files.
+- [x] `ActivationState` composes independently owned `CanonicalState`,
+  `BindingState`, `AdmissionState` and `ActivationMetrics`.
+- [x] `CanonicalState` owns Canonical registration/lookup/availability state;
+  `BindingState` owns Binding lifecycle/publication; `AdmissionState` owns Gate,
+  submission/in-flight accounting and sequence allocation.
 - [x] `AcceptedRecord`, `TimestampState` and `AcceptanceSequenceAllocator` have
   separate Record, Canonical and Admission ownership.
+- [x] Activation uses `ActivationPhase`; immutable `DAQConfig` is separate from
+  negotiated `ActivationLimits`.
+- [x] Config validation lives in `config/validation.*`.
+- [x] `InterfaceRef`, `ServiceRegistryRef`, `ConfigNodeRef` and Canonical
+  `*_info` source names are frozen without aliases.
+- [x] Plugin service adapters are split by Common, Canonical, Acquisition and
+  Storage protocol; registration remains in `activation_services.cpp`.
+- [x] The thin activation Logging wrapper is removed.
 - [x] Source and test trees no longer contain `runtime/`, `sdk/`, `failure/`,
   `resource/` or `observability/` implementation directories.
 - [x] ABI source identifiers, macro names and protocol identifiers are
   version-free; numeric `protocol_version` negotiation remains.
 - [x] Shared DAQ target is `librodaq.so` / `rodaq::daq`; implementation SDK is
   `rodaq::sdk`; Plugin Host implementation remains private.
-- [x] Installed DAQ and Plugin SDK consumers pass.
-- [x] Default Debug warnings-as-errors: **96/96 CTest PASS**.
-- [x] Release with tests and benchmarks enabled: full build PASS.
-- [x] GCC 11 ASan+LSan and UBSan full CTest: **96/96 PASS** in both builds.
-- [x] Ubuntu 24.04 full CTest: **96/96 PASS**.
-- [x] Clang 14 TSan selected concurrency suites: **10/10 PASS**.
+- [x] Installed DAQ, Plugin SDK and combined consumers pass.
+- [x] `RoDAQTargets` exports only `rodaq::daq` and `rodaq::sdk`.
+- [x] Public `DAQ`, `Status`, Config model and YAML symbols are exported; internal
+  implementation symbols remain hidden.
+- [x] Canonical, Binding, Admission, Activation, Metrics, Logging and descriptor
+  ownership tests are present.
+- [x] Automated source path/name residue check is in CTest.
+- [x] Default Debug warnings-as-errors: **105/105 CTest PASS**.
+- [x] Release with tests and benchmarks enabled: **105/105 CTest PASS**.
+- [x] GCC 11 ASan+LSan and UBSan full CTest: **105/105 PASS** in both builds.
+- [x] Ubuntu 24.04 full CTest: **105/105 PASS**.
+- [x] Clang 14 TSan selected concurrency suites: **16/16 PASS** with ASLR
+  disabled for the container.
 - [x] Steady-state and capacity benchmarks rerun with recorded comparison.
 - [x] clang-format and clang-tidy project checks PASS.
 - [x] Dependency inventory/SBOM and exported-symbol audits.
