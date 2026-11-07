@@ -10,8 +10,8 @@
 #define RODAQ_LOCAL
 #endif
 #elif defined(__GNUC__) || defined(__clang__)
-#define RODAQ_EXPORT __attribute__((visibility("default")))
-#define RODAQ_LOCAL __attribute__((visibility("hidden")))
+#define RODAQ_EXPORT [[gnu::visibility("default")]]
+#define RODAQ_LOCAL [[gnu::visibility("hidden")]]
 #else
 #define RODAQ_EXPORT
 #define RODAQ_LOCAL

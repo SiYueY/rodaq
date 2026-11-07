@@ -89,7 +89,11 @@ ActivationState::ActivationState(DAQConfig config, std::uint64_t activation_gene
     }
     storage_context_ = std::make_unique<plugin::StorageServiceContext>();
     storage_context_->state = this;
-    auto logging = LoggingContext::create(config_.logging, std::make_shared<SpdlogBackend>());
+    auto logging_backend = SpdlogBackend::create(config_.logging);
+    if (!logging_backend.ok()) {
+        throw std::runtime_error(std::string(logging_backend.status().message()));
+    }
+    auto logging = LoggingContext::create(config_.logging, std::move(logging_backend.value()));
     if (!logging.ok()) {
         throw std::runtime_error(std::string(logging.status().message()));
     }
@@ -466,7 +470,7 @@ DAQStats ActivationState::stats() const noexcept {
 void ActivationState::log(
     LogLevel level, std::string_view category, std::string_view message) noexcept {
     if (logging_context_ != nullptr) {
-        logging_context_->log(level, category, message);
+        logging_context_->log(level, category, {}, message);
     }
 }
 
@@ -508,6 +512,13 @@ void ActivationState::quarantine_logging(std::string reason) noexcept {
 
 LoggingStats ActivationState::current_logging_stats() const noexcept {
     return logging_context_ == nullptr ? LoggingStats{} : logging_context_->stats();
+}
+
+Result<Logger> ActivationState::make_logger(std::string_view category) const {
+    if (logging_context_ == nullptr) {
+        return activation_status(StatusCode::InvalidState, "DAQ logging context is unavailable");
+    }
+    return logging_context_->make_logger(category);
 }
 
 }  // namespace rodaq

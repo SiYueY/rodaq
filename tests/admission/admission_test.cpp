@@ -325,13 +325,13 @@ TEST(AdmissionGateTest, RejectsInvalidWaitConfigurationAndForeignCancellation) {
     no_deadline.mode = AdmissionMode::Wait;
     const auto invalid = gate.admit(no_deadline);
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(invalid.status().code(), StatusCode::InvalidArgument);
 
     AdmissionCancellation foreign_cancellation(second_budget);
     const auto wrong_budget =
         gate.admit(reject_request(ResourceAmount{1, 4}), foreign_cancellation);
     ASSERT_FALSE(wrong_budget.ok());
-    EXPECT_EQ(wrong_budget.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(wrong_budget.status().code(), StatusCode::InvalidArgument);
 }
 
 TEST(AdmissionGateTest, GrantDoesNotAllocateAcceptanceSequence) {

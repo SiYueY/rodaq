@@ -27,10 +27,76 @@ M4  FastDDS Acquisition + MCAP Interoperability
 M5  Production Hardening + Release Qualification
 ```
 
-Current milestone: **None — M2 PASS; pre-M3 structure/naming closure PASS
-locally; hosted CI pending; M3 NOT STARTED**
+Current milestone: **M2 ACTIVE — Status/Result/Logging infrastructure
+refactor; M3 NOT STARTED**
 
 Only one milestone may be `ACTIVE` at a time.
+
+### Non-plugin architecture execution rule
+
+The current non-plugin design baseline is `docs/design/architecture.md`,
+`runtime.md`, `admission.md`, `canonical_profile.md` and
+`recording_service.md`. Implementation contracts distinguish:
+
+- `Core Runtime`: activation-local Canonical, Admission, Payload, Storage
+  coordination, bounded progress and safety; no Task Ledger, Retention,
+  historical Artifact Catalog or process restart policy in `ActivationState`.
+- `BoundedRecording`: a service that can stay online and execute finite
+  recording tasks; each Activation produces a separate Artifact/Scope, and
+  Start/Stop gaps are explicit.
+- `ContinuousRecording`: uninterrupted rolling with cross-segment
+  lineage and bounded retention. This is **not supported** by the present
+  V1 ABI/Artifact contract and is a future design gate, not an implicit
+  M3/M5 completion claim.
+
+Execution order follows `recording_service.md` `7.3: pre-M3 Runtime
+mutation coordination; M3/M4 real-chain evidence; M5 production-service
+implementation and qualification **if** the release claims industrial
+unattended `BoundedRecording`. Core-library/finite-task releases may stay
+narrower, but must explicitly state the limitation and must not claim 7x24
+production Recording Service or `ContinuousRecording`. Unchecked tasks
+below remain NOT STARTED until implementation and evidence are recorded.
+
+---
+
+## Status, Result & Logging Infrastructure Refactor
+
+**Status:** ACTIVE — implementation and targeted verification complete; full
+Qualification matrix pending.
+
+This source-breaking pre-release refactor temporarily reopens M2. Stable C ABI
+struct layouts, offsets, scalar values and protocol versions remain unchanged;
+the ABI severity macro source names change from `RODAQ_LOG_*` to
+`RODAQ_ABI_LOG_*` and require all consumers to rebuild.
+
+- [x] Replace expected-lite with tl::expected 1.3.1 at
+  `1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4`.
+- [x] Install `tl/expected.hpp` and license; remove expected-lite target,
+  installed header, selection tests and SBOM entry.
+- [x] Adapt rocomm `Result<T>` source directly and make Status header-only with
+  rocomm-style `Ok()/code()` plus RoDAQ `domain()/error_code()` extensions.
+- [x] Apply strong Status/Result abort contracts, no-value Result, rvalue
+  dangling-access deletion, no implicit Result boolean conversion and compile
+  restrictions for array/cv/`Result<Status>`.
+- [x] Add public `logging.hpp` / `logging_config.hpp`, Running-only
+  `DAQ::logger()`, weak Logger handles and Activation-owned LoggingContext.
+- [x] Implement Sync/AsyncBounded, record/byte bounds, all three overflow
+  policies, Console/File/RotatingFile/DailyFile sinks, level/pattern/time-zone
+  settings, periodic/level flush, backtrace, formatting isolation, reentrancy
+  drop, statistics and bounded quarantine.
+- [x] Freeze `RODAQ_LOG_*` public macros and rename ABI severity constants to
+  `RODAQ_ABI_LOG_*` without compatibility aliases.
+- [x] Make `fmt::fmt` and `spdlog::spdlog` public dependencies of `rodaq::daq`;
+  install exact package closure and resolve it with `find_dependency()`.
+- [x] Keep `rodaq::sdk` independent of DAQ, fmt, spdlog and YAML.
+- [x] Add targeted Status/Result, compile-fail, logging backend/context/logger,
+  DAQ lifecycle, Plugin severity mapping, ABI/install and symbol checks.
+- [x] Adapt Result directly from rocomm and migrate Status to its header-only
+  `Ok()/code()` API with RoDAQ diagnostic extensions.
+- [x] GCC 11.4 Debug with warnings-as-errors: **108/108 CTest PASS** before the
+  final exception-rollback hardening; affected logging tests rerun **2/2 PASS**.
+- [ ] Run the complete final Qualification matrix and record evidence.
+- [ ] Restore `M2 = PASS / Core FROZEN` only after that evidence is complete.
 
 ---
 
@@ -92,6 +158,43 @@ backend functionality or change Runtime data-path semantics.
 
 Completion restores M2 as the current completed milestone and leaves M3 NOT
 STARTED until a separate M3 task is authorized.
+
+---
+
+## Pre-M3 Non-plugin Runtime Contract Gate
+
+**Status:** NOT STARTED / pending implementation and validation.
+**Owner:** Runtime / Storage coordination (not a concrete Plugin).
+**Source:** `docs/design/runtime.md` `8.2.1 and `16.34; `recording_service.md` `7.3.
+
+This is an entry gate within the existing M2 → M3 transition, **not**
+a separate active milestone or a new M2-wide rearchitecture.
+
+- [ ] Finish current M2 Status/Result/Logging requalification and restore
+  `M2 = PASS / Core FROZEN` before M3 begins.
+- [ ] Audit all Runtime → Storage mutation entry points:
+  `ensure_descriptor_ready`, `submit`, `flush` and `close`, including
+  descriptor reconciliation, dispatch, lifecycle, failure and quarantine.
+- [ ] Enforce the default **non-overlap of unauthorized Storage mutation
+  calls**, or explicitly prove concrete Storage Contract concurrency
+  capabilities. Separate internally serial workers are not proof of
+  one logically serialized instance.
+- [ ] Preserve descriptor-ready-before-binding/first-record,
+  same-Stream accepted handoff order and early completion
+  reconciliation. Avoid inline-callback deadlocks.
+- [ ] Test slow, blocked and late-returning mutations; timeout must fail
+  closed, retain no-future-access anchors and never start an unsafe
+  second mutation against the timed-out first call.
+- [ ] Add Fake Storage overlap detection and interleaving tests:
+  dynamic descriptor evolution while older Streams submit, early/late
+  completions, Stop, failure cutoff, flush/close and quarantine.
+- [ ] Record a focused gate report plus affected Runtime/ABI tests.
+  If a public contract change is necessary, revise the owning
+  designs and decisions before implementing it.
+
+**Exit Gate:** No unproven cross-thread Storage mutation overlap, no
+readiness/handoff/order regression, and timeout/failure maintains safe
+resource ownership. Follow D-066 for incremental vs final qualification.
 
 ---
 
@@ -157,7 +260,7 @@ Required production dependency pins:
 - [x] fmt 12.1.0.
 - [x] HdrHistogram_c 0.12.1.
 - [x] yaml-cpp 0.9.0.
-- [x] expected-lite 0.10.0 as the pinned Public C++ header dependency.
+- [x] tl::expected 1.3.1 as the pinned private Result implementation dependency.
 
 Evaluated but not selected for V1:
 
@@ -182,10 +285,10 @@ QUALIFIED
 Current required-dependency states:
 
 ```text
-expected-lite    PINNED + BUILT + LINKED + USED + QUALIFIED
+tl_expected      PINNED + BUILT + LINKED + USED + QUALIFIED
 HdrHistogram_c   PINNED + BUILT + LINKED + USED + QUALIFIED
-spdlog           PINNED + BUILT + LINKED + USED + QUALIFIED (private logging)
-fmt              PINNED + BUILT + LINKED + USED + QUALIFIED (private logging)
+spdlog           PINNED + BUILT + LINKED + USED + QUALIFIED (public DAQ CMake dependency)
+fmt              PINNED + BUILT + LINKED + USED + QUALIFIED (public DAQ CMake dependency)
 yaml-cpp         PINNED + BUILT + LINKED + USED + QUALIFIED (ConfigLoader)
 oneTBB           EVALUATED + NOT-SELECTED; removed from V1 baseline
 mimalloc         EVALUATED + NOT-SELECTED; removed from V1 baseline
@@ -195,9 +298,9 @@ Google Benchmark BUILT + LINKED + USED + QUALIFIED (benchmark only)
 
 #### Result / Error
 
-- [x] Finalize `rodaq::Result<T>` as the direct expected-lite alias.
-- [x] Force expected-lite's nonstd implementation independently of consumer C++ mode.
-- [x] Keep expected-lite out of the Stable C ABI.
+- [x] Finalize `rodaq::Result<T>` as a RoDAQ wrapper over private tl::expected storage.
+- [x] Pin and mechanically verify tl::expected 1.3.1.
+- [x] Keep tl::expected out of the Stable C ABI.
 - [x] Implement/freeze error representation used by Public C++ APIs.
 
 #### Stable ABI
@@ -717,11 +820,30 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 
 - [x] M0 PASS.
 - [x] M1 PASS.
-- [x] M2 PASS.
+- [ ] Current M2 Status/Result/Logging refactor requalified;
+  `M2 = PASS / Core FROZEN` restored. Historical M2 evidence alone
+  does not qualify the active revision.
+- [ ] Pre-M3 Non-plugin Runtime Contract Gate above PASS, with
+  cross-thread Storage mutation evidence.
 - [ ] ROS2 mapping reviewed against current ABI.
 - [ ] MCAP mapping reviewed against current ABI and a directly pinned RoDAQ mcap-cpp version/commit (no ROS2 mcap_vendor runtime dependency).
 
 ### Scope
+
+#### Non-plugin Runtime / Storage integration
+
+- [ ] Rerun `runtime.md` `16.34 interleaving tests before first real
+  Storage integration and retain them as M3 regression coverage.
+- [ ] Prove real MCAP descriptor readiness, dynamic descriptor
+  evolution, `submit`, final `flush` and `close` follow the verified
+  mutation coordination contract under overlapping source traffic.
+- [ ] Measure actual Handoff stalls, per-class Camera/Joint
+  offered/accepted/rejected counts and P95/P99/P99.9; distinguish
+  single-Lane head-of-line blocking from aggregate throughput.
+- [ ] Capture actual Backend finalization, disk consumption,
+  metadata/index memory growth and failure behavior as inputs to
+  the future Recording Service. Do not introduce Task Ledger or
+  file-retention semantics into Runtime/Plugin ABI.
 
 #### ROS2 Acquisition
 
@@ -763,6 +885,10 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] E2E executable/integration test.
 - [ ] round-trip validator.
 - [ ] initial performance baseline.
+- [ ] real-MCAP Storage mutation interleaving/order and tail-latency evidence.
+- [ ] Backend Artifact finalization / disk-failure evidence usable by
+  a later Recording Service, including a list of facts that are **not**
+  yet exposed through supported DAQ/validator interfaces.
 - [ ] development AppImage smoke artifact.
 
 ### Verification
@@ -793,6 +919,13 @@ Implement the first real Acquisition-to-Storage chain on top of the already vali
 - [ ] flush.
 - [ ] close.
 - [ ] failure injection.
+- [ ] Distinguish successful Backend finalization,
+  `PersistenceSucceeded` and unproven crash durability;
+  no `NormalComplete` after short write, ENOSPC or close failure.
+- [ ] Dynamic descriptor reconciliation and concurrent submit/Stop
+  interleaving without unproven Storage mutation overlap.
+- [ ] Real MCAP writer memory/index/sidecar and disk-use trends under
+  sustained camera + joint mixed workload.
 - [ ] `ros2 bag info` qualification.
 - [ ] `ros2 bag play` + subscriber verification.
 - [ ] PlotJuggler direct-open + field decode qualification.
@@ -821,6 +954,11 @@ Required initial submit mapping:
 - [ ] MCAP PersistencePending completion tests pass.
 - [ ] sidecar/descriptor failure-recovery tests pass.
 - [ ] initial throughput/CPU/RSS/latency baseline recorded.
+- [ ] Fake and real Backend cross-thread Storage mutation tests PASS;
+  no readiness or same-Stream handoff regression.
+- [ ] Short mixed-load MCAP evidence explicitly records limits:
+  no per-Stream hard real-time QoS, no assured crash durability,
+  and no claim of uninterrupted recording.
 
 ### Out of Scope
 
@@ -830,6 +968,11 @@ Do not implement in M3:
 - SQLite3 Storage implementation.
 - final production tuning.
 - final release qualification.
+- Recording Service production implementation, durable Task Ledger,
+  Artifact Catalog/Retention and automatic process recovery
+  (M5 `BoundedRecording` workstream).
+- `ContinuousRecording`, seamless rolling and cross-Scope continuity
+  (future design gate).
 - hot reload.
 
 ---
@@ -904,6 +1047,12 @@ Implement the second V1 Acquisition path directly on Fast DDS / Fast CDR, withou
 - [ ] FastDDS Stop/quiescence under active traffic.
 - [ ] no ROS2 libraries in FastDDS recording-host transitive runtime closure.
 - [ ] ROS2/FastDDS cross-acquisition equivalence runs in separate process profiles by default.
+- [ ] Classify native DDS/RMW losses, Plugin-local staging losses and
+  Runtime PreAdmissionRejected separately where source evidence exists;
+  report `Unknown` rather than 0 lost where no reliable proof exists.
+- [ ] Preserve each Activation/Scope time identity and qualify
+  cross-source timestamp uncertainty; do not assert inter-Activation
+  continuity without explicitly proven Clock correlation.
 - [ ] simultaneous ROS2 + FastDDS activation is rejected unless Fast DDS/Fast CDR SONAME/ABI/symbol coexistence qualification explicitly passes.
 
 ### Exit Gate
@@ -959,6 +1108,79 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - [ ] plugin dependency collision audit covers ROS2 `rmw_fastrtps_*` versus RoDAQ-pinned Fast DDS/Fast CDR.
 - [ ] SBOM / licenses / checksums / release manifest.
 
+#### BoundedRecording Production Service (non-plugin workstream)
+
+**Status:** NOT STARTED. Complete this workstream if V1 is advertised
+as an industrial unattended recording product. A core-library or
+finite-task distribution may defer this workstream **only with an
+explicitly narrower Release Scope** and no production-service claim.
+Reference: `docs/design/recording_service.md` ``1–7.
+
+**Task lifecycle / durable facts**
+- [ ] Define the deployment Profile before implementation: finite task
+  duration, peak source rates, allowed loss/Unknown, RPO/RTO,
+  headroom, restart budget, clock uncertainty and health SLO.
+- [ ] Implement `TaskId` / `ActivationRef` / `ArtifactRef` with
+  generation-aware idempotent Start/Stop, one Writer per target,
+  conflict handling and explicit inter-Activation recording gaps.
+- [ ] Implement bounded, versioned Durable Task Ledger + replay,
+  checksum/torn-tail protection, atomic publication, directory
+  ownership and duplicate/late-command reconciliation.
+- [ ] Separate Task/Artifact facts from Canonical identity;
+  no Task recovery may rewrite AcceptanceSequence, Scope or
+  unverified `NormalComplete`.
+
+**Disk / Artifact management**
+- [ ] Implement Disk Admission for worst-case finite duration,
+  peak bytes, already-reserved space, filesystem quotas,
+  MCAP writer metadata/index and finalization headroom.
+- [ ] Implement disk `Healthy → Pressure → Critical` thresholds
+  with hysteresis, ETA-to-full, bounded stop and explicit ENOSPC.
+- [ ] Implement Artifact Catalog and read-only validation of
+  `Reserved/Writing/Finalizing/VerifiedComplete/Partial/Unknown`;
+  only Backend/Validator evidence establishes completeness.
+- [ ] Implement idempotent/audited Retention for independently
+  closed, verified, authorized Artifacts with no active Reader
+  lease. Never delete current/Partial/unknown files to
+  manufacture headroom.
+
+**Recovery / supervision / health**
+- [ ] On startup, obtain exclusive ownership, replay ledger,
+  scan artifacts read-only, classify partial/corrupt/unknown,
+  and start any replacement recording as a **new** Activation.
+- [ ] Provide external process supervisor (e.g. systemd):
+  progress-based health, restart backoff and budget,
+  circuit-breaker and no-double-writer fencing.
+- [ ] Export bounded Task + Runtime + Source Quality + Storage
+  snapshots. Separate native loss, Plugin staging loss, pre-Gate
+  rejects, Accepted and PersistenceFailed/Unknown; missing
+  source proof must appear as `Unknown`, never 0 lost.
+- [ ] Provide minimal task-control CLI/local interface with
+  OperationId/generation idempotency and bounded readers;
+  remote/API access, if exposed, requires auth/authz,
+  audit, secure transport and request/bandwidth limits.
+- [ ] Choose and validate actual crash-durability mode with
+  measurable RPO, independent of `PersistenceSucceeded`,
+  `NormalComplete` and Task Ledger persistence; explicitly
+  document unsupported guarantees.
+
+**Industrial qualification**
+- [ ] Fault-inject SIGKILL/OOM, power-loss simulation,
+  torn Ledger, ENOSPC/quota, short write, interrupted close,
+  blocked Plugin, restart loops, Retention failure and
+  concurrent Reader leases.
+- [ ] Prove actual Camera+Joint MCAP resource trends:
+  RSS, FD, thread, writer index/sidecar/log memory, file count,
+  disk utilization and tail latency across repeated tasks.
+- [ ] Retain the 30–60 min M5 mixed-load as a short performance
+  check; propose ≥72 h stability and ≥168 h/maintenance-period
+  unattended run for the production Profile. Freeze the actual
+  duration by project SLO/risk assessment; these are design
+  recommendations, not universal standards.
+- [ ] Record Task/Artifact/Recovery traces, P95/P99/P99.9,
+  accepted/rejected/source-loss evidence, measured RTO/RPO
+  and uncovered intervals in a reproducible report.
+
 ### Deliverables
 
 - [ ] benchmark and soak reports.
@@ -966,6 +1188,14 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - [ ] interoperability regression corpus/results.
 - [ ] qualified release artifacts for required architectures.
 - [ ] SBOM / THIRD_PARTY_NOTICES / release manifest.
+- [ ] `BoundedRecording` service implementation plus durable
+  ledger/catalog schema, replay and lifecycle tests **if production
+  service is an advertised Release Profile**.
+- [ ] Disk Admission/Retention, conservative recovery, supervisor
+  health and fault-injection evidence **if this Profile is in scope**.
+- [ ] Explicit Release Scope declaration (core-library/finite-task
+  or qualified unattended `BoundedRecording`); `ContinuousRecording`
+  must be marked unsupported until a separate future gate.
 
 ### Verification
 
@@ -974,6 +1204,15 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - [ ] failure paths preserve deterministic quiescence and Artifact state.
 - [ ] performance optimizations have before/after evidence.
 - [ ] ROS2 and FastDDS interoperability remains green after tuning.
+- [ ] Validate Task/Artifact failure state from actual Backend
+  and Ledger evidence; distinguish `NormalComplete` from measured
+  crash durability.
+- [ ] If `BoundedRecording` is advertised: repeated finite tasks
+  across process restart, writer fencing, catalog/retention
+  safety, disk headroom and Partial Artifact recovery matrix PASS.
+- [ ] If `BoundedRecording` is advertised: long soak per frozen
+  deployment Profile, supervisor restart limits, upstream loss/
+  Unknown accounting and bounded writer memory/disk/FD trends PASS.
 
 ### Exit Gate
 
@@ -985,6 +1224,15 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - [ ] x86_64 and aarch64 release qualification passes.
 - [ ] FastDDS recording-host package has no ROS2 runtime dependency.
 - [ ] SBOM/license/release manifest complete.
+- [ ] Product scope documented: **production `BoundedRecording`
+  claim only after the required non-plugin Service/Disk/Ledger/
+  Recovery/Health gates PASS**. Otherwise explicitly label
+  release core-library/finite-task only.
+- [ ] Storage mutation interleaving tests (Descriptor readiness,
+  submit, flush, close) remain PASS after tuning; historical
+  M3 evidence is not enough if coordination implementation changed.
+- [ ] No unsupported claim of seamless rolling, full-chain zero
+  loss, crash durability or same-Scope automatic recovery.
 
 ### Out of Scope
 
@@ -993,6 +1241,36 @@ Harden the completed ROS2 + FastDDS + MCAP system for bounded production behavio
 - Generic DDS implementation.
 - additional Storage formats.
 - runtime hot reload / process sandboxing.
+- `ContinuousRecording`: seamless rolling, cross-Segment lineage,
+  same-Scope automatic recovery and active-Artifact retention.
+- full remote management UI/export server unless separately
+  selected; production security constraints still apply to
+  any externally exposed interface.
+
+### Future Design Gate — ContinuousRecording (not a V1 milestone)
+
+**Status:** NOT STARTED / outside M5 Exit Gate. This is a
+dependency-controlled future extension, not permission to
+modify the Storage Plugin or add a second Runtime now.
+
+- [ ] Freeze Segment identity and Task/Artifact/Scope relation:
+  atomic old/new Segment boundary, ordered Record assignment,
+  Descriptor/Projection sidecars and independently valid
+  Segment finalization.
+- [ ] Design required Storage/Runtime ABI capabilities for
+  bounded rolling while preserving same-Stream AcceptanceSequence
+  and Payload/Persistence lifetime; evaluate measured alternatives.
+- [ ] Freeze cross-Segment Manifest, Retention and crash matrix:
+  insufficient disk, next open/old close failure, reader lease,
+  Partial recovery and lineage across process restart.
+- [ ] Qualify MCAP Segment consumption with ros2 bag play,
+  PlotJuggler, Foxglove and Task-level reader composition,
+  without rewriting Canonical IDs.
+- [ ] Run separate long-duration rolling/durability/recovery
+  qualification and explicitly authorize the new release
+  Profile before claiming uninterrupted recording.
+
+---
 
 ## 2026-11-05 M2 Ownership Closure — COMPLETE / local PASS
 
@@ -1062,7 +1340,7 @@ historical evidence and do not qualify the latest uncommitted changes.
 ## 2026-11-05 Result failure construction
 
 - [x] Expose `rodaq::make_error`, migrate project callers and SDK macros, and
-  confine expected-lite names to the Result implementation and contract tests.
+  confine tl::expected names to the Result implementation and contract tests.
 - [x] Validate error copy/move, void Result, installed consumers, full Debug
   CTest and automated C++ style checks; Stable C ABI remains unchanged.
 - [ ] Obtain hosted qualification for the current working-tree changes.

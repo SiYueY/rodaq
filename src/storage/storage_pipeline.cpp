@@ -719,22 +719,15 @@ void StoragePipeline::dispatch_one(std::size_t index) {
     SubmitCallFrame frame{this, operation};
     const SubmitCallFrame* previous = active_submit_frame;
     active_submit_frame = &frame;
-    Result<rodaq_storage_submit_result> result;
-    try {
-        result = storage_->submit(submission.value());
-    } catch (const std::exception& error) {
-        active_submit_frame = previous;
-        result = rodaq::Status(StatusCode::InternalError, "storage", 0, error.what());
-        observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        complete_submit(index, std::move(result));
-        return;
-    } catch (...) {
-        active_submit_frame = previous;
-        result = rodaq::Status(StatusCode::InternalError, "storage", 0, "Storage submit threw");
-        observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
-        complete_submit(index, std::move(result));
-        return;
-    }
+    Result<rodaq_storage_submit_result> result = [&]() -> Result<rodaq_storage_submit_result> {
+        try {
+            return storage_->submit(submission.value());
+        } catch (const std::exception& error) {
+            return rodaq::Status(StatusCode::InternalError, "storage", 0, error.what());
+        } catch (...) {
+            return rodaq::Status(StatusCode::InternalError, "storage", 0, "Storage submit threw");
+        }
+    }();
     active_submit_frame = previous;
     observe_latency(StorageLatencyKind::Handoff, accepted_steady_time_ns);
     complete_submit(index, std::move(result));

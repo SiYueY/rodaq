@@ -70,7 +70,7 @@ TEST(PayloadTest, MoveAssignmentReleasesPreviousPayload) {
     auto second = pool.value().acquire(
         second_source.size(), PayloadView(second_source.data(), second_source.size()));
     ASSERT_FALSE(second.ok());
-    EXPECT_EQ(second.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(second.status().code(), StatusCode::ResourceExhausted);
 
     Payload target(std::move(first.value()));
     auto second_attempt = pool.value().acquire(
@@ -156,12 +156,12 @@ TEST(PayloadTest, ExternalModesRejectMissingReleaseCapability) {
     const auto adopted =
         Payload::adopt(PayloadView(source.data(), source.size()), nullptr, nullptr);
     ASSERT_FALSE(adopted.ok());
-    EXPECT_EQ(adopted.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(adopted.status().code(), StatusCode::InvalidArgument);
 
     const auto retained =
         Payload::retain(PayloadView(source.data(), source.size()), nullptr, nullptr);
     ASSERT_FALSE(retained.ok());
-    EXPECT_EQ(retained.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(retained.status().code(), StatusCode::InvalidArgument);
 }
 
 TEST(PayloadTest, AdoptAndRetainValidateBeforeAcquiringResponsibility) {
@@ -170,12 +170,12 @@ TEST(PayloadTest, AdoptAndRetainValidateBeforeAcquiringResponsibility) {
 
     const auto adopted = Payload::adopt(invalid, &probe, &release_probe);
     ASSERT_FALSE(adopted.ok());
-    EXPECT_EQ(adopted.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(adopted.status().code(), StatusCode::InvalidArgument);
     EXPECT_EQ(probe.calls, 0);
 
     const auto retained = Payload::retain(invalid, &probe, &release_probe);
     ASSERT_FALSE(retained.ok());
-    EXPECT_EQ(retained.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(retained.status().code(), StatusCode::InvalidArgument);
     EXPECT_EQ(probe.calls, 0);
 }
 
@@ -234,7 +234,7 @@ TEST(PayloadPoolTest, ReusesReleasedStorage) {
 
     const auto exhausted = pool.value().try_reserve(1);
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
 
     first.value() = Payload();
     auto second = pool.value().acquire(source.size(), PayloadView(source.data(), source.size()));
@@ -264,21 +264,21 @@ TEST(PayloadPoolTest, TracksUsedAvailableAndHighWaterBytes) {
 TEST(PayloadPoolTest, RejectsInvalidConfigurationAndOversizedRequests) {
     const auto zero_size = PayloadPool::create(0, 1);
     ASSERT_FALSE(zero_size.ok());
-    EXPECT_EQ(zero_size.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(zero_size.status().code(), StatusCode::InvalidArgument);
 
     const auto zero_count = PayloadPool::create(1, 0);
     ASSERT_FALSE(zero_count.ok());
-    EXPECT_EQ(zero_count.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(zero_count.status().code(), StatusCode::InvalidArgument);
 
     const auto overflow = PayloadPool::create(std::numeric_limits<std::size_t>::max(), 2);
     ASSERT_FALSE(overflow.ok());
-    EXPECT_EQ(overflow.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(overflow.status().code(), StatusCode::InvalidArgument);
 
     auto pool = PayloadPool::create(4, 1);
     ASSERT_TRUE(pool.ok());
     const auto oversized = pool.value().try_reserve(5);
     ASSERT_FALSE(oversized.ok());
-    EXPECT_EQ(oversized.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(oversized.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(PayloadPoolTest, RejectsMismatchedSourceSize) {
@@ -288,7 +288,7 @@ TEST(PayloadPoolTest, RejectsMismatchedSourceSize) {
 
     const auto mismatch = pool.value().acquire(3, PayloadView(source.data(), source.size()));
     ASSERT_FALSE(mismatch.ok());
-    EXPECT_EQ(mismatch.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(mismatch.status().code(), StatusCode::InvalidArgument);
     EXPECT_EQ(pool.value().used_bytes(), 0U);
 }
 
@@ -298,7 +298,7 @@ TEST(PayloadPoolTest, CopyRejectsInvalidSourceWithoutConsumingStorage) {
 
     const auto invalid = pool.value().acquire(4, PayloadView(nullptr, 4));
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(invalid.status().code(), StatusCode::InvalidArgument);
     EXPECT_EQ(pool.value().used_bytes(), 0U);
 }
 
@@ -321,7 +321,7 @@ TEST(PayloadPoolTest, SelectsSmallestClassAndKeepsClassBudgetsIsolated) {
 
     const auto small_exhausted = pool.value().try_reserve(4);
     ASSERT_FALSE(small_exhausted.ok());
-    EXPECT_EQ(StatusCode::ResourceExhausted, small_exhausted.status().status_code());
+    EXPECT_EQ(StatusCode::ResourceExhausted, small_exhausted.status().code());
     EXPECT_EQ(1U, pool.value().stats().classes[0].exhaustion_count);
 
     auto large = pool.value().try_reserve(9);

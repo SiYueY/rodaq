@@ -171,7 +171,7 @@ logging framework
 metrics backend
 ```
 
-这些内容由后续 Runtime、Payload、Admission、Plugin、Storage 或 Persistence 设计负责。
+这些内容由对应的 Runtime、Payload、Admission、Plugin、Storage 规范负责；任务编排、历史 Artifact、磁盘准入、恢复和生产运维由 `recording_service.md` 定义。
 
 本文也不重新定义：
 
@@ -782,6 +782,17 @@ Payload ownership handoff
 Descriptor-before-Record synchronization
 ```
 
+### 2.2.1 Production Operational Plane / Recording Service
+
+上图描述一次 Activation 的 Data Plane，并非完整的无人值守录制服务。生产部署在 Application 中进一步区分 **Recording Service（任务与 Artifact 管理）** 和 **RoDAQ Runtime（一次 Activation 的正确性核心）**：
+
+- Recording Service 拥有 TaskId、任务意图与持久化状态、目标目录/空间准入、录制任务重试、历史 Artifact Catalog、保留/删除、健康告警、重启后的恢复决策；
+- Runtime 拥有 Identity Scope、Canonical registries、Admission Gate、AcceptanceSequence、Payload/Storage completion 和 quiescence；Service **不能**重新实现这些语义；
+- System supervisor 独立监控 DAQ 进程，负责进程级恢复、重启退避与熔断；in-process Plugin Quarantine 不等价于进程隔离；
+- Service 的只读 Task/Artifact API 与 Runtime hot path 隔离，Web/REST/下载失败不能直接阻塞 Record dispatch。
+
+生产级术语必须区分：**在线守护进程按需录制**（`BoundedRecording`）与 **无间隙长期连续录制**（`ContinuousRecording`）。在当前 V1 一次 Activation 一个 Artifact 的合同下，只能通过先 Stop 再重新 Activation 实现独立录制周期，周期之间有未覆盖间隙；无缝 rolling 仍需另行修改 Storage/Artifact 合同。具体任务、磁盘、Journal 和恢复机制见 `recording_service.md`。
+
 ---
 
 ## 2.3 Runtime
@@ -993,15 +1004,22 @@ active write lifecycle 中：
 
 > Storage Output 成为独立于 Runtime 内存生命周期的持久化 Artifact。
 
-本文不规定：
+本文不规定具体 backend 的内部布局：
 
 ```text
-single file / directory
-segmentation
-Manifest
-ArtifactId
-Artifact ↔ Scope cardinality
+single file / directory representation
+Chunk / metadata batching layout
+Manifest binary representation
+ArtifactId encoding
 ```
+
+### V1 Artifact 与运行管理边界
+
+V1 的一个成功 Activation 对应一个逻辑 Storage Artifact；Artifact 可以由一个文件或一组后端文件组成，具体由 Storage mapping 定义。`NormalComplete` 仅说明本次 Artifact 完成了正常 finalization，不代表掉电持久性。Storage Plugin 只负责本次 Artifact 的写入、一致性与收尾，不负责多个录制任务之间的保留、清理、上传和空间调度。
+
+V1 不提供透明的运行中 Artifact rolling 或 retention 管理。应用层可以停止一次 Activation 并重新开始新的 Activation，但必须视为新的 Identity Scope，而不能假定 AcceptanceSequence、Descriptor ID 或 Artifact metadata 自动跨 Scope 延续。若产品需要不断流切片或长期无人值守录制，必须先形成跨 Artifact 连续性、失败恢复和生命周期的专门设计决策，不得由某个 Storage Plugin 暗中扩展 Runtime 语义。
+
+`NormalComplete` 是 Backend Artifact 的结构完整性结论，不能代替独立的磁盘持久性、任务 Ledger 完整性和跨 Scope 录制覆盖率。Application 只有在 Validator/Backend 确认后才能将相应 Artifact 发布为已验证完成。Service 需保留未知、失败、Partial 的不同状态与事件事实，不得因进程重启或文件存在就把它们归类为正常成功。详见 `recording_service.md` §3、§5。
 
 ---
 
@@ -2386,6 +2404,10 @@ Runtime
 Admission / optional source control
 ```
 
+### V1 背压策略的权限边界
+
+V1 Runtime 的 `Reject/Wait` 决策基于一次 Activation 的 Admission 配置；当前 Submit ABI 不提供按 Stream 的 mode/deadline override。Acquisition Plugin 可以按 native flow 采用不同的有界接收/排队策略，但它不能改变 Runtime Gate Pass、Accepted 与资源责任；ROS2/DDS native History 和 Plugin-local staging 的丢失必须与 Runtime 拒绝分别统计。单 Storage Lane 不保证跨 Stream 的硬实时优先级或延迟隔离，详细限制与验证见 `runtime.md `8.3.2` 和 `admission.md `3.4.1`。产品若需要独立 Stream 优先级，必须单独评审 Runtime policy surface 与调度模型，不得把普通负载通过等同于硬实时保证。
+
 ---
 
 ## 6.5 Acquisition Failure
@@ -3106,9 +3128,13 @@ Artifact state / finalization
 
 属于 future / designed Storage target，不参与 V1 implementation/release gate；其设计继续用于验证 generic Storage Contract 没有被 MCAP container model 反向塑形。
 
+### `recording_service.md`
+
+定义非插件的 Production Operational Plane：Recording Task 状态机与 durable Task Ledger、历史 Artifact Catalog、磁盘准入/配额/Retention、故障后扫描与恢复、进程级监督、任务与来源质量监测、跨 Scope Coverage，以及 BoundedRecording 与未来 ContinuousRecording 的产品与资格边界。该规范不改变 Canonical ID、Accepted、Plugin ABI 或现有单 Artifact 完整性语义。
+
 ### `persistence.md`
 
-在以下问题证明形成独立设计边界时建立：
+只有跨 Backend Durability/Recovery 形成独立的通用 Storage 合同时才建立；Recording Service 的 Task Ledger/Retention 不能代替 Backend crash consistency。具体需要：
 
 ```text
 Artifact model

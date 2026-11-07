@@ -69,7 +69,7 @@ def main():
     include_args = compiler_include_args()
     common = [args.clang_tidy, "--quiet", "--config-file=" + str(ROOT / ".clang-tidy"), "--header-filter=^" + re.escape(str(ROOT)) + "/(include/rodaq|src|tests|benchmarks)/"]
     standalone = ["-x", "c++", "-std=c++17", "-I" + str(ROOT / "include"),
-                  "-I" + str(ROOT / "third_party/expected-lite/include"),
+                  "-I" + str(ROOT / "third_party/tl_expected/include"),
                   "-I" + str(generated[0].parent), *include_args]
     work = [("format " + str(p.relative_to(ROOT)), [args.clang_format, "--dry-run", "--Werror", str(p)])
             for p in sources]

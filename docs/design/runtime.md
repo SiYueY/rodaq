@@ -107,6 +107,8 @@ Cross-scope Import
 
 这些由上游规范定义。
 
+Runtime 也不拥有持久化 Task Ledger、历史 Artifact Catalog、Retention、磁盘空间回收、跨 Activation continuity、远程任务认证或进程级监督。相关职责由 `recording_service.md` 定义，**不是**借由在 `ActivationState` 中附加全局 Writer/Manager 实现。一个 Service 可以长期在线，但每次 DAQ Activation 的安全关闭与隔离规则仍单独成立。
+
 ---
 
 ## 1.3 V1 Runtime 实现原则
@@ -3353,6 +3355,21 @@ serialized callback domain
 
 > Runtime 不会无约束地并发调用 Storage Plugin mutation operations。
 
+### 8.2.1 Descriptor readiness 与 Record submit 的跨线程协调
+
+“单逻辑 Storage Lane”约束的是 **Runtime 发起的同一 Storage instance 的 mutation 调用并发及其可见顺序**，不是仅约束 Record Dispatch 线程。`ensure_descriptor_ready` 可能在 Backend 中建立 Schema/Channel/Projection；如果后台 Descriptor Reconciliation Worker 与 Record Dispatch Worker 同时调用同一 Storage instance，必须有经 Storage Contract 证明的安全并发能力，或由 Runtime 在统一 mutation 协调域中串行执行。线程各自有队列或由不同 Quarantine Worker 监督，并不能自动满足逻辑串行性。
+
+V1 不假定 Storage Backend 的 Schema/Writer mutation 可并发；默认安全合同如下：
+
+1. 单次 `submit` 的 Runtime→Storage 同步调用尚未返回时，不进入另一个未经明确并发授权的 `ensure_descriptor_ready/flush/close` mutation；
+2. 新 Descriptor readiness 在对应 Binding 发布为 Active **之前**完成，且位于其首次 Record handoff 之前；旧 Stream 的已 Accepted work 不因新 Descriptor 增长而重排；
+3. 正常 Stop 先关闭和 join Descriptor Reconciliation，再完成已接受 Record 的 dispatch，之后才允许 final flush/close；timeout 下保持 no-future-access/Quarantine 约束；
+4. `submit` 返回后但尚未完成的异步 Persistence 工作可以继续进行；是否允许此时 Descriptor readiness、flush 或 close，取决于 Storage 明确的线程与 completion 合同，不能自行假设全部 completion 已完成；
+5. completion callback 可能发生在 mutation 调用的同一栈上或其他线程；不得在持有会被 completion 所需的序列化锁时等待 callback。早到 completion 仍按 §8.8 的 reconciliation 规则处理；
+6. mutation 监督超时只能判定失去进展，不能把仍在运行的 Plugin 调用视为已终止并允许第二次不安全 mutation。
+
+这个合同可以通过一个统一工作队列、受控调用锁加无锁早到 completion staging，或其他等效的协调原语实现；**不要求**把所有线程和 Completion Domain 强制合并成同一个 OS Thread。M3 之前必须执行 §16.34 的并发交错检查；若实现在 Descriptor Worker 直接调用 Storage、而 Dispatch Worker 同时 submit，则必须拿出明确的线程安全能力证明或修正协调路径。
+
 ---
 
 ## 8.3 Bounded Record Dispatch
@@ -3451,6 +3468,14 @@ safety factor 为 2，则 record capacity 至少为 260，实际应向上取整�
 通过边界测试确认。Per-joint 100k records/s 的 small-record stress profile 在同一
 100 ms 假设下需要至少 20k slots，不能继续沿用默认 64。具体 safety factor 和
 容差时间必须记录在 qualification profile 中。
+
+### 8.3.2 单 Lane 的服务边界与混合负载验证
+
+V1 固定一个逻辑 Record Handoff Lane，其价值是简化单 Storage Plugin 的有序 mutation 和 same-Stream handoff 保证。**该选择不提供不同 Stream 之间的硬实时隔离、公平调度、优先级或最大排队延迟保证**。特别是，某次合法但较慢的 Storage `submit` 可以对其他 Stream 造成 head-of-line blocking；有界队列只能吸收有限停顿，不能消除这一效应。
+
+V1 在声明的 production/stress profile 下采用 bounded admission 和容量规划，而不是承诺未经验证的 per-Stream QoS。必须分别记录：每类 Stream offered/accepted/rejected 量、Admission Wait/Timeout、端到端 handoff P95/P99/P99.9、最大单次 submit 阻塞、Slot/Byte high-water 和停止收敛时间。尤其要测量高码率 Camera 与高频小 Record 的持续混合负载、突发停顿和故障切换。全局吞吐达标但关键 Stream 持续超时，不得判为 mixed profile PASS。
+
+M3 需给出真实 MCAP 的初步测量；M5 release gate 必须以真实 Storage Backend 验证上述结果。未满足门槛时，须先进行架构决策：调整单 Lane 后端的批处理/阻塞策略、限定受支持的负载配置，或引入可证明 same-Stream handoff 顺序的多 Lane/调度方案。**不得**仅加大无界队列、在 Storage Plugin 内悄悄乱序、或将 benchmark 的部分通过等同于服务隔离已成立。V1 不新增未被实际 workload 证明必要的 Scheduler subsystem。
 
 ---
 
@@ -4873,6 +4898,12 @@ captures outside it; budget is released only after destruction finishes.
 This guarantee covers retention publication, not recovery from arbitrary global
 heap exhaustion during setup or unrelated cleanup operations.
 
+### 11.6.5 安全收敛与进程级故障隔离的不同承诺
+
+Quarantine 保证的是**在无法证明 no-future-access 时不提前回收 activation / Plugin / Payload 资源**；它不是 Plugin 崩溃隔离、自动恢复、永久阻塞清理或完整进程可用性的保证。V1 Plugin 与 DAQ 在同一进程地址空间：Plugin 的野指针、进程级崩溃、进程内全局状态污染和永久阻塞仍可能影响整个采集服务。固定容量 Quarantine 用尽时新 Activation 可以被拒绝，这属于可用性退化，不能报告为内存安全失败已被自动修复。
+
+V1 的 scope 只承诺已定义的超时监督、fail-closed disposition、资源保留与可能的安全继续 cleanup；不承诺自动替换 Plugin、跨进程容错、故障后不中断采集或同一 Scope 恢复运行。系统级 Watchdog、进程重启、健康探针和外部部署监督属于 Application/部署层；如需独立 Plugin 进程与 IPC，必须另行审查 ABI、Payload copy/loan、顺序、故障边界和成本，不得称其为现有 in-process Plugin Quarantine 的等价实现。
+
 ---
 
 ## 11.7 Failure 不修改 Canonical History
@@ -5619,6 +5650,18 @@ Source availability
 ```
 
 应通过明确 diagnostic Stream 进入正常 Canonical path。
+
+## 13.4 Production Health Snapshot 的责任与可证明程度
+
+`DAQStats`、`DAQLatencyStats`、生命周期状态与 Plugin health 属于 Runtime 的现有公共观测表面；生产需要的 per-Stream offered/native lost、Plugin staging lost、文件系统剩余空间、任务覆盖区间和 RPO/RTO **不应**从这些全局字段臆造。Service 负责采集下游 Runtime/Storage 与上游源端证据并按 Task/Activation generation 关联；缺少可靠证据时状态是 `Unknown`，而不是“0 loss”。
+
+- Runtime 必须保持轻量级快照和 metrics 的有界开销，采样/导出失败不影响 Admission Gate 与 Accepted work；
+- Runtime 后续扩展诊断接口时，应使用只读、bounded-cardinality、snapshot-consistent 的领域结构，不修改 Canonical Record 或现有 Admission outcome；
+- Task/Artifact 状态、磁盘 Headroom、Watchdog heartbeat、离线恢复状态只能由 Service/Supervisor 维护；Runtime 不维护跨重启的任务历史；
+- Source expected-rate 与采集质量阈值是部署 Profile，不是 Runtime 推断的设备语义。源端空闲不应自动触发假故障；
+- 生产运行必须把“进程活着”“DAQ Running”“有 Record Accepted”“Artifact 有 Persistence Progress”“文件可读”“具有掉电持久性”分别观测，任何一项不成立都不应被其他指标替代。
+
+详细健康域、任务 generation、告警与审计由 `recording_service.md` §6 定义。
 
 ---
 
@@ -6867,6 +6910,30 @@ Storage completion capacity
 对于 completion bookkeeping：
 
 > 已经允许进入 Storage in-flight set 的工作不得因为 bookkeeping capacity exhaustion 丢失 terminal tracking。
+
+## 16.32 混合 Stream 服务边界与进程内故障隔离
+
+新增真实 Storage 后必须执行 Camera + IMU + JointState 的持续混合负载，至少同时注入：长 `submit`、短时突发 backlog、慢磁盘、后台 completion 抖动。分别报告各类 Stream 的 offered/accepted/rejected、Admission Timeout 与 handoff P95/P99/P99.9，不得以总带宽或 aggregate 平均延迟掩盖关键 Stream 长期饥饿。单 Lane 的可观测 head-of-line blocking 应被明确记入性能结论；测试未满足目标 Profile 门槛不得自动扩大 V1 支持范围。
+
+故障矩阵还应覆盖：Plugin 正常错误返回、超时但最终返回、永久阻塞、Quarantine 预算用尽、宿主进程崩溃模拟。验证安全清理、记录状态和 `NormalComplete` 不被夸大；进程崩溃只能由外部监督恢复，不应把它写成 in-process Plugin 可隔离/可恢复的测试通过项。容量和恢复预算必须在正式部署报告中明确。
+
+## 16.33 Long-running Service/Runtime 分层验收
+
+从外部 Recording Service 反复执行 `Start → Running → Stop`、异常停止、跨进程重新启动和 Task generation 更新。验证每个 Activation 的新 Scope、Handle 隔离、无 Resource/FD/Thread 单调增长、迟到 completion 不落到新 Activation、Quarantine 不被进程级重启规则掩盖；Stop/失败无法安全回收时不得报告正常完成。另在持续高负载下验证 Record/Byte budget 与磁盘可持续时间**分别**受控：Runtime 资源不饱和不等于磁盘安全。
+
+当前 Runtime 不承诺 TaskId、历史 Artifact Catalog、断点续录、Rolling 或 Durable Task Ledger；它们不是本章节假设已实现的公共 API。生产门禁和记录状态机在 `recording_service.md` §7 中规定。
+
+## 16.34 Storage mutation 跨线程串行化资格验证
+
+使用会主动检测并发的 Fake Storage（对 `ensure_descriptor_ready`、`submit`、`flush`、`close` 的调用保持 enter/leave 记录并按未授权重叠失败），注入动态发现新 Descriptor、旧 Stream 持续 Record、延迟回调、正常 Stop、失败 Stop 与超时后迟返。至少验证：
+
+- 未声明并发能力时不同 mutation 的同步调用不重叠；已声明可并发的情况必须按具体能力额外单独验证；
+- 对新 Binding，readiness 完成早于首个对应 Record handoff；旧 Stream 的 AcceptanceSequence/handoff 顺序不变；
+- Stop 正常路径不会在 Descriptor Reconciliation 或 Record submit 尚未安全终止时执行 flush/close；
+- Plugin timeout 以后不释放可能被迟返调用访问的 anchor，也不以发起“重试的第二次 mutation”代替 Quarantine；
+- inline/early completion、后台 completion 与 descriptor update 不出现回调重入死锁或未追踪 completion。
+
+该案例属于 Runtime 协调与实现一致性门禁，不要求在 Plugin 端增加未冻结的公共服务。
 
 ---
 

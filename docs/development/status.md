@@ -14,7 +14,8 @@ This file records factual current repository state. Keep it concise and update i
 
 **M2 — Fake End-to-End Runtime + V1 Runtime Foundation Convergence**
 
-Status: **PASS — Core Structure Closure locally qualified and frozen; hosted CI pending**
+Status: **ACTIVE — Status/Result/Logging infrastructure refactor; full
+Qualification matrix pending**
 
 M0 historical qualification is **PASS**. D-058 replaces the earlier C/C++
 status source interfaces; applications and plugins must rebuild, and old hosted
@@ -33,6 +34,68 @@ aggregated and per-joint joint telemetry, and both mixed profiles. M2 does not
 claim real MCAP/filesystem/NVMe production capacity; that remains M5 work.
 
 The V1 backend scope has now converged to ROS2 Acquisition + FastDDS Acquisition + MCAP Storage. ROS2 and FastDDS are required alternative process profiles by default; same-process co-activation remains unsupported unless Fast DDS/Fast CDR dependency coexistence qualification passes. SQLite3, Generic DDS and SocketCAN remain future architecture-validation targets.
+
+## 2026-11-07 Status, Result and Logging infrastructure refactor
+
+Status: **ACTIVE**. The previous M2 PASS / Core FROZEN state is temporarily
+reopened until final qualification completes.
+
+Implemented:
+
+- `Status()` and `Status::Ok()` are success; OK plus diagnostics aborts.
+- `Status` is a header-only rocomm-style value type with `code()`, `domain()`,
+  `error_code()` and `message()`. It preserves arbitrary `StatusCode` values
+  without constructor normalization.
+- `Result<T>` is a RoDAQ wrapper over private `tl::expected<T, Status>` 1.3.1,
+  with no non-void default construction, no implicit boolean conversion and
+  abort-on-invalid-access semantics.
+- expected-lite was removed; installed `tl/expected.hpp` and its license replace
+  it.
+- `rodaq::Logger` is a weak, activation-scoped handle. `DAQ::logger(category)`
+  succeeds only while Running; old handles no-op after Stop and never revive
+  across restart.
+- Logging supports sealed record and byte bounds, Sync/AsyncBounded,
+  DiscardNew/OverrunOldest/Block, Console/File/RotatingFile/DailyFile sinks,
+  level/pattern/time-zone settings, periodic and level flush, backtrace,
+  source location, formatting isolation, reentrancy drop, statistics, bounded
+  flush/shutdown and worker quarantine.
+- `RODAQ_LOG_*` are public logging macros. Stable ABI constants are
+  `RODAQ_ABI_LOG_*` with unchanged values 1..7 and no aliases.
+- `rodaq::daq` publicly exports exact fmt 12.1.0 and spdlog 1.17.0 package
+  dependencies. Installation includes their headers, static archives and CMake
+  packages; an external installed consumer compiles and links a fmt logging
+  macro.
+- `rodaq::sdk` remains independent of DAQ, YAML, fmt and spdlog.
+
+Targeted local evidence:
+
+- Status/Result runtime and compile-fail contracts PASS, including
+  `Result<Status>`, array/cv rejection and nodiscard enforcement.
+- rocomm-alignment core verification PASS: header-only Status, `Ok()/code()`,
+  raw unknown C++ status preservation, ABI 0..10 mapping, SDK compilation,
+  installed consumers and Fake Runtime integration — **15/15 targeted tests**.
+- Logging context/logger/backend tests PASS for all sinks, duplicate conflicts,
+  overflow policies, byte/record bounds, periodic and requested flush, timeout,
+  backtrace, formatting failure, reentrancy, stop lifetime and quarantine.
+- DAQ Fake Pipeline integration PASS, including Running-only Logger, restart
+  invalidation and explicit mapping of every ABI severity.
+- ABI header isolation, exact fmt/spdlog installation closure, installed DAQ,
+  SDK and combined consumers, public Logger symbols and hidden implementation
+  symbols PASS.
+- GCC 11.4 Debug with warnings-as-errors: **108/108 CTest PASS** before the
+  final active-writer exception-rollback hardening.
+- After that final logging change, only `rodaq.logging.context` and
+  `rodaq.logging.logger` were rerun: **2/2 PASS**.
+
+Release, ASan/LSan, UBSan, TSan, Ubuntu 24.04, clang-tidy and capacity
+requalification have not been completed for this revision. Per current project
+direction, the full matrix is deferred rather than rerun during this
+implementation pass.
+
+The dated historical sections below preserve prior evidence. Where they refer
+to expected-lite, nonstd storage, private fmt/spdlog dependencies, the old
+Logger wrapper or `M2 PASS / Core FROZEN`, this section and D-067 through
+D-070 supersede them.
 
 ## 2026-11-06 Core implementation structure and naming closure
 
@@ -154,9 +217,9 @@ Payload/Persistence completion axes, and bounded Stop/Failure quarantine.
 Dependency lifecycle is not collapsed into one completion flag:
 
 ```text
-expected-lite                  PINNED+BUILT+LINKED+USED+QUALIFIED
+tl_expected                    PINNED+BUILT+LINKED+USED+QUALIFIED
 HdrHistogram_c                 PINNED+BUILT+LINKED+USED+QUALIFIED
-spdlog/fmt                     PINNED+BUILT+LINKED+USED+QUALIFIED
+spdlog/fmt                     PINNED+BUILT+LINKED+USED+QUALIFIED (DAQ public CMake)
 yaml-cpp                       PINNED+BUILT+LINKED+USED+QUALIFIED
 oneTBB                         EVALUATED+NOT-SELECTED; removed from baseline
 mimalloc                       EVALUATED+NOT-SELECTED; removed from baseline

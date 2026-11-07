@@ -28,7 +28,7 @@ TEST(LatencyHistogramTest, RecordsSamplesAndComputesPercentiles) {
 TEST(LatencyHistogramTest, RejectsInvalidConfigurationAndOutOfRangeSamples) {
     const auto invalid = LatencyHistogram::create(0, 100, 3);
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(StatusCode::InvalidArgument, invalid.status().status_code());
+    EXPECT_EQ(StatusCode::InvalidArgument, invalid.status().code());
 
     auto histogram = LatencyHistogram::create(1, 100, 3);
     ASSERT_TRUE(histogram.ok());

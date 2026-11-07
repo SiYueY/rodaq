@@ -50,13 +50,13 @@ runtime:
 TEST(ConfigLoaderTest, RejectsDuplicateKeysAndFileSizeOverflow) {
     const auto duplicate = load_yaml_config("key: 1\nkey: 2\n");
     ASSERT_FALSE(duplicate.ok());
-    EXPECT_EQ(StatusCode::Conflict, duplicate.status().status_code());
+    EXPECT_EQ(StatusCode::Conflict, duplicate.status().code());
 
     YamlConfigLimits limits;
     limits.max_file_bytes = 4;
     const auto oversized = load_yaml_config("longer-than-four", limits);
     ASSERT_FALSE(oversized.ok());
-    EXPECT_EQ(StatusCode::ResourceExhausted, oversized.status().status_code());
+    EXPECT_EQ(StatusCode::ResourceExhausted, oversized.status().code());
 }
 
 TEST(ConfigLoaderTest, EnforcesPostParseDepthLimit) {
@@ -64,7 +64,7 @@ TEST(ConfigLoaderTest, EnforcesPostParseDepthLimit) {
     limits.max_depth = 1;
     const auto config = load_yaml_config("a:\n  b:\n    c: 1\n", limits);
     ASSERT_FALSE(config.ok());
-    EXPECT_EQ(StatusCode::ResourceExhausted, config.status().status_code());
+    EXPECT_EQ(StatusCode::ResourceExhausted, config.status().code());
 }
 
 TEST(ConfigLoaderTest, EnforcesPostParseNodeCountLimit) {
@@ -72,7 +72,7 @@ TEST(ConfigLoaderTest, EnforcesPostParseNodeCountLimit) {
     limits.max_nodes = 3;
     const auto config = load_yaml_config("root:\n  first: 1\n  second: 2\n", limits);
     ASSERT_FALSE(config.ok());
-    EXPECT_EQ(StatusCode::ResourceExhausted, config.status().status_code());
+    EXPECT_EQ(StatusCode::ResourceExhausted, config.status().code());
 }
 
 TEST(ConfigLoaderTest, LoadsFromFile) {

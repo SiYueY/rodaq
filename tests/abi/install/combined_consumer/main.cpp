@@ -1,5 +1,6 @@
 #include <rodaq/config/config.hpp>
 #include <rodaq/daq.hpp>
+#include <rodaq/logging.hpp>
 
 #include <string>
 #include <utility>
@@ -19,5 +20,7 @@ int main() {
 
     rodaq::DAQConfig config;
     rodaq::DAQ daq(std::move(config));
-    return daq.state() == rodaq::DAQState::Constructed ? 0 : 3;
+    rodaq::Logger logger;
+    RODAQ_LOG_INFO(logger, "combined consumer value={}", 7);
+    return daq.state() == rodaq::DAQState::Constructed && !logger.valid() ? 0 : 3;
 }

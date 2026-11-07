@@ -13,7 +13,7 @@ using Clock = std::chrono::steady_clock;
 
 rodaq_status_code assign_status(const Status& error, rodaq_status* out_status) noexcept {
     assign_abi_status(error, out_status);
-    return abi_status_from_status_code(error.status_code());
+    return abi_status_from_status_code(error.code());
 }
 
 rodaq_status_code assign_message(
@@ -26,6 +26,26 @@ ActivationState* state_from(void* context) noexcept {
     return static_cast<ActivationState*>(context);
 }
 
+LogLevel log_level_from_abi(rodaq_log_level level) noexcept {
+    switch (level) {
+        case RODAQ_ABI_LOG_TRACE:
+            return LogLevel::Trace;
+        case RODAQ_ABI_LOG_DEBUG:
+            return LogLevel::Debug;
+        case RODAQ_ABI_LOG_INFO:
+            return LogLevel::Info;
+        case RODAQ_ABI_LOG_WARN:
+            return LogLevel::Warn;
+        case RODAQ_ABI_LOG_ERROR:
+            return LogLevel::Error;
+        case RODAQ_ABI_LOG_CRITICAL:
+            return LogLevel::Critical;
+        case RODAQ_ABI_LOG_OFF:
+        default:
+            return LogLevel::Off;
+    }
+}
+
 void common_log(
     void* context, rodaq_log_level level, rodaq_string_view category,
     rodaq_string_view message) noexcept {
@@ -36,7 +56,7 @@ void common_log(
     std::string_view parsed_message;
     if (parse_abi_string(category, &parsed_category) &&
         parse_abi_string(message, &parsed_message)) {
-        state_from(context)->log(static_cast<LogLevel>(level), parsed_category, parsed_message);
+        state_from(context)->log(log_level_from_abi(level), parsed_category, parsed_message);
     }
 }
 

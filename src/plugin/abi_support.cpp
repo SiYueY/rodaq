@@ -221,7 +221,7 @@ void assign_abi_status(
 
 void assign_abi_status(const Status& status, rodaq_status* out_status) noexcept {
     assign_abi_status(
-        abi_status_from_status_code(status.status_code()), status.domain(), status.error_code(),
+        abi_status_from_status_code(status.code()), status.domain(), status.error_code(),
         status.message(), out_status);
 }
 

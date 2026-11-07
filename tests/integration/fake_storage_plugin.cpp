@@ -146,8 +146,7 @@ public:
         }
         if (descriptor_scenario_ == "require_projection") {
             auto projection = runtime_.projection.get(descriptor, required_projection_id_);
-            if (!projection.ok() &&
-                projection.status().status_code() == rodaq::StatusCode::NotFound) {
+            if (!projection.ok() && projection.status().code() == rodaq::StatusCode::NotFound) {
                 value.state = RODAQ_DESCRIPTOR_UNSUPPORTED;
                 return value;
             }
@@ -180,7 +179,7 @@ public:
             if (!first.ok() || !second.ok() ||
                 first.value().clock_reading != second.value().clock_reading ||
                 first.value().unix_anchor_ns != second.value().unix_anchor_ns || unknown.ok() ||
-                unknown.status().status_code() != rodaq::StatusCode::NotFound) {
+                unknown.status().code() != rodaq::StatusCode::NotFound) {
                 value.state = RODAQ_DESCRIPTOR_FAILED;
                 rodaq::assign_abi_status(
                     RODAQ_STATUS_STORAGE_ERROR, "fake_storage", 0, "clock correlation probe failed",

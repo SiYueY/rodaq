@@ -67,7 +67,7 @@ TEST(DescriptorTest, LookupReturnsPublishedMetadataAndRejectsStaleHandles) {
     const auto stale = state.get_stream_descriptor(
         StreamDescriptorHandle::from_raw(descriptor.value().value() + 1U), info);
     ASSERT_FALSE(stale.ok());
-    EXPECT_EQ(StatusCode::NotFound, stale.status().status_code());
+    EXPECT_EQ(StatusCode::NotFound, stale.status().code());
 }
 
 }  // namespace

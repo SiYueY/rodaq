@@ -9,13 +9,13 @@ install(
 )
 
 install(
-    FILES "${RODAQ_THIRD_PARTY_ROOT}/expected-lite/include/nonstd/expected.hpp"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/nonstd"
+    FILES "${RODAQ_THIRD_PARTY_ROOT}/tl_expected/include/tl/expected.hpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/tl"
 )
 
 install(
-    FILES "${RODAQ_THIRD_PARTY_ROOT}/expected-lite/LICENSE.txt"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/expected-lite"
+    FILES "${RODAQ_THIRD_PARTY_ROOT}/tl_expected/COPYING"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/rodaq/licenses/tl_expected"
 )
 
 install(

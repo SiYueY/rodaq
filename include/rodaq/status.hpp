@@ -1,16 +1,16 @@
 #ifndef RODAQ_STATUS_HPP_
 #define RODAQ_STATUS_HPP_
 
-#include <rodaq/export.hpp>
-
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace rodaq {
 
 /// C++ status codes correspond to the C plugin status code values.
-enum class StatusCode : std::uint32_t {
+enum class StatusCode : std::int32_t {
     Ok = 0,
     InvalidArgument = 1,
     InvalidState = 2,
@@ -26,24 +26,53 @@ enum class StatusCode : std::uint32_t {
 
 /// Operation status with optional failure diagnostics.
 /// Borrowed string views remain valid until assignment, movement or destruction.
-/// OK always has empty diagnostics; unknown codes become UnknownError.
-class RODAQ_EXPORT Status final {
+/// Constructing a non-default Status with Ok is a contract violation.
+class [[nodiscard]] Status final {
 public:
     Status() noexcept = default;
-    Status(StatusCode status_code, std::string message);
-    Status(
-        StatusCode status_code, std::string domain, std::int64_t error_code, std::string message);
 
-    bool ok() const noexcept;
-    StatusCode status_code() const noexcept;
-    std::int64_t error_code() const noexcept;
-    std::string_view domain() const noexcept;
-    std::string_view message() const noexcept;
+    Status(StatusCode code, std::string message) : code_(code), message_(std::move(message)) {
+        if (code_ == StatusCode::Ok) {
+            std::abort();
+        }
+    }
+
+    Status(StatusCode code, std::string domain, std::int64_t error_code, std::string message)
+    : code_(code),
+      domain_(std::move(domain)),
+      error_code_(error_code),
+      message_(std::move(message)) {
+        if (code_ == StatusCode::Ok) {
+            std::abort();
+        }
+    }
+
+    [[nodiscard]] static Status Ok() noexcept { return {}; }
+
+    Status(const Status&) = default;
+    Status(Status&&) noexcept = default;
+
+    Status& operator=(const Status&) = default;
+    Status& operator=(Status&&) noexcept = default;
+
+    ~Status() = default;
+
+    [[nodiscard]] bool ok() const noexcept { return code_ == StatusCode::Ok; }
+
+    [[nodiscard]] StatusCode code() const noexcept { return code_; }
+
+    [[nodiscard]] std::string_view domain() const noexcept { return domain_; }
+
+    [[nodiscard]] std::int64_t error_code() const noexcept { return error_code_; }
+
+    [[nodiscard]] std::string_view message() const& noexcept { return message_; }
+
+    std::string_view message() const&& = delete;
 
 private:
-    StatusCode status_code_ = StatusCode::Ok;
-    std::int64_t error_code_ = 0;
+    StatusCode code_{StatusCode::Ok};
     std::string domain_;
+    std::int64_t error_code_ = 0;
     std::string message_;
 };
 

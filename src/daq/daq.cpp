@@ -36,6 +36,8 @@ Result<DAQStats> DAQ::stats() const { return impl_->stats(); }
 
 Result<PayloadStats> DAQ::payload_stats() const { return impl_->payload_stats(); }
 
+Result<Logger> DAQ::logger(std::string_view category) const { return impl_->logger(category); }
+
 DAQ::Impl::Impl(DAQConfig config)
 : options_(std::move(config)),
   acquisition_states_(options_.acquisitions.size(), AcquisitionActivationState::Empty) {}
@@ -132,6 +134,15 @@ Result<PayloadStats> DAQ::Impl::payload_stats() const {
         return last_payload_stats_.value();
     }
     return daq_status(StatusCode::InvalidState, "DAQ has no active Payload statistics");
+}
+
+Result<Logger> DAQ::Impl::logger(std::string_view category) const {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (state_ != DAQState::Running || active_ == nullptr ||
+        active_->phase() != ActivationPhase::Running) {
+        return daq_status(StatusCode::InvalidState, "DAQ Logger is available only while Running");
+    }
+    return active_->make_logger(category);
 }
 
 DAQ::Impl::~Impl() {

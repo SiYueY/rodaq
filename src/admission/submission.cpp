@@ -214,7 +214,7 @@ Result<rodaq_acquisition_submit_result> ActivationState::submit(
         if (!copied.ok()) {
             return pre_rejected(
                 *this,
-                copied.status().status_code() == StatusCode::ResourceExhausted
+                copied.status().code() == StatusCode::ResourceExhausted
                     ? RODAQ_REJECTION_RESOURCE_UNAVAILABLE
                     : RODAQ_REJECTION_PAYLOAD_INVALID,
                 disposition);

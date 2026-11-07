@@ -4422,6 +4422,16 @@ Storage：
 
 > 不自行跨 activation 合并 Scope。
 
+### 7.11.1 V1 单 Artifact 与长期任务的边界
+
+V1 冻结 **一次 Activation → 一个逻辑 Artifact → 一个 Identity Scope**；一个 Artifact 可包含多个 backend-specific 文件，但不是多个可独立完成的滚动 Artifact。运行中允许 MCAP Chunk、批次、Attachment、索引写出和后台 flush；这些是同一 Artifact 的内部结构，**不是 Artifact rolling**。
+
+Storage Plugin 拥有本次 Artifact 的文件句柄、数据与 metadata 写入、空间/容量错误检测、flush、close 与 `NormalComplete` 判定。Runtime 拥有 Accepted 与 Storage Handoff/Persistence 责任、Gate cutoff 和全局 failure disposition。Application/更高层录制管理者拥有任务编排、开始/停止/重新 Activation、存储目录选择、历史 Artifact 的保留/删除/上传和用户授权。Storage Plugin 不得在不改变 Runtime contract 的情况下静默删除历史文件、隐式替换目标 Artifact，或在失败后自行重启为一个新的 Identity Scope。
+
+V1 **不承诺**不中断切片、空间滚动回收、跨 Artifact 的 Sequence/Descriptor 连续性、任务级 crash resume 或 disk-full 后自动恢复。空间耗尽、无法写入或 close 失败按已有 Storage Failure/Incomplete Artifact 规则处理，不允许伪造 `PersistenceSucceeded` 或 `NormalComplete`。应用层重新开始录制时，Canonical ID/Handle/AcceptanceSequence 的重建与 Scope 分隔必须显式保留。
+
+若后续要支持连续 rolling，必须先设计并验证：跨文件的 Scope/Stream/Descriptor 关系、文件封口与 next-file 原子边界、跨文件 Record 顺序和时间线、可恢复清单、配额与 retention 顺序、reader/ros2 bag/PlotJuggler/Foxglove 的消费约束、崩溃矩阵和资源边界。这是**后续架构扩展**，不能作为 V1 Storage Plugin 的隐藏选项。
+
 ---
 
 ## 7.12 Artifact Completeness

@@ -4,11 +4,13 @@
 #include <rodaq/daq_config.hpp>
 #include <rodaq/daq_stats.hpp>
 #include <rodaq/export.hpp>
+#include <rodaq/logging.hpp>
 #include <rodaq/result.hpp>
 #include <rodaq/status.hpp>
 
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace rodaq {
@@ -49,6 +51,8 @@ public:
     std::uint64_t secondary_failure_overflow_count() const noexcept;
     Result<DAQStats> stats() const;
     Result<PayloadStats> payload_stats() const;
+    /// Returns an Activation-scoped Logger only while the DAQ is Running.
+    Result<Logger> logger(std::string_view category) const;
 
 private:
     class RODAQ_LOCAL Impl;

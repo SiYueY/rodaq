@@ -26,7 +26,7 @@ rodaq_status_code invoke_void(Function&& function, rodaq_status* out_status) noe
         Result<void> result = std::forward<Function>(function)();
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         return RODAQ_STATUS_OK;
     } catch (const std::bad_alloc&) {
@@ -58,7 +58,7 @@ rodaq_status_code invoke_interface(
         Result<InterfaceRef> result = std::forward<Function>(function)();
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         if (!result.value().valid()) {
             assign_abi_status(
@@ -102,7 +102,7 @@ rodaq_status_code invoke_struct_output(
         auto result = std::forward<Function>(function)();
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         std::forward<Writer>(writer)(output, capacity, result.value());
         return RODAQ_STATUS_OK;

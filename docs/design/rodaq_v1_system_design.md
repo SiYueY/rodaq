@@ -2,13 +2,19 @@
 
 > **状态：V1 Detailed System Design / Implementation Baseline**
 >
-> 本文是 RoDAQ V1 的总体系统设计与工程实现基线。它不是 Overview，而是用于约束实现、代码审查、插件开发、构建发布与验证的系统级规范。专项文档可以进一步展开字段和算法，但不得违反本文冻结的跨模块 Contract。
+> 本文是 RoDAQ V1 的总体系统设计与工程实现基线，约束实现、代码审查、插件开发、构建发布与验证的**跨模块不变量**。对应专项规范是领域细节的权威来源，不得与这些系统级不变量冲突；发现冲突时须修订有关文档，而不是以蓝图的历史示例覆盖当前有效的详细契约。
 >
 > 本版在 v3 基础上进行非压缩式修订：补齐 Canonical Model、Runtime ordering / failure / lifetime、Plugin System 与最新 ABI 设计的对齐、依赖选型依据、AppImage/ELF Release Qualification 和完整实施验证矩阵。
 
 > **文档定位**
 > 本文定义 RoDAQ（Robot Data Acquisition）V1 公共框架的总体架构、Runtime 核心机制、动态插件体系、仓库与构建组织、第三方依赖基线、开源参考实现、AppImage 发布方式以及开发验证路线。
 > 本文面向实际工程开发，不是概念性白皮书，也不是某一个具体插件的接口说明。后续 `runtime`、`plugin system`、`ROS2 Acquisition`、`FastDDS Acquisition` 与 `MCAP Storage` 的 V1 实现，以及 SQLite3、SocketCAN、Generic DDS 等后续 Plugin 设计，都应遵循本文给出的总体边界和工程约束。
+
+## 当前设计规范的权威边界
+
+`AGENTS.md` 的 source-of-truth hierarchy 继续有效：本文拥有系统级不变量；`architecture.md` 解释 Plugin-independent 责任与依赖；`canonical_data_model.md` / `canonical_profile.md` 拥有 ID、Clock、Record、Descriptor 等语义；`runtime.md` 拥有生命周期、Control/Data Plane、Dispatch、Failure/Quiescence；`admission.md` 与 `payload.md` 拥有 Gate、资源/顺序及 Payload lifetime；`rodaq_plugin_system.md` 拥有 C ABI 与 SDK；`acquisition_plugin.md`、`storage_plugin.md` 拥有两类 Plugin 的通用合同；对应 ROS2/FastDDS/MCAP/SQLite3 mapping 拥有 native-specific 投影和验收；`recording_service.md` 拥有非插件的生产录制任务、Artifact Catalog、磁盘准入、长期运行恢复与外部监督合同。
+
+`docs/development/decisions.md` 记录已接受的修订理由，`plan.md`、`status.md` 记录实施状态而非替代设计规范；历史实现方案不因留在正文而继续有效。需要改变当前 ABI/Control/Data Contract 时，应同步修订蓝图及受影响的专项规范，明确兼容性和 M3/M5 qualification 影响。**设计规范成立不等于实现已经具备该能力**；本轮单 Lane、global AdmissionMode、单 Artifact 和 in-process Failure scope 的限制在下游专项文档中定义。Storage 的单逻辑 mutation Lane 不只是 Record dispatch 顺序，还要求 Descriptor Reconciliation、submit、flush/close 的跨线程一致性；以 `runtime.md` §8.2.1/§16.34 为 M3 前的实现审查与验证门槛。
 
 ---
 
@@ -257,10 +263,45 @@ mi_heap_t
 
 RoDAQ C++ 操作返回类型统一为 `Result<T>`（无值时为 `Result<void>`）。
 `Status` 表示状态码和诊断，作为 Result 的失败分支及诊断查询返回值；
-`Result<T>` 是维护值 / 失败状态约束的 RoDAQ 封装类。expected-lite 0.10.0 仅作为
+`Status` 是 header-only 的 rocomm 风格值类型，扩展 RoDAQ 所需结构化诊断字段。
+`Result<T>` 源码对齐 rocomm，是维护值 / 失败状态约束的 RoDAQ 封装类。tl::expected 1.3.1 仅作为
 `Result<T>` 的私有存储机制及固定的编译依赖；第三方类型不进入公开函数签名或 C ABI。
+Public Logging header 为实现 header-only `Logger::log()` 和可变参数宏而包含 pinned
+fmt/spdlog headers，`rodaq::daq` 因此公开导出 `fmt::fmt` 和 `spdlog::spdlog` 的
+CMake usage requirements；这些第三方类型仍不进入 RoDAQ-owned 函数签名或 C ABI。
 这项决策取代 D-025 原有的直接 alias 约定。
 
+
+### V1 运行能力边界：四项必须明确的取舍
+
+在不改变 Canonical、Payload Ownership 和 Plugin ABI 的前提下，V1 明确采用以下**可验证、但非无限承诺**的运行模型：
+
+| 领域 | V1 已选架构 | 不得声称的能力 | 验证与升级判据 |
+| --- | --- | --- | --- |
+| Storage 调度 | one logical ordered Record Handoff Lane + bounded resources | per-Stream hard real-time / priority / guaranteed isolation | M3 真实 MCAP 测量，M5 混合负载门禁；失败则重新评审 lane/fairness contract |
+| Admission 策略 | one Activation-wide `Reject` or bounded `Wait`；Plugin 可作 bounded native-local handling | per-Stream Runtime AdmissionMode / deadline override | 不同 Stream 需要独立 Runtime policy 时先扩展接口和 conformance |
+| 录制产物 | one Activation → one logical Artifact and Identity Scope | rolling、retention、跨 Artifact continuity、crash resume | 后续产品需求明确后先设计跨 Artifact 语义再实现 |
+| 失败隔离 | in-process Plugin supervision、bounded Quarantine、fail-closed cleanup | 任意 Plugin 崩溃隔离、自动替换、不中断恢复 | 有进程级可用性 SLA 后再设计外部监督/IPC |
+
+这些是当前 **V1 contract 的显式边界**，不是认为机器人业务不需要差异化调度或长期录制。未来增加能力时必须保留 accepted no-drop、same-Stream order、Scope identity、no-future-access 等已有安全不变量。具体实现、backpressure 统计和资格验证以 `runtime.md` §8.3.2、`admission.md` §3.4.1、`storage_plugin.md` §7.11.1 与 `runtime.md` §11.6.5 为准。
+
+### Production Operational Plane：核心 Runtime 之外的长期运行责任
+
+数据平面的 `Acquisition → Runtime → Storage` 路径继续保持唯一；生产系统在其**控制与管理侧**补上一个 Recording Service，以及独立的 Process Supervisor。两者不参与 Canonical ID 分配、Admission Gate、Storage completion 或 Plugin ABI。
+
+```text
+Control / Operations:  CLI / REST / UI → Recording Service → DAQ public API
+                                       ├─ Durable Task Ledger
+                                       ├─ Artifact Catalog / Recovery
+                                       ├─ Disk Admission / Retention
+                                       └─ Health / Alert Policy
+Process lifecycle:    systemd / external supervisor → Recording Service process
+Data path:            Acquisition → RoDAQ Runtime → Storage → MCAP Artifact
+```
+
+`BoundedRecording`（长期在线、按需执行有结束点的任务）在现有 Runtime 的一次 Activation → 一个逻辑 Artifact 模型上成立，但任务服务尚未实现。`ContinuousRecording`（无缝、无限期采集与自动分片）**当前不受支持**；Service 的 `Stop → Start` 只能形成具有显式间隙的新 Scope。后者需要先冻结 Segment 原子边界、跨段 Manifest、Durability、Reader/回放和 Failure Contract，不能通过修改现有 Directory Layout 或增加队列来绕过。完整模型见 `recording_service.md`。
+
+生产产品必须为每个 Profile 明确 RPO/RTO、允许丢失与未知区间、最大录制时长、磁盘容量/回收、恢复策略和可观测性。凡未通过该 Profile 资格验证的部署，不得因 M2 Fake Runtime 压力测试 PASS 或单个 MCAP 文件正常关闭而宣称工业级 7×24 无人值守采集。
 
 ## 1.3 Canonical Model：系统语义中心
 
@@ -846,249 +887,85 @@ plugin-independent Canonical/Runtime architecture
 
 ## 1.4 仓库目录结构
 
-RoDAQ V1 在正式开发前应冻结顶层目录职责。后续可以增加私有文件，但不应频繁调整这些边界。
-
-> **2026-11-06 implementation amendment:** the tree below is the early
-> recommendation and is retained as design history. The current frozen source
-> layout uses `src/daq/`, `src/activation/`, `src/canonical/`,
-> `src/binding/`, `src/admission/`, `src/record/`, `src/payload/`,
-> `src/storage/`, `src/plugin/`, `src/clock/`, `src/projection/`,
-> `src/config/`, `src/logging/` and `src/metrics/`. It contains no
-> `src/runtime/`, `src/sdk/`, `include/rodaq/runtime/`,
-> `include/rodaq/plugin/detail/`, generalized `detail`/`internal`/`impl`
-> namespace, or compatibility forwarding headers. The installed Public CMake
-> surface is `rodaq::daq` and `rodaq::sdk`.
-
-推荐：
+V1 的仓库结构采用**公开接口与私有实现分离、按领域组织私有实现、插件代码与 Runtime 解耦**的原则。目录是工程职责边界，不是额外的 `runtime` 或 `manager` 抽象。以下展示当前 `develop` 的有效结构及 M3+ 计划添加的 concrete Plugins；不再保留已废弃的 `src/runtime/`、`src/sdk/`、`include/rodaq/runtime/` 或 `plugin/detail/` 目录。
 
 ```text
 rodaq/
-├── CMakeLists.txt
-├── README.md
-├── LICENSE
-├── .gitmodules
-│
-├── cmake/
-│   ├── dependencies.cmake
-│   ├── options.cmake
-│   ├── warnings.cmake
-│   ├── sanitizers.cmake
-│   ├── install.cmake
-│   ├── packaging.cmake
-│   ├── RoDAQPlugin.cmake
-│   └── RoDAQAbiCheck.cmake
-│
 ├── include/
 │   └── rodaq/
+│       ├── daq.hpp                 # installed Application API
+│       ├── daq_config.hpp
+│       ├── daq_stats.hpp
 │       ├── status.hpp
 │       ├── result.hpp
-│       ├── types.hpp
-│       │
-│       ├── canonical/
-│       │   ├── ids.hpp
-│       │   ├── clock.hpp
-│       │   ├── schema.hpp
-│       │   ├── stream.hpp
-│       │   └── record.hpp
-│       │
-│       ├── runtime/
-│       │   ├── runtime.hpp
-│       │   ├── config.hpp
-│       │   ├── handles.hpp
-│       │   └── stats.hpp
-│       │
-│       ├── payload/
-│       │   ├── payload.hpp
-│       │   └── payload_view.hpp
-│       │
-│       ├── plugin/
-│       │   ├── abi/
-│       │   │   ├── common.h
-│       │   │   ├── canonical.h
-│       │   │   ├── service.h
-│       │   │   ├── config.h
-│       │   │   ├── runtime.h
-│       │   │   ├── acquisition.h
-│       │   │   ├── storage.h
-│       │   │   └── plugin.h
-│       │   │
-│       │   ├── plugin.hpp
-│       │   ├── config.hpp
-│       │   ├── runtime.hpp
-│       │   ├── acquisition.hpp
-│       │   ├── storage.hpp
-│       │   ├── export.hpp
-│       │   └── detail/
-│       │       └── trampolines.hpp
-│       │
-│       └── logging/
-│       │   └── logger.hpp
-│       │
+│       ├── config/                 # installed configuration model
+│       └── plugin/
+│           ├── abi/                # Stable C ABI
+│           │   ├── common.h
+│           │   ├── canonical.h
+│           │   ├── service.h
+│           │   ├── config.h
+│           │   ├── runtime.h
+│           │   ├── acquisition.h
+│           │   ├── storage.h
+│           │   └── plugin.h
+│           └── *.hpp               # C++17 Plugin authoring interfaces
 ├── src/
-│   ├── canonical/
-│   │   ├── clock.cpp
-│   │   ├── schema.cpp
-│   │   ├── stream.cpp
-│   │   └── record.cpp
-│   │
-│   ├── runtime/
-│   │   ├── runtime.cpp
-│   │   ├── runtime_state.hpp
-│   │   ├── runtime_state.cpp
-│   │   ├── registry.hpp
-│   │   ├── registry.cpp
-│   │   ├── admission.hpp
-│   │   ├── admission.cpp
-│   │   ├── resource_budget.hpp
-│   │   ├── resource_budget.cpp
-│   │   ├── dispatch_queue.hpp
-│   │   ├── dispatch_queue.cpp
-│   │   ├── completion.hpp
-│   │   ├── completion.cpp
-│   │   ├── lifecycle.hpp
-│   │   ├── lifecycle.cpp
-│   │   └── stats.cpp
-│   │
-│   ├── payload/
-│   │   ├── payload.cpp
-│   │   ├── payload_pool.hpp
-│   │   ├── payload_pool.cpp
-│   │   ├── memory_resource.hpp
-│   │   └── memory_resource.cpp
-│   │
-│   ├── plugin/
-│   │   ├── shared_library.hpp
-│   │   ├── shared_library.cpp
-│   │   ├── plugin_library.hpp
-│   │   ├── plugin_library.cpp
-│   │   ├── plugin_manager.hpp
-│   │   ├── plugin_manager.cpp
-│   │   ├── plugin_catalog.hpp
-│   │   ├── plugin_catalog.cpp
-│   │   ├── acquisition_plugin_instance.hpp
-│   │   ├── acquisition_plugin_instance.cpp
-│   │   ├── storage_plugin_instance.hpp
-│   │   └── storage_plugin_instance.cpp
-│   │
-│   ├── logging/
-│   │   ├── logger.cpp
-│   │   ├── logging_context.hpp
-│   │   └── logging_context.cpp
-│   │
-│   ├── metrics/
-│   │   ├── runtime_stats.cpp
-│   │   ├── latency_histogram.hpp
-│   │   └── latency_histogram.cpp
-│   │
-│   └── config/
-│       ├── yaml_config_loader.hpp
-│       └── yaml_config_loader.cpp
-│
-├── plugins/
-│   ├── acquisition/
-│   │   ├── ros2/
-│   │   │   ├── CMakeLists.txt
-│   │   │   ├── include/
-│   │   │   ├── src/
-│   │   │   └── tests/
-│   │   │
-│   │   └── fastdds/
-│   │       ├── CMakeLists.txt
-│   │       ├── include/
-│   │       ├── src/
-│   │       └── tests/
-│   │
-│   └── storage/
-│       ├── mcap/
-│       │   ├── CMakeLists.txt
-│       │   ├── include/
-│       │   ├── src/
-│       │   └── tests/
-│       │
-│       └── sqlite3/
-│           ├── CMakeLists.txt
-│           ├── include/
-│           ├── src/
-│           └── tests/
-│
-├── apps/
-│   └── rodaq/
-│       ├── CMakeLists.txt
-│       └── main.cpp
-│
+│   ├── daq/                        # Application-facing DAQ lifecycle/recovery
+│   ├── activation/                 # Activation aggregate + lifecycle composition
+│   ├── canonical/                  # identity/registry/descriptor state
+│   ├── binding/                    # binding lifecycle and publication
+│   ├── admission/                  # Gate, resource reservation, sequence
+│   ├── record/                     # accepted immutable record representation
+│   ├── payload/                    # Payload lifetime and bounded pool
+│   ├── storage/                    # generic dispatch/completion coordination
+│   ├── plugin/                     # Plugin Host, ABI adapters, SDK implementation
+│   ├── clock/                      # clock correlation
+│   ├── projection/                 # typed interoperability projections
+│   ├── config/                     # config loader/validation/ABI bridge
+│   ├── logging/                    # bounded logging implementation
+│   └── metrics/                    # observability and histograms
+├── plugins/                        # concrete ROS2/FastDDS/MCAP plugins (M3+, not yet implemented)
+├── apps/                           # application entry points
 ├── tests/
 │   ├── abi/
-│   │   ├── layout_sentinels.cpp
-│   │   ├── symbol_exports.cmake
-│   │   ├── compatibility/
-│   │   └── baseline/
-│   │
-│   ├── unit/
-│   │   ├── canonical/
-│   │   ├── runtime/
-│   │   ├── payload/
-│   │   └── plugin/
-│   │
+│   ├── activation/
+│   ├── admission/
+│   ├── binding/
+│   ├── canonical/
+│   ├── config/
+│   ├── daq/
 │   ├── integration/
-│   │   ├── fake_acquisition_plugin/
-│   │   ├── fake_storage_plugin/
-│   │   ├── plugin_loading/
-│   │   ├── lifecycle/
-│   │   └── runtime_pipeline/
-│   │
-│   ├── stress/
-│   │   ├── admission_stress.cpp
-│   │   ├── dispatch_stress.cpp
-│   │   ├── payload_stress.cpp
-│   │   └── plugin_lifecycle_stress.cpp
-│   │
-│   └── fuzz/
-│       ├── config_fuzz.cpp
-│       ├── abi_fuzz.cpp
-│       └── metadata_fuzz.cpp
-│
+│   ├── plugin/
+│   ├── storage/
+│   └── ...                         # other domain-focused tests
 ├── benchmarks/
-│   ├── queue_benchmark.cpp
-│   ├── admission_benchmark.cpp
-│   ├── payload_benchmark.cpp
-│   ├── registry_benchmark.cpp
-│   ├── daq_pipeline_benchmark.cpp
-│   └── joint_pipeline_benchmark.cpp
-│
+├── cmake/                           # dependency, target, install, ABI qualification
 ├── packaging/
-│   └── appimage/
-│       ├── AppRun
-│       ├── build_appimage.cmake
-│       └── verify_dependencies.sh
-│
 ├── docs/
-│   ├── architecture.md
-│   ├── runtime.md
-│   ├── admission.md
-│   ├── payload.md
-│   ├── rodaq_plugin_system.md
-│   ├── logging.md
-│   ├── packaging.md
-│   ├── canonical_data_model.md
-│   ├── canonical_profile.md
-│   ├── acquisition_plugin.md
-│   ├── storage_plugin.md
-│   ├── acquisition_plugin/
-│   │   ├── ros2.md
-│   │   └── fastdds.md
-│   └── storage_plugin/
-│       ├── mcap.md
-│       └── sqlite3.md
-│
-└── third_party/
-    ├── spdlog/
-    ├── fmt/
-    ├── hdr_histogram/
-    ├── yaml-cpp/
-    ├── expected-lite/
-    ├── googletest/
-    └── benchmark/
+│   ├── design/                      # effective system + component contracts
+│   │   ├── architecture.md
+│   │   ├── recording_service.md       # non-plugin production operational plane
+│   │   ├── canonical_data_model.md
+│   │   ├── canonical_profile.md
+│   │   ├── runtime.md
+│   │   ├── admission.md
+│   │   ├── payload.md
+│   │   ├── rodaq_plugin_system.md
+│   │   ├── acquisition_plugin.md
+│   │   ├── acquisition_plugin/{ros2,fastdds}.md
+│   │   ├── storage_plugin.md
+│   │   └── storage_plugin/{mcap,sqlite3}.md
+│   ├── development/                 # decisions / plan / status / qualification
+│   └── coding_guidelines/
+└── third_party/                     # pinned third-party Git submodules
 ```
+
+`include/rodaq/` 是唯一的对外 C++/C ABI 头文件根目录。`src/` 同级各领域模块均为 Runtime 系统的实现组成部分，不需要 `src/runtime/` 进行二次包裹；`plugin` 表示有实质边界的 Plugin 子系统。通用组件间的依赖由 CMake target、installed-header check 和导出符号隔离验证，而不是借助 `internal`、`detail`、`impl` 命名空间模拟封装。
+
+V1 当前对外安装目标是 `rodaq::daq`（`librodaq.so`）和 `rodaq::sdk`（静态 Plugin SDK）。`rodaq_plugin`、`rodaq_objects` 与测试支持 target 为内部组件；Plugin Host 不单独成为 Application 公共依赖。`plugins/` 下具体采集/存储实现属于 M3/M4 交付，不应因目录预留而被视为已经支持。
+
+本节冻结**目录职责**，不冻结每一个私有文件的数量或排列。具体模块可以调整文件实现，只要不破坏下面的所有权、依赖与公开接口契约。
 
 ## 1.5 目录职责与依赖规则
 
@@ -1141,7 +1018,7 @@ Runtime internals
 include/rodaq/daq.hpp
 src/daq/daq.cpp
 src/activation/activation_state.*
-src/admission.hpp
+src/admission/admission.hpp
 ```
 
 而不是为了 `include/` / `src/` 机械对称，把所有 private header 都放进 `include/`。
@@ -1211,19 +1088,15 @@ include/rodaq/plugin/
 
 Plugin 作者通常使用 C++ SDK；SDK 负责生成和适配稳定 C ABI。
 
-Payload 命名统一为：
+Payload 的工程归属与接口层级必须分开：
 
 ```text
-Payload
-    owning / lifetime-bearing / move-only
-    include/rodaq/payload/payload.hpp
-
-PayloadView
-    non-owning / read-only
-    include/rodaq/payload/payload_view.hpp
+src/payload/                  # private Runtime Payload / Pool / Reservation
+src/record/                   # private AcceptedRecord
+include/rodaq/plugin/abi/     # cross-DSO Payload and borrowed bytes contract
 ```
 
-不再使用 `Payload`。
+当前 `include/rodaq/` 没有已安装的 `payload/payload.hpp`；不得在蓝图中虚构 Public Payload 类或把 Runtime 内部持有类型泄露到 Plugin ABI。C++ Plugin SDK 对 ABI bytes/ownership 做类型化封装，具体以其公开头文件为准。
 
 ### `plugins/`
 
@@ -1376,10 +1249,6 @@ third_party/foo/
 `.gitmodules` 类似：
 
 ```ini
-[submodule "third_party/onetbb"]
-    path = third_party/onetbb
-    url = https://github.com/uxlfoundation/oneTBB.git
-
 [submodule "third_party/spdlog"]
     path = third_party/spdlog
     url = https://github.com/gabime/spdlog.git
@@ -4082,7 +3951,7 @@ RoDAQ 实现应区分：
 | Formatting | fmt | Logging / internal formatting |
 | Latency Histogram | HdrHistogram_c | LatencyHistogram backend |
 | Config Parsing | yaml-cpp | ConfigLoader backend |
-| Result primitive | expected-lite | Result implementation |
+| Result primitive | tl::expected | Result implementation |
 | Allocator | mimalloc | optional backend |
 | ROS2 Acquisition native API | ROS2 rcl/rmw/rosidl | Plugin-local dependency; allowed only for ROS2 Acquisition |
 | FastDDS Acquisition native API | Fast DDS + Fast CDR | Plugin-local direct pinned dependency; no ROS2 runtime dependency |
@@ -4115,7 +3984,7 @@ HdrHistogram
 | Registry / Handles | iceoryx FixedPositionContainer | LLVM | Canonical Handle model |
 | Backpressure | Aeron | gRPC | Accepted semantics |
 | Lifecycle / Quiescence | eCAL | rosbag2 | Runtime + Plugin convergence |
-| Status/Result | LLVM Expected/Error | expected-lite | RoDAQ error taxonomy |
+| Status/Result | LLVM Expected/Error | tl::expected | RoDAQ error taxonomy |
 | Plugin ABI / SDK | PlotJuggler SDK | LLVM Plugin、gz-plugin、class_loader | family protocol、services、extensions、DSO lifetime |
 | FastDDS Acquisition | eProsima DDS-Pipe | eProsima DDS Record & Replay | ROS2 wire mapping、Canonical mapping、projection、lifecycle/bounds |
 | MCAP interoperability | rosbag2_storage_mcap | PlotJuggler MCAP loader、Foxglove/mcap | strict ROS2 profile + RoDAQ sidecar + qualification |
@@ -4477,11 +4346,11 @@ AppImage
 
 | 组件 | 冻结版本 | Linkage | 默认 | 备注 |
 |---|---:|---|---|---|
-| spdlog | **1.17.0** | static | 是 | external fmt |
-| fmt | **12.1.0** | static | 是 | 与 spdlog 配套 |
+| spdlog | **1.17.0** | static | 是 | external fmt; DAQ public CMake dependency |
+| fmt | **12.1.0** | static | 是 | Logging header/macro; DAQ public CMake dependency |
 | HdrHistogram_c | **0.12.1** | core-only static | 是 | minimal core |
 | yaml-cpp | **0.9.0** | static + PIC | 是 | config frontend |
-| expected-lite | **0.10.0** | header-only | 是 | Public C++ `Result<T>` alias dependency |
+| tl_expected | **1.3.1** | header-only | 是 | Public C++ `Result<T>` implementation dependency |
 | oneTBB | **2022.3.0** | not linked | 否 | evaluated, not selected for V1 |
 | mimalloc | **3.6.1** | not linked | 否 | evaluated, not selected for V1 |
 | GoogleTest | **1.18.0** | test-only | 开发 | not shipped |
@@ -4614,41 +4483,40 @@ YAML → JSON / TOML / programmatic config
 
 不改变 Plugin ABI。
 
-### expected-lite 0.10.0
+### tl::expected 1.3.1
 
-V1 当前依赖基线保留：
+V1 当前依赖基线冻结：
 
 ```text
-expected-lite 0.10.0
+tl::expected 1.3.1
+commit 1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4
 ```
 
-V1 冻结的 Public C++ contract 是：
+Public C++ contract 是：
 
 ```text
 rodaq::Result<T>
 ```
 
-C++ implementation 私有复用：
+C++ implementation 私有使用：
 
 ```text
-nonstd::expected<T, Status>
+tl::expected<T, Status>
 ```
 
 公开 `Result<T>` 不提供可变失败分支或底层 expected 的访问。
 `Status` 表达状态码和诊断。无返回值操作返回 `Result<void>`，底层为
-`expected<void, Status>`，默认构造成功；从 OK Status 构造失败时产生 UnknownError。
+`tl::expected<void, Status>`，默认构造成功；从 OK Status 构造失败是 contract
+violation，必须 abort。
 
-expected-lite 是显式 Public C++ header dependency，但：
+tl::expected 是显式 Public C++ header-only dependency，但：
 
 ```text
 RoDAQ-owned API signatures 仍使用 rodaq::Result<T>
-expected-lite 不得进入 Stable C Plugin ABI
+tl::expected 不得进入 Stable C Plugin ABI
 ```
 
-V1 必须强制 expected-lite 使用 nonstd implementation。消费者切换 C++23 或
-toolchain 不得静默切换为 `std::expected`。迁移到 `std::expected` 需要未来显式决策。
-
-安装导出必须提供与仓库 pin 一致的 `nonstd/expected.hpp` 及其 license notice，
+安装导出必须提供与仓库 pin 一致的 `tl/expected.hpp` 及其 license notice，
 使 installed Public header consumer 不需要自行安装任意版本，也不需要在构建时
 访问网络。
 
@@ -4708,13 +4576,13 @@ tbb::*
 spdlog::*
 fmt::*
 YAML::Node
-nonstd::expected
+tl::expected
 hdr_histogram*
 mi_heap_t
 ```
 
 Public C++ API 的函数签名同样禁止这些类型。`rodaq::Result<T>` 是 RoDAQ 自有
-封装，不再是第三方类型的别名；实现头文件仍依赖固定版本 expected-lite。
+封装，不再是第三方类型的别名；实现头文件仍依赖固定版本 tl::expected。
 
 如果新增任何第三方类型进入：
 
@@ -4733,7 +4601,7 @@ third_party/
 ├── fmt/
 ├── hdr_histogram/
 ├── yaml-cpp/
-├── expected-lite/
+├── tl_expected/
 ├── googletest/
 └── benchmark/
 ```
@@ -4944,12 +4812,13 @@ RoDAQ-owned config structs
 
 `YAML::Node` 不进入 Runtime。
 
-## 5.9 expected-lite
+## 5.9 tl::expected
 
 冻结：
 
 ```text
-0.10.0
+1.3.1
+1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4
 ```
 
 header-only。
@@ -4959,14 +4828,17 @@ V1 Public C++ implementation：
 ```text
 RoDAQ Result
       ↓
-expected-lite
+tl::expected
 ```
 
-`rodaq::Result<T>` 是 RoDAQ 封装类，私有使用 `nonstd::expected<T, Status>`。
-RoDAQ-owned API signatures 使用 `Status` 和 `Result<T>`，expected-lite 类型
-不进入 C ABI。失败 Result 不能携带 OK；错误构造归一化为 UnknownError。
+`rodaq::Result<T>` 是 RoDAQ 封装类，私有使用 `tl::expected<T, Status>`。
+RoDAQ-owned API signatures 使用 `Status` 和 `Result<T>`，tl::expected 类型
+不进入 C ABI。失败 Result 不能携带 OK；以 OK Status 构造失败 Result 是
+contract violation，必须 abort。
 
-V1 固定使用 nonstd implementation。未来迁移到：
+成功 Status 用作 Result failure 构造是 contract violation，必须 abort。
+调用失败 Result 的 `value()`、`operator*` 或 lvalue `operator->()` 同样 abort。
+未来迁移到：
 
 ```text
 std::expected
@@ -4974,8 +4846,8 @@ std::expected
 
 必须经过新的显式架构决策，不能因为消费者切换到 C++23 自动发生。
 
-`result.hpp` 必须机械验证 `expected_lite_MAJOR/MINOR/PATCH == 0/10/0`；错误版本
-和隐式 `std::expected` selection 都必须造成编译失败。
+`result.hpp` 必须机械验证 `TL_EXPECTED_VERSION_MAJOR/MINOR/PATCH == 1/3/1`；
+错误版本必须造成编译失败。
 
 ## 5.10 mimalloc
 
@@ -5099,7 +4971,7 @@ spdlog
 fmt
 HdrHistogram_c
 yaml-cpp
-expected-lite
+tl_expected
 mimalloc（若启用）
 ```
 
@@ -5562,7 +5434,7 @@ spdlog 1.17.0
 fmt 12.1.0
 HdrHistogram_c 0.12.1
 yaml-cpp 0.9.0
-expected-lite 0.10.0 as Public C++ Result alias dependency
+tl::expected 1.3.1 as the Public C++ Result implementation dependency
 
 evaluated, not selected:
 oneTBB 2022.3.0
@@ -5582,7 +5454,7 @@ submodule 不能算作 build、runtime usage 或 qualification 完成。
 Git submodule pinned by commit
 no build-time network fetching
 no third-party types in Stable ABI
-no third-party types in Public C++ API signatures; Result has private expected-lite storage
+no third-party types in Public C++ API signatures; Result has private tl::expected storage
 ```
 
 Status / Result：
@@ -5590,8 +5462,8 @@ Status / Result：
 ```text
 finalize rodaq::Result<T>
 freeze public error semantics
-force expected-lite nonstd implementation
-keep expected-lite out of Stable ABI
+pin tl::expected 1.3.1
+keep tl::expected out of Stable ABI
 ```
 
 Stable ABI headers：
@@ -6963,7 +6835,7 @@ production mixed: encoded camera + aggregated RobotState
 stress mixed: raw RGB8 camera + per-joint joint Records
 PayloadPool / queue / batching tuning
 copy count / allocation count / CPU / RSS / tail latency
-minimum 30–60 minute mixed workload soak
+minimum 30–60 minute mixed workload soak (short performance gate only; not 7×24 reliability proof)
 ```
 
 Interoperability regression：
@@ -6987,6 +6859,14 @@ FastDDS-only deployment without ROS2 runtime
 SBOM / licenses / checksums / release manifest
 ```
 
+### Production Profile 资格门槛
+
+本节既有 M5 的 30–60 分钟 mixed-load 测试仅能作为**短期性能门禁**。目标为工业长期在线的部署，必须另外提供 `recording_service.md` §7 的任务生命周期/目录锁、容量准入、Ledger、恢复、健康监督、实际磁盘故障和持续运行证据。
+
+建议验证节奏为至少 72 小时的真实 Disk + MCAP 长时 Soak，并以 168 小时或目标维护周期相当的持续任务作为发布证据；真实时长由 SLO/风险评估冻结，不是通用标准要求。针对 `ContinuousRecording` 的发布，除了服务层门禁，还必须先完成跨 Segment 合同及 Plugin/Reader 互操作；**未实现时只能宣称 BoundedRecording**。
+
+M5 的 Kernel/Process memory safety gate、ABI/平台发布与 ROS2/FastDDS Interoperability gate 仍然必须分别通过。服务层功能可以并行开发，但不得用未来计划替代本次 Release 的实现与验收。
+
 ### Exit Gate
 
 ```text
@@ -6995,6 +6875,8 @@ SBOM / licenses / checksums / release manifest
 [PASS] camera, joint and mixed-workload benchmarks meet their declared production
        and stress-profile gates; recording a lower baseline is not a substitute
 [PASS] failure/crash matrix preserves deterministic quiescence and artifact status
+[PASS] target production profile passes the required Recording Service disk/ledger/recovery/health gates, or release explicitly limits itself to core-library/short-task scope
+[PASS] Storage mutation coordination passes Descriptor readiness / Record submit / flush / close cross-thread interleaving tests
 [PASS] ROS2 and FastDDS interoperability qualification remains green after tuning
 [PASS] x86_64 and aarch64 release qualification passes
 [PASS] FastDDS recording-host package has no ROS2 runtime dependency
@@ -7546,7 +7428,7 @@ RoDAQ V1 的工程边界应当明确：
     fmt
     HdrHistogram_c
     yaml-cpp
-    expected-lite
+    tl::expected
     GoogleTest
     Google Benchmark
 
@@ -7683,7 +7565,7 @@ implementation alone does not establish no-drop capacity.
 
 ### Dependency baseline
 
-V1 Runtime Core production dependencies are expected-lite, HdrHistogram_c,
+V1 Runtime Core production dependencies are tl::expected, HdrHistogram_c,
 spdlog, fmt and yaml-cpp. oneTBB and mimalloc were evaluated but are not
 selected for the V1 baseline. They may return only through a new durable
 decision backed by a concrete workload and measured evidence.

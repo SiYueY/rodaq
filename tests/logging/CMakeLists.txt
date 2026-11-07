@@ -1,2 +1,3 @@
 rodaq_add_test(rodaq_logging_context_test logging.context logging_context_test.cpp)
 rodaq_add_test(rodaq_logger_test logging.logger logger_test.cpp)
+rodaq_add_test(rodaq_spdlog_backend_test logging.spdlog_backend spdlog_backend_test.cpp)

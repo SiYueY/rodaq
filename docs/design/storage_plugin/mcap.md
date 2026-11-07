@@ -1945,6 +1945,12 @@ durability_policy
 
 因此仍不需要单独新增 `persistence.md`。
 
+### 4.11.1 V1 Artifact 边界与 Rolling 非目标
+
+本 Mapping 的一个成功 Activation 对应一个逻辑 ROS2-profile MCAP Artifact。Chunk rotation、`closeLastChunk()`、metadata batch 和最终 Footer 都只属于**同一 MCAP 文件内部结构**，不能描述成跨文件 rolling。`NormalComplete` 只在所有要求的 native MCAP 与 RoDAQ sidecar/finalization 检查通过后成立。
+
+V1 不支持运行中自动切换输出 MCAP、最大空间后删除旧文件、跨文件记录顺序/Descriptor 延续或任务级崩溃恢复。Application 可以通过 Stop/Close 后重新 Activation 形成下一个独立 Artifact 和新的 Scope；对外必须明确是多个独立录制结果，不能称为“无缝分片”。磁盘 ENOSPC、容量上限或写入失败必须按本文件 §4.6–4.10 的 failure/partial Artifact 语义收敛。任何未来 rolling 方案必须先遵守 `storage_plugin.md` §7.11.1，并增加跨文件 sidecar、ROS2 回放和崩溃恢复资格验证。
+
 ---
 
 # 5. Interoperability、Conformance 与设计审查结论
@@ -2337,6 +2343,12 @@ long-running ordering/timeline test
 No manual GUI action is required on every artifact close. Runtime validation is deterministic; actual ROS2/PlotJuggler/Foxglove consumer execution belongs to CI/release qualification and golden-fixture regression.
 
 ---
+
+### 5.8.1 V1 单 Artifact 的边界验证
+
+资格验证必须证明：McapWriter Chunk/metadata batch flush 不会产生被误报为完整独立录制结果的第二 Artifact；一次正常 close 只产生本次 Scope 的一个逻辑 `NormalComplete` MCAP；发生 ENOSPC、short write、partial Attachment/Finalization、close failure 时不能发布 `NormalComplete`。同一 Application 两次顺序 Activation 的 Scope、Descriptor identity 与 Playback metadata 不得隐式合并。
+
+滚动分片、retention、录制任务跨崩溃继续和自动重启写入当前 MCAP 文件均**不属于**本 Mapping V1 的 PASS 范围；支持这些能力必须先定义新的 Artifact lifecycle/continuity contract 并补充单独的 reader/回放与故障验证。
 
 ## 5.9 设计审查结论
 

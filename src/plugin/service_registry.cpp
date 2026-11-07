@@ -135,7 +135,7 @@ rodaq_status_code ServiceRegistry::query(
         Result<rodaq_interface> result = registry->query(parsed_id);
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         *out_service = result.value();
         return RODAQ_STATUS_OK;

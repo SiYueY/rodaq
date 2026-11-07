@@ -109,11 +109,11 @@ add_test(
         "${CMAKE_CURRENT_SOURCE_DIR}/check_header_isolation.cmake"
 )
 
-function(rodaq_add_compile_fail_test test_name source_file fake_path diagnostic)
-    if(fake_path STREQUAL "native")
-        set(failure_include "${RODAQ_THIRD_PARTY_ROOT}/expected-lite/include")
+function(rodaq_add_compile_fail_test test_name source_file diagnostic)
+    if(ARGC GREATER 3)
+        set(failure_include "${ARGV3}")
     else()
-        set(failure_include "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/fake_expected/${fake_path}")
+        set(failure_include "${RODAQ_TL_EXPECTED_INCLUDE_DIR}")
     endif()
     set(test_object "${CMAKE_CURRENT_BINARY_DIR}/compile_fail/${test_name}.o")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compile_fail")
@@ -131,20 +131,6 @@ function(rodaq_add_compile_fail_test test_name source_file fake_path diagnostic)
             "${CMAKE_CURRENT_SOURCE_DIR}/run_compile_fail.cmake"
     )
 endfunction()
-
-rodaq_add_compile_fail_test(
-    result_wrong_expected_version
-    result_wrong_expected_version.cpp
-    wrong_version
-    "RoDAQ requires expected-lite 0.10.0"
-)
-
-rodaq_add_compile_fail_test(
-    result_std_expected_selection
-    result_std_expected_selection.cpp
-    std_selection
-    "RoDAQ requires expected-lite's nonstd implementation"
-)
 
 add_test(
     NAME rodaq.abi.install_smoke
@@ -266,4 +252,15 @@ add_test(
 )
 
 rodaq_add_compile_fail_test(
-    result_status result_status.cpp native "Result<Status> is ambiguous")
+    result_status result_status.cpp "Result<Status> is not supported")
+rodaq_add_compile_fail_test(
+    result_array result_array.cpp "Result<T> does not support array types")
+rodaq_add_compile_fail_test(
+    result_const result_const.cpp "Result<T> does not support const-qualified types")
+rodaq_add_compile_fail_test(
+    result_nodiscard result_nodiscard.cpp "nodiscard")
+rodaq_add_compile_fail_test(
+    result_wrong_tl_version
+    result_wrong_tl_version.cpp
+    "RoDAQ requires tl::expected 1.3.1"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/fake_tl/wrong_version")

@@ -7,11 +7,15 @@ target_include_directories(rodaq_headers
 
 add_library(rodaq_public_api INTERFACE)
 target_compile_features(rodaq_public_api INTERFACE cxx_std_17)
-target_link_libraries(rodaq_public_api INTERFACE rodaq_headers rodaq_expected_lite)
+target_link_libraries(rodaq_public_api
+    INTERFACE
+        rodaq_headers
+        rodaq_tl_expected
+        fmt::fmt
+        spdlog::spdlog
+)
 
 add_library(rodaq_base_objects OBJECT
-    status.cpp
-    result.cpp
     plugin/abi_support.cpp
 )
 target_compile_features(rodaq_base_objects PUBLIC cxx_std_17)
@@ -21,7 +25,7 @@ target_include_directories(rodaq_base_objects
     PRIVATE
         "${PROJECT_SOURCE_DIR}/src"
 )
-target_link_libraries(rodaq_base_objects PUBLIC rodaq_expected_lite)
+target_link_libraries(rodaq_base_objects PUBLIC rodaq_tl_expected)
 set_target_properties(rodaq_base_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
 rodaq_enable_warnings(rodaq_base_objects)
 rodaq_enable_sanitizers(rodaq_base_objects)
@@ -32,7 +36,7 @@ target_include_directories(rodaq_base
     PUBLIC
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
 )
-target_link_libraries(rodaq_base PUBLIC rodaq_expected_lite)
+target_link_libraries(rodaq_base PUBLIC rodaq_tl_expected)
 set_target_properties(rodaq_base PROPERTIES POSITION_INDEPENDENT_CODE ON)
 rodaq_enable_warnings(rodaq_base)
 rodaq_enable_sanitizers(rodaq_base)
@@ -52,14 +56,10 @@ target_compile_features(rodaq_sdk PUBLIC cxx_std_17)
 target_include_directories(rodaq_sdk
     PUBLIC
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-        "$<BUILD_INTERFACE:${RODAQ_EXPECTED_LITE_INCLUDE_DIR}>"
+        "$<BUILD_INTERFACE:${RODAQ_TL_EXPECTED_INCLUDE_DIR}>"
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     PRIVATE
         "${PROJECT_SOURCE_DIR}/src"
-)
-target_compile_definitions(rodaq_sdk
-    PUBLIC
-        nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD
 )
 set_target_properties(rodaq_sdk PROPERTIES
     POSITION_INDEPENDENT_CODE ON

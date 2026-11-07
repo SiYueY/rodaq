@@ -213,7 +213,7 @@ rodaq_status_code ProjectionRegistry::register_projection(
             registry->register_entry(request->descriptor, projection_id, payload, payload_size);
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         return RODAQ_STATUS_OK;
     } catch (const std::exception& error) {
@@ -267,7 +267,7 @@ rodaq_status_code ProjectionRegistry::get_projection(
         Result<ProjectionView> result = registry->get(descriptor, parsed_id);
         if (!result.ok()) {
             assign_abi_status(result.status(), out_status);
-            return abi_status_from_status_code(result.status().status_code());
+            return abi_status_from_status_code(result.status().code());
         }
         const ProjectionView& view = result.value();
         out_info->struct_size = initialized;

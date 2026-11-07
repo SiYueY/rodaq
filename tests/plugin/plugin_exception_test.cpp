@@ -74,13 +74,12 @@ TEST(PluginExceptionTest, DefaultServiceWrappersFailWithoutDereferencingNull) {
     EXPECT_FALSE(clock.valid());
     EXPECT_FALSE(acquisition.valid());
     EXPECT_FALSE(storage.valid());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.lifecycle_snapshot().status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.lifecycle_snapshot().status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        canonical.get_stream(rodaq_stream_handle{}).status().status_code());
+        canonical.get_stream(rodaq_stream_handle{}).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        projection.get(rodaq_stream_descriptor_handle{}, "id").status().status_code());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState, clock.anchor(rodaq_clock_handle{}).status().status_code());
+        projection.get(rodaq_stream_descriptor_handle{}, "id").status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, clock.anchor(rodaq_clock_handle{}).status().code());
 }

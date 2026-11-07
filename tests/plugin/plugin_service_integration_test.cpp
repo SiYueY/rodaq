@@ -389,7 +389,7 @@ void expect_acquisition_control_failure(const char* path_environment) {
         take(manager.load_library(plugin_path(path_environment)))));
     const auto result = instance.bind(registry->abi_view());
     ASSERT_FALSE(result.ok());
-    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().code());
     instance.destroy();
 }
 
@@ -402,7 +402,7 @@ void expect_storage_control_failure(const char* path_environment) {
         take(manager.load_library(plugin_path(path_environment)))));
     const auto result = instance.bind(registry->abi_view());
     ASSERT_FALSE(result.ok());
-    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().code());
     instance.destroy();
 }
 
@@ -443,7 +443,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_ACQUISITION_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().code());
         instance.destroy();
     }
     {
@@ -454,7 +454,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_STORAGE_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().code());
         instance.destroy();
     }
     {
@@ -470,7 +470,7 @@ TEST(PluginServiceIntegrationTest, MissingRequiredServicesFailBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_STORAGE_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::NotFound, result.status().code());
         instance.destroy();
     }
 }
@@ -492,7 +492,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_ACQUISITION_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().code());
         instance.destroy();
     }
 
@@ -510,7 +510,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_ACQUISITION_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().code());
         instance.destroy();
     }
 
@@ -528,7 +528,7 @@ TEST(PluginServiceIntegrationTest, IncompatibleServiceAbiFailsBind) {
             take(manager.load_library(plugin_path("RODAQ_TEST_ACQUISITION_PLUGIN")))));
         const auto result = instance.bind(registry->abi_view());
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidArgument, result.status().code());
         instance.destroy();
     }
 }
@@ -559,7 +559,7 @@ TEST(PluginServiceIntegrationTest, RequiredControlInterfacesAreQueriedAndValidat
 
         const auto unknown = instance.query_interface("rodaq.test.unknown");
         ASSERT_FALSE(unknown.ok());
-        EXPECT_EQ(rodaq::StatusCode::NotFound, unknown.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::NotFound, unknown.status().code());
         instance.destroy();
     }
 
@@ -615,11 +615,11 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         const std::unique_ptr<ServiceRegistry> registry = make_registry(services);
         AcquisitionPluginInstance instance = take(manager.create_acquisition_plugin_instance(
             take(manager.load_library(plugin_path("RODAQ_TEST_SDK_ACQUISITION")))));
-        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().code());
         ASSERT_TRUE(instance.bind(registry->abi_view()).ok());
         ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         ASSERT_TRUE(instance.start().ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.start().status().code());
 
         const auto control = instance.required_control_interface();
         ASSERT_TRUE(control.ok());
@@ -630,7 +630,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
             table->quiesce_stream(control.value().context, rodaq_stream_handle{1}, &error));
         EXPECT_EQ(RODAQ_STATUS_OK, table->quiesce_plugin(control.value().context, &error));
         ASSERT_TRUE(instance.stop().ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.stop().status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.stop().status().code());
         instance.destroy();
     }
 
@@ -668,7 +668,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         open.session_id = rodaq_string_view{session, sizeof(session) - 1};
         open.target_uri = rodaq_string_view{target, sizeof(target) - 1};
         ASSERT_TRUE(instance.open(open).ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.open(open).status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.open(open).status().code());
 
         rodaq_storage_submission submission{};
         submission.struct_size = sizeof(submission);
@@ -687,7 +687,7 @@ TEST(PluginServiceIntegrationTest, SdkFixturesCompleteFullLifecycle) {
         close.struct_size = RODAQ_STORAGE_CLOSE_REQUEST_MIN_STRUCT_SIZE;
         close.disposition = RODAQ_STORAGE_CLOSE_NORMAL;
         ASSERT_TRUE(instance.close(close).ok());
-        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.close(close).status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InvalidState, instance.close(close).status().code());
         instance.destroy();
     }
 }
@@ -705,7 +705,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         ASSERT_TRUE(instance.configure(rodaq::config_abi_view(config.root())).ok());
         const auto result = instance.start();
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::InternalError, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::InternalError, result.status().code());
         EXPECT_NE(std::string_view::npos, result.status().message().find("exception"));
         instance.destroy();
     }
@@ -722,7 +722,7 @@ TEST(PluginServiceIntegrationTest, SdkLifecycleFailuresAndExceptionsAreContained
         open.struct_size = RODAQ_STORAGE_OPEN_REQUEST_MIN_STRUCT_SIZE;
         const auto result = instance.open(open);
         ASSERT_FALSE(result.ok());
-        EXPECT_EQ(rodaq::StatusCode::Unavailable, result.status().status_code());
+        EXPECT_EQ(rodaq::StatusCode::Unavailable, result.status().code());
         instance.destroy();
     }
 }

@@ -1457,6 +1457,8 @@ DAQ::submit
 
 这只是实现机制，不引入新的 Canonical subsystem。
 
+V1 Runtime Admission 的 `Reject/Wait` 模式是 Activation 级配置，不是每个 DDS Topic/Reader 的独立 Runtime mode。短 Listener + bounded Plugin-local queue 是 native 执行模型，可按 Flow 分配队列资源和记录本地丢弃，但不能改变已接受 Record 的 Persistence/Ownership，也不能称为 Runtime per-Stream QoS。DDS History/QoS、Plugin-local staging 和 Runtime pre-admission 拒绝三者必须分别观测。需要混合 Wait/Reject 的 Runtime policy 时，先评审 API/ABI 与同 Stream 顺序/资源模型，不得在 Plugin 层悄悄模拟。详见 `admission.md `3.4.1`。
+
 ## 4.4 Failure / Recovery
 
 Failure 可以包括：

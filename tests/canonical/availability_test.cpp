@@ -38,8 +38,8 @@ TEST(CanonicalAvailabilityTest, UpdatesSourceAndStreamOnlyForTheOwningPlugin) {
         state.report_stream_availability(1, stream.value(), RODAQ_AVAILABILITY_AVAILABLE);
     ASSERT_FALSE(wrong_source_owner.ok());
     ASSERT_FALSE(wrong_stream_owner.ok());
-    EXPECT_EQ(StatusCode::InvalidState, wrong_source_owner.status().status_code());
-    EXPECT_EQ(StatusCode::InvalidState, wrong_stream_owner.status().status_code());
+    EXPECT_EQ(StatusCode::InvalidState, wrong_source_owner.status().code());
+    EXPECT_EQ(StatusCode::InvalidState, wrong_stream_owner.status().code());
 }
 
 TEST(CanonicalAvailabilityTest, RejectsUnknownHandlesAndInvalidStates) {
@@ -50,7 +50,7 @@ TEST(CanonicalAvailabilityTest, RejectsUnknownHandlesAndInvalidStates) {
     const auto unknown = state.report_source_availability(
         0, SourceHandle::from_raw(42), RODAQ_AVAILABILITY_AVAILABLE);
     ASSERT_FALSE(unknown.ok());
-    EXPECT_EQ(StatusCode::NotFound, unknown.status().status_code());
+    EXPECT_EQ(StatusCode::NotFound, unknown.status().code());
 
     const std::uint8_t stream_id[] = {'t'};
     auto stream = state.register_stream(0, stream_id, sizeof(stream_id));
@@ -58,7 +58,7 @@ TEST(CanonicalAvailabilityTest, RejectsUnknownHandlesAndInvalidStates) {
     const auto invalid = state.report_stream_availability(
         0, stream.value(), static_cast<rodaq_availability_state>(99));
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(StatusCode::InvalidArgument, invalid.status().status_code());
+    EXPECT_EQ(StatusCode::InvalidArgument, invalid.status().code());
 }
 
 }  // namespace

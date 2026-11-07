@@ -345,21 +345,18 @@ TEST(PluginServicesTest, DefaultWrappersAreSafeAndResultApisReportInvalidState) 
     rodaq::plugin::ServiceRegistryRef registry;
 
     EXPECT_FALSE(common.valid());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.monotonic_time_ns().status().status_code());
-    common.log(RODAQ_LOG_INFO, "category", "message");
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.monotonic_time_ns().status().code());
+    common.log(RODAQ_ABI_LOG_INFO, "category", "message");
     common.diagnostic(RODAQ_DIAGNOSTIC_INFO, "code", "message");
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.lifecycle_snapshot().status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, common.lifecycle_snapshot().status().code());
 
     EXPECT_FALSE(canonical.valid());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_source({}).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_clock({}).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_schema({}).status().status_code());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState, canonical.get_timestamp_key_set(1).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_stream({}).status().status_code());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState,
-        canonical.get_stream_descriptor({}).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_source({}).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_clock({}).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_schema({}).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_timestamp_key_set(1).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_stream({}).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, canonical.get_stream_descriptor({}).status().code());
 
     EXPECT_FALSE(projection.valid());
     EXPECT_EQ(
@@ -368,55 +365,51 @@ TEST(PluginServicesTest, DefaultWrappersAreSafeAndResultApisReportInvalidState) 
             .register_entry(rodaq_stream_descriptor_handle{1}, "id", nullptr, 0)
 
             .status()
-            .status_code());
+            .code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        projection.get(rodaq_stream_descriptor_handle{1}, "id").status().status_code());
+        projection.get(rodaq_stream_descriptor_handle{1}, "id").status().code());
 
     EXPECT_FALSE(clock.valid());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState,
-        clock.anchor(rodaq_clock_handle{1}).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, clock.anchor(rodaq_clock_handle{1}).status().code());
 
     EXPECT_FALSE(acquisition.valid());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        acquisition.register_source(valid_source()).status().status_code());
+        acquisition.register_source(valid_source()).status().code());
+    EXPECT_EQ(
+        rodaq::StatusCode::InvalidState, acquisition.register_clock(valid_clock()).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        acquisition.register_clock(valid_clock()).status().status_code());
+        acquisition.register_schema(valid_schema()).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        acquisition.register_schema(valid_schema()).status().status_code());
+        acquisition.register_stream(valid_stream()).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
-        acquisition.register_stream(valid_stream()).status().status_code());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState,
-        acquisition.publish_descriptor(valid_descriptor()).status().status_code());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState, acquisition.submit(valid_record()).status().status_code());
+        acquisition.publish_descriptor(valid_descriptor()).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, acquisition.submit(valid_record()).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
         acquisition
             .report_source(rodaq_source_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
 
             .status()
-            .status_code());
+            .code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
         acquisition
             .report_stream(rodaq_stream_handle{1}, RODAQ_AVAILABILITY_AVAILABLE, nullptr)
 
             .status()
-            .status_code());
+            .code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidState,
         acquisition
             .report_plugin_state(RODAQ_ACQUISITION_PLUGIN_AVAILABLE, nullptr)
 
             .status()
-            .status_code());
+            .code());
 
     EXPECT_FALSE(storage.valid());
     storage.payload_consumed(rodaq_storage_operation{1});
@@ -427,15 +420,15 @@ TEST(PluginServicesTest, DefaultWrappersAreSafeAndResultApisReportInvalidState) 
     EXPECT_FALSE(config.valid());
     EXPECT_EQ(rodaq::ConfigKind::Null, config.kind());
     EXPECT_EQ(0U, config.size());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.find("key").status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.at(0).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.key_at(0).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_bool().status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_int64().status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_double().status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_string().status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.find("key").status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.at(0).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.key_at(0).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_bool().status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_int64().status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_double().status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, config.as_string().status().code());
 
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, registry.query("service").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, registry.query("service").status().code());
 }
 
 TEST(PluginServicesTest, ValidWrappersForwardEveryPublicOperation) {
@@ -454,7 +447,7 @@ TEST(PluginServicesTest, ValidWrappersForwardEveryPublicOperation) {
     auto storage = take(rodaq::plugin::StorageService::from(
         rodaq::plugin::InterfaceRef{rodaq_interface{&context, &storage_vtable}}));
 
-    common.log(RODAQ_LOG_INFO, "category", "message");
+    common.log(RODAQ_ABI_LOG_INFO, "category", "message");
     const auto monotonic = common.monotonic_time_ns();
     ASSERT_TRUE(monotonic.ok());
     EXPECT_EQ(0U, monotonic.value());
@@ -513,32 +506,28 @@ TEST(PluginServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachDAQ) {
     source.source_id.data = nullptr;
     source.source_id.size = 1;
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        acquisition.register_source(source).status().status_code());
+        rodaq::StatusCode::InvalidArgument, acquisition.register_source(source).status().code());
 
     auto clock = valid_clock();
     clock.resolution_denominator = 0;
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        acquisition.register_clock(clock).status().status_code());
+        rodaq::StatusCode::InvalidArgument, acquisition.register_clock(clock).status().code());
 
     auto schema = valid_schema();
     schema.type_identifier_present = 2;
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        acquisition.register_schema(schema).status().status_code());
+        rodaq::StatusCode::InvalidArgument, acquisition.register_schema(schema).status().code());
 
     auto stream = valid_stream();
     stream.native_id.size = 0;
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        acquisition.register_stream(stream).status().status_code());
+        rodaq::StatusCode::InvalidArgument, acquisition.register_stream(stream).status().code());
 
     auto descriptor = valid_descriptor();
     descriptor.timestamp_key_count = 1;
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        acquisition.publish_descriptor(descriptor).status().status_code());
+        acquisition.publish_descriptor(descriptor).status().code());
 
     static const rodaq_timestamp_key timestamp_key[] = {
         {rodaq_string_view{"role", 4}, rodaq_clock_handle{1}}};
@@ -547,24 +536,21 @@ TEST(PluginServicesTest, StructurallyInvalidAcquisitionInputsDoNotReachDAQ) {
     descriptor.timestamp_key_count = UINT32_MAX;
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        acquisition.publish_descriptor(descriptor).status().status_code());
+        acquisition.publish_descriptor(descriptor).status().code());
 
     auto record = valid_record();
     record.timestamp_value_count = 1;
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().code());
 
     static const rodaq_timestamp_value timestamp_value[] = {{RODAQ_FALSE, 0, 0}};
     record = valid_record();
     record.timestamp_values = timestamp_value;
     record.timestamp_value_count = UINT32_MAX;
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().code());
 
     record = valid_record();
     record.payload.mode = RODAQ_PAYLOAD_ADOPT;
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, acquisition.submit(record).status().code());
 
     EXPECT_EQ(0, counts.acquisition);
 }

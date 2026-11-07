@@ -48,7 +48,7 @@ TEST(HandleTest, AllocatorIsMonotonicAndDetectsOverflow) {
 
     const auto exhausted = allocator.allocate();
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(RegistryTest, InsertFindEraseAndCapacity) {
@@ -69,7 +69,7 @@ TEST(RegistryTest, InsertFindEraseAndCapacity) {
 
     const auto full = registry.insert(30);
     ASSERT_FALSE(full.ok());
-    EXPECT_EQ(full.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(full.status().code(), StatusCode::ResourceExhausted);
 
     ASSERT_TRUE(registry.erase(first.value()).ok());
     EXPECT_EQ(registry.find(first.value()), nullptr);
@@ -83,7 +83,7 @@ TEST(RegistryTest, EraseRejectsInvalidAndMissingHandles) {
 
     const auto invalid = registry.erase(StreamHandle{});
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(invalid.status().code(), StatusCode::InvalidArgument);
 
     auto handle = registry.insert(1);
     ASSERT_TRUE(handle.ok());
@@ -91,7 +91,7 @@ TEST(RegistryTest, EraseRejectsInvalidAndMissingHandles) {
 
     const auto double_erase = registry.erase(handle.value());
     ASSERT_FALSE(double_erase.ok());
-    EXPECT_EQ(double_erase.status().status_code(), StatusCode::NotFound);
+    EXPECT_EQ(double_erase.status().code(), StatusCode::NotFound);
 }
 
 TEST(RegistryTest, StaleHandleCannotResolveReusedSlot) {
@@ -182,7 +182,7 @@ TEST(RegistryTest, GenerationExhaustionRetiresSlotWithoutWrapping) {
 
     const auto retired = registry.insert(2);
     ASSERT_FALSE(retired.ok());
-    EXPECT_EQ(retired.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(retired.status().code(), StatusCode::ResourceExhausted);
 }
 
 struct ThrowingValue {
@@ -245,13 +245,13 @@ TEST(RegistryTest, FailedValueConstructionDoesNotLoseCapacity) {
     ThrowingValue::failure = ThrowingValue::Failure::RuntimeError;
     const auto failed = registry.insert(ThrowingValue(1));
     ASSERT_FALSE(failed.ok());
-    EXPECT_EQ(failed.status().status_code(), StatusCode::InternalError);
+    EXPECT_EQ(failed.status().code(), StatusCode::InternalError);
     EXPECT_EQ(registry.size(), 0U);
 
     ThrowingValue::failure = ThrowingValue::Failure::BadAlloc;
     const auto allocation_failed = registry.insert(ThrowingValue(2));
     ASSERT_FALSE(allocation_failed.ok());
-    EXPECT_EQ(allocation_failed.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(allocation_failed.status().code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(registry.size(), 0U);
 
     ThrowingValue::failure = ThrowingValue::Failure::None;

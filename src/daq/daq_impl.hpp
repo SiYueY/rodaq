@@ -110,6 +110,7 @@ public:
     std::uint64_t secondary_failure_overflow_count() const noexcept;
     Result<DAQStats> stats() const;
     Result<PayloadStats> payload_stats() const;
+    Result<Logger> logger(std::string_view category) const;
 
 private:
     template <typename Callable>

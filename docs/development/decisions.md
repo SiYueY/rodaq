@@ -236,7 +236,7 @@ Required production baseline:
 - fmt 12.1.0 — static.
 - HdrHistogram_c 0.12.1 — core-only static.
 - yaml-cpp 0.9.0 — static + PIC.
-- expected-lite 0.10.0 — pinned Public C++ header dependency used directly by `rodaq::Result<T>`; see D-025.
+- tl::expected 1.3.1 — pinned Public C++ header dependency used privately by `rodaq::Result<T>`; see D-067.
 
 Approved optional candidates:
 
@@ -1050,7 +1050,7 @@ frozen.
 
 ## D-051 — Logging is Runtime-owned, bounded and quarantinable
 
-**Status:** Accepted
+**Status:** Superseded by D-068; retained as historical context.
 
 Runtime owns a `LoggingContext` with fixed record and byte capacity,
 drop-new policy, high-water/drop/backend-failure counters, direct recursion
@@ -1179,7 +1179,7 @@ must migrate and rebuild; the Stable C ABI and frozen fixtures remain unchanged.
 
 ## D-058 — Status and validated Result unify operation outcomes
 
-**Status:** Accepted; supersedes D-025's direct alias, D-057's failure-only Error,
+**Status:** Superseded by D-067; retained as historical context. It supersedes D-025's direct alias, D-057's failure-only Error,
 and the earlier C/C++ source-name and diagnostic contracts where they conflict.
 
 No-value operations return Result<void>; value operations return Result<T>. Status
@@ -1360,3 +1360,100 @@ edit loop.
 
 **Reference:** `docs/coding_guidelines/cpp_coding_guidelines.md §5.42`,
 `docs/development/plan.md`.
+
+## D-067 — Result uses tl::expected with strong contract semantics
+
+**Status:** Superseded by D-070; retained as historical context. It supersedes
+D-025 and D-058.
+
+`rodaq::Result<T>` privately stores `tl::expected<T, Status>` from pinned
+tl::expected 1.3.1 at commit
+`1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4`. The installed include tree supplies
+`tl/expected.hpp` and its license; expected-lite is removed.
+
+A default `Status` is success. Constructing `Status(Ok, ...)`, constructing a
+failed `Result` from an OK Status, or reading `value()`, `operator*` or lvalue
+`operator->()` from a failed Result is a contract violation and calls
+`std::abort()`. Non-void Result has no default constructor, no implicit boolean
+conversion, and rejects array, reference, cv-qualified and `Status` value types.
+`Result<void>` defaults to success and its `value()` aborts on failure. Rvalue
+`Status::message()` and rvalue `Result::operator->()` are deleted to prevent
+dangling access. Unknown status values normalize to `UnknownError`.
+
+**Reference:** `include/rodaq/status.hpp`, `include/rodaq/result.hpp`,
+`tests/daq/`, `tests/abi/compile_fail/`.
+
+## D-068 — Logging is Activation-owned with weak public handles
+
+**Status:** Accepted; supersedes D-051.
+
+Each activation owns its `LoggingContext`, sink collection, bounded queue and
+single worker. There is no process-global production logger.
+`DAQ::logger(category)` succeeds only while the DAQ is Running. The returned
+`Logger` owns its category but observes the activation state through a weak
+reference. After Stop, logging calls are safe no-ops and control operations
+return `InvalidState`; restart requires obtaining a new Logger.
+
+The queue is bounded by both record count and materialized category/message
+bytes; source file/function strings are also copied into the record and charged
+to that byte budget. Sync, AsyncBounded, Console/File/RotatingFile/DailyFile
+sinks, sink-level
+patterns and levels, Block/OverrunOldest/DiscardNew overflow, periodic and
+level-triggered flush, backtrace, source location, formatting exception
+isolation, reentrancy drop, statistics and bounded quarantine are required.
+Default async capacity is 8192 records and 8 MiB with `DiscardNew`.
+
+The public Logging header intentionally uses pinned fmt/spdlog for header-only
+formatting and macros. `rodaq::daq` therefore exports `fmt::fmt` and
+`spdlog::spdlog` usage requirements, and `RoDAQConfig.cmake` resolves exact
+pinned package versions with `find_dependency()`. No third-party type enters a
+RoDAQ-owned function signature or Stable C ABI. `rodaq::sdk` remains independent
+of DAQ, fmt, spdlog and YAML.
+
+**Reference:** `docs/design/logging.md`, `include/rodaq/logging.hpp`,
+`include/rodaq/logging_config.hpp`, `src/logging/`, `cmake/install.cmake`.
+
+## D-069 — Public logging macros and ABI severity macros are distinct
+
+**Status:** Accepted; clarifies D-068 and replaces conflicting historical
+source-name statements in D-051.
+
+Public logging macros are `RODAQ_LOG_TRACE`, `RODAQ_LOG_DEBUG`,
+`RODAQ_LOG_INFO`, `RODAQ_LOG_WARN`, `RODAQ_LOG_ERROR` and
+`RODAQ_LOG_CRITICAL`. `RODAQ_LOG_ACTIVE_LEVEL` controls compile-time pruning and
+disabled macros do not evaluate arguments. `RODAQ_LOG_LEVEL_*` constants are the
+compile-time thresholds.
+
+Stable ABI severity constants are `RODAQ_ABI_LOG_*` with numeric values 1..7
+unchanged. Plugin SDK and adapter code map `LogLevel` and ABI severity with an
+explicit mapping. No old `RODAQ_LOG_*` ABI-name aliases are retained; C and C++
+Plugin consumers must rebuild.
+
+**Reference:** `include/rodaq/logging.hpp`,
+`include/rodaq/plugin/abi/runtime.h`, `src/plugin/common_service_adapter.cpp`,
+`tests/integration/`.
+
+## D-070 — Status/Result align with rocomm
+
+**Status:** Accepted; supersedes D-067.
+
+`rodaq::Result<T>` is adapted from the rocomm source implementation. It keeps
+the same construction, access, abort and move-only semantics as rocomm, fixes
+the error type to RoDAQ `Status`, and retains the tl::expected 1.3.1 header
+version check. RoDAQ does not depend on the rocomm project or library.
+
+`rodaq::Status` is a header-only rocomm-style value type extended with
+`domain_` and native `error_code_`. Its public names are `Status::Ok()`,
+`ok()`, `code()`, `domain()`, `error_code()` and lvalue `message()`.
+`StatusCode` uses `int32_t` and retains `UnknownError = 10`; constructors do
+not normalize arbitrary C++ status values. `Status(Ok, ...)` remains a
+contract violation that aborts.
+
+Stable C ABI values and layouts remain unchanged. The ABI bridge explicitly
+maps known `rodaq_status_code` values, and unrecognized ABI values are
+normalized to `RODAQ_STATUS_UNKNOWN_ERROR`. Status is no longer exported from
+`librodaq.so`; consumers compile its inline implementation from the installed
+header. No old `success()` or `status_code()` aliases are retained.
+
+**Reference:** `include/rodaq/status.hpp`, `include/rodaq/result.hpp`,
+`src/plugin/abi_support.cpp`, `tests/daq/`, `tests/plugin/service_registry_test.cpp`.

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -541,7 +542,7 @@ TEST(DAQPipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     EXPECT_EQ(failed.state(), DAQState::Failed);
     auto failed_primary = failed.primary_failure();
     ASSERT_FALSE(failed_primary.ok());
-    EXPECT_EQ(failed_primary.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(failed_primary.code(), StatusCode::StorageError);
     auto failed_secondary = failed.secondary_failures();
     ASSERT_TRUE(failed_secondary.ok());
     EXPECT_TRUE(failed_secondary->empty());
@@ -571,7 +572,7 @@ TEST(DAQPipelineTest, RejectsDescriptorReadinessAndInitialBindingFailures) {
     EXPECT_EQ(runtime.state(), DAQState::Failed);
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::Unavailable);
+    EXPECT_EQ(primary.code(), StatusCode::Unavailable);
     auto secondary = runtime.secondary_failures();
     ASSERT_TRUE(secondary.ok());
     EXPECT_TRUE(secondary->empty());
@@ -620,11 +621,11 @@ TEST(DAQPipelineTest, BoundsDescriptorReconciliationRequestQueue) {
     ASSERT_TRUE(runtime.configure().ok());
     const auto started = runtime.start();
     ASSERT_FALSE(started.ok());
-    EXPECT_EQ(started.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(started.status().code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(runtime.state(), DAQState::Failed);
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(primary.code(), StatusCode::ResourceExhausted);
 }
 
 TEST(DAQPipelineTest, PreservesStorageOpenAndAcquisitionStartFailures) {
@@ -639,7 +640,7 @@ TEST(DAQPipelineTest, PreservesStorageOpenAndAcquisitionStartFailures) {
     EXPECT_EQ(storage.state(), DAQState::Failed);
     auto storage_primary = storage.primary_failure();
     ASSERT_FALSE(storage_primary.ok());
-    EXPECT_EQ(storage_primary.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(storage_primary.code(), StatusCode::StorageError);
     EXPECT_NE(storage_primary.message().find("open failure"), std::string_view::npos);
 
     const std::string acquisition_log = unique_log_path("acquisition_start_failure");
@@ -654,7 +655,7 @@ TEST(DAQPipelineTest, PreservesStorageOpenAndAcquisitionStartFailures) {
     EXPECT_EQ(acquisition.state(), DAQState::Failed);
     auto acquisition_primary = acquisition.primary_failure();
     ASSERT_FALSE(acquisition_primary.ok());
-    EXPECT_EQ(acquisition_primary.status_code(), StatusCode::Unavailable);
+    EXPECT_EQ(acquisition_primary.code(), StatusCode::Unavailable);
     EXPECT_NE(
         acquisition_primary.message().find("configured acquisition start failure"),
         std::string_view::npos);
@@ -762,7 +763,7 @@ TEST(DAQPipelineTest, SwitchesProjectionDependentDescriptorAndRejectsConflict) {
     EXPECT_FALSE(conflict.start().ok());
     auto primary = conflict.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::Conflict);
+    EXPECT_EQ(primary.code(), StatusCode::Conflict);
 }
 
 TEST(DAQPipelineTest, InjectsMandatoryDAQIngressTimestamp) {
@@ -842,7 +843,7 @@ TEST(DAQPipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRole) {
     EXPECT_FALSE(four.start().ok());
     auto four_failure = four.primary_failure();
     ASSERT_FALSE(four_failure.ok());
-    EXPECT_EQ(four_failure.status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(four_failure.code(), StatusCode::InvalidArgument);
 
     const std::string ingress_log = unique_log_path("plugin_ingress_role");
     std::error_code ingress_removed;
@@ -855,7 +856,7 @@ TEST(DAQPipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRole) {
     EXPECT_FALSE(ingress.start().ok());
     auto ingress_failure = ingress.primary_failure();
     ASSERT_FALSE(ingress_failure.ok());
-    EXPECT_EQ(ingress_failure.status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(ingress_failure.code(), StatusCode::InvalidArgument);
 
     const std::string duplicate_log = unique_log_path("duplicate_timestamp_key");
     std::error_code duplicate_removed;
@@ -868,7 +869,7 @@ TEST(DAQPipelineTest, EnforcesCanonicalTimestampCapacityAndRejectsIngressRole) {
     EXPECT_FALSE(duplicate.start().ok());
     auto duplicate_failure = duplicate.primary_failure();
     ASSERT_FALSE(duplicate_failure.ok());
-    EXPECT_EQ(duplicate_failure.status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(duplicate_failure.code(), StatusCode::InvalidArgument);
     EXPECT_NE(duplicate_failure.message().find("duplicate key"), std::string_view::npos);
 }
 
@@ -943,7 +944,7 @@ TEST(DAQPipelineTest, BoundsAndQuarantinesBlockedActivationCalls) {
         EXPECT_EQ(runtime.state(), DAQState::Failed);
         auto primary = runtime.primary_failure();
         ASSERT_FALSE(primary.ok());
-        EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+        EXPECT_EQ(primary.code(), StatusCode::Timeout);
     }
 }
 
@@ -1002,7 +1003,7 @@ TEST(DAQPipelineTest, BoundsDescriptorReadinessDuringRunningSwitch) {
     ASSERT_TRUE(wait_for_failure(runtime));
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+    EXPECT_EQ(primary.code(), StatusCode::Timeout);
     EXPECT_FALSE(runtime.stop().ok());
     EXPECT_EQ(runtime.state(), DAQState::Failed);
 }
@@ -1026,7 +1027,7 @@ TEST(DAQPipelineTest, StopsDuringDescriptorReadinessWithoutPublishingSwitch) {
     EXPECT_EQ(runtime.state(), DAQState::Failed);
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+    EXPECT_EQ(primary.code(), StatusCode::Timeout);
     auto secondary = runtime.secondary_failures();
     ASSERT_TRUE(secondary.ok());
     EXPECT_TRUE(secondary->empty());
@@ -1348,7 +1349,7 @@ TEST(DAQPipelineTest, BoundsStorageSubmitFlushAndCloseStalls) {
         EXPECT_EQ(runtime.state(), DAQState::Failed);
         auto primary = runtime.primary_failure();
         ASSERT_FALSE(primary.ok());
-        EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+        EXPECT_EQ(primary.code(), StatusCode::Timeout);
         EXPECT_FALSE(runtime.stop().ok());
         EXPECT_EQ(runtime.state(), DAQState::Failed);
     }
@@ -1367,7 +1368,7 @@ TEST(DAQPipelineTest, DetectsStorageHandoffStallWithoutCallingStop) {
     ASSERT_TRUE(wait_for_failure(runtime));
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+    EXPECT_EQ(primary.code(), StatusCode::Timeout);
     const auto started = Clock::now();
     EXPECT_FALSE(runtime.stop().ok());
     EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(500));
@@ -1421,9 +1422,9 @@ TEST(DAQPipelineTest, BoundsAcquisitionQuiesceAndStopFailures) {
         auto primary = runtime.primary_failure();
         ASSERT_FALSE(primary.ok());
         if (std::string_view(scenario.lifecycle_scenario).find("stall") != std::string_view::npos) {
-            EXPECT_EQ(primary.status_code(), StatusCode::Timeout);
+            EXPECT_EQ(primary.code(), StatusCode::Timeout);
         } else {
-            EXPECT_EQ(primary.status_code(), StatusCode::Unavailable);
+            EXPECT_EQ(primary.code(), StatusCode::Unavailable);
         }
     }
 }
@@ -1514,12 +1515,12 @@ TEST(DAQPipelineTest, PreservesPrimaryAndSecondaryFailureDiagnostics) {
 
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(primary.code(), StatusCode::StorageError);
     EXPECT_NE(primary.message().find("flush failure"), std::string_view::npos);
     auto secondary = runtime.secondary_failures();
     ASSERT_TRUE(secondary.ok());
     ASSERT_EQ(secondary->size(), 1U);
-    EXPECT_EQ(secondary->front().status_code(), StatusCode::StorageError);
+    EXPECT_EQ(secondary->front().code(), StatusCode::StorageError);
     EXPECT_NE(secondary->front().message().find("close failure"), std::string_view::npos);
     EXPECT_EQ(runtime.secondary_failure_overflow_count(), 0U);
 }
@@ -1659,7 +1660,7 @@ TEST(DAQPipelineTest, RejectsCrossPluginSourceIdentityCollisionDuringStart) {
     ASSERT_TRUE(runtime.configure().ok());
     EXPECT_FALSE(runtime.start().ok());
     ASSERT_FALSE(runtime.primary_failure().ok());
-    EXPECT_EQ(runtime.primary_failure().status_code(), StatusCode::Conflict);
+    EXPECT_EQ(runtime.primary_failure().code(), StatusCode::Conflict);
     EXPECT_EQ(runtime.state(), DAQState::Failed);
 }
 
@@ -1770,13 +1771,111 @@ TEST(DAQPipelineTest, RestartCreatesFreshActivation) {
         2);
 }
 
+TEST(DAQPipelineTest, LoggerIsRunningScopedAndInvalidatedAcrossRestart) {
+    const auto event_log = unique_log_path("logger_lifecycle_events");
+    const auto application_log = unique_log_path("logger_lifecycle_application");
+    std::error_code removed;
+    fs::remove(event_log, removed);
+    fs::remove(application_log, removed);
+
+    auto runtime_options = options("logger_lifecycle", "sync", "copy", 1, 1, 1, event_log);
+    runtime_options.logging.level = LogLevel::Trace;
+    runtime_options.logging.async.enabled = false;
+    FileSinkConfig sink;
+    sink.path = application_log;
+    sink.options.level = LogLevel::Trace;
+    sink.options.pattern = "%v";
+    runtime_options.logging.sinks = {SinkConfig{sink}};
+
+    DAQ runtime(std::move(runtime_options));
+    EXPECT_EQ(StatusCode::InvalidState, runtime.logger("rodaq.application").status().code());
+    ASSERT_TRUE(runtime.configure().ok());
+    EXPECT_EQ(StatusCode::InvalidState, runtime.logger("rodaq.application").status().code());
+
+    ASSERT_TRUE(runtime.start().ok());
+    auto first = runtime.logger("rodaq.application");
+    ASSERT_TRUE(first.ok());
+    EXPECT_TRUE(first.value().valid());
+    EXPECT_EQ(StatusCode::InvalidArgument, runtime.logger("").status().code());
+    RODAQ_LOG_INFO(first.value(), "first activation {}", 1);
+    ASSERT_TRUE(runtime.stop().ok());
+
+    EXPECT_FALSE(first.value().valid());
+    first.value().write(LogLevel::Error, {}, "after stop");
+    EXPECT_EQ(StatusCode::InvalidState, first.value().set_level(LogLevel::Debug).status().code());
+
+    ASSERT_TRUE(runtime.start().ok());
+    auto second = runtime.logger("rodaq.application");
+    ASSERT_TRUE(second.ok());
+    EXPECT_TRUE(second.value().valid());
+    EXPECT_FALSE(first.value().valid());
+    RODAQ_LOG_INFO(second.value(), "second activation {}", 2);
+    ASSERT_TRUE(runtime.stop().ok());
+    EXPECT_FALSE(second.value().valid());
+
+    const std::string contents = [&application_log] {
+        std::ifstream input(application_log);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    EXPECT_NE(std::string::npos, contents.find("[rodaq.application] first activation 1"));
+    EXPECT_NE(std::string::npos, contents.find("[rodaq.application] second activation 2"));
+    EXPECT_EQ(std::string::npos, contents.find("after stop"));
+}
+
+TEST(DAQPipelineTest, PluginLoggingMapsEveryAbiSeverityExplicitly) {
+    const auto event_log = unique_log_path("plugin_log_levels_events");
+    const auto application_log = unique_log_path("plugin_log_levels_application");
+    std::error_code removed;
+    fs::remove(event_log, removed);
+    fs::remove(application_log, removed);
+
+    auto runtime_options = options("plugin_log_levels", "sync", "copy", 1, 1, 1, event_log);
+    runtime_options.logging.level = LogLevel::Trace;
+    runtime_options.logging.async.enabled = false;
+    FileSinkConfig sink;
+    sink.path = application_log;
+    sink.options.level = LogLevel::Trace;
+    sink.options.pattern = "%l|%v";
+    runtime_options.logging.sinks = {SinkConfig{sink}};
+    runtime_options.acquisitions[0].config = map_config({
+        {"streams", plugin::ConfigTree::int64(1)},
+        {"records_per_stream", plugin::ConfigTree::int64(1)},
+        {"producer_threads", plugin::ConfigTree::int64(1)},
+        {"payload_size", plugin::ConfigTree::int64(16)},
+        {"payload_mode", plugin::ConfigTree::string("copy")},
+        {"lifecycle_scenario", plugin::ConfigTree::string("log_levels")},
+    });
+
+    DAQ runtime(std::move(runtime_options));
+    ASSERT_TRUE(runtime.configure().ok());
+    ASSERT_TRUE(runtime.start().ok());
+    ASSERT_TRUE(runtime.stop().ok());
+
+    const auto lines = read_lines(application_log);
+    EXPECT_NE(
+        lines.end(),
+        std::find(lines.begin(), lines.end(), "info|[plugin.fake] Acquisition configured"));
+    EXPECT_NE(
+        lines.end(), std::find(lines.begin(), lines.end(), "trace|[plugin.fake] trace severity"));
+    EXPECT_NE(
+        lines.end(), std::find(lines.begin(), lines.end(), "debug|[plugin.fake] debug severity"));
+    EXPECT_NE(
+        lines.end(), std::find(lines.begin(), lines.end(), "warning|[plugin.fake] warn severity"));
+    EXPECT_NE(
+        lines.end(), std::find(lines.begin(), lines.end(), "error|[plugin.fake] error severity"));
+    EXPECT_NE(
+        lines.end(),
+        std::find(lines.begin(), lines.end(), "critical|[plugin.fake] critical severity"));
+    EXPECT_EQ(lines.end(), std::find(lines.begin(), lines.end(), "off|[plugin.fake] off severity"));
+}
+
 TEST(DAQPipelineTest, RejectsStartWhenActivationRootBudgetIsExhausted) {
     auto& quarantine = plugin::PluginQuarantine::process();
     std::vector<std::uint64_t> reserved;
     while (true) {
         auto slot = quarantine.reserve_activation("DAQ activation budget test");
         if (!slot.ok()) {
-            ASSERT_EQ(slot.status().status_code(), StatusCode::ResourceExhausted);
+            ASSERT_EQ(slot.status().code(), StatusCode::ResourceExhausted);
             break;
         }
         reserved.push_back(slot.value());
@@ -1788,7 +1887,7 @@ TEST(DAQPipelineTest, RejectsStartWhenActivationRootBudgetIsExhausted) {
     ASSERT_TRUE(runtime.configure().ok());
     const auto started = runtime.start();
     ASSERT_FALSE(started.ok());
-    EXPECT_EQ(started.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(started.status().code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(runtime.state(), DAQState::Configured);
 
     for (const std::uint64_t slot : reserved) {
@@ -1990,7 +2089,7 @@ TEST(DAQPipelineTest, FatalStorageFailureAutomaticallyConvergesWithoutStop) {
         const auto message = std::string(primary.message());
         EXPECT_FALSE(runtime.stop().ok());
         expect_single_cleanup(log, "control storage_close disposition=3");
-        EXPECT_EQ(runtime.primary_failure().message(), message);
+        EXPECT_EQ(primary.message(), message);
         auto stats = runtime.stats();
         ASSERT_TRUE(stats.ok());
         EXPECT_EQ(stats->accepted_records, 1U);
@@ -2101,7 +2200,7 @@ TEST(DAQPipelineTest, DescriptorWorkerFailureDoesNotSelfJoin) {
     EXPECT_EQ(runtime.state(), DAQState::Failed);
     auto primary = runtime.primary_failure();
     ASSERT_FALSE(primary.ok());
-    EXPECT_EQ(primary.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(primary.code(), StatusCode::StorageError);
     EXPECT_NE(primary.message().find("descriptor readiness failure"), std::string_view::npos);
     expect_single_cleanup(log, "control storage_close disposition=3");
 }

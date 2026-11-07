@@ -44,13 +44,12 @@ TEST(ClockCorrelationTest, ProjectsPositiveNegativeAndEqualDeltas) {
 TEST(ClockCorrelationTest, RejectsCheckedArithmeticFailures) {
     const UnixEpochClockAnchor overflow = anchor(0, std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        project_unix_nanoseconds(1, overflow).status().status_code());
+        rodaq::StatusCode::InvalidArgument, project_unix_nanoseconds(1, overflow).status().code());
 
     const UnixEpochClockAnchor underflow = anchor(0, 0);
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        project_unix_nanoseconds(-1, underflow).status().status_code());
+        project_unix_nanoseconds(-1, underflow).status().code());
 
     const UnixEpochClockAnchor extreme =
         anchor(std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::uint64_t>::max());
@@ -58,7 +57,7 @@ TEST(ClockCorrelationTest, RejectsCheckedArithmeticFailures) {
         rodaq::StatusCode::InvalidArgument,
         project_unix_nanoseconds(std::numeric_limits<std::int64_t>::max(), extreme)
             .status()
-            .status_code());
+            .code());
 }
 
 TEST(ClockCorrelationTest, CapturesOneStableAnchorWithInjectedReaders) {
@@ -85,7 +84,7 @@ TEST(ClockCorrelationTest, CapturesOneStableAnchorWithInjectedReaders) {
     const UnixEpochClockAnchor second = take(correlation.get_anchor(clock(7)));
     EXPECT_EQ(first.clock_reading, second.clock_reading);
     EXPECT_EQ(first.unix_anchor_ns, second.unix_anchor_ns);
-    EXPECT_EQ(rodaq::StatusCode::NotFound, correlation.get_anchor(clock(8)).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, correlation.get_anchor(clock(8)).status().code());
 }
 
 TEST(ClockCorrelationTest, CreatesIndependentAnchorsPerActivation) {
@@ -101,11 +100,11 @@ TEST(ClockCorrelationTest, RejectsBackwardAndUnknownClockInputs) {
     const auto backward = ClockCorrelation::establish(
         clock(1), [&call] { return call++ == 0 ? 100 : 99; }, [] { return 1'000U; });
     ASSERT_FALSE(backward.ok());
-    EXPECT_EQ(rodaq::StatusCode::Unavailable, backward.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::Unavailable, backward.status().code());
 
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        ClockCorrelation::from_anchor(UnixEpochClockAnchor{clock(0), 0, 0}).status().status_code());
+        ClockCorrelation::from_anchor(UnixEpochClockAnchor{clock(0), 0, 0}).status().code());
 }
 
 TEST(ClockCorrelationTest, AbiAdapterReturnsStableCallerOwnedAnchor) {

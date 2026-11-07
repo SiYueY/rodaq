@@ -2,8 +2,17 @@
     global:
         _ZN5rodaq3DAQ*;
         _ZNK5rodaq3DAQ*;
-        _ZN5rodaq6Status*;
-        _ZNK5rodaq6Status*;
+        _ZN5rodaq6Logger5write*;
+        _ZN5rodaq6Logger5stats*;
+        _ZN5rodaq6Logger9set_level*;
+        _ZN5rodaq6Logger10should_log*;
+        _ZN5rodaq6Logger13request_flush*;
+        _ZN5rodaq6Logger14dump_backtrace*;
+        _ZN5rodaq6Logger16enable_backtrace*;
+        _ZN5rodaq6Logger17disable_backtrace*;
+        _ZNK5rodaq6Logger5valid*;
+        _ZNK5rodaq6Logger5level*;
+        _ZNK5rodaq6Logger5stats*;
         _ZN5rodaq10ConfigTree*;
         _ZNK5rodaq10ConfigTree*;
         _ZN5rodaq13ConfigNodeRef*;

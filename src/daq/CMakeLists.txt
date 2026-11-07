@@ -3,8 +3,6 @@ set(RODAQ_SOURCES
     lifecycle.cpp
     recovery.cpp
     failure_mailbox.cpp
-    ../status.cpp
-    ../result.cpp
     ../config/config.cpp
     ../plugin/abi_support.cpp
     ../activation/activation_state.cpp
@@ -30,7 +28,6 @@ set(RODAQ_SOURCES
     ../config/validation.cpp
     ../projection/projection_registry.cpp
     ../logging/logging_context.cpp
-    ../logging/logger.cpp
     ../logging/spdlog_backend.cpp
     ../metrics/latency_histogram.cpp
     ../metrics/stats_accumulator.cpp
@@ -86,13 +83,14 @@ target_include_directories(rodaq
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_link_libraries(rodaq
+    PUBLIC
+        fmt::fmt
+        spdlog::spdlog
     PRIVATE
         rodaq_plugin
         rodaq_sdk
         yaml-cpp::yaml-cpp
-        fmt::fmt
         hdr_histogram::hdr_histogram_core_static
-        spdlog::spdlog
 )
 if(UNIX AND NOT APPLE)
     set_property(TARGET rodaq APPEND PROPERTY
@@ -118,11 +116,11 @@ if((BUILD_TESTING AND RODAQ_BUILD_TESTS) OR RODAQ_BUILD_BENCHMARKS)
         PUBLIC
             rodaq_plugin
             rodaq_sdk
+            fmt::fmt
+            spdlog::spdlog
         PRIVATE
             yaml-cpp::yaml-cpp
-            fmt::fmt
             hdr_histogram::hdr_histogram_core_static
-            spdlog::spdlog
     )
     set_target_properties(rodaq_testing PROPERTIES POSITION_INDEPENDENT_CODE ON)
     rodaq_enable_warnings(rodaq_testing)

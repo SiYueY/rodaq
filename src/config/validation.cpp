@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <type_traits>
 
 namespace rodaq {
 namespace {
@@ -99,17 +100,77 @@ Result<void> validate_timeouts(const DAQConfig& config) {
 }
 
 Result<void> validate_logging_config(const LoggingConfig& logging) {
-    if (logging.queue_records == 0) {
-        return validation_error("logging.queue_records must be greater than zero");
+    if (logging.name.empty()) {
+        return validation_error("logging.name must not be empty");
     }
-    if (logging.queue_bytes == 0) {
-        return validation_error("logging.queue_bytes must be greater than zero");
+    if (logging.pattern.empty()) {
+        return validation_error("logging.pattern must not be empty");
+    }
+    if (logging.sinks.empty()) {
+        return validation_error("logging.sinks must not be empty");
+    }
+    if (logging.level < LogLevel::Trace || logging.level > LogLevel::Off ||
+        logging.flush.level < LogLevel::Trace || logging.flush.level > LogLevel::Off) {
+        return validation_error("logging levels must be valid");
+    }
+    if (logging.time_zone != TimeZone::Local && logging.time_zone != TimeZone::Utc) {
+        return validation_error("logging time zone is invalid");
+    }
+    if (logging.async.overflow_policy != OverflowPolicy::Block &&
+        logging.async.overflow_policy != OverflowPolicy::OverrunOldest &&
+        logging.async.overflow_policy != OverflowPolicy::DiscardNew) {
+        return validation_error("logging overflow policy is invalid");
+    }
+    if (logging.async.queue_records == 0 || logging.async.queue_records > 262144) {
+        return validation_error("logging.async.queue_records must be in [1, 262144]");
+    }
+    if (logging.async.queue_bytes == 0) {
+        return validation_error("logging.async.queue_bytes must be greater than zero");
+    }
+    if (logging.flush.interval.count() < 0) {
+        return validation_error("logging.flush.interval must not be negative");
+    }
+    if (logging.backtrace_capacity > 65536) {
+        return validation_error("logging.backtrace_capacity must be <= 65536");
     }
     if (logging.flush_timeout.count() <= 0) {
         return validation_error("logging.flush_timeout must be greater than zero");
     }
     if (logging.shutdown_timeout.count() <= 0) {
         return validation_error("logging.shutdown_timeout must be greater than zero");
+    }
+    for (const SinkConfig& sink : logging.sinks) {
+        const auto valid = std::visit(
+            [](const auto& value) -> const char* {
+                using Sink = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<Sink, ConsoleSinkConfig>) {
+                    if (value.stream != ConsoleStream::Stdout &&
+                        value.stream != ConsoleStream::Stderr) {
+                        return "logging console stream is invalid";
+                    }
+                } else if constexpr (std::is_same_v<Sink, FileSinkConfig>) {
+                    if (value.path.empty()) {
+                        return "logging file path must not be empty";
+                    }
+                } else if constexpr (std::is_same_v<Sink, RotatingFileSinkConfig>) {
+                    if (value.path.empty() || value.max_size == 0 || value.max_files == 0) {
+                        return "rotating logging configuration is invalid";
+                    }
+                } else {
+                    if (value.path.empty() || value.rotation_hour > 23 ||
+                        value.rotation_minute > 59) {
+                        return "daily logging configuration is invalid";
+                    }
+                }
+                if (value.options.level < LogLevel::Trace || value.options.level > LogLevel::Off) {
+                    return "logging sink level is invalid";
+                }
+                return nullptr;
+            },
+            sink);
+        if (valid != nullptr) {
+            return validation_error(valid);
+        }
     }
     return {};
 }

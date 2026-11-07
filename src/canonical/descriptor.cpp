@@ -421,7 +421,7 @@ Result<void> ActivationState::publish_stream_descriptor(
 
     auto requested = request_descriptor_reconciliation(handle, critical_for_start);
     if (!requested.ok()) {
-        if (requested.status().status_code() == StatusCode::ResourceExhausted) {
+        if (requested.status().code() == StatusCode::ResourceExhausted) {
             request_failure(requested.status());
         }
         return requested;
@@ -567,7 +567,7 @@ void ActivationState::on_projection_registered(
         }
         auto result = request_descriptor_reconciliation(descriptor, critical_for_start);
         if (!result.ok()) {
-            if (result.status().status_code() == StatusCode::ResourceExhausted) {
+            if (result.status().code() == StatusCode::ResourceExhausted) {
                 request_failure(result.status());
             }
         }

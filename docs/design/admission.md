@@ -1165,6 +1165,31 @@ Wait interruption：
 
 > 明确属于 pre-gate failure cleanup。
 
+### 3.4.1 V1 Policy 的作用域与 Stream 差异化
+
+`Reject` 和 `Wait` 是 Runtime Admission 的资源压力结果策略，不是 ROS2/DDS 的 Reliability、History 或 Deadline QoS。V1 的 Runtime-facing `AdmissionMode` 和 `submit_wait_timeout` 由本次 Activation 的 `DAQConfig` 决定，**当前 C ABI / Submit 不提供 Stream 级别的 mode/deadline override**。规范不得描述为已经支持每条 Stream 独立配置 Runtime Wait/Reject。
+
+Acquisition Plugin 可以按 native flow/Stream 选择自身的接收执行方式：例如传感器 callback 直接走有界快速路径，或者通过预配置有界 Plugin-local staging queue 交给可等待的 worker；它不能通过自行等待或丢弃来改变 Runtime Gate Pass、AcceptanceSequence、Accepted no-drop 及 Payload Ownership。Plugin 本地排队、丢弃和 DDS/RMW History 丢失，必须独立于 Runtime PreAdmissionRejected 统计与解释，不得宣称其等价。
+
+V1 推荐高频 Camera / IMU / JointStream 的部署 Profile 使用 `Reject`-oriented Runtime 配置，以避免对 middleware progress thread 造成不可控阻塞。若要求 `Wait`，只能由可中断、不会阻塞 discovery/quiescence 的执行上下文使用，并满足统一 deadline。单个 Activation 内需要**不同 Runtime AdmissionMode** 的产品场景，不属于当前 V1 API 已支持能力；可以采用独立 Runtime/进程 profile，或在单独审查并修改 C++/C ABI 配置与 conformance 后扩展 per-Stream Policy。不得用未经声明的 Plugin-specific magic parameter 假装已实现此能力。
+
+当前不提供跨 Stream 的优先级、公平性或硬实时接受保证。单 Lane 的影响和混合负载测量由 `runtime.md` §8.3.2 约束；下游 native callback policy 分别由 ROS2/FastDDS mapping 决定。
+
+### 3.4.2 长期过载、损失分类与容量界
+
+`Accepted no-drop` 只覆盖 Runtime 接受后的普通资源压力，**不**保证 native source→Plugin→Runtime→Storage→掉电存活的全链路无丢失。当 offered rate 长期高于可持续 Storage drain rate，任何有界资源终将耗尽；增加队列容量只能吸收有限停顿，无法解决长期吞吐不足。生产 Profile 应至少区分：
+
+| 事件 | 审计归属 | 能否改写 AcceptanceSequence / Accepted |
+| --- | --- | --- |
+| DDS/RMW/设备丢样或 native History 溢出 | Acquisition source quality | 不能；尚未 Runtime 提交 |
+| Plugin-local staging 超限 | Acquisition Plugin 本地压力 | 不能；不是 Runtime Gate 已通过的 Record |
+| Runtime pre-Gate Reject/WaitTimeout | Admission PreAdmissionRejected | 不分配 AcceptanceSequence |
+| Gate-pass 后发生合法 AdmissionRejected | Runtime 已分配但未 Accepted 的 Attempt | 不回滚已分配 Sequence |
+| Accepted 后 Storage Failed/Unknown | Persistence terminal outcome | 不能改写 Accepted 历史 |
+| OS 写入成功但未满足 durability policy | Task/Storage Durability | 不得伪称掉电持久 |
+
+Service 根据 offered/accepted/failed 与 Source availability 推导实际覆盖度；无法从 upstream 获得序号、丢样或工作量证据时必须返回 `Unknown`，禁止宣称全链路 100% 完整。当前 AdmissionMode 仍是 Activation-wide；需要不同 Stream 的独立实时保证，属于需评审和实测的 API/调度扩展，不能在 Plugin 内用不受控队列模拟。
+
 ---
 
 ## 3.5 Wait 必须可终止
@@ -4907,6 +4932,12 @@ no new AcceptanceSequence
 - Payload lifetime 由 AcceptedRecord 持有；
 - completion bookkeeping 保持到 Storage tracking terminal；
 - 不发生重复释放。
+
+### Activation-wide Policy 与 native-local pressure 资格验证
+
+V1 必须验证多个 Camera/IMU/Joint Stream 共享同一 `DAQConfig.admission_mode` 和 `submit_wait_timeout` 的事实；不应编造单个 Stream mode override API。对 `Reject` 验证立即 PreAdmissionRejected，不消耗 AcceptanceSequence；对 `Wait` 验证统一截止时间及 Stop、failure、Binding invalidation 的中断。ROS2/DDS native History 丢样、Plugin-local staging 丢样与 Runtime PreAdmissionRejected 必须分别归类，不能用 Accepted 计数覆盖 upstream loss。
+
+真实生产混合负载如出现关键 Stream 持续超时，需要按 `runtime.md` §8.3.2 判定部署 Profile/调度模型未达标；不得将数据源优先级作为未冻结的隐式策略塞入当前 ABI。
 
 ---
 

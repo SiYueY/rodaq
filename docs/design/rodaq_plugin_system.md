@@ -1802,13 +1802,13 @@ V1 冻结公共日志/诊断数值域：
 
 ```c
 typedef uint32_t rodaq_log_level;
-#define RODAQ_LOG_TRACE     UINT32_C(1)
-#define RODAQ_LOG_DEBUG     UINT32_C(2)
-#define RODAQ_LOG_INFO      UINT32_C(3)
-#define RODAQ_LOG_WARN      UINT32_C(4)
-#define RODAQ_LOG_ERROR     UINT32_C(5)
-#define RODAQ_LOG_CRITICAL  UINT32_C(6)
-#define RODAQ_LOG_OFF       UINT32_C(7)
+#define RODAQ_ABI_LOG_TRACE     UINT32_C(1)
+#define RODAQ_ABI_LOG_DEBUG     UINT32_C(2)
+#define RODAQ_ABI_LOG_INFO      UINT32_C(3)
+#define RODAQ_ABI_LOG_WARN      UINT32_C(4)
+#define RODAQ_ABI_LOG_ERROR     UINT32_C(5)
+#define RODAQ_ABI_LOG_CRITICAL  UINT32_C(6)
+#define RODAQ_ABI_LOG_OFF       UINT32_C(7)
 
 typedef uint32_t rodaq_diagnostic_severity;
 #define RODAQ_DIAGNOSTIC_INFO      UINT32_C(1)
@@ -6518,12 +6518,15 @@ search path order wins
 ```
 
 C++ 的 `StatusCode` 与 Stable C ABI 的 `rodaq_status_code` 使用对应的状态语义和数值，
-包含 `Ok` 和 `UnknownError`。`Status` 可表示成功或失败，默认构造为成功；
-成功时 domain、error_code 和 message 为空或零，未知状态归一化为 `UnknownError`。
-`Result<T>` 是 RoDAQ 封装的值或失败状态；将 OK Status 用于失败构造会生成
-`UnknownError`，状态访问为只读。无值操作返回 `Result<void>`，有值操作返回 `Result<T>`。
-`Result<void>` 私有存储为 `nonstd::expected<void, Status>`，默认构造表示成功；
-将 OK Status 传入失败构造同样归一化为 `UnknownError`。
+包含 `Ok` 和 `UnknownError`。`Status` 是 header-only 的 rocomm 风格值类型，默认构造
+为成功，使用 `Ok()`、`code()`、`domain()`、`error_code()` 和 `message()`。
+构造函数不归一化任意未知 C++ `StatusCode`；Stable C ABI bridge 继续把无法识别的
+ABI 数值规范化为 `UnknownError`。
+`Result<T>` 是 RoDAQ 封装的值或失败状态；将 OK Status 用于失败构造是 contract
+violation，必须 abort。失败 Result 的状态访问为只读；对失败 Result 调用
+`value()`、`operator*` 或 lvalue `operator->()` 同样必须 abort。
+无值操作返回 `Result<void>`，有值操作返回 `Result<T>`。
+`Result<void>` 私有存储为 `tl::expected<void, Status>`，默认构造表示成功。
 C ABI 的整数状态类型为 `rodaq_status_code`，诊断结构为 `rodaq_status`，字段包括
 `status_code`、`error_code`、domain 和 message。应用及插件必须迁移并重新构建；
 不提供旧 Error、旧 Result 接口或旧 C 类型别名。

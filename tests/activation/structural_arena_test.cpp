@@ -35,7 +35,7 @@ TEST(StructuralArenaTest, ExactCapacityCanBeAllocated) {
 
     const auto exhausted = arena.value()->allocate_bytes(1, 1);
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(StructuralArenaTest, ExhaustionReturnsResourceExhausted) {
@@ -45,7 +45,7 @@ TEST(StructuralArenaTest, ExhaustionReturnsResourceExhausted) {
     ASSERT_TRUE(arena.value()->allocate_bytes(16, 1).ok());
     const auto exhausted = arena.value()->allocate_bytes(1, 1);
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(StructuralArenaTest, InvalidAlignmentAndOverflowAreRejected) {
@@ -54,12 +54,12 @@ TEST(StructuralArenaTest, InvalidAlignmentAndOverflowAreRejected) {
 
     const auto bad_alignment = arena.value()->allocate_bytes(1, 3);
     ASSERT_FALSE(bad_alignment.ok());
-    EXPECT_EQ(bad_alignment.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(bad_alignment.status().code(), StatusCode::InvalidArgument);
 
     const auto overflow =
         arena.value()->allocate<std::uint64_t>(std::numeric_limits<std::size_t>::max());
     ASSERT_FALSE(overflow.ok());
-    EXPECT_EQ(overflow.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(overflow.status().code(), StatusCode::InvalidArgument);
 }
 
 TEST(StructuralArenaTest, ZeroSizedAllocationDoesNotConsumeCapacity) {

@@ -19,13 +19,13 @@ extern "C" {
 
 typedef uint32_t rodaq_log_level;
 
-#define RODAQ_LOG_TRACE UINT32_C(1)
-#define RODAQ_LOG_DEBUG UINT32_C(2)
-#define RODAQ_LOG_INFO UINT32_C(3)
-#define RODAQ_LOG_WARN UINT32_C(4)
-#define RODAQ_LOG_ERROR UINT32_C(5)
-#define RODAQ_LOG_CRITICAL UINT32_C(6)
-#define RODAQ_LOG_OFF UINT32_C(7)
+#define RODAQ_ABI_LOG_TRACE UINT32_C(1)
+#define RODAQ_ABI_LOG_DEBUG UINT32_C(2)
+#define RODAQ_ABI_LOG_INFO UINT32_C(3)
+#define RODAQ_ABI_LOG_WARN UINT32_C(4)
+#define RODAQ_ABI_LOG_ERROR UINT32_C(5)
+#define RODAQ_ABI_LOG_CRITICAL UINT32_C(6)
+#define RODAQ_ABI_LOG_OFF UINT32_C(7)
 
 typedef uint32_t rodaq_diagnostic_severity;
 

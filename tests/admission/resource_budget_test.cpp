@@ -19,7 +19,7 @@ TEST(ResourceBudgetTest, ReservationIsAllOrNothing) {
 
     const auto rejected = budget.try_reserve(ResourceAmount{1, 3});
     ASSERT_FALSE(rejected.ok());
-    EXPECT_EQ(rejected.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(rejected.status().code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(budget.used(), (ResourceAmount{1, 6}));
     EXPECT_EQ(budget.available(), (ResourceAmount{1, 2}));
 }

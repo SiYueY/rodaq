@@ -53,7 +53,7 @@ TEST(TimestampStateTest, HandlesSignedValueBoundariesAndRejectsInvalidSlots) {
 
     const auto bad_slot = timestamps.set(4, 1);
     ASSERT_FALSE(bad_slot.ok());
-    EXPECT_EQ(bad_slot.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(bad_slot.status().code(), StatusCode::InvalidArgument);
 }
 
 TEST(AcceptanceSequenceAllocatorTest, SequencesStartAtZeroPerStream) {
@@ -98,11 +98,11 @@ TEST(AcceptanceSequenceAllocatorTest, ExhaustionIsTerminalForTheStream) {
 
     const auto exhausted = allocator.value().allocate(kStream);
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
 
     const auto still_exhausted = allocator.value().allocate(kStream);
     ASSERT_FALSE(still_exhausted.ok());
-    EXPECT_EQ(still_exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(still_exhausted.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(AcceptanceSequenceAllocatorTest, StreamCountIsBounded) {
@@ -112,7 +112,7 @@ TEST(AcceptanceSequenceAllocatorTest, StreamCountIsBounded) {
 
     const auto full = allocator.value().allocate(StreamHandle::from_raw(2));
     ASSERT_FALSE(full.ok());
-    EXPECT_EQ(full.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(full.status().code(), StatusCode::ResourceExhausted);
 }
 
 TEST(AcceptedRecordTest, OwnsPayloadAndReservationAndReleasesBoth) {
@@ -176,7 +176,7 @@ TEST(AcceptedRecordTest, RejectsSourceSequenceWithoutSource) {
         kBinding, 0, std::nullopt, std::uint64_t{5}, TimestampState{}, Payload(),
         std::move(reservation.value()));
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(invalid.status().code(), StatusCode::InvalidArgument);
     EXPECT_EQ(budget.used(), ResourceAmount{});
 }
 
@@ -189,7 +189,7 @@ TEST(AcceptedRecordTest, RejectsInvalidBinding) {
         BindingHandle{}, 0, std::nullopt, std::nullopt, TimestampState{}, Payload(),
         std::move(reservation.value()));
     ASSERT_FALSE(invalid.ok());
-    EXPECT_EQ(invalid.status().status_code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(invalid.status().code(), StatusCode::InvalidArgument);
 }
 
 TEST(AcceptedRecordTest, PreservesPresentZeroSourceSequence) {

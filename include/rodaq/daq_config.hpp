@@ -2,6 +2,7 @@
 #define RODAQ_DAQ_CONFIG_HPP_
 
 #include <rodaq/config/config.hpp>
+#include <rodaq/logging_config.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -15,25 +16,6 @@ namespace rodaq {
 enum class AdmissionMode {
     Reject,
     Wait,
-};
-
-enum class LogLevel : std::uint8_t {
-    Trace = 1,
-    Debug = 2,
-    Info = 3,
-    Warn = 4,
-    Error = 5,
-    Critical = 6,
-    Off = 7,
-};
-
-struct LoggingConfig {
-    LogLevel level = LogLevel::Info;
-    std::size_t queue_records = 8192;
-    std::size_t queue_bytes = 8U * 1024U * 1024U;
-    std::chrono::nanoseconds flush_timeout = std::chrono::seconds(2);
-    std::chrono::nanoseconds shutdown_timeout = std::chrono::seconds(3);
-    bool stderr_sink = true;
 };
 
 struct PayloadClassConfig {

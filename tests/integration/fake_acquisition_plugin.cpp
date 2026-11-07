@@ -154,7 +154,15 @@ public:
             (payload_mode_ != "copy" && payload_mode_ != "adopt" && payload_mode_ != "retain")) {
             return invalid_argument();
         }
-        runtime_.common.log(RODAQ_LOG_INFO, "plugin.fake", "Acquisition configured");
+        runtime_.common.log(RODAQ_ABI_LOG_INFO, "plugin.fake", "Acquisition configured");
+        if (lifecycle_scenario_ == "log_levels") {
+            runtime_.common.log(RODAQ_ABI_LOG_TRACE, "plugin.fake", "trace severity");
+            runtime_.common.log(RODAQ_ABI_LOG_DEBUG, "plugin.fake", "debug severity");
+            runtime_.common.log(RODAQ_ABI_LOG_WARN, "plugin.fake", "warn severity");
+            runtime_.common.log(RODAQ_ABI_LOG_ERROR, "plugin.fake", "error severity");
+            runtime_.common.log(RODAQ_ABI_LOG_CRITICAL, "plugin.fake", "critical severity");
+            runtime_.common.log(RODAQ_ABI_LOG_OFF, "plugin.fake", "off severity");
+        }
         stage_ = Stage::Configured;
         return {};
     }
@@ -747,7 +755,7 @@ private:
         }
         std::lock_guard<std::mutex> lock(log_mutex_);
         std::ofstream output(event_log_, std::ios::app);
-        output << "submit error=" << static_cast<std::uint32_t>(error.status_code())
+        output << "submit error=" << static_cast<std::uint32_t>(error.code())
                << " message=" << error.message() << '\n';
     }
 
@@ -840,15 +848,15 @@ private:
             RODAQ_SOURCE_REGISTRATION_MIN_STRUCT_SIZE, 0,
             rodaq_bytes_view{
                 reinterpret_cast<const std::uint8_t*>(foreign_id.data()), foreign_id.size()}});
-        if (conflict.ok() || conflict.status().status_code() != rodaq::StatusCode::Conflict) {
+        if (conflict.ok() || conflict.status().code() != rodaq::StatusCode::Conflict) {
             return invalid_state();
         }
         for (auto availability : {RODAQ_AVAILABILITY_UNAVAILABLE, RODAQ_AVAILABILITY_AVAILABLE}) {
             auto source =
                 runtime_.acquisition.report_source(foreign_source_, availability, nullptr);
             auto stream = runtime_.acquisition.report_stream(foreign_stream, availability, nullptr);
-            if (source.ok() || source.status().status_code() != rodaq::StatusCode::InvalidState ||
-                stream.ok() || stream.status().status_code() != rodaq::StatusCode::InvalidState) {
+            if (source.ok() || source.status().code() != rodaq::StatusCode::InvalidState ||
+                stream.ok() || stream.status().code() != rodaq::StatusCode::InvalidState) {
                 return invalid_state();
             }
         }
@@ -856,10 +864,8 @@ private:
             rodaq_source_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
         auto unknown_stream = runtime_.acquisition.report_stream(
             rodaq_stream_handle{UINT64_MAX}, RODAQ_AVAILABILITY_UNAVAILABLE, nullptr);
-        if (unknown_source.ok() ||
-            unknown_source.status().status_code() != rodaq::StatusCode::NotFound ||
-            unknown_stream.ok() ||
-            unknown_stream.status().status_code() != rodaq::StatusCode::NotFound) {
+        if (unknown_source.ok() || unknown_source.status().code() != rodaq::StatusCode::NotFound ||
+            unknown_stream.ok() || unknown_stream.status().code() != rodaq::StatusCode::NotFound) {
             return invalid_state();
         }
         const auto own_clock = clock_;
@@ -868,7 +874,7 @@ private:
             auto descriptor = publish_descriptor(streams_.front(), "fake/foreign-clock");
             const auto expected = clock.value == UINT64_MAX ? rodaq::StatusCode::NotFound
                                                             : rodaq::StatusCode::InvalidState;
-            if (descriptor.ok() || descriptor.status().status_code() != expected) {
+            if (descriptor.ok() || descriptor.status().code() != expected) {
                 clock_ = own_clock;
                 return invalid_state();
             }

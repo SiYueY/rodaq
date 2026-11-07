@@ -114,6 +114,7 @@ public:
     bool shutdown_logging(std::chrono::steady_clock::time_point deadline) noexcept;
     void quarantine_logging(std::string reason) noexcept;
 
+    Result<Logger> make_logger(std::string_view category) const;
     LoggingStats current_logging_stats() const noexcept;
     void record_pre_rejected(bool gate_closed, bool timeout) noexcept;
     void record_admission_wait(std::int64_t duration_ns) noexcept;

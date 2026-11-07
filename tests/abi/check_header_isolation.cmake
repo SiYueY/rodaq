@@ -70,26 +70,20 @@ if(storage_operation EQUAL -1)
 endif()
 
 file(GLOB public_cpp_headers "${RODAQ_TEST_PUBLIC_INCLUDE_DIR}/*.hpp")
-set(nonstd_exposures)
+set(expected_exposures)
 
 foreach(header IN LISTS public_cpp_headers)
     file(READ "${header}" contents)
-    string(REGEX MATCHALL "nonstd::[A-Za-z_][A-Za-z0-9_]*" matches "${contents}")
+    string(REGEX MATCHALL "tl::[A-Za-z_][A-Za-z0-9_]*" matches "${contents}")
     get_filename_component(header_name "${header}" NAME)
     if(matches AND NOT header_name STREQUAL "result.hpp")
-        message(FATAL_ERROR "${header_name} must not expose nonstd names: ${matches}")
+        message(FATAL_ERROR "${header_name} must not expose tl::expected names: ${matches}")
     endif()
-    list(APPEND nonstd_exposures ${matches})
+    list(APPEND expected_exposures ${matches})
 endforeach()
 
-list(LENGTH nonstd_exposures nonstd_exposure_count)
-if(NOT nonstd_exposure_count EQUAL 3)
+list(LENGTH expected_exposures expected_exposure_count)
+if(expected_exposure_count EQUAL 0)
     message(FATAL_ERROR
-        "Public C++ headers must only use nonstd in the Result implementation, found: "
-        "${nonstd_exposures}")
-endif()
-
-if(NOT nonstd_exposures STREQUAL "nonstd::make_unexpected;nonstd::expected;nonstd::expected")
-    message(FATAL_ERROR
-        "Unexpected Public C++ nonstd exposure: ${nonstd_exposures}")
+        "Result header must use tl::expected as its private implementation")
 endif()

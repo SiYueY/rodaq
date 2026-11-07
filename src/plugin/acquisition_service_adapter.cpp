@@ -12,7 +12,7 @@ namespace {
 
 rodaq_status_code assign_status(const Status& error, rodaq_status* out_status) noexcept {
     assign_abi_status(error, out_status);
-    return abi_status_from_status_code(error.status_code());
+    return abi_status_from_status_code(error.code());
 }
 
 rodaq_status_code assign_message(

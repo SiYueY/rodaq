@@ -1,6 +1,7 @@
 # RoDAQ V1 Design & M0-M2 Implementation Convergence Plan
 
-**Status:** Implemented; M2 Final Closure Fix locally qualified on 2026-11-05
+**Status:** Historical convergence plan; later infrastructure refactor is
+tracked in `docs/development/plan.md`
 
 **Plan revision:** R1 (executed)
 
@@ -11,6 +12,28 @@
 This plan is the implementation input for the V1 Runtime Foundation
 Convergence. It does not itself change code, tests, CMake, Stable ABI, or
 milestone status.
+
+## 2026-11-07 Status/Result/Logging Infrastructure Refactor
+
+The pre-M3 Core Foundation was reopened as M2 ACTIVE for a source-breaking
+Status/Result/Logging refactor. The current execution checklist and evidence
+belong in `plan.md` and `status.md`; durable decisions are D-067 through D-069.
+
+Where the historical sections below state expected-lite, nonstd storage, a
+Runtime-owned/process-local public Logger, private fmt/spdlog dependencies,
+`RODAQ_LOG_*` ABI severity names or the old Status API, the later decisions and
+design documents supersede them.
+
+Implemented deltas:
+
+- tl::expected 1.3.1 private Result storage with strong abort contracts.
+- Activation-owned LoggingContext and weak Running-only Logger handles.
+- Complete bounded sync/async logging configuration, sinks, overflow, flush,
+  backtrace, metrics and quarantine behavior.
+- Public `RODAQ_LOG_*` formatting macros and renamed `RODAQ_ABI_LOG_*` severity
+  constants with unchanged values.
+- Installed exact fmt/spdlog package closure for `rodaq::daq`, while
+  `rodaq::sdk` remains independent of DAQ, YAML, fmt and spdlog.
 
 ## 2026-11-06 Pre-M3 Core Structure Closure
 

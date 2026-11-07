@@ -142,34 +142,62 @@ thread identifier diagnostic
 optional source location
 ~~~
 
-Logger input string 在调用返回后不保证继续有效。
+Logger 的 category/message/source-location 输入字符串在调用返回后不保证继续有效。
 
-因此 async mode 必须在 admission 成功时把 required category/message bytes materialize 到 bounded Logging-owned storage，不能保存 caller temporary pointer。
+因此 LoggingContext 必须在 admission 成功时把 category、message、source file 和
+source function bytes materialize 到 bounded Logging-owned storage，不能保存 caller
+temporary pointer。queue byte accounting 必须覆盖这些 materialized bytes。
 
 ## 2.4 Logger Facade
 
-推荐 Public C++ API：
+Public C++ API：
 
 ~~~cpp
 namespace rodaq {
 
-class Logger {
+class [[nodiscard]] Logger {
  public:
-  void Log(LogLevel level,
-           std::string_view category,
-           std::string_view message) noexcept;
+  bool valid() const noexcept;
+  LogLevel level() const noexcept;
+  Result<void> set_level(LogLevel level);
+  bool should_log(LogLevel level) noexcept;
+  void write(LogLevel level, SourceLocation source,
+             std::string_view message) noexcept;
+  Result<void> request_flush();
+  Result<void> enable_backtrace(std::size_t capacity);
+  Result<void> disable_backtrace();
+  Result<void> dump_backtrace();
+  LoggingStats stats() const noexcept;
 };
 
 }
 ~~~
 
-具体 convenience API 可以在实现阶段微调，但必须保持：
+`DAQ::logger(std::string_view category)` 仅在 DAQ 状态为 `Running` 时成功，并返回
+`Result<Logger>`。Logger 绑定创建时的 category；内部只持有 weak state。
+Activation Stop 后旧 Logger 的 `valid()` 为 false，`write()`/格式化宏安全 no-op，
+控制操作返回 `InvalidState`。DAQ restart 不复活旧 Logger，必须重新获取。
+
+Public logging header 使用 pinned fmt/spdlog 提供 header-only `Logger::log()` 和
+可变参数宏。`rodaq::daq` 对消费者公开依赖 `fmt::fmt` 与 `spdlog::spdlog`；
+installed package 使用 `find_dependency()` 解析它们。必须保持：
 
 ~~~text
 RoDAQ-owned types
 no exceptions crossing noexcept boundary
-no spdlog/fmt public dependency
+no spdlog/fmt types in RoDAQ-owned function signatures
+no spdlog/fmt types in Stable Plugin ABI
 ~~~
+
+冻结宏：
+
+~~~text
+RODAQ_LOG_TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL(logger, fmt, ...)
+RODAQ_LOG_ACTIVE_LEVEL
+RODAQ_LOG_LEVEL_TRACE..OFF
+~~~
+
+`RODAQ_LOG_ACTIVE_LEVEL` 控制编译期裁剪；裁剪后的宏不得求值其参数。
 
 ## 2.5 Plugin Logging ABI
 
@@ -178,13 +206,13 @@ Plugin 通过 rodaq.runtime.common::log() 记录日志。
 V1 Stable ABI 数值域已经冻结为：
 
 ~~~text
-RODAQ_LOG_TRACE     = 1
-RODAQ_LOG_DEBUG     = 2
-RODAQ_LOG_INFO      = 3
-RODAQ_LOG_WARN      = 4
-RODAQ_LOG_ERROR     = 5
-RODAQ_LOG_CRITICAL  = 6
-RODAQ_LOG_OFF       = 7
+RODAQ_ABI_LOG_TRACE     = 1
+RODAQ_ABI_LOG_DEBUG     = 2
+RODAQ_ABI_LOG_INFO      = 3
+RODAQ_ABI_LOG_WARN      = 4
+RODAQ_ABI_LOG_ERROR     = 5
+RODAQ_ABI_LOG_CRITICAL  = 6
+RODAQ_ABI_LOG_OFF       = 7
 
 RODAQ_DIAGNOSTIC_INFO     = 1
 RODAQ_DIAGNOSTIC_WARNING  = 2
@@ -193,6 +221,10 @@ RODAQ_DIAGNOSTIC_FATAL    = 4
 ~~~
 
 `DiagnosticSeverity` 与 `LogLevel` 是两个独立 domain；不得按整数直接互转。未知值不得 reinterpret 成较低严重度。
+
+ABI severity 宏使用 `RODAQ_ABI_LOG_*`，避免与 Public Logging macro 冲突。
+数值 1..7 不变；Plugin SDK/adapter 使用显式 switch 在 `LogLevel` 与 ABI severity
+之间映射。
 
 Plugin call：
 
@@ -383,9 +415,9 @@ metrics
 
 ## 4.3 Formatting
 
-格式化可以使用 fmt，但 Public API 不暴露 fmt::format_string / fmt::memory_buffer。
-
-首个实现可以优先接受已经构造好的 UTF-8 message string，减少 API surface。
+格式化使用 pinned fmt。`Logger::log()` 是 header-only template，Public API 不暴露
+`fmt::format_string` / `fmt::memory_buffer` 作为 RoDAQ-owned 参数或返回类型。
+格式化异常必须被隔离，并按安全级别记录内部 formatting failure diagnostic。
 
 ## 4.4 Backend Failure
 
@@ -450,16 +482,31 @@ Destructor 不承担无限等待 contract。
 ~~~yaml
 logging:
   level: info
-  mode: async
-  queue_records: 8192
-  queue_bytes: 8388608
-  flush_timeout_ms: 2000
-  shutdown_timeout_ms: 3000
+  pattern: "[%Y-%m-%d %H:%M:%S.%e%z] [%l] [%n] [%t] [%s:%#] %v"
+  time_zone: local
   sinks:
-    - type: stderr
+    - type: console
+      stream: stderr
+      level: trace
+  async:
+    enabled: true
+    queue_records: 8192
+    queue_bytes: 8388608
+    overflow_policy: discard_new
+  flush:
+    level: error
+    interval_ms: 0
+  backtrace_capacity: 0
+  flush_timeout_ns: 2000000000
+  shutdown_timeout_ns: 3000000000
 ~~~
 
 yaml-cpp 只属于 configuration frontend；Logging implementation 不保存 YAML::Node。
+
+支持的 sink 为 Console、File、RotatingFile、DailyFile。普通文件路径按 normalized
+absolute path 检测重复；同一进程重复打开同一路径返回 `Conflict`。默认只创建一个
+stderr ConsoleSink。`Block` overflow policy 会阻塞生产者，禁止用于数据面关键线程；
+默认 `DiscardNew` 不阻塞。
 
 ## 5.2 Metrics
 
@@ -553,7 +600,8 @@ Plugin uses Runtime common logging service
 Logging resources are bounded
 default overflow does not block Data Plane indefinitely
 Runtime owns Logging lifecycle
-spdlog/fmt do not leak into public API/ABI
+spdlog/fmt types do not appear in RoDAQ-owned API signatures or Plugin ABI
+fmt/spdlog installation and CMake package dependencies are complete
 primary Runtime failure is preserved
 Shutdown timeout never implies unsafe thread termination
 ~~~
@@ -576,7 +624,7 @@ metrics implementation
 
 RoDAQ Logging V1 采用：
 
-> **RoDAQ-owned Logger facade + Runtime-owned bounded LoggingContext + private spdlog/fmt backend + Plugin Runtime-service logging + explicit bounded Flush/Shutdown semantics。**
+> **Activation-owned bounded LoggingContext + weak-state Public Logger facade + pinned spdlog/fmt backend/macros + Plugin Runtime-service logging + explicit bounded Flush/Shutdown semantics。**
 
 Logging 必须服务于 RoDAQ 的可诊断性，而不能反过来成为 Data Plane correctness、resource boundedness 或 shutdown safety 的破坏源。
 
@@ -591,8 +639,11 @@ failures, direct reentrant drops, flush timeouts and shutdown timeouts are
 part of Runtime logging statistics.
 
 Plugin common log and diagnostic calls route through the Runtime
-LoggingContext. spdlog/fmt remain private and never appear in the Stable C ABI
-or Runtime public headers.
+LoggingContext. The Public logging header intentionally exposes pinned
+fmt/spdlog formatting macros and therefore makes `fmt::fmt` and
+`spdlog::spdlog` public CMake dependencies of `rodaq::daq`. Third-party types
+remain absent from RoDAQ-owned function signatures and the Stable C ABI, and
+`rodaq::sdk` remains independent of DAQ, YAML, fmt and spdlog.
 
 Backend exceptions are contained. Flush and shutdown use explicit deadlines.
 A worker that cannot stop by the deadline is transferred with its state to

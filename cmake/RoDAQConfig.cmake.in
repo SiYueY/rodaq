@@ -1,5 +1,9 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+find_dependency(fmt 12.1.0 EXACT CONFIG HINTS "${PACKAGE_PREFIX_DIR}")
+find_dependency(spdlog 1.17.0 EXACT CONFIG HINTS "${PACKAGE_PREFIX_DIR}")
+
 include("${CMAKE_CURRENT_LIST_DIR}/RoDAQTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/rodaq_plugin.cmake")
 

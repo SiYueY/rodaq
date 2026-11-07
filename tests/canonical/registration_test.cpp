@@ -46,7 +46,7 @@ TEST(CanonicalRegistrationTest, InterningIsScopedByOwnerAndPreservesIdentity) {
     ASSERT_TRUE(duplicate.ok());
     ASSERT_FALSE(foreign.ok());
     EXPECT_EQ(first.value(), duplicate.value());
-    EXPECT_EQ(StatusCode::Conflict, foreign.status().status_code());
+    EXPECT_EQ(StatusCode::Conflict, foreign.status().code());
 
     rodaq_source_info info{};
     ASSERT_TRUE(state.get_source(first.value(), info).ok());
@@ -69,7 +69,7 @@ TEST(CanonicalRegistrationTest, ClockConflictConsumesNoDuplicateIdentity) {
     ASSERT_TRUE(duplicate.ok());
     ASSERT_FALSE(conflict.ok());
     EXPECT_EQ(first.value(), duplicate.value());
-    EXPECT_EQ(StatusCode::Conflict, conflict.status().status_code());
+    EXPECT_EQ(StatusCode::Conflict, conflict.status().code());
 }
 
 TEST(CanonicalRegistrationTest, SchemaAndStreamDeduplicationRespectOwnershipScope) {

@@ -2753,6 +2753,12 @@ Scope persistence、artifact lineage 和 import mapping 属于后续设计。
 
 ---
 
+### Recording Task 与跨 Activation Coverage（解释层，不改变 Canonical Profile）
+
+`TaskId`、`ArtifactRef`、跨 Activation 的任务进度和时间覆盖率属于外部 Recording Service / Catalog，不成为 V1 Canonical Object，也不获得新的 Canonical ID allocation authority。一个 Task 可以指向多个 Scope，但每个 Scope 仍独立维持 StreamId、DescriptorId、ClockId、AcceptanceSequence 与 Payload bytes。Task 级索引只能引用原 Artifact/Scope 和标明已验证的 Clock correlation；不能为方便跨文件查询而在原始 Artifact 内重写 ID。
+
+若一个 Recording Service 在 Stop 之后重新 Activation，必须在覆盖报告中显式标识未录制或未知时间区间，不能假定单个机器 monotonic clock 在进程重启/主机重启后保持同一时基。`NormalComplete` 证明的是单个后端 Artifact 的正常关闭完整性，并不证明 Task 级无丢失。运行与恢复方案详见 `recording_service.md` §2、§5。
+
 ## 4.8 不支持 Transform / Merge
 
 V1 Canonical Profile 不提供：

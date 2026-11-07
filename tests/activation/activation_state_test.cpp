@@ -60,7 +60,7 @@ TEST(ActivationStateTest, PrimaryAndSecondaryFailureHistoryAreDistinct) {
         Status(StatusCode::InternalError, "activation", 9, "cleanup failure"));
 
     const Status primary = activation.value()->primary_failure();
-    EXPECT_EQ(StatusCode::StorageError, primary.status_code());
+    EXPECT_EQ(StatusCode::StorageError, primary.code());
     EXPECT_EQ("primary failure", primary.message());
     const auto secondary = activation.value()->secondary_failures();
     ASSERT_TRUE(secondary.ok());

@@ -2,6 +2,7 @@ execute_process(
     COMMAND
         "${RODAQ_TEST_CXX_COMPILER}"
         -std=c++17
+        -Werror=unused-result
         "-I${RODAQ_TEST_FAKE_INCLUDE_DIR}"
         "-I${RODAQ_TEST_PROJECT_INCLUDE_DIR}"
         -c

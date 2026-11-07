@@ -101,22 +101,21 @@ TEST(ConfigViewTest, ReportsNotFoundAndInvalidStateWithoutImplicitConversion) {
     ConfigTree tree = make_nested_tree();
     const ConfigNodeRef root = tree.root();
 
-    EXPECT_EQ(rodaq::StatusCode::NotFound, root.find("missing").status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::NotFound, take(root.find("items")).at(3).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::NotFound, root.key_at(root.size()).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, root.find("missing").status().code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, take(root.find("items")).at(3).status().code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, root.key_at(root.size()).status().code());
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        root.find(std::string_view("\xFF", 1)).status().status_code());
+        rodaq::StatusCode::InvalidArgument, root.find(std::string_view("\xFF", 1)).status().code());
 
     const ConfigNodeRef limit = take(root.find("limit"));
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.as_double().status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.find("child").status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.at(0).status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.key_at(0).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.as_double().status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.find("child").status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.at(0).status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, limit.key_at(0).status().code());
 
     const ConfigNodeRef items = take(root.find("items"));
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.find("child").status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.key_at(0).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.find("child").status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, items.key_at(0).status().code());
 }
 
 TEST(ConfigViewTest, AllowsEmptyAndUtf8MapKeys) {
@@ -139,14 +138,14 @@ TEST(ConfigViewTest, RejectsInvalidOrDuplicateMapEntries) {
         {std::string("\xFF", 1), ConfigTree::null()},
     });
     ASSERT_FALSE(invalid_key.ok());
-    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, invalid_key.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, invalid_key.status().code());
 
     const auto duplicate = ConfigTree::map({
         {"key", ConfigTree::int64(1)},
         {"key", ConfigTree::int64(2)},
     });
     ASSERT_FALSE(duplicate.ok());
-    EXPECT_EQ(rodaq::StatusCode::Conflict, duplicate.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::Conflict, duplicate.status().code());
 }
 
 TEST(ConfigViewTest, BorrowedViewsOutliveTreeOwner) {

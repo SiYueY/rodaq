@@ -27,7 +27,7 @@ FunctionPointer function_from_symbol(void* symbol) noexcept {
 
 Result<void*> find_optional_symbol(const SharedLibrary& library, std::string_view name) {
     Result<void*> symbol = library.find_symbol(name);
-    if (symbol.ok() || symbol.status().status_code() != StatusCode::NotFound) {
+    if (symbol.ok() || symbol.status().code() != StatusCode::NotFound) {
         return symbol;
     }
     return static_cast<void*>(nullptr);

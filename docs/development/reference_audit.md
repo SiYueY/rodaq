@@ -229,7 +229,7 @@ it on a production or development path.
 
 | Dependency | Audit result |
 |---|---|
-| expected-lite | Directly reused; no replacement needed |
+| tl::expected 1.3.1 | Directly reused as private `Result<T>` storage |
 | HdrHistogram_c | Directly reused behind Runtime metrics |
 | spdlog | Reused as private backend under RoDAQ LoggingContext |
 | fmt | Required by external-fmt spdlog configuration |

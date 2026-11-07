@@ -31,7 +31,7 @@ TEST(PluginQuarantineTest, PreservesFailureStatusAndDiagnostics) {
     ASSERT_TRUE(outcome.ok());
     EXPECT_EQ(outcome->status, plugin::SupervisedCallStatus::Failed);
     EXPECT_FALSE(outcome->error.ok());
-    EXPECT_EQ(outcome->error.status_code(), StatusCode::StorageError);
+    EXPECT_EQ(outcome->error.code(), StatusCode::StorageError);
     EXPECT_EQ(outcome->error.domain(), "test_storage");
     EXPECT_EQ(outcome->error.error_code(), 17);
     EXPECT_EQ(outcome->error.message(), "write failed");
@@ -194,7 +194,7 @@ TEST(PluginQuarantineTest, BoundsActivationRootsAndReleasesCleanSlots) {
     while (true) {
         auto slot = manager.reserve_activation("activation slot test");
         if (!slot.ok()) {
-            EXPECT_EQ(slot.status().status_code(), StatusCode::ResourceExhausted);
+            EXPECT_EQ(slot.status().code(), StatusCode::ResourceExhausted);
             break;
         }
         slots.push_back(slot.value());
@@ -215,7 +215,7 @@ TEST(PluginQuarantineTest, BoundsActivationRootsAndReleasesCleanSlots) {
     }
     auto exhausted = manager.reserve_activation("activation slot exhaustion test");
     ASSERT_FALSE(exhausted.ok());
-    EXPECT_EQ(exhausted.status().status_code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(exhausted.status().code(), StatusCode::ResourceExhausted);
     for (const std::uint64_t slot : slots) {
         manager.release_activation(slot);
     }

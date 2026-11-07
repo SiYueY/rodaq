@@ -20,7 +20,7 @@ Result<PluginLibraryLease> PluginManager::load_library(const std::filesystem::pa
     if (existing.ok()) {
         return existing;
     }
-    if (existing.status().status_code() != StatusCode::NotFound) {
+    if (existing.status().code() != StatusCode::NotFound) {
         return std::move(existing).status();
     }
 

@@ -21,10 +21,16 @@ endif()
 set(include_dir "${RODAQ_TEST_INSTALL_PREFIX}/include")
 set(plugin_abi_dir "${include_dir}/rodaq/plugin/abi")
 set(legacy_abi_dir "${include_dir}/rodaq/abi")
-set(expected_license
-    "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/expected-lite/LICENSE.txt")
+set(tl_expected_license
+    "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/tl_expected/COPYING")
 set(runtime_header "${include_dir}/rodaq/daq.hpp")
 set(runtime_config_header "${include_dir}/rodaq/daq_config.hpp")
+set(logging_header "${include_dir}/rodaq/logging.hpp")
+set(logging_config_header "${include_dir}/rodaq/logging_config.hpp")
+set(fmt_header "${include_dir}/fmt/format.h")
+set(spdlog_header "${include_dir}/spdlog/spdlog.h")
+set(fmt_package "${RODAQ_TEST_INSTALL_PREFIX}/lib/cmake/fmt/fmt-config.cmake")
+set(spdlog_package "${RODAQ_TEST_INSTALL_PREFIX}/lib/cmake/spdlog/spdlogConfig.cmake")
 set(dependency_inventory
     "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/sbom/rodaq-dependency-inventory.json")
 set(exported_targets
@@ -54,13 +60,19 @@ if(EXISTS "${legacy_abi_dir}")
     message(FATAL_ERROR "Legacy installed ABI directory still exists: ${legacy_abi_dir}")
 endif()
 
-if(NOT EXISTS "${expected_license}")
-    message(FATAL_ERROR "Installed expected-lite license is missing")
+if(NOT EXISTS "${tl_expected_license}")
+    message(FATAL_ERROR "Installed tl::expected license is missing")
 endif()
 
 foreach(installed_file
         "${runtime_header}"
         "${runtime_config_header}"
+        "${logging_header}"
+        "${logging_config_header}"
+        "${fmt_header}"
+        "${spdlog_header}"
+        "${fmt_package}"
+        "${spdlog_package}"
         "${dependency_inventory}"
         "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/HdrHistogram_c/LICENSE.txt"
         "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/spdlog/LICENSE"
@@ -68,6 +80,21 @@ foreach(installed_file
         "${RODAQ_TEST_INSTALL_PREFIX}/share/rodaq/licenses/yaml-cpp/LICENSE")
     if(NOT EXISTS "${installed_file}")
         message(FATAL_ERROR "Installed DAQ/SBOM file is missing: ${installed_file}")
+    endif()
+endforeach()
+
+file(READ "${dependency_inventory}" dependency_inventory_text)
+if(dependency_inventory_text MATCHES "\"name\": \"expected-lite\"")
+    message(FATAL_ERROR "Installed SBOM still records expected-lite")
+endif()
+foreach(required_inventory_fragment
+        "\"name\": \"tl_expected\""
+        "\"commit\": \"1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4\""
+        "\"classification\": \"required-production-public-cmake\"")
+    string(FIND "${dependency_inventory_text}" "${required_inventory_fragment}" fragment_position)
+    if(fragment_position EQUAL -1)
+        message(FATAL_ERROR
+            "Installed SBOM is missing: ${required_inventory_fragment}")
     endif()
 endforeach()
 
@@ -82,7 +109,7 @@ foreach(forbidden_target
         "rodaq_headers"
         "rodaq_public_api"
         "rodaq_api_support"
-        "rodaq_expected_lite"
+        "rodaq_tl_expected"
         "yaml-cpp"
         "rodaq_plugin"
         "rodaq_objects"
@@ -136,7 +163,11 @@ if(RODAQ_NM_EXECUTABLE)
             "rodaq::AdmissionGate"
             "rodaq::PayloadPool"
             "rodaq::Registry"
-            "rodaq::StoragePipeline")
+            "rodaq::StoragePipeline"
+            "rodaq::LoggingContext"
+            "rodaq::LoggerState"
+            "rodaq::SpdlogBackend"
+            "rodaq::Status")
         if(nm_output MATCHES "${internal_symbol}")
             message(FATAL_ERROR
                 "Internal implementation symbol escaped the DAQ DSO: ${internal_symbol}")
@@ -147,7 +178,9 @@ if(RODAQ_NM_EXECUTABLE)
             "rodaq::DAQ::stop"
             "rodaq::DAQ::lifecycle_snapshot"
             "rodaq::DAQ::stats"
-            "rodaq::Status::ok"
+            "rodaq::Logger::valid"
+            "rodaq::Logger::set_level"
+            "rodaq::Logger::request_flush"
             "rodaq::ConfigTree::root"
             "rodaq::ConfigNodeRef::find"
             "rodaq::load_yaml_config"

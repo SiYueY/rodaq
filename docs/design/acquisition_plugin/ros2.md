@@ -1483,6 +1483,8 @@ Runtime Accepted/Rejected
 ROS transport delivered/lost
 ```
 
+V1 Runtime `AdmissionMode` 和超时在 Activation 级统一配置；ROS2 Acquisition 的 callback/staging 选择可以随 Topic 改变，但不能逐 Topic 改写 Runtime Gate 的 `Reject/Wait`。默认面向高频 Topic 的 Reject-oriented 部署只意味着 pre-admission 拒绝可被统计与处理，**不表示不丢 ROS2/RMW History 数据，也不提供 Stream 级优先级**。若有 Topic 需要 Runtime Wait 而其他 Topic 不允许等待，必须在 deployment/profile 或新增经评审的 Runtime Policy 接口上解决，不允许使用未约定的 hidden override。详见 `admission.md `3.4.1`。
+
 ## 4.3 Source / Stream / Plugin Failure
 
 Publisher disappearance：

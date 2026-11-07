@@ -4,12 +4,12 @@
   "project_version": "@PROJECT_VERSION@",
   "dependencies": [
     {
-      "name": "expected-lite",
-      "version": "v0.10.0",
-      "commit": "3583e95bad46f5af7d8a826632bc68a6f7281551",
+      "name": "tl_expected",
+      "version": "v1.3.1",
+      "commit": "1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4",
       "license": "BSL-1.0",
       "classification": "required-production",
-      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+      "status": ["PINNED", "BUILT", "LINKED", "USED"]
     },
     {
       "name": "HdrHistogram_c",
@@ -24,16 +24,16 @@
       "version": "v1.17.0",
       "commit": "79524ddd08a4ec981b7fea76afd08ee05f83755d",
       "license": "MIT",
-      "classification": "required-production-private",
-      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+      "classification": "required-production-public-cmake",
+      "status": ["PINNED", "BUILT", "LINKED", "USED"]
     },
     {
       "name": "fmt",
       "version": "12.1.0",
       "commit": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
       "license": "MIT",
-      "classification": "required-production-private",
-      "status": ["PINNED", "BUILT", "LINKED", "USED", "QUALIFIED"]
+      "classification": "required-production-public-cmake",
+      "status": ["PINNED", "BUILT", "LINKED", "USED"]
     },
     {
       "name": "yaml-cpp",

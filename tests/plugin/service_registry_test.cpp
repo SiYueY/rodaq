@@ -35,8 +35,7 @@ TEST(ServiceRegistryTest, RegistersAndQueriesBorrowedInterfaces) {
 
     ASSERT_TRUE(registry.register_entry("rodaq.test.first", first).ok());
     ASSERT_TRUE(registry.register_entry("rodaq.test.second", second).ok());
-    EXPECT_EQ(
-        rodaq::StatusCode::InvalidState, registry.query("rodaq.test.first").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, registry.query("rodaq.test.first").status().code());
     ASSERT_TRUE(registry.freeze().ok());
 
     const auto queried_first = registry.query("rodaq.test.first");
@@ -59,7 +58,7 @@ TEST(ServiceRegistryTest, FreezeIsIdempotentAndPreventsRegistration) {
     const auto result =
         registry.register_entry("rodaq.test.after_freeze", make_service(&context, &vtable));
     ASSERT_FALSE(result.ok());
-    EXPECT_EQ(rodaq::StatusCode::InvalidState, result.status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidState, result.status().code());
 }
 
 TEST(ServiceRegistryTest, RejectsInvalidIdsDuplicatesAndCapacityExhaustion) {
@@ -69,37 +68,34 @@ TEST(ServiceRegistryTest, RejectsInvalidIdsDuplicatesAndCapacityExhaustion) {
     const rodaq_interface service = make_service(&context, &vtable);
 
     EXPECT_EQ(
-        rodaq::StatusCode::InvalidArgument,
-        registry.register_entry("", service).status().status_code());
+        rodaq::StatusCode::InvalidArgument, registry.register_entry("", service).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        registry.register_entry(std::string_view("\xFF", 1), service).status().status_code());
+        registry.register_entry(std::string_view("\xFF", 1), service).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        registry.register_entry("far.too.long", service).status().status_code());
+        registry.register_entry("far.too.long", service).status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        registry.register_entry("valid.id", rodaq_interface{}).status().status_code());
+        registry.register_entry("valid.id", rodaq_interface{}).status().code());
 
     ASSERT_TRUE(registry.register_entry("one", service).ok());
-    EXPECT_EQ(
-        rodaq::StatusCode::Conflict,
-        registry.register_entry("one", service).status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::Conflict, registry.register_entry("one", service).status().code());
     ASSERT_TRUE(registry.register_entry("two", service).ok());
     EXPECT_EQ(
         rodaq::StatusCode::ResourceExhausted,
-        registry.register_entry("tri", service).status().status_code());
+        registry.register_entry("tri", service).status().code());
 }
 
 TEST(ServiceRegistryTest, QueryReportsNotFoundAndRejectsInvalidIds) {
     auto registry = make_registry();
     ASSERT_TRUE(registry.freeze().ok());
 
-    EXPECT_EQ(rodaq::StatusCode::NotFound, registry.query("missing").status().status_code());
-    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, registry.query("").status().status_code());
+    EXPECT_EQ(rodaq::StatusCode::NotFound, registry.query("missing").status().code());
+    EXPECT_EQ(rodaq::StatusCode::InvalidArgument, registry.query("").status().code());
     EXPECT_EQ(
         rodaq::StatusCode::InvalidArgument,
-        registry.query(std::string_view("\xFF", 1)).status().status_code());
+        registry.query(std::string_view("\xFF", 1)).status().code());
 }
 
 TEST(ServiceRegistryTest, AbiViewReturnsProtocolAndQueryBehavior) {
@@ -204,7 +200,7 @@ TEST(AbiSupportTest, ConvertsAllStatusCodesAndHandlesInvalidDiagnostics) {
             EXPECT_TRUE(result.ok());
         } else {
             ASSERT_FALSE(result.ok());
-            EXPECT_EQ(result.status_code(), mapping.cpp_status);
+            EXPECT_EQ(result.code(), mapping.cpp_status);
         }
     }
     EXPECT_EQ(
@@ -212,19 +208,19 @@ TEST(AbiSupportTest, ConvertsAllStatusCodesAndHandlesInvalidDiagnostics) {
         RODAQ_STATUS_UNKNOWN_ERROR);
     auto unknown = rodaq::status_from_abi(42U, nullptr, "test");
     ASSERT_FALSE(unknown.ok());
-    EXPECT_EQ(unknown.status_code(), rodaq::StatusCode::UnknownError);
+    EXPECT_EQ(unknown.code(), rodaq::StatusCode::UnknownError);
 
     rodaq_status diagnostic{};
     diagnostic.status_code = RODAQ_STATUS_NOT_FOUND;
     auto mismatch = rodaq::status_from_abi(RODAQ_STATUS_TIMEOUT, &diagnostic, "test");
     ASSERT_FALSE(mismatch.ok());
-    EXPECT_EQ(mismatch.status_code(), rodaq::StatusCode::InternalError);
+    EXPECT_EQ(mismatch.code(), rodaq::StatusCode::InternalError);
     EXPECT_EQ(mismatch.message(), "Plugin returned a malformed ABI diagnostic");
     diagnostic.status_code = RODAQ_STATUS_TIMEOUT;
     diagnostic.reserved[0] = 1;
     auto malformed = rodaq::status_from_abi(RODAQ_STATUS_TIMEOUT, &diagnostic, "test");
     ASSERT_FALSE(malformed.ok());
-    EXPECT_EQ(malformed.status_code(), rodaq::StatusCode::InternalError);
+    EXPECT_EQ(malformed.code(), rodaq::StatusCode::InternalError);
     EXPECT_TRUE(rodaq::status_from_abi(RODAQ_STATUS_OK, &diagnostic, "test").ok());
 }
 
@@ -235,12 +231,12 @@ TEST(AbiSupportTest, StatusRoundTripsDiagnosticsAndNormalizesUnknownCode) {
     EXPECT_EQ(diagnostic.status_code, RODAQ_STATUS_UNAVAILABLE);
     EXPECT_EQ(diagnostic.error_code, -37);
     const auto restored = rodaq::status_from_abi(diagnostic.status_code, &diagnostic);
-    EXPECT_EQ(restored.status_code(), rodaq::StatusCode::Unavailable);
+    EXPECT_EQ(restored.code(), rodaq::StatusCode::Unavailable);
     EXPECT_EQ(restored.domain(), "dds");
     EXPECT_EQ(restored.error_code(), -37);
     EXPECT_EQ(restored.message(), "failed");
     EXPECT_TRUE(rodaq::status_from_abi(RODAQ_STATUS_OK, nullptr).ok());
-    EXPECT_EQ(rodaq::status_from_abi(42U, nullptr).status_code(), rodaq::StatusCode::UnknownError);
+    EXPECT_EQ(rodaq::status_from_abi(42U, nullptr).code(), rodaq::StatusCode::UnknownError);
 }
 
 TEST(AbiSupportTest, CanonicalizesSuccessAndUnknownDiagnosticStatus) {
@@ -252,10 +248,10 @@ TEST(AbiSupportTest, CanonicalizesSuccessAndUnknownDiagnosticStatus) {
     EXPECT_EQ(output.message_size, 0U);
     rodaq::assign_abi_status(42U, "backend", -9, "unknown", &output);
     auto status = rodaq::status_from_abi(42U, &output);
-    EXPECT_EQ(status.status_code(), rodaq::StatusCode::UnknownError);
+    EXPECT_EQ(status.code(), rodaq::StatusCode::UnknownError);
     EXPECT_EQ(status.error_code(), -9);
     EXPECT_EQ(status.domain(), "backend");
     EXPECT_EQ(status.message(), "unknown");
     output.reserved[0] = 1;
-    EXPECT_EQ(rodaq::status_from_abi(42U, &output).status_code(), rodaq::StatusCode::InternalError);
+    EXPECT_EQ(rodaq::status_from_abi(42U, &output).code(), rodaq::StatusCode::InternalError);
 }

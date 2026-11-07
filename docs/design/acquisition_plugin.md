@@ -3235,6 +3235,12 @@ latency requirement
 
 选择 policy。
 
+### 5.6.1 V1 Runtime Policy 与 Plugin-local Policy 不同
+
+`Reject/Wait` 只有 Runtime `AdmissionMode` 决定 Gate 前资源不足时是否等待；V1 此模式和 deadline 是 Activation-wide 的，不是 Plugin 逐次 `Submit` 能覆盖的参数。因此“Plugin / configuration 可以选择”只指**部署时对 DAQConfig 的整体选择**与 Plugin 自有的 native-flow 接收策略，不暗示一个 Runtime 内每条 Stream 都可另选 Runtime AdmissionMode。
+
+Plugin-local 可按 Flow 选择：直接提交、使用有界 Staging、在未提交 Runtime 前拒绝 native sample、或依 Native QoS 传播压力。每一项都必须有明确的容量、超时、丢失统计和 Quiescence 语义。它不改变 Runtime `Accepted` 后的责任、不创造新的 AcceptanceSequence、也不能把 native 或 staging 丢失记为 Runtime Gate Pass 后丢失。ROS2/FastDDS mapping 对回调线程是否可等待有最终约束。按 Stream 的 Runtime override 需要新的明确 API/ABI 与 conformance 决策，V1 不作此承诺。
+
 ---
 
 ## 5.7 Wait Contract

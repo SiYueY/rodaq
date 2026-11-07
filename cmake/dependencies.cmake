@@ -14,7 +14,7 @@ function(rodaq_require_dependency name path)
 endfunction()
 
 foreach(required_dependency
-    "expected-lite|third_party/expected-lite"
+    "tl_expected|third_party/tl_expected"
     "spdlog|third_party/spdlog"
     "fmt|third_party/fmt"
     "hdr_histogram|third_party/hdr_histogram"
@@ -26,27 +26,23 @@ foreach(required_dependency
     rodaq_require_dependency("${dependency_name}" "${dependency_path}")
 endforeach()
 
-set(RODAQ_EXPECTED_LITE_INCLUDE_DIR
-    "${RODAQ_THIRD_PARTY_ROOT}/expected-lite/include"
+set(RODAQ_TL_EXPECTED_INCLUDE_DIR
+    "${RODAQ_THIRD_PARTY_ROOT}/tl_expected/include"
 )
 
-if(NOT EXISTS "${RODAQ_EXPECTED_LITE_INCLUDE_DIR}/nonstd/expected.hpp")
+if(NOT EXISTS "${RODAQ_TL_EXPECTED_INCLUDE_DIR}/tl/expected.hpp")
     message(FATAL_ERROR
-        "The pinned expected-lite header is unavailable. "
+        "The pinned tl::expected header is unavailable. "
         "Run: git submodule update --init --recursive"
     )
 endif()
-add_library(rodaq_expected_lite INTERFACE)
-target_compile_features(rodaq_expected_lite INTERFACE cxx_std_17)
-target_include_directories(rodaq_expected_lite
+add_library(rodaq_tl_expected INTERFACE)
+target_compile_features(rodaq_tl_expected INTERFACE cxx_std_17)
+target_include_directories(rodaq_tl_expected
     SYSTEM
         INTERFACE
-            "$<BUILD_INTERFACE:${RODAQ_EXPECTED_LITE_INCLUDE_DIR}>"
+            "$<BUILD_INTERFACE:${RODAQ_TL_EXPECTED_INCLUDE_DIR}>"
             "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-)
-target_compile_definitions(rodaq_expected_lite
-    INTERFACE
-        nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD
 )
 
 set(HDR_HISTOGRAM_CORE_ONLY ON CACHE BOOL "" FORCE)
@@ -57,22 +53,20 @@ add_subdirectory(
 
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
 set(FMT_TEST OFF CACHE BOOL "" FORCE)
-set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+set(FMT_INSTALL ON CACHE BOOL "" FORCE)
 add_subdirectory(
     "${RODAQ_THIRD_PARTY_ROOT}/fmt"
     "${CMAKE_BINARY_DIR}/third_party/fmt"
-    EXCLUDE_FROM_ALL
 )
 
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+set(SPDLOG_INSTALL ON CACHE BOOL "" FORCE)
 add_subdirectory(
     "${RODAQ_THIRD_PARTY_ROOT}/spdlog"
     "${CMAKE_BINARY_DIR}/third_party/spdlog"
-    EXCLUDE_FROM_ALL
 )
 
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
