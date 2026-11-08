@@ -4,9 +4,9 @@
 | --- | --- |
 | 文档类型 | 角色模块详细设计 |
 | 状态 | V1 详细设计基线 |
-| 适用范围 | 所有 RoDAQ Storage Plugin 的 Descriptor Prepare、Batch Write、Segment、Seal、Durability、Size 与 Failure 合同 |
+| 适用范围 | 所有 RoDAQ Storage Plugin 的 Descriptor Prepare、Batch Write、Segment、Seal、Durability、Size 与 Failure 规则 |
 | 上位设计 | [系统架构设计](architecture.md) |
-| 公共插件合同 | [Plugin](plugin.md) |
+| 公共插件接口契约 | [Plugin](plugin.md) |
 | 关联设计 | [Pipeline](pipeline.md) · [Task](task.md) · [Acquisition](acquisition.md) |
 
 ## 1. 目标与角色边界
@@ -83,11 +83,11 @@ stateDiagram-v2
 
 具体实现可以不使用同名状态机，但必须提供等价可证明的生命周期事实。
 
-## 2. 配置、Descriptor 与 Batch 写入合同
+## 2. 配置、Descriptor 与 Batch 写入规则
 
 ### 2.1 配置与 Capability
 
-**配置合同。**
+**配置规则。**
 
 Storage-specific 参数由插件定义，例如：
 
@@ -168,7 +168,7 @@ Descriptor prepare timeout 时：
 - Host 不执行 Descriptor Cut；
 - 新 Descriptor Record 不被接纳；
 - 调用仍可能迟返时，Storage instance 和相关资源保持所有权；
-- 到局部清理 deadline 后按进程恢复合同处理。
+- 到局部清理 deadline 后按进程恢复规则处理。
 
 ### 2.3 Batch Write 与结果语义
 
@@ -230,7 +230,7 @@ Storage 只有在能够证明 Record 没有被格式写入时，才允许把后�
 
 Host 可以把这些 Record 结算为 AcceptedKnownFailed，但默认不会把它们重新塞回当前污染上下文重试。
 
-是否允许业务级重放属于未来额外合同。
+是否允许业务级重放属于未来扩展规则。
 
 **Unknown。**
 
@@ -330,7 +330,7 @@ Open 前 Storage 已拥有：
 - bounded resource budget；
 - unique segment identity。
 
-空 Recording Instance 不需要产生空 Segment，除非后端格式合同明确要求且通过验收。
+空 Recording Instance 不需要产生空 Segment，除非后端格式规范明确要求且通过验收。
 
 ### 3.2 Rotation、Physical Size 与 Seal
 
@@ -874,7 +874,7 @@ typedef struct rodaq_storage_batch_result {
 - 无法证明剩余部分未写入：`TAIL_UNKNOWN`；
 - timeout 且 backend call 可能继续执行：必须视为 Unknown；
 - ABI 参数本身无效导致无法安全解释输出时，Host 不读取 BatchResult，但这种错误只能发生在进入 backend write 之前；
-- Host 对其它非法组合整体提升为 Unknown 并认为插件违反合同。
+- Host 对其它非法组合整体提升为 Unknown 并认为插件违反接口契约。
 
 **Descriptor Prepare 表示。**
 
@@ -912,7 +912,7 @@ V1 不让 Storage 自行选择最终全局目录，也不允许它绕过受管 o
 
 文件路径参数必须是受管、规范化后的 host-provided location。
 
-Storage 对 staging directory 的写入必须受以下路径合同约束：
+Storage 对 staging directory 的写入必须受以下路径约束：
 
 - Host 提供的 staging root 是唯一允许写入根；
 - plugin 产生的文件名/SealResult 只允许相对路径；
@@ -1078,7 +1078,7 @@ segment_hard_physical_limit + conservative seal reserve
 seal 返回实际 physical bytes 后：
 
 - actual <= reserved：释放多余 byte reservation；
-- actual > reserved：视为 Storage size/seal-reserve 合同违约，立即关闭 Admission 并进入保护/故障；已经产生的文件仍由原 Segment owner 结算，不能丢弃；
+- actual > reserved：视为违反 Storage size/seal-reserve 声明规则，立即关闭 Admission 并进入保护/故障；已经产生的文件仍由原 Segment owner 结算，不能丢弃；
 - Commit terminal 后归还该 Segment 的剩余 reservation。
 
 当 Segment N 已 sealed/commit pending，而 Writer 想打开 Segment N+1 时，必须先取得新的 CommitReservation。若没有容量，Pipeline 关闭或保持 Admission Gate 保护状态，等待已有 Commit 释放容量；不得在没有 reservation 的情况下继续创建新 Segment，也不得把 sealed 文件无界堆在 staging 目录。
@@ -1104,7 +1104,7 @@ validate sealed file list
 
 每一步都产生内部 progress marker/diagnostic，但 **durable commit linearization point 是 final directory rename 后对应 parent directory 的 fsync 成功返回**。最后的 committed fact/Catalog publish 是可重建内存或索引事实，不再引入第二个 durability 边界。若 rename 已成功但 parent fsync 结果未知，则进入 VerificationRequired，不能直接报告 Committed。
 
-**Segment Manifest 字段合同。**
+**Segment Manifest 字段规范。**
 
 RoDAQ Segment Manifest 是 Core-owned Strict JSON。Storage 只提供其中的 `storage` / `files` / format contribution，不能自行生成另一份权威 Manifest。
 
@@ -1118,7 +1118,7 @@ RoDAQ Segment Manifest 是 Core-owned Strict JSON。Storage 只提供其中的 `
 | `segment_sequence` | decimal string | Pipeline/实例内产物顺序事实，不作为 Record Identity |
 | `control_generation` | decimal string | 创建该 Segment 的控制代次 |
 | `config_version` | string | Task 不可变配置版本 |
-| `effective_config_id` | string | 本实例完整运行合同身份 |
+| `effective_config_id` | string | 本实例完整运行契约身份 |
 | `acquisition` / `storage` | object | 精确 plugin id/version/build/environment fingerprint |
 | `descriptors` | bounded array | 本 Segment 实际引用的 Descriptor 完整解码事实 |
 | `files` | bounded array | 受管相对路径、物理大小、checksum/format role |
@@ -1378,12 +1378,12 @@ Missing/Corrupt
 
 ### 6.4 V1 完成条件
 
-Storage 角色合同完成需要：
+Storage 角色契约完成需要：
 
 - Fake Storage conformance 全通过；
 - MCAP 实现无需修改 Pipeline 核心语义；
 - Unknown 和 timeout 资源所有权可证明；
-- physical-size/seal-reserve 合同通过真实数据验证；
+- physical-size/seal-reserve 规则通过真实数据验证；
 - Writer/Commit backlog 在峰值负载达到有界稳态；
 - crash matrix 没有“路径存在但无法判断是否 committed”的未定义恢复；
 - 独立读回与标准工具互操作通过；

@@ -4,9 +4,9 @@
 | --- | --- |
 | 文档类型 | 角色模块详细设计 |
 | 状态 | V1 详细设计基线 |
-| 适用范围 | 所有 RoDAQ Acquisition Plugin 的 Source、Stream、Descriptor、Record Submission、Payload、Callback 与 Quiescence 合同 |
+| 适用范围 | 所有 RoDAQ Acquisition Plugin 的 Source、Stream、Descriptor、Record Submission、Payload、Callback 与 Quiescence 规则 |
 | 上位设计 | [系统架构设计](architecture.md) |
-| 公共插件合同 | [Plugin](plugin.md) |
+| 公共插件接口契约 | [Plugin](plugin.md) |
 | 关联设计 | [Pipeline](pipeline.md) · [Task](task.md) · [Storage](storage.md) |
 
 ## 1. 目标与职责边界
@@ -34,7 +34,7 @@ Acquisition Plugin 负责把外部数据源转换为 RoDAQ 可接纳的 Source�
 - 宣称 Record durable；
 - 在 Host 拒绝后私自认为该 Record 已接纳。
 
-## 2. 数据源、Stream 与配置合同
+## 2. 数据源、Stream 与配置语义
 
 ### 2.1 数据关系、实例与配置
 
@@ -72,7 +72,7 @@ Prepared 可以已经创建协议对象或 subscription，但 Host Admission Gat
 
 Running 只表示插件可以产生 callback；Record 是否被接纳仍由 Pipeline Admission 决定。
 
-**配置合同。**
+**配置规则。**
 
 Acquisition-specific configuration 由插件定义，例如：
 
@@ -240,7 +240,7 @@ new submissions use new descriptor generation
 - 不允许无界积累；
 - 不允许错误使用旧 Descriptor。
 
-## 3. Record 提交与 Payload 合同
+## 3. Record 提交与 Payload 规则
 
 ### 3.1 Record Submission 与 Callback
 
@@ -559,7 +559,7 @@ Acquisition 实例只获得运行所需 secret material。
 
 **后端映射要求。**
 
-具体后端文档必须说明如何映射 Acquisition 合同。
+具体后端文档必须说明如何映射 Acquisition 接口契约。
 
 **ROS 2。**
 
@@ -1078,7 +1078,7 @@ plugins/
 - quiesce hang；
 - declared resource overflow。
 
-用于验证 Host 合同，不作为生产性能证据。
+用于验证 Host 规则，不作为生产性能证据。
 
 **真实后端。**
 
@@ -1115,10 +1115,10 @@ plugins/
 
 ### 6.3 V1 完成条件
 
-Acquisition 角色合同完成需要：
+Acquisition 角色契约完成需要：
 
 - Fake Acquisition conformance 全通过；
-- ROS 2 Acquisition 能按通用合同实现而无需修改 Pipeline 核心语义；
+- ROS 2 Acquisition 能按通用规则实现而无需修改 Pipeline 核心语义；
 - Source/Sequence/Time/Payload 每个可选事实都有明确 absence 语义；
 - callback 与 quiesce race 可证明；
 - sustained overload 时所有队列与 metadata 有界；

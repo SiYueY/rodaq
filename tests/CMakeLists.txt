@@ -1,0 +1,19 @@
+add_executable(rodaq_result_test result_test.cpp)
+target_link_libraries(rodaq_result_test PRIVATE rodaq::core)
+add_test(NAME rodaq_result_test COMMAND rodaq_result_test)
+
+add_executable(rodaq_logging_test logging_test.cpp)
+target_link_libraries(rodaq_logging_test PRIVATE rodaq::logging)
+add_test(NAME rodaq_logging_test COMMAND rodaq_logging_test)
+
+add_executable(rodaq_public_headers_test public_headers_test.cpp)
+target_link_libraries(rodaq_public_headers_test PRIVATE rodaq::logging)
+add_test(NAME rodaq_public_headers_test COMMAND rodaq_public_headers_test)
+
+add_executable(rodaq_logging_async_file_test logging_async_file_test.cpp)
+target_link_libraries(rodaq_logging_async_file_test PRIVATE rodaq::logging)
+add_test(NAME rodaq_logging_async_file_test COMMAND rodaq_logging_async_file_test)
+
+add_executable(rodaq_logging_compile_level_test logging_compile_level_test.cpp)
+target_link_libraries(rodaq_logging_compile_level_test PRIVATE rodaq::logging)
+add_test(NAME rodaq_logging_compile_level_test COMMAND rodaq_logging_compile_level_test)

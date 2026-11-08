@@ -2,6 +2,14 @@
 
 RoDAQ 是面向工业机器人的数据采集应用。操作者可以查询录制覆盖和可交付产物。
 
+## 设计与接口
+
+**接口契约（Interface Contract）**
+
+调用方与被调用方必须共同遵守的可验证约定，包括类型与 ABI、所有权与借用期限、生命周期、调用顺序、并发与重入、错误和超时语义、资源上界及兼容性。实现可以不同，但外部可观察行为不得单方面改变。
+
+设计文档统一使用“契约”；具体条款根据性质使用“规则”“协议”“语义”或“边界”等更具体的术语。
+
 ## 录制
 
 **录制任务（Recording Task）**
@@ -42,7 +50,7 @@ RoDAQ 自有 Deployment Configuration、Task Configuration、Stream Identity Sta
 
 **生效录制配置（Effective Recording Configuration）**
 
-Start、Resume 或自动恢复时，由 Task 配置、Deployment Generation、精确插件版本、输出卷身份、解析后的非敏感参数、能力与资源计划等共同形成的本次录制实例运行合同，以稳定 `effective_config_id` 标识。
+Start、Resume 或自动恢复时，由 Task 配置、Deployment Generation、精确插件版本、输出卷身份、解析后的非敏感参数、能力与资源计划等共同形成的本次录制实例运行契约，以稳定 `effective_config_id` 标识。
 
 **链路资源档位（Pipeline Resource Profile）**
 

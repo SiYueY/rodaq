@@ -23,7 +23,7 @@ Plugin 公共框架负责：
 - Extension Query；
 - Host Services；
 - 结构大小、所有权、错误码和字符串/缓冲区规则；
-- 线程安全和重入基础合同；
+- 线程安全和重入基础规则；
 - 插件实例公共生命周期；
 - ABI conformance 与依赖共存资格。
 
@@ -36,13 +36,13 @@ Plugin 公共框架不负责：
 - HTTP 或 Web；
 - 把所有后端业务参数统一成一个大配置结构。
 
-## 2. Plugin 合同与实例生命周期
+## 2. 插件接口契约与实例生命周期
 
 ### 2.1 模型、版本与配置
 
 **设计原则。**
 
-**ABI 优先稳定，业务合同分层。**
+**ABI 保持稳定，业务语义分层。**
 
 公共边界采用 C ABI，插件内部可以使用 C++17。
 
@@ -84,7 +84,7 @@ ABI 只表达稳定跨库事实：
 - callback validity；
 - destroy 前静止条件。
 
-“调用返回后通常还有效”不是合同。
+“调用返回后通常还有效”不能作为可依赖的接口契约。
 
 **动态库模型。**
 
@@ -117,7 +117,7 @@ Descriptor 至少包含：
 
 | 字段 | 语义 |
 | --- | --- |
-| ABI major/minor | 公共二进制合同版本 |
+| ABI major/minor | 公共 ABI 版本 |
 | struct size | 结构尾扩展保护 |
 | plugin id | 稳定逻辑标识 |
 | plugin version | 发布版本 |
@@ -259,7 +259,7 @@ Resource Plan 是插件对当前配置的**资源申请**，不是性能保证�
 
 验证实际资源不突破声明或定义的合理 envelope。
 
-突破声明属于插件合同缺陷。
+突破声明说明插件违反资源声明规则。
 
 **Instance Lifecycle。**
 
@@ -401,7 +401,7 @@ query_extension(extension_id, requested_version)
 
 V1 公共默认：
 
-| 调用类型 | 默认合同 |
+| 调用类型 | 默认调用规则 |
 | --- | --- |
 | instance create/destroy | Host 串行 |
 | mutable control calls | 同一实例 Host 串行 |
@@ -416,7 +416,7 @@ V1 公共默认：
 
 禁止隐式重入。
 
-插件在执行 Host→Plugin 调用时，如果调用 Host callback，必须遵守该 callback 的明确重入合同。
+插件在执行 Host→Plugin 调用时，如果调用 Host callback，必须遵守该 callback 的明确重入规则。
 
 默认禁止：
 
@@ -575,7 +575,7 @@ V1 插件 SDK/交付至少包含：
 
 ### 4.4 与角色文档的分工
 
-| 合同 | Plugin 公共文档 | Acquisition 文档 | Storage 文档 |
+| 职责项 | Plugin 公共文档 | Acquisition 文档 | Storage 文档 |
 | --- | --- | --- | --- |
 | ABI version/layout | 权威 | 引用 | 引用 |
 | loader/library lifetime | 权威 | 引用 | 引用 |
@@ -1034,7 +1034,7 @@ extension header
 
 调用方必须在实例或 library 对应 lifetime 内使用，不缓存超过声明范围。
 
-### 5.4 Loader、异常边界与线程合同
+### 5.4 Loader、异常边界与线程安全规则
 
 **装载器内部组成。**
 

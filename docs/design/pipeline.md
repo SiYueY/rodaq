@@ -130,7 +130,7 @@ identity/<task_id>.json
 
 它不保存当前 Recording Instance 状态。
 
-字段级 JSON 合同至少包括：
+字段级 JSON 规范至少包括：
 
 | 字段 | 类型 | 规则 |
 | --- | --- | --- |
@@ -168,7 +168,7 @@ then allocate in memory
 
 规则：
 
-1. 新区间上界必须先按状态文件原子提交合同 durable；
+1. 新区间上界必须先按状态文件原子提交协议 durable；
 2. durable 前不得分配该区间序号；
 3. crash 后未使用尾部废弃；
 4. gap 合法；
@@ -359,7 +359,7 @@ Acquisition 提供可稳定持有的共享载荷引用。
 
 Pipeline 在 Admission Commit 前 acquire retain；所有合法消费者结束后 exactly-once release。
 
-**所有模式共同合同。**
+**所有模式共同规则。**
 
 - payload immutable；
 - exactly-once release；

@@ -166,7 +166,7 @@ control/<task_id>.json
 
 Task Control Record 是 Run/Pause/Stop/Reset 控制意图的唯一权威。Recovery Record 不拥有 Desired State 或 Reset intent。
 
-字段级 JSON 合同建议冻结为：
+字段级 JSON 规范建议冻结为：
 
 | 字段 | 类型 | 规则 |
 | --- | --- | --- |
@@ -230,7 +230,7 @@ Task 级 Recovery Record 保存：
 recovery/<task_id>.json
 ```
 
-它是**执行与恢复证据**，不是 Desired State 权威。字段级合同至少包括：
+它是**执行与恢复证据**，不是 Desired State 权威。字段级规范至少包括：
 
 | 字段 | 类型 | 语义 |
 | --- | --- | --- |
@@ -478,7 +478,7 @@ Boot Reconciliation 使用证据矩阵：
 
 **Effective Recording Configuration。**
 
-Task 模块负责在 Start/Resume/恢复准备阶段形成本次实例的运行合同：
+Task 模块负责在 Start/Resume/恢复准备阶段形成本次实例的运行契约：
 
 ```text
 Task config_version
@@ -550,7 +550,7 @@ Task 模块需要的内部能力按职责而不是具体类名定义：
 
 ## 5. 开发实现设计
 
-本章把前述控制合同映射为 C++17 开发边界。类型名用于统一实现方向；私有类型可在不改变合同的前提下调整，但不得重新合并已经分离的职责。
+本章把前述控制语义映射为 C++17 开发边界。类型名用于统一实现方向；私有类型可在不改变契约的前提下调整，但不得重新合并已经分离的职责。
 
 ### 5.1 内部组成与公共接口
 
@@ -844,7 +844,7 @@ Task 详细实现必须允许注入以下测试替身：
 - controllable work executor；
 - fault-injectable Recovery writer。
 
-单元测试不应依赖真实 ROS 2、MCAP 或 HTTP 才能验证状态机与 crash-window 合同。
+单元测试不应依赖真实 ROS 2、MCAP 或 HTTP 才能验证状态机与 crash-window 规则。
 
 **代码组织约束。**
 
