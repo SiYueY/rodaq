@@ -3,7 +3,7 @@
 ## 开始工作
 
 - 检查当前分支和 `git status`，保留已有工作。
-- 设计和实现前阅读 [系统架构草案](docs/design/next_architecture.md) 及与任务相关的现有文档。草案里的待评审事项按其状态处理。
+- 设计和实现前阅读 [系统架构草案](docs/design/architecture.md) 及与任务相关的现有文档。草案里的待评审事项按其状态处理。
 - 修改 C++ 前阅读 [C++17 代码规范](docs/coding_guidelines/cpp_coding_guidelines.md)。
 - 历史实现、设计和测试结果供查阅。引入具体做法时，在当前分支记录适用的约束与验证结果。
 
