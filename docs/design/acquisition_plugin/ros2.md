@@ -643,7 +643,7 @@ representation
 
 它不得伪装成 `ros2msg`，也不得让 native tooling 误认为存在完整 message definition。
 
-对于 V1 required `MCAP Storage + ROS2 interoperability` path，type-only descriptor **不能进入 Ready Binding**：MCAP Descriptor readiness 必须要求完整 `rodaq.projection.ros2` 与 `ros2msg/ros2idl` dependency-complete Schema。type-only 只保留为 generic Acquisition / diagnostic capability，不属于 V1 qualified recording output。
+对于 V1 required `MCAP Storage + ROS2 interoperability` path，type-only descriptor **不能进入 Ready Binding**：MCAP Descriptor readiness 必须要求完整 `rodaq.projection.ros2.v1` 与 `ros2msg/ros2idl` dependency-complete Schema。type-only 只保留为 generic Acquisition / diagnostic capability，不属于 V1 qualified recording output。
 
 如果后续获得 exact schema：
 
@@ -674,7 +674,7 @@ Clock interpretation where relevant
 
 Descriptor ID 仍由 Runtime 分配。
 
-### 2.3.1 `rodaq.projection.ros2`
+### 2.3.1 `rodaq.projection.ros2.v1`
 
 ROS2 Acquisition 在发布 StreamDescriptor 后、Storage descriptor readiness 前，必须通过：
 
@@ -682,7 +682,7 @@ ROS2 Acquisition 在发布 StreamDescriptor 后、Storage descriptor readiness �
 rodaq.runtime.projection
 ```
 
-为该 descriptor 注册 `rodaq.projection.ros2`。
+为该 descriptor 注册 `rodaq.projection.ros2.v1`。
 
 该 projection **不是 Canonical State**；其目的只是把生成标准 ROS2 MCAP 所需要、但不属于 Canonical identity/equality 的信息传递给 Storage。Canonical Schema、StreamName 与 PayloadEncoding 仍然是 authority。
 
@@ -719,7 +719,7 @@ PayloadEncoding is compatible with projection.serialization_format
 
 #### Projection payload encoding
 
-`rodaq.projection.ros2` uses a deterministic binary record so no JSON/YAML parser is required for the outer projection envelope：
+`rodaq.projection.ros2.v1` uses a deterministic binary record so no JSON/YAML parser is required for the outer projection envelope：
 
 ```text
 u32_le format_version = 1
@@ -1608,7 +1608,7 @@ type identity always preserved for admitted typed payload
 exact schema unavailable → explicit type-only descriptor or no activation
 type-only → exact schema causes Descriptor evolution
 Storage readiness before Binding Active
-rodaq.projection.ros2 registered before readiness
+rodaq.projection.ros2.v1 registered before readiness
 projection topic/type/serialization cross-checks Canonical Descriptor
 projection change → new descriptor, never in-place mutation
 ```
@@ -1725,7 +1725,7 @@ V1 选择：
 
 ## 5.4 Implementation Readiness
 
-本文已经足以指导 V1 ROS2 Acquisition 实现。实现还必须同时落地 `rodaq.projection.ros2`，因为 V1 MCAP interoperability 已是 required contract，而不是 optional export feature。目标 Humble headers 已确认：
+本文已经足以指导 V1 ROS2 Acquisition 实现。实现还必须同时落地 `rodaq.projection.ros2.v1`，因为 V1 MCAP interoperability 已是 required contract，而不是 optional export feature。目标 Humble headers 已确认：
 
 ```text
 GenericSubscription public callback

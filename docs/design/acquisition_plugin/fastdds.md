@@ -122,7 +122,7 @@ FastDDS Acquisition Plugin
         ├── Control Plane: ROS2 topic/type/schema/QoS reconstruction
         └── Data Plane: serialized CDR + source/timestamp facts
         ↓
-Canonical registration + rodaq.projection.ros2
+Canonical registration + rodaq.projection.ros2.v1
         ↓
 Runtime Binding
         ↓
@@ -304,7 +304,7 @@ pending_type_samples
 
 但绝不能像“直到 TypeObject 到来”为止无限缓存。
 
-即使 raw serialized payload 可以在完整 TypeObject 到达前获得，V1 qualified path 仍不能因此建立 type-only Ready Binding。Plugin 只能 boundedly pending、施加 backpressure，或在 Admission 前 drop/reject；只有 reliable ROS2 TypeIdentifier + dependency-complete `ros2idl/ros2msg` + valid `rodaq.projection.ros2` 都就绪后才能进入 normal Admission。
+即使 raw serialized payload 可以在完整 TypeObject 到达前获得，V1 qualified path 仍不能因此建立 type-only Ready Binding。Plugin 只能 boundedly pending、施加 backpressure，或在 Admission 前 drop/reject；只有 reliable ROS2 TypeIdentifier + dependency-complete `ros2idl/ros2msg` + valid `rodaq.projection.ros2.v1` 都就绪后才能进入 normal Admission。
 
 ### type information 持久化
 
@@ -581,12 +581,12 @@ DynamicTypes 主要属于 Control Plane。具体实现必须优先参考 DDS-Pip
 
 如果冻结的 Fast DDS public path 无法直接暴露满足 RoDAQ lifetime/serialization contract 的 bytes，必须在 implementation review 中明确选择 lower serialized/RTPS path 或受控 reserialization fallback，并用 10-camera workload 量化其 copy/CPU cost；不得把 reserialized bytes 伪称为 exact original wire bytes。
 
-### `rodaq.projection.ros2`
+### `rodaq.projection.ros2.v1`
 
 FastDDS Plugin 必须产生与 `ros2.md` 完全相同版本和编码的：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 logical fields：
@@ -646,7 +646,7 @@ Projection registration order：
 ```text
 publish Canonical StreamDescriptor
         ↓
-register rodaq.projection.ros2
+register rodaq.projection.ros2.v1
         ↓
 MCAP descriptor readiness
         ↓
@@ -1559,7 +1559,7 @@ incompatible ROS2 type not merged
 CompleteTypeObject / dependency discovery
 exact ROS2 type identity preserved for every admitted payload
 complete ros2idl/ros2msg reconstruction
-rodaq.projection.ros2 registered before descriptor readiness
+rodaq.projection.ros2.v1 registered before descriptor readiness
 DataWriter QoS → deterministic offered_qos_profiles projection
 ```
 

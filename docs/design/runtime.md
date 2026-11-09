@@ -1236,7 +1236,7 @@ Key：
 V1 required projection：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 The registry is mutated only on the Control Plane through `rodaq.runtime.projection`. Acquisition publishes projections after the StreamDescriptor exists and before Storage descriptor readiness. Storage reads projections through the same Runtime service; there is no Acquisition → Storage pointer/call path.

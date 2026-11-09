@@ -166,7 +166,7 @@ not queried on every Record hot path
 V1 冻结的 projection identifier：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 其 logical fields 至少包括：
@@ -191,7 +191,7 @@ bounds
 (StreamDescriptor, projection-id) association
 ```
 
-V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
+V1 MCAP Storage 要求每个要进入正式 ROS2-compatible Artifact 的 StreamDescriptor 都存在有效 `rodaq.projection.ros2.v1`。缺失或不完整时 Descriptor readiness 必须返回 Unsupported，而不是生成一个“看起来像 ROS2”的降级 Channel。
 
 Descriptor publication returns the immutable `DescriptorHandle` before Storage readiness can
 complete. Acquisition may then register its typed InteropProjection through

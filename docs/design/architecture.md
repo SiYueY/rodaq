@@ -366,7 +366,7 @@ Storage Descriptor Readiness
 V1 required projection：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 它只服务外部 interoperability：

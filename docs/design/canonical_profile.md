@@ -2405,7 +2405,7 @@ Writer GUID / equivalent → optional SourceId
 writer-originated sequence → optional SourceSequence
 reader reception timestamp
 writer source timestamp capability boundary
-DataWriter QoS → non-Canonical rodaq.projection.ros2
+DataWriter QoS → non-Canonical rodaq.projection.ros2.v1
 rodaq/acquisition_ingress
 ```
 
@@ -2445,7 +2445,7 @@ source_timestamp
 
 reader-side reception timestamp 在其 clock domain 可稳定描述时可以作为 optional Timestamp capability。
 
-FastDDS-specific QoS、ROS2 topic/type reconstruction evidence 等 interoperability facts 不因此进入 Canonical State；它们通过 versioned typed `rodaq.projection.ros2` 传递给 MCAP Storage。
+FastDDS-specific QoS、ROS2 topic/type reconstruction evidence 等 interoperability facts 不因此进入 Canonical State；它们通过 versioned typed `rodaq.projection.ros2.v1` 传递给 MCAP Storage。
 
 V1 qualified FastDDS path 不接受 arbitrary Generic DDS / OMG-IDL-only flow。无法证明 ROS2-compatible Topic/Type/Schema/CDR contract 的 flow 必须在 Binding readiness 前 Unsupported。Generic DDS lifecycle (`dispose`、`no-writers` 等) 与 native OMG-IDL artifact 属于 future mapping；如果 future review 证明它们需要新的 canonical primitive，应重新评估 Profile/Canonical Model，而不是塞进 Generic Metadata。
 
@@ -2480,7 +2480,7 @@ M4: FastDDS Acquisition + the same MCAP interoperability path
 M5: production hardening / release qualification
 ```
 
-两条 Acquisition path 都必须生成 semantically equivalent `rodaq.projection.ros2`，最终 MCAP 必须通过 ROS2、PlotJuggler、Foxglove interoperability qualification。
+两条 Acquisition path 都必须生成 semantically equivalent `rodaq.projection.ros2.v1`，最终 MCAP 必须通过 ROS2、PlotJuggler、Foxglove interoperability qualification。
 
 ### Future architecture-validation mappings
 
@@ -2983,7 +2983,7 @@ SourceSequence present / absent semantics
 serialized ROS2-compatible CDR fidelity
 reader reception timestamp
 source timestamp only when common writer clock is proven
-DataWriter QoS → rodaq.projection.ros2
+DataWriter QoS → rodaq.projection.ros2.v1
 bounded pending-type behavior
 clock restart / source lifecycle where relevant
 ```

@@ -158,7 +158,7 @@ Storage 不得：
 Storage Descriptor readiness 必须把所需 projection 作为 capability/precondition 检查的一部分。例如 V1 MCAP Storage 对正式 ROS2-compatible Artifact 要求：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 存在且完整；否则该 Descriptor 为 Unsupported。

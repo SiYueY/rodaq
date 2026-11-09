@@ -32,7 +32,7 @@ ROS2 Acquisition ─────┐
 FastDDS Acquisition ──┘
 ```
 
-MCAP Plugin **不能根据 Acquisition concrete type 分支**。两种 Acquisition 都通过 Canonical Descriptor/Record + `rodaq.projection.ros2` 提供 Storage 所需信息；MCAP 只消费统一 Runtime contract。
+MCAP Plugin **不能根据 Acquisition concrete type 分支**。两种 Acquisition 都通过 Canonical Descriptor/Record + `rodaq.projection.ros2.v1` 提供 Storage 所需信息；MCAP 只消费统一 Runtime contract。
 
 V1 正式输出既要保留 RoDAQ full-fidelity Canonical sidecar，也必须能够直接被 `ros2 bag play`、PlotJuggler 与 Foxglove 消费。Generic DDS / OMG-IDL-only MCAP 是未来 capability，不属于 V1 required artifact contract。
 
@@ -619,7 +619,7 @@ Descriptor Ready
 
 ## 2.4 Native MCAP Schema Projection
 
-Canonical SchemaDescriptor remains the full-fidelity authority. `rodaq.projection.ros2` proves that the descriptor is eligible for the V1 ROS2 MCAP projection and supplies ROS2-specific interoperability facts not stored in Canonical State.
+Canonical SchemaDescriptor remains the full-fidelity authority. `rodaq.projection.ros2.v1` proves that the descriptor is eligible for the V1 ROS2 MCAP projection and supplies ROS2-specific interoperability facts not stored in Canonical State.
 
 For a V1 qualified descriptor, all of the following are mandatory：
 
@@ -1993,7 +1993,7 @@ validate Finalization Manifest / Footer / counts
 
 ROS2 interoperability is a **normative V1 requirement**, not best-effort compatibility evidence.
 
-Every normal V1 data Channel must be backed by a valid `rodaq.projection.ros2` and satisfy：
+Every normal V1 data Channel must be backed by a valid `rodaq.projection.ros2.v1` and satisfy：
 
 ```text
 Header.profile = ros2
@@ -2037,7 +2037,7 @@ V1 release artifacts require both, but keeping the concepts separate prevents ge
 
 ## 5.3 FastDDS Acquisition Interoperability
 
-FastDDS Acquisition does **not** get a separate MCAP format. It must reconstruct the same `rodaq.projection.ros2` as ROS2 Acquisition and therefore enters the exact same MCAP Schema/Channel path.
+FastDDS Acquisition does **not** get a separate MCAP format. It must reconstruct the same `rodaq.projection.ros2.v1` as ROS2 Acquisition and therefore enters the exact same MCAP Schema/Channel path.
 
 Required mapping：
 
@@ -2077,7 +2077,7 @@ Cross-Acquisition Equivalence tests must record the same ROS2 publisher corpus t
 
 ### A. ROS2-qualified round-trip corpus
 
-这些 case 必须同时满足 valid `rodaq.projection.ros2`，并完成 native MCAP + RoDAQ sidecar full-fidelity round-trip：
+这些 case 必须同时满足 valid `rodaq.projection.ros2.v1`，并完成 native MCAP + RoDAQ sidecar full-fidelity round-trip：
 
 ```text
 Canonical ID = 0 / near UINT64_MAX
@@ -2107,7 +2107,7 @@ Schema absent
 type-only schema
 OMG IDL-only schema
 binary/unknown exact schema format
-missing rodaq.projection.ros2
+missing rodaq.projection.ros2.v1
 projection/type/schema contradiction
 unproven CDR framing
 ```
