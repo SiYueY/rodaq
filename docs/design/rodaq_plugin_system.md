@@ -596,6 +596,23 @@ typedef uint32_t rodaq_bool;
 #define RODAQ_TRUE  UINT32_C(1)
 ```
 
+`rodaq_bool` 的合法值严格冻结为：
+
+```text
+0 = false
+1 = true
+
+任何其他 input value
+    → INVALID_ARGUMENT
+
+任何 provider output 中的其他 value
+    → ABI contract violation
+```
+
+同一原则适用于所有以 `uint32_t` 承载的 enum-like ABI domain：调用方只能传入具体
+operation 明确允许的已知值，provider 也不得产生未声明值；除非某个协议明确定义
+forward-compatible unknown-value handling。
+
 Status：
 
 ```c
@@ -611,7 +628,11 @@ typedef uint32_t rodaq_status_code;
 #define RODAQ_STATUS_STORAGE_ERROR       UINT32_C(7)
 #define RODAQ_STATUS_TIMEOUT             UINT32_C(8)
 #define RODAQ_STATUS_INTERNAL_ERROR      UINT32_C(9)
+#define RODAQ_STATUS_UNKNOWN_ERROR       UINT32_C(10)
 ```
+
+`UNKNOWN_ERROR` 只用于无法映射到稳定 RoDAQ status taxonomy 的未知 boundary/backend failure；
+已知错误必须使用更具体的 stable status code。
 
 V1 不使用 ABI-visible C enum，以避免：
 
@@ -793,6 +814,54 @@ return != OK
 ```
 
 `out_error == NULL` 合法。
+
+### ABI Pointer / Output 通用规则
+
+除非具体 operation 明确另有规定，V1 冻结以下规则：
+
+```text
+required input pointer == NULL
+    → INVALID_ARGUMENT
+
+required caller-owned output pointer == NULL
+    → INVALID_ARGUMENT
+
+caller-owned APPENDABLE output
+    → Caller zero-initializes the offered capacity
+    → struct_size is validated before any ownership transfer or semantic side effect
+
+success
+    → every required output is fully initialized within its returned prefix
+
+failure
+    → Caller MUST NOT read ordinary output fields unless that operation explicitly
+      documents a failure-path output contract
+```
+
+对于需要在失败路径仍返回 ownership/lifetime 信息的 operation，本文必须显式定义该例外。
+例如 Acquisition `submit()` 的 ADOPT / RETAIN 路径即使函数级返回 non-OK，在 Runtime
+可能已经越过 ownership acquisition point 时，仍必须返回可读取的 `payload_disposition`。
+因此该 operation 必须在任何 transfer point 之前完成 `out_result` pointer、capacity 和
+minimum-prefix validation。
+
+`create()` 额外冻结：
+
+```text
+out_instance == NULL
+    → INVALID_ARGUMENT
+
+before invoking Plugin implementation
+    *out_instance = NULL
+
+return == OK
+    *out_instance MUST be non-NULL
+
+return != OK
+    *out_instance MUST remain NULL
+```
+
+`query_interface()` / Service Registry `query()` 在 NOT_FOUND 或其他 non-OK 返回时必须把
+caller-provided `rodaq_interface` 清零，避免 stale fat pointer 被误用。
 
 C++ SDK trampoline 必须把：
 
@@ -1253,6 +1322,28 @@ reserved scalar/array bytes
 
 这条规则适用于所有 ABI-visible V1 request/result/view。
 
+### ABI semantic firewall validation order
+
+所有可变长 ABI input 和 APPENDABLE output 的机械校验顺序冻结为：
+
+```text
+scalar/count bounds
+    ↓
+pointer/count structural relationships
+    ↓
+safe element dereference / copy
+    ↓
+enum / bool / flags / reserved / presence semantics
+```
+
+不得先按照 caller-provided count 遍历，再验证 count 上界。所有 arithmetic 必须在
+`offsetof + size`、`count * element_size`、byte totals 等计算前做 overflow/range 检查；
+`UINT32_MAX`/极端 `uint64_t` 输入必须 fail closed，而不能 wrap。
+
+Plugin-origin diagnostic buffer 同样先验证 status code、flags、reserved、domain/message
+size bounds 以及需要 UTF-8 的字段，再允许 Runtime 读取或保留。Malformed diagnostic
+属于 ABI violation/rejected input，不能作为“部分可信”的状态继续传播。
+
 ### C declaration-order rule
 
 所有在 function pointer signature 中出现的 struct tag 必须：
@@ -1623,6 +1714,17 @@ Service Query：
 
 > **只允许在 Plugin `bind()` 阶段执行。**
 
+传给 `bind()` 的 `rodaq_service_registry` 对象本身是 call-scoped borrowed view：
+
+```text
+valid only for the bind() call
+Plugin MUST NOT retain the registry pointer/context/vtable after bind() returns
+Plugin MUST NOT perform Service Registry query outside bind()
+```
+
+但成功 `query()` 返回的具体 Runtime Service fat pointer 具有 §3.6 定义的 instance
+lifetime，可以在 Bind 成功后缓存。
+
 Plugin 在 Bind：
 
 ```text
@@ -1774,10 +1876,25 @@ V1 Stable C ABI 同时提供 exact literal 常量：
 命名：
 
 ```text
-rodaq.<domain>.<service>.v<major>
+rodaq.<domain>.<service>
 ```
 
-例如：
+稳定 Service ID 标识一个 protocol family；不把 major 重复编码进 ID。破坏性版本变化
+由对应 vtable 的 `protocol_version` 显式协商。例如：
+
+```text
+Service ID
+    rodaq.runtime.common
+
+Protocol Version
+    1
+```
+
+同一 major 内 append-only 演进继续使用同一 Service ID。真正 incompatible 的新 major
+必须先定义明确 compatibility policy，再提升 `protocol_version`；不得同时用 `.vN`
+后缀和 `protocol_version` 维护两套相互竞争的版本真值。
+
+例如未来 Service：
 
 ```text
 rodaq.runtime.metrics
@@ -3646,7 +3763,7 @@ rodaq.runtime.projection
 A projection is identified by a versioned UTF-8 identifier, for example：
 
 ```text
-rodaq.projection.ros2
+rodaq.projection.ros2.v1
 ```
 
 Projection bytes are **not Canonical State**. They are an immutable, bounded, projection-specific representation whose format is defined by the corresponding mapping specification.
@@ -3784,7 +3901,7 @@ validation rules
 
 Unknown projection identifiers may be ignored by consumers that do not require them. A Storage Backend that declares a projection as required must return Descriptor Unsupported when it is absent or invalid.
 
-For V1 ROS2 interoperability, `rodaq.projection.ros2` is required by the MCAP Storage mapping. Its payload encoding and semantic fields are frozen by `acquisition_plugin/ros2.md` and `acquisition_plugin/fastdds.md`; both producers must generate semantically equivalent projections.
+For V1 ROS2 interoperability, `rodaq.projection.ros2.v1` is required by the MCAP Storage mapping. Its payload encoding and semantic fields are frozen by `acquisition_plugin/ros2.md` and `acquisition_plugin/fastdds.md`; both producers must generate semantically equivalent projections.
 
 ---
 
@@ -4379,7 +4496,7 @@ typedef struct rodaq_descriptor_readiness_result {
 } rodaq_descriptor_readiness_result;
 ```
 
-`READY` and `UNSUPPORTED` require `failure.code == RODAQ_STATUS_OK`.
+`READY` and `UNSUPPORTED` require `failure.status_code == RODAQ_STATUS_OK`.
 `FAILED` requires a non-OK `failure` value carrying the complete domain, native
 code and message diagnostic. Function-level `out_error` remains reserved for
 ABI/control-call failure.
@@ -4420,6 +4537,47 @@ Storage enters failure path
 ```
 
 不得动态缩小 limit 并把已合法 Accepted Record 拒掉。
+
+### Storage inflight capacity accounting
+
+`maximum_inflight_records` / `maximum_inflight_bytes` 是 Runtime 与 Storage 之间用于
+Pre-Gate reservation 的 bounded handoff contract，而不是模糊的“队列大小”。
+
+V1 冻结：
+
+```text
+operation-record capacity
+    reserved before an Accepted Record can require Storage handoff
+    remains occupied while that logical Storage operation is not fully terminal
+
+operation fully terminal
+    Payload axis terminal
+    AND Persistence axis terminal
+    AND no required completion bookkeeping remains
+```
+
+因此 `PayloadConsumed + PersistencePending` 仍占用一个 inflight-record operation slot。
+
+`maximum_inflight_bytes` 在 V1 表示 Storage 对 Runtime-owned Payload bytes 的最大并发
+borrowed-access budget，而不是 backend 私有持久化缓冲区总内存：
+
+```text
+PAYLOAD_PENDING
+    counts the Record payload bytes against maximum_inflight_bytes
+
+PAYLOAD_CONSUMED
+    releases that borrowed-Payload byte charge immediately
+    even when Persistence remains Pending
+```
+
+Storage 自己的 encoder/transaction/chunk/cache memory 必须另外保持 bounded，并由 Storage
+implementation/configuration qualification 证明；不能把私有 backend memory 含混地塞进
+`maximum_inflight_bytes`。
+
+Runtime 必须根据 capability snapshot 建立对应的 record-slot 与 borrowed-byte reservation，
+使 conforming Storage 在已经获得 negotiated capacity 的 handoff 上不会因为普通容量压力
+返回 `RESOURCE_EXHAUSTED`。未来如需独立 persistence-capacity 维度，必须通过明确的新
+capability/extension 增加，而不能改变 V1 字段语义。
 
 `ensure_descriptor_ready()`：
 
@@ -4982,16 +5140,27 @@ typedef struct rodaq_storage_open_request {
     uint32_t struct_size;
     uint32_t flags;
 
-    rodaq_string_view session_id;
+    rodaq_string_view artifact_id;
     rodaq_string_view target_uri;
 } rodaq_storage_open_request;
 ```
+
+`artifact_id` 是当前 Storage open/close lifecycle 对应 logical Artifact 的稳定、non-empty
+UTF-8 identifier。它不是 Canonical identity、Runtime Handle、Recording Service TaskId
+或旧式 Session 概念，也不得跨 Artifact lifecycle 被隐式复用。
 
 `target_uri` 例如：
 
 ```text
 file:///data/run_001
 ```
+
+Runtime/Recording Service 可以自行维护 Task ↔ Activation ↔ Artifact 的关系，但 Storage
+ABI 只接收 Artifact-level identity 与 target URI，不重新引入 Session domain。
+
+> **Pre-freeze ABI convergence:** 当前 header 中如仍存在 `session_id`，必须在 Plugin ABI
+> Freeze 前同步重命名为 `artifact_id` 并重新生成 layout/binary baseline；Freeze 后不得
+> 把该字段再作为兼容别名保留。
 
 Plugin-specific：
 
@@ -5319,6 +5488,21 @@ typedef struct rodaq_storage_operation {
 `rodaq_storage_operation` is the FROZEN Storage handoff/completion handle.
 `value == 0` is invalid.
 
+Operation identity/lifetime 冻结为：
+
+```text
+Runtime-owned
+opaque to Plugin
+scoped to one Storage instance activation
+never persisted
+never interpreted or synthesized by Plugin
+```
+
+Runtime MUST prevent an old, duplicate or late callback token from resolving to a different
+logical handoff in the same or a later activation。实现可以采用 monotonic non-reuse、
+`(index, generation/tag)` encoding 或等价 activation-scoped validation，但不得仅复用裸
+slot index。迟到或重复 callback 必须 fail closed，不能产生 ABA 并 terminalize 新 operation。
+
 Submit result：
 
 ```c
@@ -5614,7 +5798,7 @@ PERSISTENCE_SUCCEEDED
 
 PERSISTENCE_FAILED / PERSISTENCE_UNKNOWN
     error != NULL
-    error->code != RODAQ_STATUS_OK
+    error->status_code != RODAQ_STATUS_OK
 ```
 
 `error` is borrowed for the callback duration. Runtime must copy the
@@ -5625,7 +5809,7 @@ self-contained `rodaq_status` value before retaining it.
 ```text
 报告不对应单一 Record outcome 的后台/systemic Storage failure
 error != NULL
-error->code != RODAQ_STATUS_OK
+error->status_code != RODAQ_STATUS_OK
 ```
 
 The diagnostic pointer is borrowed for the callback duration.
@@ -5894,9 +6078,14 @@ ensure_descriptor_ready
 open
 flush
 close
+destroy
 ```
 
 must execute under Runtime-owned bounded supervision.
+
+Plugin-origin Payload `release(owner_context)` 不是 Control Plane method，但同样属于不可信
+的跨 DSO execution，必须通过 bounded Release Executor 监督；不得在 Admission、Storage
+completion 或 Runtime lifecycle critical section 中直接执行。
 
 The ABI does not require every method to carry a deadline parameter. Runtime instead owns the control-operation deadline and execution context.
 
@@ -5960,6 +6149,15 @@ DSO kept mapped
 owned state retained as necessary for memory safety
 process exit remains the final reclamation boundary
 ```
+
+`destroy()` timeout 不表示 destroy code 已经停止执行。超时的 destroy call、execution
+context、instance lease、library lease 与 activation root 必须一起进入 quarantine；
+禁止由普通 C++ destructor 隐式再次调用 destroy，禁止 detach，禁止提前 `dlclose()`。
+
+Plugin-origin Payload `release()` 同样必须 exactly-once、`RODAQ_NOEXCEPT`，不得开始新的
+normal acquisition/registration/submit work，并运行于 bounded Release Executor。若 release
+超过 Stop deadline，其 worker 和 Payload/Plugin leases 一起移入 process-wide quarantine；
+Runtime 不得为了“完成 Stop”而假定 Payload 已释放或销毁 callback 仍可能使用的 state。
 
 A deployment may choose process termination for an unrecoverable stuck Plugin, but V1 Core never uses unsafe asynchronous thread termination as a cleanup primitive.
 
@@ -6046,18 +6244,27 @@ RoDAQ 内部必须保证：
 正确顺序：
 
 ```text
-stop Acquisition
+Runtime Gate closed / waiters woken
     ↓
-no new submissions
+quiesce_plugin() succeeds
     ↓
-drain accepted Runtime records
+no future normal Submit / registration path can begin
     ↓
-release all Plugin-origin Payload
+converge active Submit and Admission work
+    ↓
+drain accepted Runtime / Storage obligations
+    ↓
+release all Plugin-origin Payload while native release capability remains valid
     ↓
 originated_payload_count == 0
     ↓
+destructive Acquisition stop()
+    ↓
 destroy Acquisition Instance
 ```
+
+因此 `stop()` 不能作为“先停止再 drain”的入口；它只在 Plugin-origin Payload anchor
+已经安全 terminalize/release 之后执行。
 
 ---
 
@@ -6405,6 +6612,52 @@ RTLD_DEEPBIND
 RTLD_NODELETE
 dlmopen
 ```
+
+V1 Loader admission 必须机械执行 one-DSO-one-family：
+
+```text
+Acquisition candidate
+    rodaq_plugin_abi_version exists exactly once
+    rodaq_get_acquisition_plugin is defined by candidate DSO
+    rodaq_get_storage_plugin is absent
+
+Storage candidate
+    rodaq_plugin_abi_version exists exactly once
+    rodaq_get_storage_plugin is defined by candidate DSO
+    rodaq_get_acquisition_plugin is absent
+
+both family entrypoints present
+    → reject
+
+neither family entrypoint present
+    → reject
+```
+
+sidecar metadata 中的 family 只用于 discovery/inspection hint；最终 family truth 来自
+candidate DSO 的 validated export 与 family protocol object。
+
+### Trusted in-process code boundary
+
+V1 Plugin 是与 Runtime 同进程、同权限执行的 native code：
+
+> **Stable C ABI、manifest/descriptor validation 和 symbol provenance 是 compatibility /
+> correctness boundary，不是 security sandbox。**
+
+`dlopen()` 时 DSO constructor 已可能执行，因此 Boot ABI/Descriptor 检查不能把不可信
+`.so` 变成安全代码。Production deployment 必须把 Plugin search path 当作 trusted code
+installation surface：
+
+```text
+no implicit current-working-directory scan
+explicit relative paths are rejected or canonicalized against an approved root
+candidate path is canonicalized before duplicate/provenance comparison
+production plugin directories must not be writable by untrusted users
+RODAQ_PLUGIN_PATH is a deployment/admin override, not an untrusted tenant input
+symlink resolution must not escape an approved deployment root when such a root is configured
+```
+
+V1 不提供 Plugin signature verification、process sandbox 或 privilege separation；需要运行
+不可信第三方 Plugin 时必须使用独立进程边界，而不是依赖本 ABI。
 
 ---
 
@@ -6973,20 +7226,29 @@ Plugin topology frozen
 Stop：
 
 ```text
-Gate close
+Gate close / wake waiters
     ↓
-Acquisition stop
+Acquisition quiesce_plugin()
     ↓
-Runtime drain
+active Submit / Admission convergence
+    ↓
+Runtime + Storage drain
+    ↓
+release Plugin-origin Payload anchors
+    ↓
+destructive Acquisition stop()
     ↓
 Storage flush / close
     ↓
-Destroy instances
+supervised destroy instances
     ↓
-Release leases
+release remaining leases
     ↓
-dlclose
+dlclose only when no execution/lease can still enter Plugin code
 ```
+
+任何 quiesce/release/stop/close/destroy timeout 都不能通过破坏上述 lifetime ordering
+“强行继续”；无法证明安全终止的对象进入 quarantine。
 
 ---
 
@@ -7060,6 +7322,17 @@ objdump -p
 lddtree
 patchelf --print-rpath
 ```
+
+V1 采用同进程 `RTLD_LOCAL`、不使用 `dlmopen` namespace，因此 Stable C Plugin ABI 并不
+意味着每个 Plugin 的第三方 ELF dependency 可以完全隔离。V1 冻结：
+
+> **同一 RoDAQ 进程中的所有 Plugin 必须属于一个经过 release qualification 的兼容
+> ELF dependency ABI universe。**
+
+不支持在同一进程同时依赖语义冲突的同 SONAME / incompatible ABI 版本，并期待 loader
+自动隔离。AppImage release 必须对全部内置 Plugin 的递归 `DT_NEEDED` closure 做联合
+qualification；第三方 Plugin 如需要冲突依赖，应采用独立进程/产品方案，而不是通过
+`RTLD_GLOBAL`、`RTLD_DEEPBIND` 或 symbol interposition workaround 解决。
 
 ---
 
@@ -7348,6 +7621,8 @@ wrong Boot ABI
 
 missing family entrypoint
 
+both Acquisition and Storage entrypoints in one DSO
+
 wrong family protocol
 
 struct_size < MIN_STRUCT_SIZE
@@ -7383,6 +7658,9 @@ invalid Extension interface
 Storage PayloadPending/PersistencePending without required completion
 
 duplicate Storage completion
+
+late Storage completion after operation slot reuse attempt
+    → must not resolve to another logical operation
 
 same-stack reentrant completion during submit() call
 
@@ -7463,6 +7741,10 @@ destroy from Configured
 
 destroy from Stopped
 
+blocked Payload release → bounded Stop + quarantine
+
+blocked destroy → supervised timeout + retained instance/DSO
+
 repeated load / create / stop / destroy / unload
 ```
 
@@ -7486,7 +7768,7 @@ open failure rollback
 
 close(NORMAL) → NormalComplete only if finalization succeeds
 close(ACTIVATION_ABORT) → never NormalComplete
-close(FAILURE) → never mislabel failed Session as NormalComplete
+close(FAILURE) → never mislabel failed Artifact as NormalComplete
 
 sync PayloadConsumed + PersistenceSucceeded
 
@@ -7758,6 +8040,8 @@ Data Contract
     [ ] Payload COPY / ADOPT / RETAIN transfer/acquisition points
     [ ] Storage Submission / HandoffAccepted boundary
     [ ] Storage Payload / Persistence dual-axis completion
+    [ ] Storage operation non-alias / ABA prevention
+    [ ] Storage inflight record/byte accounting
     [ ] payload_consumed() exactly-once semantics
     [ ] persistence_completed() exactly-once semantics
     [ ] no submit-stack reentrant async completion
@@ -7789,7 +8073,9 @@ Concurrency
 Ownership
     [ ] String / bytes lifetime
     [ ] Error lifetime
+    [ ] ABI pointer/nullability/output contract
     [ ] Payload release
+    [ ] supervised release / destroy quarantine
     [ ] InstanceLease
     [ ] PluginLibraryLease
     [ ] no ownership cycles
@@ -7798,8 +8084,11 @@ Loader
     [ ] SharedLibrary
     [ ] PluginLibrary
     [ ] symbol provenance
+    [ ] one DSO = one family admission
     [ ] duplicate ID
     [ ] RTLD policy
+    [ ] trusted-code/search-path policy
+    [ ] compatible ELF dependency universe
     [ ] Search Path
 
 SDK
@@ -7886,6 +8175,10 @@ Acquisition lifecycle
 Storage lifecycle
 
 Storage Payload / Persistence dual-axis completion contract
+
+Storage operation non-alias / inflight capacity accounting
+
+ABI pointer/nullability/output contract
 
 Stop / Close quiescence
 
@@ -8093,21 +8386,5 @@ Mechanical ABI CI
 
 ---
 
-## M2 Convergence Plugin Contract
-
-All counts and scalar bounds are enforced before pointer/count arrays are
-dereferenced. `UINT32_MAX`-style inputs fail without arithmetic wraparound.
-APPENDABLE outputs are read only through their declared initialized prefix and
-are rejected when reserved fields, states or diagnostic relationships are
-invalid.
-
-Adopt/Retain anchors carry the Plugin instance lease. Runtime retains the
-instance and library while a release callback, pending operation or extension
-view can still execute Plugin code. Release callbacks execute on bounded
-Release Executor workers. A timed-out release or destroy transfers its worker
-and retained activation state to the process-wide quarantine; implicit
-destructor destroy, detach and premature `dlclose` are forbidden.
-
-Acquisition Plugin health is operational state. Recoverable failure invalidates
-the Plugin's current routing and requires fresh Descriptor/Binding activation.
-Terminal failure synthesizes a failure when no diagnostic is supplied.
+本文所有 ABI firewall、Plugin health、release/destroy supervision 与 quarantine
+规则均已收敛到对应 normative 章节；文末不再维护第二套 convergence patch contract。
