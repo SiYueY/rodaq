@@ -87,8 +87,8 @@ pipeline_id（可选，仅首次创建时允许缺失）
 required/optional
 resource_profile reference
 output_root reference
-acquisition plugin id + config schema version + params
-storage plugin id + config schema version + params
+acquisition { plugin_id, schema_version, config }
+storage { plugin_id, schema_version, config }
 streams[]
 ```
 
@@ -97,7 +97,7 @@ streams[]
 ```text
 stream_id（可选，仅新建 Stream 时允许缺失）
 logical name/address
-acquisition-specific stream params
+acquisition-specific stream_config
 payload/schema expectation（若配置期已知）
 readiness policy
 ```
@@ -110,7 +110,7 @@ readiness policy
 - Configure 保留既有对象时必须携带原 ID；省略 ID 表示创建新对象，不按名称/Topic 猜测身份连续；
 - 同一 Task Config 内 ID 必须唯一；
 - 导出可保留 Task-scope Pipeline/Stream ID，它们在导入为新 Task 后仍只在新 Task scope 内解释，不造成跨 Task 身份冲突；
-- backend-specific `params` 保持 Strict JSON object，由对应 Plugin Schema + semantic validation 负责；
+- `acquisition.config / storage.config / stream_config` 保持 Strict JSON object，由对应 Plugin Schema + semantic validation 负责；
 - credential 只保存引用，不保存 secret material。
 
 `config_version` 在 ID 分配、结构/语义校验和规范化完成后计算，因此它标识的是**实际持久化、可运行的 Task 配置**，而不是尚未分配稳定 ID 的原始输入文本。
@@ -268,7 +268,9 @@ ended_boundary
 
 `opened_observed` 只是观察事实；`phase=OpenAuthorized` 才是恢复时“可能已经开放”的权威证据。
 
-Task Recovery Record 的持久化由独立 `TaskRecoveryStore` 管理；它和 Task Control Record 是两个不同权威域，不允许一个 serializer 同时根据内存状态“顺手”重建两者。
+Task Recovery Record 的持久化由独立 `TaskRecoveryStore` 管理；它和 Task Control Record 是两个不同权威域，不允许一个 serializer 同时根据内存状态“顺手”重建两者。Recovery Record 只记录生命周期/恢复 checkpoint，不保存每 Record、Batch 或正常 Segment 提交进度，也不承担 committed artifact 历史；后者由 Durable Artifact Ledger 负责。
+
+Deployment 必须为 Recovery Record 冻结 `max_recovery_record_bytes`、最大 interruption/cleanup/reset-progress 条目数及最小更新间隔或等价写放大预算。达到软阈值时先压缩已终结且可由其它权威事实重建的条目；若继续增长会丢失必要恢复证据，则 Task 进入 Protected/diagnostic 并拒绝新的非紧急工作，而不是继续扩大 JSON。
 
 ## 3. 控制生命周期与恢复
 
@@ -356,7 +358,7 @@ Prepared Pipeline 的 Admission Gate 保持 Closed。
 
 **BestEffort。**
 
-所有准备结果确定后，只要至少一条允许运行的 Pipeline Ready，可以通过 Barrier 并开放成功 Pipeline；失败链路形成明确结果和 Degraded/Failed 投影。
+所有准备结果确定后，只要至少一条 eligible Pipeline Ready，可以通过 Barrier 并开放成功 Pipeline。只要仍有获准 Pipeline 正常接纳，任何 Required/Optional 缺失都使 Task 投影为 `Degraded`，失败严重度保留在逐 Pipeline 事实中；只有不存在合法运行集合时，才根据失败是否可自动恢复进一步投影 `Protected` 或 `Failed`。
 
 **Open Authorization。**
 
@@ -415,9 +417,9 @@ Task Control Record 持有唯一 Reset authority：
 - 固定目标范围；
 - 目标控制代次。
 
-Recovery Record 只记录逐卷执行进度。
+Recovery Record 只记录逐卷执行进度。Reset 的产物目标集合由受管卷/命名空间和 Durable Artifact Ledger committed facts 在受理代次下固定；Artifact/Catalog 模块负责执行读租约阻断、文件删除、Ledger 清理和 Catalog 更新。文件删除必须先持久确认，之后才允许移除或压缩对应 Ledger committed fact；如果进程在文件删除后、Ledger 清理前退出，该状态是可恢复的 Reset 中间态，不得报告为历史产物意外丢失。
 
-Reset 删除 Task 归属的录制产物和可重建运行事实，但不得回退 Stream Identity State 中的 AcceptanceSequence high-water，不得复用 Task/Pipeline/Stream ID。
+Reset 删除 Task 归属的录制产物和可重建运行事实，但不得回退 Stream Identity State 中的 AcceptanceSequence high-water，不得复用 Task/Pipeline/Stream ID。只有目标文件、对应 Durable Artifact Ledger committed facts 和 Catalog 可见性均完成结算后，Reset 才能进入终态。
 
 ### 3.4 状态投影与 Boot Reconciliation
 
@@ -442,12 +444,12 @@ Execution Condition 由逐 Pipeline 事实投影：
 | --- | --- |
 | Idle | Desired=Stopped 且无旧实例占用 |
 | Preparing | 当前确有 Start/Resume prepare 工作 |
-| Active | 所有 Required Pipeline 正常开放并推进 |
-| Degraded | Optional 缺失或 BestEffort 合法部分运行 |
-| Protected | Run intent 保留，但因资源/磁盘/临时条件关闭接纳 |
-| Draining | 当前确有 Pause/Stop/收尾工作 |
+| Active | 配置完整性目标已满足：所有 Required 正常开放并推进，且没有使任务降级的其它 Pipeline 缺失 |
+| Degraded | 仍存在启动策略允许的合法运行集合，但配置未完整实现；包括 Optional 缺失，以及 BestEffort 下 Required/Optional 部分失败但至少一条 eligible Pipeline 仍正常接纳 |
+| Protected | Run intent 保留，但当前不存在合法运行集合；阻塞原因仍具备自动恢复路径，例如临时资源、磁盘或外部条件 |
+| Draining | 当前确有 Pause/Stop/Process Shutdown Drain/收尾工作 |
 | PendingCleanup | 旧实例尚未证明静止或资源尚未释放 |
-| Failed | Required Pipeline 出现不可恢复错误或恢复预算耗尽 |
+| Failed | 当前不存在合法运行集合，且错误不可自动恢复或恢复预算耗尽；BestEffort 下仍有合法运行集合时不得仅因某条 Required 永久失败而投影 Failed |
 
 **Boot Reconciliation。**
 
@@ -457,7 +459,7 @@ Execution Condition 由逐 Pipeline 事实投影：
 2. Stream Identity State；
 3. active Task Configuration；
 4. Recovery Record；
-5. 已提交/隔离产物事实。
+5. Durable Artifact Ledger、已提交/隔离 Segment Manifest 及对应删除意图。
 
 Boot Reconciliation 使用证据矩阵：
 
@@ -625,18 +627,19 @@ CleanupCompleted
 ShutdownRequested
 ```
 
-所有异步完成事件必须携带：
+所有异步工作都有进程内唯一 `work_id`。完成事件必须携带：
 
 ```text
 task_id
-operation_id
+work_id
 control_generation
 work_kind
+operation_id（仅属于用户生命周期 Operation 时存在）
 pipeline_id（若适用）
 instance_id（若适用）
 ```
 
-TaskController 收到事件时先验证归属，再更新状态。旧 generation 事件即使业务工作成功，也只能进入原 operation/resource 结算，不能推进当前 Task。
+Process Shutdown Drain、Boot Reconciliation 和内部维护工作不创建伪造的用户 `operation_id`。TaskController 收到事件时先验证 work/operation/实例归属，再更新状态。旧 generation 事件即使业务工作成功，也只能完成原 resource/diagnostic 结算；若它属于旧用户 Operation，则只能结算该 Operation，不得推进当前 Task。
 
 **状态机与副作用分离。**
 
@@ -822,16 +825,17 @@ POST /start
 
 **Shutdown。**
 
-守护进程 shutdown：
+守护进程 shutdown 执行 **Process Shutdown Drain**，它不是用户 Stop：
 
-1. TaskService 停止接收新的非紧急操作；
-2. 为所有 Running Task 生成受控 Stop/Shutdown work；
-3. 保持 Task 控制查询可用到关停截止；
-4. 等待有界期限；
-5. 未静止资源保留持久恢复证据；
-6. 进程退出交给外部 supervisor 完成最终恢复。
+1. TaskService 停止接收新的非紧急操作和新的 Start/Resume 入场；
+2. 对所有存在运行实例的 Task 调度内部 Shutdown Drain，关闭 Admission Gate、quiesce、排空 Writer/Commit backlog 并记录实例结束证据；
+3. **不得修改 `desired_state`、不得递增用户 `control_generation`、不得撤销 Run intent，也不得创建伪装成用户 Stop 的 operation ledger 条目**；
+4. 能在期限内正常收尾的实例记录 `Ended(reason=ProcessShutdown)`，保留当前 Run continuation eligibility；
+5. 保持 Task 控制查询可用到关停截止并等待有界期限；
+6. 未静止资源保留原实例归属、PendingCleanup 与持久恢复证据；
+7. 进程退出交给外部 supervisor，下一次启动依据原 Desired State、当前 generation 和恢复策略执行 Boot Reconciliation。
 
-TaskController destructor 不承担业务 Stop，不允许无界等待。完整关停必须走显式 shutdown 流程。
+只有显式用户 Stop 才把 Desired State 改为 Stopped 并使旧 continuation permission 失效。TaskController destructor 不承担业务 Stop 或 Shutdown Drain，不允许无界等待；完整关停必须走显式 shutdown 流程。
 
 **Test Seam。**
 
@@ -875,9 +879,11 @@ task/
 5. Open Authorization 必须先于任何 Admission Gate 打开。
 6. OpenAuthorized 但缺失 OpenedObserved 的实例按“可能已开放”恢复。
 7. 更高 control generation 永远压制旧 Run/open/recovery 请求。
-8. Reset 不回退 Stream identity 或 AcceptanceSequence high-water。
-9. Task Execution Condition 只能由逐 Pipeline 事实投影，不能独立写入第二份健康状态。
-10. Operation Result、Desired State、Execution Condition 和 Data Impact 保持正交。
+8. Reset 不回退 Stream identity 或 AcceptanceSequence high-water；目标文件删除确认前不得移除对应 Durable Artifact Ledger committed fact，Reset 终态要求文件/Ledger/Catalog 全部结算。
+9. Task Execution Condition 只能由逐 Pipeline 事实和启动策略投影，不能独立写入第二份健康状态；BestEffort 仍有合法运行集合时，单条 Required 永久失败只能使 Task Degraded，不能直接投影 Failed。
+10. Process Shutdown Drain 不是用户 Stop：不得修改 Desired State、递增用户 control generation、撤销 Run intent 或伪造用户 operation。
+11. Recovery Record 只承担有界生命周期 checkpoint，不保存 normal committed artifact 历史，也不得无界增长或高频吸收数据路径进度。
+12. Operation Result、Desired State、Execution Condition 和 Data Impact 保持正交。
 
 ### 6.2 验收矩阵
 
@@ -886,9 +892,10 @@ task/
 - Create/Configure 每个持久提交点崩溃；
 - Start/Resume 在 Prepare 前、Prepared 后、Barrier 后、Open Authorization 后、部分 Gate open 后崩溃；
 - AllRequired 任意 Required Prepare 失败；
-- BestEffort 部分成功；
+- BestEffort 部分成功，包括 Required 永久失败但其它 eligible Pipeline 正常运行时 Task=Degraded，以及无合法运行集合时 Protected/Failed 的区分；
 - Pause/Stop 与高并发提交竞争；
 - Stop 接管 Start/Pause/Resume；
+- Process Shutdown Drain 在 Running Task 上完成/超时/迟返，验证 Desired State 与用户 generation 不变、无伪造 Stop operation，并在重启后按原 Run intent 对账；
 - 相同/冲突幂等键；
 - 旧 generation 完成事件迟返；
 - Reset 受理后逐卷删除期间崩溃；

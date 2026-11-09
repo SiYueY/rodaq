@@ -436,7 +436,7 @@ Pipeline 校验：
 - Unknown 立即触发 Admission Gate failure cut；
 - 当前 Segment 进入 contaminated/quarantine 路径。
 
-confirmed format write 不等于 durable Segment commit。
+confirmed format write 不等于 durable Segment commit。Pipeline 只把 Storage/Commit 子系统报告的 **normal Committed** 作为已保存终态；该终态必须已经满足 Storage 设计中的 Segment filesystem durability，并完成独立 Durable Artifact Ledger committed fact。`RegistrationPending`、`VerificationRequired` 和 `Quarantined` 均不得被 Pipeline 计入正常 durable commit。
 
 ## 4. 时间、恢复与资源边界
 
@@ -446,20 +446,20 @@ confirmed format write 不等于 durable Segment commit。
 
 - host receive realtime；
 - host receive monotonic；
-- `host_boot_id`；
+- `system_boot_id`；
 - `clock_epoch_id`；
 - optional source timestamps；
 - optional SourceId；
 - optional SourceSequence + sequence scope；
 - AcceptanceSequence。
 
-**Host Boot。**
+**System Boot。**
 
-monotonic 与 Clock Epoch 只能在同一 `host_boot_id` 内直接比较。
+monotonic 与 Clock Epoch 只能在同一 `system_boot_id` 内直接比较。
 
-Linux V1 的 platform layer 优先读取内核提供的 boot identity（例如 `/proc/sys/kernel/random/boot_id`）并转换为项目 `HostBootId`；**守护进程重启但 OS 未重启时必须得到同一 Host Boot ID**。只有真正的 OS boot 变化才产生新的 Host Boot。读取/解析失败时不能随机生成一个看似有效但破坏跨进程相关性的值；系统进入时间证据降级/诊断，具体启动策略由 Deployment 决定。
+Linux V1 的 platform layer 优先读取内核提供的 boot identity（例如 `/proc/sys/kernel/random/boot_id`）并转换为项目 `SystemBootId`；**守护进程重启但 OS 未重启时必须得到同一 System Boot ID**。只有真正的 OS boot 变化才产生新的 System Boot。读取/解析失败时不能随机生成一个看似有效但破坏跨进程相关性的值；系统进入时间证据降级/诊断，具体启动策略由 Deployment 决定。
 
-`clock_epoch_id` 在一个 Host Boot 内使用 `uint64_t`，`0` 无效，首个有效值为 `1`，只增不回退、不 wrap。
+`clock_epoch_id` 在一个 System Boot 内使用 `uint64_t`，`0` 无效，首个有效值为 `1`，只增不回退、不 wrap。
 
 主机重启后新的 epoch/monotonic 与旧 boot 无直接连续性。
 
@@ -468,7 +468,7 @@ Linux V1 的 platform layer 优先读取内核提供的 boot identity（例如 `
 进程级 `ClockCorrelationService` 维护 immutable snapshot：
 
 ```text
-host_boot_id
+system_boot_id
 clock_epoch_id
 sample_monotonic_ns
 sample_realtime_ns
@@ -476,7 +476,7 @@ correlation quality/error bound
 jump evidence（若为新 Epoch）
 ```
 
-Acquisition submit 入口采集 receive monotonic/realtime 时读取一次当前 snapshot，并把 `host_boot_id + clock_epoch_id` 固定到本次 RecordAttempt。Admission Commit 只验证该时间事实结构有效，不把后续更新的新 Epoch 反向写入旧 attempt。
+Acquisition submit 入口采集 receive monotonic/realtime 时读取一次当前 snapshot，并把 `system_boot_id + clock_epoch_id` 固定到本次 RecordAttempt。Admission Commit 只验证该时间事实结构有效，不把后续更新的新 Epoch 反向写入旧 attempt。
 
 V1 **不要求 Clock Epoch 变化自动执行 Pipeline-wide Admission Cut，也不要求强制 Segment rotation**。原因是多个 Stream callback 可以在 Epoch 边界附近迟返，强制以“第一条新 Epoch Record”作为 Segment cut 无法在不增加额外全链路 barrier 的情况下证明没有旧 Epoch Record 后到。
 
@@ -739,7 +739,7 @@ fsync while holding Pipeline control lock
 | Acquisition callback domain | 按插件声明的最大并发 | 插件线程或受控 callback executor |
 | Sequence persistence lane | 同一 Task Identity State 更新串行 | 可由共享持久化 executor 承载 |
 | Writer lane | 同一 Pipeline Storage mutation 串行 | 可由共享 worker pool 上的 per-Pipeline serial queue 承载 |
-| Commit lane | 同一 Segment 单 owner；同卷并发有上限 | 卷级有界 commit executor |
+| Commit lane | 同一 Segment 单 owner；同卷并发有上限；filesystem durability 与 Artifact Ledger 登记完成后才产生 normal Committed | 卷级有界 commit executor，Ledger 持久化不得绕过 commit backlog 预算 |
 | Cleanup lane | 不破坏 owner 的前提下有界并行 | 共享维护 executor |
 
 V1 不要求“一个 Pipeline 一个线程”。任何线程池实现都必须证明：不会因为某个插件永久阻塞而耗尽所有控制/停止/诊断容量。
@@ -1005,15 +1005,17 @@ Writer 只在：
 close Admission Gate
 → wait commit-domain in-flight
 → acquisition quiesce
-→ drain RecordQueue
+→ optionally destroy Acquisition instance after quiesce proof
+→ drain RecordQueue (retained payload owner/charge remains independent)
 → settle Writer/Storage
 → settle Commit backlog
-→ prove plugin quiescence
-→ release reservations
+→ quiesce/destroy Storage instance
+→ prove all plugin calls + payload owners settled
+→ release remaining reservations
 → publish Ended/PendingCleanup
 ```
 
-若某步超时，后续只能执行不破坏仍在途 owner 的动作，不得为了“完成析构”提前释放。
+若某步超时，后续只能执行不破坏仍在途 owner 的动作，不得为了“完成析构”提前释放。 Acquisition quiesce 后仍在队列中的 Transfer/Retain payload 不属于 instance owner：其 backing、release callback 与 physical charge 必须按 Acquisition ABI 的独立 payload-owner contract 一直保留到最后一次 release；因此提前销毁已 Quiescent Acquisition instance 不等于提前归还这些 payload 预算。
 
 **Test Seam。**
 

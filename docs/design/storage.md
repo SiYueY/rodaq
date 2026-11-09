@@ -67,18 +67,18 @@ Storage write success != Segment durable commit
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created
-    Created --> Configured
-    Configured --> Prepared
+    [*] --> Created: create success
+    Created --> Prepared: prepare backend / volume
     Prepared --> Writing: first segment opened
     Writing --> Sealing: rotate/stop
     Sealing --> Prepared: segment sealed
     Writing --> Failed: write unknown/fatal
     Sealing --> Failed: seal unknown/fatal
+    Created --> Quiescing: prepare failure / shutdown
     Prepared --> Quiescing: close instance
     Failed --> Quiescing
-    Quiescing --> Quiescent
-    Quiescent --> Destroyed
+    Quiescing --> Quiescent: all calls / file access settled
+    Quiescent --> Destroyed: destroy
 ```
 
 具体实现可以不使用同名状态机，但必须提供等价可证明的生命周期事实。
@@ -165,7 +165,7 @@ future writes can reference this descriptor
 
 Descriptor prepare timeout 时：
 
-- Host 不执行 Descriptor Cut；
+- RoDAQ 不执行 Descriptor Cut；
 - 新 Descriptor Record 不被接纳；
 - 调用仍可能迟返时，Storage instance 和相关资源保持所有权；
 - 到局部清理 deadline 后按进程恢复规则处理。
@@ -176,7 +176,7 @@ Descriptor prepare timeout 时：
 
 V1 强制支持同步有界 batch。
 
-Host 调用：
+RoDAQ 调用：
 
 ```text
 write_batch(records[0..N))
@@ -211,7 +211,7 @@ remainder = none
 confirmed prefix 表示 Storage 能证明：
 
 - Record 已按照当前格式顺序写入；
-- 格式内部不需要 Host 再重复提交这些 Record；
+- 格式内部不需要 RoDAQ 再重复提交这些 Record；
 - Storage 不再把这些 Record 当作“未尝试”。
 
 confirmed prefix 不是 durable commit。
@@ -228,7 +228,7 @@ Storage 只有在能够证明 Record 没有被格式写入时，才允许把后�
 - 在任何后缀字节写入前明确失败；
 - backend transaction 能确定未执行该范围。
 
-Host 可以把这些 Record 结算为 AcceptedKnownFailed，但默认不会把它们重新塞回当前污染上下文重试。
+RoDAQ 可以把这些 Record 结算为 AcceptedKnownFailed，但默认不会把它们重新塞回当前污染上下文重试。
 
 是否允许业务级重放属于未来扩展规则。
 
@@ -261,13 +261,13 @@ Unknown 的处理：
 
 **Payload Consumption Boundary。**
 
-Storage write 接收 Host 借用的 Record/Payload。
+Storage write 接收 RoDAQ 借用的 Record/Payload。
 
 同步 V1：
 
-- write_batch 实际返回前，Host 不释放传入 payload；
+- write_batch 实际返回前，RoDAQ 不释放传入 payload；
 - confirmed prefix 不意味着插件已经停止访问所有输入内存，除非 ABI 明确提供更早 consume boundary；
-- timeout 不允许 Host 假设调用已停止；
+- timeout 不允许 RoDAQ 假设调用已停止；
 - pending/late call 的 payload owner 保持旧 instance。
 
 未来异步 Storage 若加入，必须分别表达：
@@ -297,7 +297,7 @@ close
 
 这样 V1 不要求 Storage 自己处理多线程写入顺序。
 
-Storage 不得从内部线程异步修改当前 format session，除非该行为完全封装且不破坏 Host 单-lane 语义。
+Storage 不得从内部线程异步修改当前 format session，除非该行为完全封装且不破坏 RoDAQ 单-lane 语义。
 
 **Segment。**
 
@@ -453,7 +453,7 @@ Core 负责合并：
 - Task/Pipeline/Instance identity；
 - `effective_config_id`；
 - Descriptor；
-- host boot/time；
+- system boot/time；
 - Coverage；
 - Data Impact；
 - commit facts。
@@ -470,11 +470,12 @@ Storage 不拥有整个 RoDAQ Manifest 的权威。
 4. fsync data/metadata files；
 5. fsync manifest；
 6. atomic publish temp→final；
-7. fsync parent directory；
-8. 发布 committed fact；
-9. Catalog 可见。
+7. fsync parent directory，证明 Segment 文件集合在声明的文件系统故障模型内持久；
+8. 在独立于 Segment 目录和 Catalog 的 Durable Artifact Ledger 中持久登记 committed fact；
+9. 发布内存 committed event；
+10. Catalog 可见。
 
-只有步骤 8 后普通查询才把 Segment 作为正常已保存产物。
+步骤 7 是 **Segment filesystem durability point**；步骤 8 的 Ledger fact 持久完成是 **RoDAQ normal Committed linearization point**。只有步骤 8 后普通查询才把 Segment 作为正常已保存产物。若步骤 7 已成功但步骤 8 尚未完成，Segment 为 `RegistrationPending`，恢复可核验并补齐 Ledger，而不能直接把目录存在当作 Committed。
 
 **Commit 失败。**
 
@@ -494,6 +495,10 @@ Storage 不拥有整个 RoDAQ Manifest 的权威。
 - 核验文件和 manifest；
 - 补齐可证明的同步；
 - 若无法证明完整性则 quarantine。
+
+**parent fsync 已成功但 Artifact Ledger 登记失败/迟返。**
+
+Segment 保持 `RegistrationPending`，文件不得删除、覆盖或进入正常 Catalog。该 Segment 继续占用 Commit backlog 的 segment/physical-byte 预算，并由原 Commit owner 重试或交给恢复流程补齐 Ledger；不得让 Writer 通过无界创建后续 Segment 绕过该占用。Ledger 持久化故障达到预算或状态目录紧急余量不足时，关闭/保护受影响 Pipeline Admission Gate，优先保留停止、恢复和 Ledger 结算所需容量。只有 Ledger committed fact 已持久完成后，才能释放对应 commit backlog 并报告 normal Committed。
 
 **Quarantine。**
 
@@ -515,9 +520,11 @@ V1 不承诺自动修复 contaminated format。
 | 事实 | 行为 |
 | --- | --- |
 | temp/staging only | quarantine |
-| final path + complete durable evidence | catalog |
-| final path + commit result missing | verify, then catalog or quarantine |
-| known committed segment missing | DataLoss/alert |
+| final path + complete filesystem durable evidence + no Ledger committed fact | verify, then persist Ledger fact and catalog；无法证明则 quarantine |
+| final path + uncertain parent sync | VerificationRequired；补齐/证明 filesystem durability 后再登记 Ledger |
+| Ledger committed fact + valid final path/manifest | catalog |
+| Ledger committed fact + segment missing/corrupt + no legal delete intent | HistoricalArtifactLostOrCorrupt / alert |
+| legal retention/Reset delete intent in progress | continue cleanup；文件已删而 Ledger fact 尚在属于可恢复中间态 |
 | contaminated/Unknown | quarantine |
 | incomplete cleanup | continue maintenance |
 
@@ -671,22 +678,33 @@ Storage 角色建议拆分：
 
 | 对象 | 主要职责 |
 | --- | --- |
-| `StoragePlugin` | Core 侧 C++ ABI wrapper |
-| `StorageInstance` | 一个 plugin storage instance 的角色状态 |
+| `StorageInstance` | 一个 plugin storage instance 的角色状态；Core 侧 C ABI wrapper 是 `rodaq::plugin::StorageHandle`，不属于 Storage 角色内部对象 |
 | `DescriptorCatalog` | prepared Descriptor/schema 映射 |
 | `SegmentWriter` | 当前 active Segment 的格式写入 |
 | `SegmentSealer` | 格式封口、文件清单和 seal facts |
 | `CommitQueue` | sealed Segment 的有界交接 |
-| `SegmentCommitter` | fsync/manifest/publish/parent fsync |
+| `SegmentCommitter` | fsync/manifest/publish/parent fsync，并在文件系统持久完成后通过 Core contract 登记 Durable Artifact Ledger |
+| `ArtifactLedger`（Core contract） | 独立保存仍受管理的 committed Segment 最小事实；不属于 Storage plugin ABI，具体持久实现由 Core persistence/artifact 模块提供 |
 | `StorageSnapshotPublisher` | write/seal/commit/resource 快照 |
 
 具体 backend 实现只实现 role ABI；Core SegmentCommitter 不依赖 MCAP/SQLite3 类型。
 
 **Storage ABI operation table。**
 
-Storage role table 至少包含：
+Storage V1 required role table 固定为：
 
 ```c
+typedef struct rodaq_storage_capability rodaq_storage_capability_t;
+typedef struct rodaq_storage_resource_plan rodaq_storage_resource_plan_t;
+typedef struct rodaq_storage_instance_config rodaq_storage_instance_config_t;
+typedef struct rodaq_storage_record rodaq_storage_record_t;
+typedef struct rodaq_storage_descriptor rodaq_storage_descriptor_t;
+typedef struct rodaq_segment_spec rodaq_segment_spec_t;
+typedef struct rodaq_segment_size rodaq_segment_size_t;
+typedef struct rodaq_storage_batch_result rodaq_storage_batch_result_t;
+typedef struct rodaq_segment_seal_result rodaq_segment_seal_result_t;
+typedef struct rodaq_storage_instance* rodaq_storage_instance_t;
+
 typedef struct rodaq_storage_operations {
     rodaq_abi_header_t header;
 
@@ -698,118 +716,142 @@ typedef struct rodaq_storage_operations {
     rodaq_result_code_t (*get_configured_capability)(
         const rodaq_config_api_t* config_api,
         rodaq_config_node_t config,
-        rodaq_storage_capability_t* out_capability,
+        rodaq_storage_capability_t* capability,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*get_resource_plan)(
         const rodaq_config_api_t* config_api,
         rodaq_config_node_t config,
-        rodaq_storage_resource_plan_t* out_plan,
+        rodaq_storage_resource_plan_t* resource_plan,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*create)(
-        const rodaq_host_services_t* host,
+        const rodaq_config_api_t* config_api,
         rodaq_config_node_t config,
-        const rodaq_storage_create_args_t* args,
-        rodaq_plugin_instance_t* out_instance,
+        const rodaq_storage_instance_config_t* instance_config,
+        const rodaq_plugin_services_t* services,
+        rodaq_storage_instance_t* instance,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*prepare)(
-        rodaq_plugin_instance_t instance,
-        const rodaq_storage_prepare_args_t* args,
+        rodaq_storage_instance_t instance,
         const rodaq_deadline_t* deadline,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*prepare_descriptor)(
-        rodaq_plugin_instance_t instance,
+        rodaq_storage_instance_t instance,
         const rodaq_storage_descriptor_t* descriptor,
         const rodaq_deadline_t* deadline,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*open_segment)(
-        rodaq_plugin_instance_t instance,
-        const rodaq_segment_open_args_t* args,
+        rodaq_storage_instance_t instance,
+        const rodaq_segment_spec_t* segment,
         const rodaq_deadline_t* deadline,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*write_batch)(
-        rodaq_plugin_instance_t instance,
+        rodaq_storage_instance_t instance,
         const rodaq_storage_record_t* records,
         uint32_t record_count,
         const rodaq_deadline_t* deadline,
-        rodaq_storage_batch_result_t* out_result,
+        rodaq_storage_batch_result_t* batch_result,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*get_segment_size)(
-        rodaq_plugin_instance_t instance,
-        rodaq_segment_size_t* out_size,
+        rodaq_storage_instance_t instance,
+        rodaq_segment_size_t* segment_size,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*seal_segment)(
-        rodaq_plugin_instance_t instance,
+        rodaq_storage_instance_t instance,
         const rodaq_deadline_t* deadline,
-        rodaq_segment_seal_result_t* out_result,
+        rodaq_segment_seal_result_t* seal_result,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*quiesce)(
-        rodaq_plugin_instance_t instance,
+        rodaq_storage_instance_t instance,
         const rodaq_deadline_t* deadline,
         rodaq_error_buffer_t* error);
 
-    void (*destroy)(rodaq_plugin_instance_t instance);
+    void (*destroy)(rodaq_storage_instance_t instance);
 } rodaq_storage_operations_t;
 ```
 
-V1 mutable operation 全部由 Host 单 lane 串行。
+`header.version_major/minor` 是 **Storage Role Protocol** 版本，不是 Common ABI 版本；RoDAQ 同时校验 descriptor 的 role protocol、operation table header 与 `role_operations_size`。V1 `RODAQ_STORAGE_OPERATIONS_BASE_SIZE` 覆盖当前列出的 validate/capability/plan/create/prepare/descriptor/segment/write/seal/quiesce/destroy 全部 required operations，base prefix 内函数指针不得为 NULL。ABI Freeze 后函数顺序、required prefix 及 Batch/Seal 输出语义不得在 minor 中改变，只能尾扩展。当前 mutable operation 全部由 RoDAQ 单 lane 串行。`rodaq_storage_instance_t` 只允许传给 Storage operations；不得与 Acquisition 或未来其它 role instance 互转，C/C++ conformance 示例以 `-Werror` 验证类型误传。`role_operations_size` 必须等于 operation table `header.struct_size`，descriptor role protocol version 必须与 table header 完全一致。V1 同时冻结 `RODAQ_STORAGE_CAPABILITY_BASE_SIZE`、`RODAQ_STORAGE_RESOURCE_PLAN_BASE_SIZE`、`RODAQ_STORAGE_INSTANCE_CONFIG_BASE_SIZE`、`RODAQ_STORAGE_RECORD_BASE_SIZE`、`RODAQ_STORAGE_DESCRIPTOR_BASE_SIZE`、`RODAQ_SEGMENT_SPEC_BASE_SIZE`、`RODAQ_SEGMENT_SIZE_BASE_SIZE`、`RODAQ_STORAGE_BATCH_RESULT_BASE_SIZE` 与 `RODAQ_SEGMENT_SEAL_RESULT_BASE_SIZE`。
 
-configured capability 至少包含：
+官方 C++ 开发路径使用 `rodaq::plugin::StorageFactory` 与 `rodaq::plugin::Storage`，由 `export.hpp` adapter 自动生成上述 C operation table。`storage.hpp` 中的 `StorageCapability`、`StorageResourcePlan`、`StorageInstanceConfig`、`StorageDescriptor`、`SegmentSpec`、`StorageBatch`、`StorageBatchResult`、`StorageWriteOutcome`、`SegmentSealResult` 与本节 C ABI 事实一一对应；`prepare()` 当前没有额外参数结构，只接收 `Deadline`。C++ 对象只存在于插件 DSO 内。MCAP、SQLite3 等官方 Storage 后端应优先实现 C++ 接口，避免重复手写 C trampoline、Result 映射和 ownership glue。
 
-```text
-environment_fingerprint
-max_record_bytes
-max_batch_records
-max_batch_bytes
-payload/schema capability bits
-descriptor_prepare capability
-physical_size capability
-rotation capability
-durability capability
-verification capability
-seal_reserve_bytes
-max_segment_file_count
+**Storage V1 value layout。** 下列结构是 Storage Role Protocol 的正式 C ABI；所有带 `rodaq_abi_header_t` 的 call-scoped value struct 都写当前 negotiated Storage Role version。V1 `*_BASE_SIZE` 固定为下列 required prefix，未来 minor 只能尾扩展。
+
+```c
+typedef struct rodaq_storage_capability {
+    rodaq_abi_header_t header;
+    rodaq_environment_fingerprint_t environment_fingerprint;
+
+    uint64_t max_record_bytes;
+    uint64_t max_batch_bytes;
+    uint64_t seal_reserve_bytes;
+    uint64_t payload_schema_bits;
+    uint64_t descriptor_prepare_bits;
+    uint64_t physical_size_bits;
+    uint64_t rotation_bits;
+    uint64_t durability_bits;
+    uint64_t verification_bits;
+
+    uint32_t max_batch_records;
+    uint32_t max_segment_file_count;
+    uint32_t max_relative_path_bytes;
+    uint32_t reserved0;
+} rodaq_storage_capability_t;
+
+typedef struct rodaq_storage_resource_plan {
+    rodaq_abi_header_t header;
+    rodaq_environment_fingerprint_t environment_fingerprint;
+
+    uint64_t plugin_buffer_bytes;
+    uint64_t compression_workspace_bytes;
+    uint64_t seal_workspace_bytes;
+    uint64_t max_internal_inflight_bytes;
+    uint64_t max_batch_bytes;
+
+    uint32_t thread_count;
+    uint32_t executor_count;
+    uint32_t fd_count;
+    uint32_t max_batch_records;
+    uint32_t max_active_segment_files;
+    uint32_t max_segment_file_count;
+    uint32_t max_relative_path_bytes;
+    uint32_t reserved0;
+} rodaq_storage_resource_plan_t;
+
+typedef struct rodaq_storage_instance_config {
+    rodaq_abi_header_t header;
+
+    rodaq_task_id_t task_id;
+    rodaq_pipeline_id_t pipeline_id;
+    rodaq_instance_id_t instance_id;
+    rodaq_effective_config_id_t effective_config_id;
+    uint64_t control_generation;
+
+    rodaq_environment_fingerprint_t expected_environment_fingerprint;
+    rodaq_string_t output_volume_id;
+
+    uint64_t max_record_bytes;
+    uint64_t max_batch_bytes;
+    uint64_t seal_reserve_bytes;
+    uint32_t max_batch_records;
+    uint32_t max_segment_file_count;
+    uint32_t max_relative_path_bytes;
+    uint32_t max_active_segment_files;
+
+    const rodaq_secret_bundle_t* secrets;
+} rodaq_storage_instance_config_t;
 ```
 
-Resource Plan 至少包含：
+`output_volume_id`、`secrets` 及其 nested bytes 只在 `create()` 调用期间 borrowed，插件必须复制跨调用需要的普通值/凭据。Capability 与 Resource Plan 的 `environment_fingerprint` 必须完全一致；Storage effective limits 不得超过 capability、resource plan 或 Deployment admission 的任何一侧。`max_segment_file_count` 与 `max_relative_path_bytes` 同时决定 seal output 的预分配上界，不能在 seal 时再动态询问容量。
 
-```text
-environment_fingerprint
-plugin_buffer_bytes
-compression_workspace_bytes
-seal_workspace_bytes
-max_internal_inflight_bytes
-thread_count
-executor_count
-fd_count
-max_batch_records
-max_batch_bytes
-max_active_segment_files
-```
-
-所有 count 使用 `uint32_t`，所有 byte size 使用 `uint64_t`。Capability 与 Resource Plan fingerprint 不一致时 Host 拒绝创建实例。
-
-`rodaq_storage_create_args_t` 至少固定：
-
-```text
-task/pipeline/instance identity
-effective_config_id
-control generation
-Effective Pipeline Limits
-resolved output-volume identity
-role Host Services/context
-optional secret bundle
-```
-
-`create()` 只建立准入后的本地实例，不打开业务 Segment、执行长时间 fsync 或等待外部设备恢复；这些工作由带 deadline 的后续 role operation 完成。
+`create()` 只建立准入后的本地实例，不打开业务 Segment、执行长时间 fsync 或等待外部设备恢复。`config_api` 与 config node 只在 create 调用期间 borrowed；`services` 在 create 失败时不得保留，成功后可由该 Storage instance 保存到 destroy 返回。创建前必须重新观察影响 capability/resource plan 的 backend 环境并与 `expected_environment_fingerprint` 比较；不一致时返回 Conflict/Unavailable、保持 `instance == NULL`，由 RoDAQ 重新执行 capability→plan→admission。
 
 Storage 调用顺序冻结为：
 
@@ -828,19 +870,47 @@ Storage 调用顺序冻结为：
 
 **StorageRecord ABI。**
 
-Storage 不接收 Acquisition 原始对象，而接收 Core accepted Record 的稳定 role representation：
+Storage 不接收 Acquisition 原始对象，而接收 Core accepted Record 的稳定 role representation。V1 采用固定容量时间戳数组：
 
-```text
-stream identity
-acceptance sequence
-descriptor identity/token
-receive/recording/source timestamps
-source facts
-payload bytes + logical size
-bounded flags/extensions
+```c
+#define RODAQ_STORAGE_TIMESTAMP_CAPACITY 6u
+
+typedef struct rodaq_storage_timestamp {
+    uint32_t role;
+    uint32_t clock_domain;
+    int64_t value_ns;
+} rodaq_storage_timestamp_t;
+
+typedef struct rodaq_storage_record {
+    rodaq_abi_header_t header;
+
+    rodaq_stream_id_t stream_id;
+    rodaq_descriptor_id_t descriptor_id;
+    uint64_t acceptance_sequence;
+
+    rodaq_system_boot_id_t system_boot_id;
+    uint64_t clock_epoch_id;
+    uint64_t receive_monotonic_ns;
+    int64_t receive_realtime_ns;
+
+    rodaq_source_id_t source_id;
+    rodaq_source_session_id_t source_session_id;
+    uint64_t source_sequence;
+
+    rodaq_bytes_t payload;
+    rodaq_storage_timestamp_t timestamps[RODAQ_STORAGE_TIMESTAMP_CAPACITY];
+
+    uint64_t flags;
+    uint32_t timestamp_count;
+    uint32_t sequence_scope;
+    uint8_t has_source_id;
+    uint8_t has_source_session_id;
+    uint8_t has_source_sequence;
+    uint8_t reserved[5];
+} rodaq_storage_record_t;
 ```
 
-Storage 只能读取这些事实，不得修改 Record identity 或 Payload。
+records array、payload bytes 及其 nested views 只在同步 `write_batch()` 实际返回前 borrowed；RoDAQ watchdog timeout 但 backend call 未迟返时 borrow 仍持续。`timestamp_count <= RODAQ_STORAGE_TIMESTAMP_CAPACITY`；unused slots 和 absent source fields 必须清零。Storage 只能读取这些事实，不得修改 Record identity 或 Payload。
 
 **BatchResult ABI。**
 
@@ -873,48 +943,61 @@ typedef struct rodaq_storage_batch_result {
 - partial known failure：`confirmed_prefix < record_count` + `TAIL_DEFINITELY_UNWRITTEN`；
 - 无法证明剩余部分未写入：`TAIL_UNKNOWN`；
 - timeout 且 backend call 可能继续执行：必须视为 Unknown；
-- ABI 参数本身无效导致无法安全解释输出时，Host 不读取 BatchResult，但这种错误只能发生在进入 backend write 之前；
-- Host 对其它非法组合整体提升为 Unknown 并认为插件违反接口契约。
+- ABI 参数本身无效导致无法安全解释输出时，RoDAQ 不读取 BatchResult，但这种错误只能发生在进入 backend write 之前；
+- RoDAQ 对其它非法组合整体提升为 Unknown 并认为插件违反接口契约。
 
 **Descriptor Prepare 表示。**
 
-`rodaq_storage_descriptor_t` 至少提供：
-
-```text
-descriptor_id
-stream identity
-encoding
-schema bytes/identity
-source/time interpretation summary
-bounded namespaced extensions
-required-extension flags
+```c
+typedef struct rodaq_storage_descriptor {
+    rodaq_abi_header_t header;
+    rodaq_descriptor_id_t descriptor_id;
+    rodaq_stream_id_t stream_id;
+    rodaq_string_t encoding;
+    rodaq_string_t schema_name;
+    rodaq_bytes_t schema;
+    rodaq_digest256_t schema_digest;
+    uint64_t source_timestamp_role_bits;
+    uint64_t flags;
+} rodaq_storage_descriptor_t;
 ```
 
-Storage prepare 返回 success 前必须完成所有会导致“这个 Descriptor 根本无法写”的验证。
+所有 string/schema bytes 只在 `prepare_descriptor()` 调用实际返回前 borrowed。Storage prepare 返回 success 前必须完成所有会导致“这个 Descriptor 根本无法写”的验证。
 
 允许把昂贵但可延迟的格式对象创建放到 prepare 内，但必须受 operation deadline。
 
-**Segment Open Args。**
+**Segment Spec。**
 
-Core 为 Storage 创建 staging location，并向 plugin 传：
+RoDAQ 为 Storage 创建 staging location，并以正式 value struct 传入：
 
-```text
-segment_id
-instance identity
-staging directory/path capability
-effective storage config
-known descriptor set
-size/rotation limits
-seal budget
+```c
+typedef struct rodaq_segment_spec {
+    rodaq_abi_header_t header;
+    rodaq_segment_id_t segment_id;
+    rodaq_instance_id_t instance_id;
+    rodaq_string_t staging_directory;
+    uint64_t target_data_bytes;
+    uint64_t hard_data_bytes;
+    uint64_t seal_reserve_bytes;
+    uint32_t max_file_count;
+    uint32_t max_relative_path_bytes;
+} rodaq_segment_spec_t;
+
+typedef struct rodaq_segment_size {
+    rodaq_abi_header_t header;
+    uint64_t physical_bytes;
+    uint32_t file_count;
+    uint32_t reserved0;
+} rodaq_segment_size_t;
 ```
 
-V1 不让 Storage 自行选择最终全局目录，也不允许它绕过受管 output root 写任意位置。
+`staging_directory` 只在 `open_segment()` 调用期间 borrowed；Storage 成功 open 后必须保存自己需要的受管路径/目录句柄，不得保存该 string view。V1 不让 Storage 自行选择最终全局目录，也不允许它绕过受管 output root 写任意位置。
 
-文件路径参数必须是受管、规范化后的 host-provided location。
+文件路径参数必须是受管、规范化后的 RoDAQ-provided location。
 
 Storage 对 staging directory 的写入必须受以下路径约束：
 
-- Host 提供的 staging root 是唯一允许写入根；
+- RoDAQ 提供的 staging root 是唯一允许写入根；
 - plugin 产生的文件名/SealResult 只允许相对路径；
 - 禁止绝对路径、`..`、空路径和路径规范化后逃逸 staging root；
 - Core 在接收 SealResult 后重新验证每个文件仍位于该 Segment staging root；
@@ -938,7 +1021,7 @@ active Segment 生命周期内：
 - Core 拥有 staging namespace 和最终 publish 决策；
 - seal success 后 Storage 永久放弃对 sealed files 的修改权；
 - Commit Lane 取得 sealed files 的 durability/publish owner；
-- Catalog 只读取 committed facts。
+- Catalog 只从 Durable Artifact Ledger committed facts、Segment 核验结果和合法删除进度重建；自身不拥有 committed authority。
 
 同一文件不能同时由 Storage 和 Committer 修改。
 
@@ -968,7 +1051,7 @@ Storage backend 内的多子步骤共享一个 absolute monotonic deadline。
 
 如果 backend API 不支持取消：
 
-- Host deadline 到期后停止等待/标记 timeout；
+- RoDAQ deadline 到期后停止等待/标记 timeout；
 - 实际 backend call 可能仍执行；
 - instance、payload、format state 和 execution slot 继续归旧 call；
 - 不得同时对同一 instance 发新的 mutable call。
@@ -1020,20 +1103,37 @@ current physical
 
 **SealResult ABI。**
 
-Seal result 至少返回：
+`seal_segment()` 是有副作用且不可安全重放的操作，因此 **V1 禁止 two-pass `required-capacity → 再次 seal`**。容量必须在 Resource Plan/instance admission 阶段确定并由 RoDAQ 在单次 seal 调用前预分配：
 
-```text
-file count
-bounded file descriptors/names
-final physical sizes
-format metadata/checksum contribution
-seal overhead
-backend verification facts
+```c
+typedef struct rodaq_path_buffer {
+    char* data;
+    uint32_t capacity;
+    uint32_t size;
+} rodaq_path_buffer_t;
+
+typedef struct rodaq_sealed_file {
+    rodaq_path_buffer_t relative_path;
+    uint64_t physical_size;
+    rodaq_digest256_t content_digest;
+    uint32_t digest_kind; /* 0 = none */
+    uint32_t flags;
+} rodaq_sealed_file_t;
+
+typedef struct rodaq_segment_seal_result {
+    rodaq_abi_header_t header;
+    rodaq_sealed_file_t* files;
+    uint32_t file_capacity;
+    uint32_t file_count;
+    uint64_t total_physical_bytes;
+    uint64_t seal_overhead_bytes;
+    uint64_t verification_bits;
+} rodaq_segment_seal_result_t;
 ```
 
-file list 不能是插件动态堆 vector 跨 ABI 返回。使用 caller-owned bounded output，或两阶段 required-capacity + fill。
+调用前 RoDAQ 必须令 `file_capacity >= admitted max_segment_file_count`，并为每个 `relative_path` 提供 `capacity >= admitted max_relative_path_bytes + 1` 的 caller-owned buffer，全部清零。插件在执行任何 seal side effect **之前**验证这些容量；不足则返回 `InvalidArgument`，不得开始 seal。成功或已开始 seal 后，插件绝不能需要超过已声明上界；若实际 `file_count/path bytes` 超过 admission 声明，属于 Plugin Contract Violation，当前 Segment 进入 quarantine/Unknown 处理，不能通过重调 seal 修复。
 
-Seal success 后 Storage 不再修改这些文件。
+`relative_path.capacity` 包含 NUL；`size` 不含 NUL。写出的路径必须有效 UTF-8、NUL-terminated、相对且满足 staging-root 约束。`file_count <= file_capacity`，unused entries 保持全零。`digest_kind == 0` 时 `content_digest` 必须全零。Seal success 后 Storage 永久放弃对这些 sealed files 的修改权。`rodaq_path_buffer_t` 与 `rodaq_sealed_file_t` 是 V1 固定 nested layout，不带 `rodaq_abi_header_t`、不在原地尾扩展；未来需要新增 per-file 字段时通过 SegmentSealResult 的新 tail capability/新 array type 引入，不能改变现有 array stride。
 
 **SealedSegment。**
 
@@ -1099,10 +1199,11 @@ validate sealed file list
 → fsync staging directory
 → atomic rename staging directory to final Segment name in same parent
 → fsync Segment parent directory
-→ publish in-memory/rebuildable committed fact
+→ persist Durable Artifact Ledger committed fact
+→ publish in-memory committed event / rebuildable Catalog
 ```
 
-每一步都产生内部 progress marker/diagnostic，但 **durable commit linearization point 是 final directory rename 后对应 parent directory 的 fsync 成功返回**。最后的 committed fact/Catalog publish 是可重建内存或索引事实，不再引入第二个 durability 边界。若 rename 已成功但 parent fsync 结果未知，则进入 VerificationRequired，不能直接报告 Committed。
+每一步都产生内部 progress marker/verification fact。final directory rename 后对应 parent directory 的 fsync 成功返回是 **Segment filesystem durability point**；随后独立 Durable Artifact Ledger committed fact 完成持久发布才是 **RoDAQ normal Committed linearization point**。Catalog publish 仍是可重建内存/索引事实，不引入额外 durability boundary。若 rename 已成功但 parent fsync 结果未知，则进入 `VerificationRequired`；若 parent fsync 已成功但 Ledger 尚未持久完成，则进入 `RegistrationPending`，恢复核验后补齐 Ledger，二者都不能直接报告 Committed。
 
 **Segment Manifest 字段规范。**
 
@@ -1123,7 +1224,7 @@ RoDAQ Segment Manifest 是 Core-owned Strict JSON。Storage 只提供其中的 `
 | `descriptors` | bounded array | 本 Segment 实际引用的 Descriptor 完整解码事实 |
 | `files` | bounded array | 受管相对路径、物理大小、checksum/format role |
 | `record_coverage` | bounded object/array | 每 Stream sequence/time coverage 与 known/unknown outcome |
-| `host_boot_id` / `clock_epochs` | string / bounded array | 接收时间解释证据 |
+| `system_boot_id` / `clock_epochs` | string / bounded array | 接收时间解释证据 |
 | `logical_bytes` / `physical_bytes` | decimal string | 统计与容量事实 |
 | `commit` | object | seal/commit 结果和必要 durable evidence version |
 | `content_digest` | string | Manifest 自身规范化内容摘要 |
@@ -1143,8 +1244,10 @@ staging only
 sealed but unpublished
 final path + manifest
 final path + uncertain parent sync
+filesystem durable + Ledger missing (RegistrationPending)
+Ledger committed fact + valid Segment
+Ledger committed fact + Segment missing/corrupt
 quarantine
-known committed fact
 ```
 
 Core recovery scanner 只输出结构化 Evidence，Catalog 决策遵循本章前述 **Recovery** 规则，不从目录时间戳或未验证的文件存在性推断 Committed。
@@ -1163,22 +1266,33 @@ Core recovery scanner 只输出结构化 Evidence，Catalog 决策遵循本章�
 
 **Storage C++ Wrapper。**
 
-Core 侧 wrapper：
+Core 侧 wrapper 与 Plugin 公共文档中的 `rodaq::plugin::StorageHandle` 对齐：
 
 ```cpp
-class StoragePlugin {
+struct StorageWriteOutcome {
+    Status status;
+    StorageBatchResult batch_result;
+};
+
+class StorageHandle {
 public:
-    Result<void> prepare(const StoragePrepareRequest&, Deadline);
-    Result<void> prepare_descriptor(const StreamDescriptor&, Deadline);
-    Result<void> open_segment(const SegmentOpenRequest&, Deadline);
-    StorageBatchResult write_batch(const StorageBatch&, Deadline);
+    Result<void> prepare(Deadline deadline);
+    Result<void> prepare_descriptor(
+        const StreamDescriptor& descriptor,
+        Deadline deadline);
+    Result<void> open_segment(
+        const SegmentSpec& segment,
+        Deadline deadline);
+    StorageWriteOutcome write_batch(
+        const StorageBatch& batch,
+        Deadline deadline);
     Result<SegmentSize> segment_size() const;
-    Result<SegmentSealResult> seal_segment(Deadline);
-    Result<void> quiesce(Deadline);
+    Result<SegmentSealResult> seal_segment(Deadline deadline);
+    Result<void> quiesce(Deadline deadline);
 };
 ```
 
-Wrapper 负责 ABI 校验、Status 映射、deadline/latency metrics 和 error buffer，不让 Pipeline 直接接触 C function table。
+当前 `prepare` 没有独立 request object；`open_segment` 使用已有领域对象 `SegmentSpec`，不再定义 `SegmentOpenRequest`。Wrapper 负责 ABI 校验、Status 映射、deadline/latency metrics 和 error buffer，不让 Pipeline 直接接触 C function table。`StorageWriteOutcome` 在 Core-side namespace 中保留同一双通道语义：`status` 表示操作状态，`batch_result` 始终有效并表示已确认前缀/尾部确定性；尚未进入 backend write 的失败固定为 `0 + DefinitelyUnwritten`，进入 backend write 后按实际事实返回 DefinitelyUnwritten 或 Unknown。Pipeline 不能把非 OK 直接压缩成只有 Status 而丢失 BatchResult。
 
 **Storage Backend Adapter。**
 
@@ -1236,18 +1350,18 @@ Storage wrapper 将后端错误映射为：
 
 **Quiesce 与 Destroy。**
 
-Storage quiesce：
+Storage `quiesce()` 继承 Plugin 公共幂等收敛契约，对 create 成功后的 Created/Prepared/active/failed instance 都合法；prepare/open/write/seal 任一步失败后也必须经 quiesce 才能 destroy，已 Quiescent 重复调用返回 OK：
 
 ```text
 prevent new mutable calls
-→ wait current write/prepare/seal call end
+→ wait current write/prepare/seal call actually return
 → settle/abort active Segment according to known result
 → stop backend workers
 → prove no file/payload access
 → Quiescent
 ```
 
-`destroy()` 只释放 Quiescent 实例，不负责首次 flush/seal。
+RoDAQ watchdog 先到但旧 Storage ABI call 尚未返回时仍是 `TimedOutButInFlight`；同一实例 mutable call 串行规则下，RoDAQ 只登记 quiesce pending，等待旧调用迟返后才真正调用 quiesce。旧调用永久不返则按 Plugin 公共规则升级进程级恢复。`destroy()` 只释放 Quiescent 实例，不负责首次 flush/seal、外部 I/O 或未知线程 join。
 
 **Test Seam。**
 
@@ -1268,21 +1382,21 @@ Storage 详细实现需要：
 
 ```text
 storage/
-  storage_plugin.*
-  storage_types.*
+  instance.*
+  descriptor_catalog.*
   segment_writer.*
   segment_sealer.*
   sealed_segment.*
   commit_queue.*
   segment_committer.*
-  storage_snapshot.*
+  snapshot.*
 
 plugins/
   mcap/
   sqlite3/
 ```
 
-通用 `storage/` 不包含 MCAP/SQLite3 第三方头；文件系统持久提交能力可以形成明确的 platform/storage support 文件，但不放入宽泛 `utils/` 或 `detail/`。
+目录已经表达 Storage 领域，因此内部文件不重复 `storage_` 前缀，也不保留 `types.*` 兜底文件。Descriptor 映射明确归 `descriptor_catalog`，Segment 写入/封口/提交各自独立命名；共享值类型放在最接近其所有权的文件或公开 `plugin/storage.hpp`。通用 `storage/` 不包含 MCAP/SQLite3 第三方头；文件系统持久提交能力使用职责明确的 platform/storage support 文件，不放入 `common/utils/helpers/detail`。
 
 ## 6. 不变量与资格
 
@@ -1331,12 +1445,14 @@ plugins/
 - manifest fsync；
 - rename；
 - parent fsync；
+- Artifact Ledger committed fact write/sync/publish；
 - catalog publish。
 
 恢复后每个 Segment 只能归入：
 
 ```text
 Committed
+RegistrationPending
 Quarantined
 VerificationRequired
 Missing/Corrupt
@@ -1384,7 +1500,8 @@ Storage 角色契约完成需要：
 - MCAP 实现无需修改 Pipeline 核心语义；
 - Unknown 和 timeout 资源所有权可证明；
 - physical-size/seal-reserve 规则通过真实数据验证；
-- Writer/Commit backlog 在峰值负载达到有界稳态；
-- crash matrix 没有“路径存在但无法判断是否 committed”的未定义恢复；
+- Writer/Commit backlog（包含 RegistrationPending/Ledger 登记积压）在峰值负载达到有界稳态；
+- crash matrix 覆盖 filesystem durability→Artifact Ledger→Catalog 的全部窗口，不存在“目录存在但无法判定 normal Committed”或“Ledger 已提交但文件丢失却无法识别”的未定义恢复；
+- retention/Reset 能在文件删除与 Ledger 清理之间任意崩溃点恢复，且不把合法删除误报为历史丢失；
 - 独立读回与标准工具互操作通过；
-- 72h/168h 资格中文件数、FD、RSS、pending Segment 和 commit lag 无未解释增长。
+- 72h/168h 资格中文件数、FD、RSS、pending Segment、Artifact Ledger 活跃事实/字节和 commit lag 无未解释增长。
