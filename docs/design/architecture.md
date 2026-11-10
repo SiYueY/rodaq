@@ -59,10 +59,10 @@ flowchart LR
 | Task 状态 | 期望控制状态与执行条件正交建模 | 避免 `Running/Failed` 单状态混淆持久意图与运行事实 |
 | 记录身份 | `stream_id + acceptance_sequence`，按 Stream 持久区间预留并跨实例/重启不复用 | 保持稳定记录身份，同时避免制造不存在的跨流全局顺序 |
 | 接纳边界 | Pipeline Admission Gate 建立全链路 cut，per-Stream commit 完成 Descriptor/Sequence；接纳提交点是“可拒绝→必须结算”的唯一边界 | 统一 Start/Pause/Stop/failure cutoff 与并发提交语义 |
-| 插件边界 | 受管 Plugin Package + 固定 bootstrap C ABI + Role Protocol + C++ authoring adapter + 配置 Schema catalog + Capability/Resource Plan | C ABI 稳定跨 DSO；C++ API 提高插件开发效率但不成为二进制边界；在 `dlopen` 前完成 artifact 准入 |
+| 插件边界 | 受管 Plugin Package + 固定 bootstrap C ABI + Acquisition/Storage Role Protocol + C++ authoring adapter + 配置 Schema catalog | 插件只负责协议/格式适配；系统资源、Volume、Admission、Commit authority 留在 Task/Core；后端差异通过配置、Canonical Data Model 与 Role minor-tail 演进 |
 | Storage V1 | 同步有界批次；Writer 与 Commit Lane 有界解耦；真实性能不合格时发布前补齐异步写入能力 | 隔离 fsync 尾延迟，同时保持 backlog 和所有权可证明 |
 | 持久化 | 不可变 Task Config + Stream Identity State + 单一 Task Control authority + Recovery Progress + Segment 原子发布 + Durable Artifact Ledger | 分离身份、控制、执行、数据内容与“已提交产物曾存在”的持久事实，避免依赖可重建索引反推历史 |
-| 资源模型 | Core 硬计费、Plugin 声明、共享外部资源分层治理，并限制长期对象 cardinality | 防止“内存池有界但元数据/中间件/提交积压无界”的长期失控 |
+| 资源模型 | Application/Deployment 定策略，Task ResourceProfile 定任务预算，Core/Pipeline 执行硬计费与 Admission；第三方 backend 内部资源走配置与资格验证 | 防止插件成为第二套资源调度器，同时保持热路径与长期对象有界 |
 | 发布门禁 | 真实 ROS 2 → MCAP、故障矩阵、72h 工程预资格、168h 生产画像 | V1 按工业交付而非功能演示验收 |
 
 ## 1. 系统目标与生产约束
@@ -104,7 +104,7 @@ flowchart LR
 
 V1 交付本机可安装和操作的数采应用。操作者能配置并并行运行多个录制任务，执行 Start、Pause、Resume、Stop 和 Reset，通过本机 Web 或 API 查看各数据流的实际频率，查询并获取录制产物。两种录制模式共用分片写入，连续录制保留历史，滚动录制按配置回收窗口外分片。
 
-V1 是**工业生产环境可交付的录制核心**，不是功能演示版。凡进入 V1 的录制能力，都必须同时闭合数据语义、接纳边界、载荷所有权、插件配置与资源计划、写入和分片提交、故障恢复、可观测性、性能容量以及长期运行资格；不得以“后续版本再完善”为理由保留会影响正确性、资源有界性或目标负载的未定义行为。后续版本主要扩展更多采集与存储后端、跨节点能力、在线处理以及超出 V1 故障矩阵的高级恢复，而不是补齐 V1 已承诺录制路径的基础正确性。
+V1 是**工业生产环境可交付的录制核心**，不是功能演示版。凡进入 V1 的录制能力，都必须同时闭合数据语义、接纳边界、载荷所有权、插件配置与 Core 资源治理、写入和分片提交、故障恢复、可观测性、性能容量以及长期运行资格；不得以“后续版本再完善”为理由保留会影响正确性、资源有界性或目标负载的未定义行为。后续版本主要扩展更多采集与存储后端、跨节点能力、在线处理以及超出 V1 故障矩阵的高级恢复，而不是补齐 V1 已承诺录制路径的基础正确性。
 
 开发先冻结数据流与记录语义、录制链路规则和插件边界，再打通 ROS 2 → MCAP。随后完成 `rodaq` 模块的任务控制、两种录制模式、恢复、产物查询和生产观测；`rodaq` 模块通过功能、故障和性能门槛后，再设计 HTTP 接口并接入 Web。V1 分别验证 MQTT → MCAP 和 ROS 2 → rosbag2 SQLite3，以确认同一套采集器和存储器插件边界支持替换。采集入口、暂停排空、分片提交、资源上限和端到端性能门槛从首个闭环落实。[实施顺序与验收](#7-实施门槛与生产资格)
 
@@ -185,7 +185,7 @@ flowchart LR
 | 执行域 | 所有权与容量 | 停机与迟返处理 |
 | --- | --- | --- |
 | 控制面 | 管理任务配置、持久期望状态与控制代次、有界操作账本，以及内存中的执行投影和独立恢复记录。限制请求大小、并发和控制队列，预留健康查询与停止能力 | 先关闭新任务及启动入场，再协调已受理操作。迟返只能更新与其控制代次、链路和实例匹配的资源结算或观察事实 |
-| 录制执行域 | 每个录制链路独立拥有插件实例、数据入口、有界队列、串行写入权限和当前分片。准入计入插件内部缓冲、线程和 FD | 关闭接纳，排空并结算分片。释放插件及输出所有权前确认相应执行和引用已经静止。超时保留占用和迟返归属 |
+| 录制执行域 | 每个录制链路独立拥有插件实例、数据入口、有界队列、串行写入权限和当前分片。Core 准入只计入自己可控制的 queue/payload/execution/segment/commit 等预算；插件内部 middleware/writer 资源由配置与资格验证约束 | 关闭接纳，排空并结算分片。释放插件及输出所有权前确认相应执行和引用已经静止。超时保留占用和迟返归属 |
 | 产物维护和读取 | 分页索引、验证、读回、导出、保留回收。每卷有界作业和带宽，使用与控制提交和录制不同的执行资源 | 下载取消后释放读引用。回收通过持久意图重试。超时卷的维护任务不占用其他卷预留容量 |
 | 外部服务管理器 | 启动、限制和监视单个 RoDAQ 守护进程，配置重启退避、频率上限和正常关停期限 | 区分退出请求、超时与真实退出。确认旧守护进程退出后才启动替代实例。无法退出时告警并保留排他约束 |
 
@@ -197,7 +197,9 @@ V1 不把多个采集器合并到同一链路，也不把一条链路同时扇�
 
 每条链路在创建实例前独立预留串行写入容量及可能阻塞的采集控制调用容量。采集器停止调用阻塞时，该链路的写入者仍可排空已接纳的数据。存储器的写入、封口及其他需要与写入串行的操作使用该链路的写入容量。可能无限迟返的插件控制调用不得与 Writer、控制提交或健康查询共用一个没有隔离配额的线程池；实现必须为其提供链路专属或严格分区的执行槽位。C++17 不尝试强行终止任意卡死线程，到达局部清理期限仍无法证明静止时按整进程恢复规则处理。阻塞调用在所属链路执行，控制面读取快照，结构锁内不调用插件、文件系统或外部回调。停止操作的受理与调度、健康查询及诊断使用单独的预留容量。
 
-`rodaq` 模块按链路统一检查并预留所需额度，检查范围包括进程的链路槽位、线程、文件描述符及内存预算。准备中、录制中及待清理的实例均计入占用。每条链路在一次预留中取得全部所需额度，资源不足时报告该链路准备失败。任务按照配置的 `AllRequired` 或 `BestEffort` 策略聚合各链路准备结果并结算 Start、Resume 或自动恢复；资源是否已实际取得和入口是否已开放始终按链路单独报告。插件初始化及失败收尾期间保留其占用，关联调用、引用和资源实际释放后才归还对应额度。
+`rodaq` 模块按链路统一检查 **Core 自己可控制的**资源：Pipeline/Segment 槽位、control/plugin-call execution slot、Record/byte/Payload/Queue、Core-owned FD/memory、Volume bytes、seal reserve、Commit backlog 与长期对象 cardinality。准备中、录制中、待提交和待清理的 Core ownership 都计入占用；资源不足时在 Gate Open/Admission Commit 前失败或进入保护。
+
+插件/backend 内部资源不伪装成同一套精确 reservation。能够由插件配置显式限制的 DDS history、MQTT client queue、compression/database cache 等由 Schema/semantic validation 约束；第三方库内部 thread/FD/TLS/kernel buffer 通过进程级 cgroup/systemd 限制、发布支持矩阵和真实负载 RSS/thread/FD/HWM qualification 管理。插件初始化及迟返期间只保留实际仍被 owner 使用的 Core execution/handle/对象，不存在“Plugin 预报一份线程/FD ResourcePlan 后 Core 照单预留”的路径。
 
 共享磁盘、网卡、内核或同一物理设备需单独限制和验证。Linux cgroup v2 可约束整个守护进程的部署资源，具体控制器与目标 I/O 行为需要实测。[Linux cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) · [systemd 服务单元](https://man7.org/linux/man-pages/man5/systemd.service.5.html)
 
@@ -231,25 +233,35 @@ V1 不把多个采集器合并到同一链路，也不把一条链路同时扇�
 | 存储器插件 | 负责目标格式的写入、滚动分片的格式封口及所需文件的清单 |
 | `rodaq` 模块 | 管理任务、插件实例和执行预算，负责数据接纳、文件提交、产物索引与清理 |
 
-同进程插件须来自受管发布渠道并通过 Plugin Package admission。daemon 初始化阶段以有界扫描一次性验证 Deployment 启用的 package manifest、artifact/schema digest、目标平台、权限、allow-list 与依赖支持矩阵，之后才允许 `dlopen` 并形成进程生命周期内 immutable Plugin Catalog；Task Create/Start 不触发新的插件目录扫描或 DSO 装载。运行时先通过独立且永久稳定的 Bootstrap Foundation 协商 Common ABI，再按所选 Common ABI descriptor 校验 plugin identity、RoDAQ feature floor 与 Role Protocol。Bootstrap 不依赖 Common ABI descriptor/result 类型，也不携带 feature bits。兼容承诺覆盖发布矩阵中经过联合验证的应用版本、插件版本、操作系统、架构和依赖组合。同进程插件的隔离边界只覆盖符合 ABI 契约的返回错误、迟返所有权、超时和资源占用；插件触发的进程崩溃、未定义行为、内存破坏、全局死锁或无界资源消耗不属于链路级隔离保证，按进程级故障处理。
+同进程插件须来自受管发布渠道并通过 Plugin Package admission。daemon 初始化阶段以有界扫描一次性验证 Deployment 启用的 package manifest、artifact/schema digest、目标平台、权限、allow-list 与依赖支持矩阵，之后才允许 `dlopen` 并形成进程生命周期内 immutable Plugin Catalog；Task Create/Start 不触发新的插件目录扫描或 DSO 装载。运行时先通过独立且永久稳定的 Bootstrap Foundation 协商 Common ABI，再按所选 Common ABI descriptor 校验 plugin identity 与 Role Protocol。Bootstrap 不依赖 Common ABI descriptor/result 类型，也不承担 capability/resource negotiation。兼容承诺覆盖发布矩阵中经过联合验证的应用版本、插件版本、操作系统、架构和依赖组合。同进程插件的隔离边界只覆盖符合 ABI 契约的返回错误、迟返所有权、超时和资源占用；插件触发的进程崩溃、未定义行为、内存破坏、全局死锁或无界资源消耗不属于链路级隔离保证，按进程级故障处理。
 
 动态库边界采用单一固定 Bootstrap Foundation。bootstrap 只协商 Common ABI 并返回该 ABI descriptor 的 opaque pointer/size；只有协商成功后 Loader 才按对应 Common ABI 解释 Plugin Descriptor，再取得 Acquisition/Storage Role Protocol operation table。不是每个角色导出一组全局入口。Common/Role ABI 使用结构大小、typed opaque handle、有界缓冲和固定结果码，插件内部可用 C++17。所有权、借用期限、逐函数并发、deadline/late-return 和释放责任由 Plugin 公共详细设计冻结；`rodaq` 模块与插件各自处理内部异常，任何 C++ exception 不跨稳定 C ABI。
 
-#### 2.5.1 插件配置、能力与资源计划
+#### 2.5.1 插件配置、后端差异与系统资源边界
 
-统一插件接口不要求不同插件共享同一组业务配置字段。任务配置保存链路公共字段和各插件自己的参数对象；ROS 2 的 Topic、类型和 QoS，MQTT 的 Broker、Topic 和 QoS，以及 MCAP 的压缩、Chunk 和索引参数都由对应插件定义。`rodaq` 模块不维护包含所有后端字段的巨大联合配置，也不让 `nlohmann::json`、`std::string`、`std::vector` 或具体后端 C++ 类型跨稳定 C ABI。
+统一插件接口不要求不同后端共享同一组业务配置字段。任务配置保存链路公共字段和各插件自己的参数对象；例如 ROS 2 可以配置 Topic/type/QoS，MQTT 可以配置 Broker/Topic/QoS/session，MCAP 配置 chunk/compression/index，SQLite3 配置 transaction/journal/WAL/checkpoint。`rodaq` 模块不维护包含所有后端字段的巨大联合配置，也不让具体后端 C++ 类型跨稳定 C ABI。
 
-每个 Plugin Package 提供可机器读取、带版本的 **JSON Schema catalog**。服务端和 `rodaq` 模块按 Task 保存的精确 schema version 完成结构校验；插件仍是协议相关语义校验最终权威。Config Schema 与 Common/Role ABI 分开版本化，旧 Task 只能在当前 package 仍明确提供该 schema 时继续解释，不隐式迁移。完整 dialect、local-only `$ref` 和资源上限规则以 `plugin.md` 为权威。 Config API 是 validate/capability/plan/create 的 per-call 只读协议，不属于 `PluginServices`；运行实例长期可借用的公共服务只包含 Clock、Logging，Acquisition 另有 typed `AcquisitionServices`。
+每个 Plugin Package 提供带版本的 JSON Schema catalog。V1 schema identity 直接等于 `plugin_id`；服务端/Core 按 Task 保存的精确 `schema_version` 做结构校验，插件 `validate_config()` 负责 backend-specific semantic validation。Config API 只在 `validate_config/create` 当前调用期间 borrowed；需要访问真实 Topic、DDS participant、设备或格式环境才能确认的条件必须在 `prepare()`/`prepare_descriptor()` 中检查，而不是增加 pre-instance capability snapshot。
 
-插件能力区分静态协议支持、Configured Capability 与 Runtime State。静态协议支持由 Role Protocol operation table 和 Extension Query 表达，不额外维护一份重复的静态 Capability 列表；Configured Capability 由已验证配置和稳定环境事实计算，不能由 `rodaq` 模块通过配置字段猜测；连接、发现、吞吐和错误等瞬时事实由各 Role 的 Snapshot/运行状态表达；Plugin Common Services 不定义额外的 Diagnostic 通道。采集器 Configured Capability 至少覆盖来源标识、来源序号、时间信息、单记录上限及载荷持有方式；存储器至少覆盖载荷/Schema 表示、记录/批次限制、物理大小、封口余量、滚动和耐久能力。真正可选的新协议通过版本化 Extension Query 增加；兼容字段优先在结构尾部增加并受结构大小保护，破坏语义的变化提升协议主版本。
+**Plugin 不提供 Resource Plan，也不参与系统 resource admission。** 资源 authority 为：
 
-插件参数通过静态校验后，在创建录制实例前产生**插件资源计划**。资源计划给出当前配置可能占用的 RoDAQ-facing buffer 和插件内部缓冲上界、线程或内部执行者上界、文件描述符、可能阻塞的控制槽位、最大单记录和在途记录/字节、存储封口余量以及其它必须硬限制的资源。CPU 使用率和实际 I/O 吞吐不伪装成可精确预留的硬额度，而由生产性能画像验证。资源计划是当前配置的申请量，链路资源档位是部署允许的上限；申请超过档位时链路在创建插件实例前准备失败。
+```text
+Application / Deployment policy
+        ↓
+Task resource_profile
+        ↓
+Core Capacity / Volume policy
+        ↓
+Effective Pipeline Limits
+        ↓
+Plugin instance + Core data path
+```
 
-`rodaq` 模块把采集器能力与资源计划、存储器能力与资源计划、Core 自身限制和链路资源档位求交，形成该录制实例的**链路生效约束**。至少冻结单记录上限、记录/字节在途上限、可用载荷持有方式、批次上限、Descriptor/Schema 可表示性、滚动能力以及需要预留的执行和内存资源。所有 Required 条件都满足且资源已经取得后，链路才允许开放接纳；运行中不得因为普通资源压力重新放宽这些上限。
+ResourceProfile 与 Core 决定 max record、Record/byte/payload quota、Queue capacity、callback service limit、Storage batch limit、Segment/Volume/Commit budget、执行槽位和长期对象 cardinality。插件在 instance config/SegmentSpec 中接收与自身接口行为有关的 limits，不能申请更大的系统预算；当前 backend 无法在限制内工作时返回结构化失败。ROS 2/RMW、MQTT client/socket、MCAP compression workspace、SQLite page/WAL memory 等插件实现资源不能在未来流量未知时假装成为精确 startup reservation；能够由 backend 配置限制的通过 Schema/semantic validation 限制，其余由固定版本/profile、cgroup/进程级约束以及 stress/soak 的 RSS/thread/FD/HWM 资格验证。
 
-同进程插件组合还必须通过依赖共存资格。Package manifest 和发布矩阵记录关键 SONAME、版本/build identity、RUNPATH 与符号可见性；ROS 2 中间件、Fast DDS/Fast CDR、OpenSSL、压缩库等存在不兼容依赖闭包时，不因 RoDAQ C ABI 本身稳定就宣称可以同时装载。未通过联合验证的组合在 `dlopen` 前的 Deployment/package admission 阶段拒绝。
+后端差异不使用任意 capability map 或通用 Extension Registry。Acquisition 把来源差异映射为 Canonical Stream Descriptor、SourceEvent、RecordAttempt/Payload；Storage 消费相同 Canonical Descriptor/Record，并通过 BatchResult/SegmentSize/SegmentSealResult 返回格式事实。真正需要 Core 理解的新 Role 语义才允许通过 Role Protocol minor + `struct_size` typed tail 演进。
 
-已注册的库句柄保留到守护进程退出，不做运行期热卸载。实例一旦 create 成功，后续成功、失败或停止路径都必须先通过幂等 quiesce 证明调用、回调、Payload 和后台访问静止，之后才 destroy；RoDAQ watchdog 超时但 ABI call 尚未返回不等于静止。Reset 要求此前实例已静止。插件升级通过受管 package 发布和整进程重启生效。
+同进程插件组合仍必须通过依赖共存资格。Package manifest 和发布支持矩阵记录关键 SONAME、版本/build identity、RUNPATH 与符号可见性；ROS 2/RMW、MQTT client/OpenSSL、压缩库等存在不兼容依赖闭包时，不因 RoDAQ C ABI 稳定就宣称可共存。Loader 只执行已冻结的 package/ABI gate，不在现场求解任意依赖图；官方组合以发布支持矩阵和联合测试为权威。
 
 #### 2.5.2 停止采集回调
 
@@ -276,94 +288,92 @@ RoDAQ 在途插件调用、插件回调及关联引用都实际结束后，`roda
 | 调用类别 | V1 并发规则 |
 | --- | --- |
 | Acquisition 控制调用 | 同一实例的 create 后 mutable control 串行；不同实例默认可并发。prepare/start 失败后仍必须 quiesce，再 destroy |
-| Acquisition 数据回调 | 插件可以从多个内部线程并发回调，但必须在 configured capability/resource plan 中声明最大并发；RoDAQ service callback 不同步反调同一实例 mutable control |
-| Storage 变更调用 | 同一实例 descriptor prepare、write batch、seal/close 等由一个逻辑 Storage lane 串行；不同实例默认可并发 |
-| Library-level immutable query | descriptor、Role/Extension table 和 extension query 必须可被多个实例并发读取，不允许依赖隐式 DSO-wide serialization |
+| Acquisition 数据回调 | 插件可以从多个 native 线程产生数据，但同时在途 RoDAQ callback 不得超过 Core 在 instance config 下发的 `max_callback_concurrency`；RoDAQ service callback 不同步反调同一实例 mutable control |
+| Storage 变更调用 | 同一实例 descriptor prepare、open segment、write batch、seal segment 等由一个逻辑 Storage lane 串行；不同实例默认可并发 |
+| Library-level immutable data | descriptor 与 Role operation table 必须可被多个实例并发读取，不允许依赖隐式 DSO-wide serialization |
 | RoDAQ service callback | 逐入口冻结并发、阻塞、所有权与重入规则；插件不得持有会与 quiesce/control 冲突的全局锁去调用 RoDAQ service callback |
 
-插件销毁前必须满足公共 quiescence：没有未返回的 RoDAQ→Plugin call、Plugin→RoDAQ service callback、Payload/Buffer 访问或插件后台任务仍可能触及实例/RoDAQ service state。RoDAQ watchdog 先到但同步 ABI call 仍执行时只登记 cleanup pending，不能并发 quiesce/destroy；迟返后再收敛，永久不返则进入整进程恢复。任何新增可并发扩展都必须声明最大并发、所有权和关闭规则，并进入 ABI/package conformance gate。
+插件销毁前必须满足公共 quiescence：没有未返回的 RoDAQ→Plugin call、Plugin→RoDAQ service callback、Payload/Buffer 访问或插件后台任务仍可能触及实例/RoDAQ service state。RoDAQ watchdog 先到但同步 ABI call 仍执行时只登记 cleanup pending，不能并发 quiesce/destroy；迟返后再收敛，永久不返则进入整进程恢复。任何新增 Role minor-tail operation 都必须冻结并发、所有权和关闭规则，并进入 ABI/package conformance gate。
 
-### 2.6 多后端组合
+### 2.6 多后端组合与 Canonical Descriptor
 
-采集器标识接入协议与数据地址，数据流描述声明载荷编码、可用的 Schema 和解释数据所需的有界扩展信息，存储器声明能写入的编码、Schema 及产物约定。三个维度分别配置。例如 MQTT 可以承载 JSON 或其他应用定义的字节，MCAP 可以保存不同编码的流。`rodaq` 模块依据数据流描述、插件能力、资源计划和链路资源档位形成链路生效约束，在开放接纳前拒绝不兼容或资源不可满足的录制配置。[MQTT 5.0 载荷与内容类型](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html) · [MCAP 格式注册表](https://mcap.dev/spec/registry)
+Acquisition 与 Storage 的可组合性由 **Canonical Data Model** 决定，而不是由插件互相理解对方私有配置或 ResourcePlan。Stream Descriptor 的跨插件事实至少包括：`data_profile`、`channel_name`、`message_encoding`、`schema_name`、`schema_encoding` 和 schema bytes；schema digest 由 Core 在接受 Descriptor proposal 时自行计算，Record timestamp role/domain 由每条 Record 自描述，不进入 Descriptor capability。Storage 在 `prepare_descriptor()` 中对实际 Descriptor 做格式兼容性判断；不兼容就明确失败，Core 不通过 capability 预判所有未来组合。
 
-Stream Descriptor 可以携带**有界、不可变、带命名空间的扩展信息**，用于保存通用字段无法表达、但独立读回或标准工具互操作所必需的描述事实。例如 ROS 2 采集器可以提供 `rodaq.ros2` 扩展信息，MCAP 存储器在配置要求 ROS 2 兼容产物时读取它。`rodaq` 模块负责限制大小、保存和转交，但不解释插件专有内容。这样可以避免 MCAP 直接依赖 ROS 2 采集器私有对象，也不需要为 V1 引入通用的跨插件投影服务。未知且非 Required 的扩展可以忽略；被当前存储组合声明为 Required 的扩展缺失或不合法时，在开放接纳前失败。
+V1 定义 `generic` 与 `ros2` data profile。`generic` 只保证通用 channel/message/schema facts；`ros2` profile 额外保证 `message_encoding=cdr`、ROS 2 schema encoding（`ros2msg` 或 `ros2idl`），并可携带 REP-2011 `type_description_hash` 与 typed offered QoS profile set。ROS 2 专用 typed facts 放在独立 `plugin/abi/ros2.h`，不继续扩大基础 `types.h`。
 
-| 角色 | 后端 | 设计边界 |
-| --- | --- | --- |
-| 采集器 | ROS 2 | 首个支持的采集器。按 Topic、消息类型和 QoS 订阅，提供序列化载荷及 ROS 2 消息定义 |
-| 采集器 | MQTT | 第二个支持的采集器。按 Broker 和明确配置的 Topic 订阅，每条流声明 QoS 和载荷编码 |
-| 采集器 | gRPC | 扩展候选。先约定服务、方法、流式方向、消息编码和定义。可从客户端调用服务端流式 RPC 读取记录起步。[gRPC 调用类型](https://grpc.io/docs/what-is-grpc/core-concepts/) |
-| 存储器 | MCAP | 首个开发闭环。按流记录 Channel、编码和可用 Schema。ROS 2 组合遵守 ROS 2 profile 与回放兼容要求，其他组合按各自声明的编码和消费工具验收 |
-| 存储器 | rosbag2 SQLite3 | 第二个验证的存储器，按参考 ROS 2 发行版的 rosbag2 布局交付 |
+组合示例：
 
-后端组合按采集器、载荷编码、存储器产物约定和参考消费工具分别验收。首个闭环为 ROS 2 → MCAP，第二个采集器用 MQTT → MCAP 验证，首个 MQTT 验收载荷为 JSON。存储器替换单独用 ROS 2 → rosbag2 SQLite3 验证，复用同一 ROS 2 采集器进行对照。Humble 和 Jazzy 在 Open Robotics 2025 年报告中的 ROS 包下载占比分别为 48.53% 和 24.45%。Humble 默认写入 SQLite3，Iron 起默认改为 MCAP，Jazzy 继续提供两种存储器。这些工具链证据用于确定 ROS 2 存储验收范围。[2025 ROS Metrics Report](https://discourse.openrobotics.org/t/2025-ros-metrics-report/52575) · [Humble 存储格式](https://github.com/ros2/rosbag2/tree/humble#storage-format-plugin-architecture) · [Iron 格式切换](https://github.com/ros2/ros2_documentation/blob/iron/source/Releases/Release-Iron-Irwini.rst) · [Jazzy 存储格式](https://github.com/ros2/rosbag2/tree/jazzy#storage-format-plugin-architecture)
+- **ROS 2 Acquisition → MCAP**：Acquisition 产生 `ros2` Canonical Descriptor；MCAP Storage 映射为 ROS 2 profile MCAP，并通过 `ros2 bag play`、PlotJuggler、Foxglove/独立 reader 验收。
+- **MQTT Acquisition → MCAP**：V1 使用 `generic` profile；`channel_name` 为完整 Topic，首个资格 payload 为 JSON，`message_encoding=json`，可选 JSON Schema 使用 `schema_encoding=jsonschema`。Broker/session/retained 等运行事实不塞进 Descriptor 私有 metadata map；retained delivery 通过逐 Record Canonical flag 表达。
+- **ROS 2 profile → rosbag2 SQLite3**：SQLite3 Storage 可以要求 `ros2` profile，并使用 channel/type/schema、optional type hash 和 typed QoS 生成标准 topic/metadata/DB。
+- **Fast DDS/direct DDS**：后移为未来 Acquisition。未来若接入，只要现有 Canonical facts 足以表达就不修改 Core/Role ABI；不能因为 payload 是 CDR 就自动伪装为 ROS 2 profile。
 
-用独立动态装载的可控测试采集器验证接口契约，再用真实 MQTT 链路验证采集器替换。ROS 2 发行版的中间件配置属于 ROS 2 采集器的验证范围。MQTT 和后续接入协议分别按其接口和消息语义验证。[ROS 2 中间件实现说明](https://github.com/ros2/ros2_documentation/blob/jazzy/source/Concepts/Intermediate/About-Different-Middleware-Vendors.rst)
+不允许用任意 namespaced key/value extension 在插件间暗中建立私有耦合。一个事实如果只属于 backend 内部实现，就留在 backend；如果需要跨 Acquisition→Core→Storage 长期解释，就必须提升为有界、typed Canonical fact。
 
 ### 2.7 模块与构建依赖
 
 | 模块 | 负责的行为 | 对外接口及依赖 |
 | --- | --- | --- |
-| `web/` | 编辑任务、提交操作，展示任务状态、采集频率与已提交产物 | 通过 `/api/` 获取权威状态。页面只保存表单和展示状态 |
-| `server/` | 装配进程、加载部署配置、提供本机 HTTP 和静态页面 | 将 HTTP 请求转换为 `rodaq` 模块的控制、查询及读取请求。HTTP 类型留在服务端 |
-| `rodaq/` | 实现任务控制、录制链路、产物提交与查询。管理任务配置、身份/控制/恢复事实和已提交产物 | 向服务端和开发验收程序提供同一套控制与查询接口。装载插件并通过 C ABI 调用。模块可独立于采集和存储后端及 HTTP 框架构建 |
-| `common/` | 提供多个核心模块共同依赖、无业务所有权的稳定基础类型与低层原语 | 只允许放置 `Status/Result`、强类型 ID、时间/期限、失败维度、版本/摘要及确有跨模块需要的有界低层类型；不得承载 Task/Pipeline/Record/Segment/Plugin 等领域状态或通用 `utils` 杂项 |
-| 插件（拟放在 `plugins/`） | 采集器实现协议接入和记录交付，存储器实现格式写入和封口 | 各插件独立构建为动态库。跨 DSO 通过稳定 C ABI 交互，插件作者优先使用 C++ authoring API；协议与格式依赖分别留在对应插件 |
+| `web/` | 编辑任务、提交操作，展示任务状态、采集频率、覆盖事实与已提交产物 | 只通过 `/api/` 获取权威状态；页面不拥有 Task/Pipeline 状态 |
+| `server/` | 装配进程、加载 Deployment、提供本机 HTTP 和静态页面 | 将 HTTP 请求转换为 `rodaq` 公共控制/查询/读取请求；HTTP 类型不进入核心模块 |
+| `rodaq/` | Task 控制、Pipeline、Admission、Writer/Commit、Volume/Artifact、恢复和查询 | 向 server/开发验收程序提供同一公共接口；装载插件并通过稳定 C ABI 调用；可独立于 HTTP 和具体 backend 构建 |
+| `common/` | 多个核心模块共同依赖、无业务所有权的稳定基础类型与低层原语 | 只放 `Status/Result`、强类型 ID、时间/期限、失败维度、版本/摘要及确有跨模块需要的有界低层类型；不得吸收 Task/Pipeline/Record/Segment/Plugin 领域状态或通用 `utils` 杂项 |
+| Plugin SDK/host wrapper | DSO bootstrap、ABI validation、C++ adapter、role-specific host wrapper | 依赖 `common` 与自包含 `plugin/abi`；不得依赖 Task state machine、HTTP 或具体 backend 类型 |
+| `plugins/ros2` / `plugins/mqtt` | V1 Acquisition backend | 独立 DSO；只依赖 Plugin SDK 与对应协议库，不访问 Pipeline/Task 私有对象 |
+| `plugins/mcap` / `plugins/sqlite3` | V1 Storage backend | 独立 DSO；只依赖 Plugin SDK 与格式库，不拥有 Volume/Commit/Artifact policy |
 
-`rodaq` 模块按以下职责管理状态。这里定义的是所有权和依赖边界，不要求每一行都对应一个 C++ 类；实现可以合并紧密相关且具有相同生命周期的私有对象，但不得重新把所有状态集中到一个承担配置、接纳、写入、恢复和查询的单体对象中。队列、线程调度和状态文件序列化属于实现细节，控制请求和插件均通过对应接口提交工作。
+`rodaq` 内部按事实所有权拆分职责；不要求每行对应一个物理库或一个 C++ 类，但不允许通过共享可写状态重新形成单体 Runtime：
 
 | 内部职责 | 状态归属与交接 |
 | --- | --- |
-| 任务控制 | 持有任务配置、持久期望状态、控制代次和操作结果。只根据逐链路事实投影任务执行条件，不直接操作链路队列、插件对象或文件 Writer |
-| 持久状态 | 负责不可变配置、Stream Identity State、Task Control Record 和 Recovery Record 的版本、原子发布及重启读取；不拥有数据热路径 |
-| 录制链路执行 | 每条链路持有本次实例、入口状态、链路生效约束和收尾进度，编排采集、接纳、写入和故障处置；不重新定义任务意图 |
-| 数据流与描述 | 持有链路内数据流、当前 Stream Descriptor、描述切换代次、来源和时间解释事实，保证记录引用的描述在写入前已经可用 |
-| 接纳与载荷 | 持有接纳入口、记录/字节额度、载荷物理占用和每条数据流的接纳序号，建立接纳提交点并把已接纳记录交给有界队列 |
-| 写入与存储 | 串行取得有界批次，调用存储器，记录格式写入进度、已知失败和未知结果；不直接发布最终产物 |
-| 分片提交 | 负责滚动边界、封口、同步、清单和最终目录发布；文件系统持久完成后登记 Durable Artifact Ledger，再产生正常 Committed 事实 |
-| 产物提交事实 | Durable Artifact Ledger 独立于 Segment 目录和可重建 Catalog，持有仍受 RoDAQ 管理的已提交 Segment 最小事实；合法回收/Reset 完成前不得删除对应事实 |
-| 产物管理 | 从 Durable Artifact Ledger、文件系统和恢复证据重建 Catalog，持有读租约并在维护执行域完成查询、验证、回收和 Reset；Catalog 本身不是“产物曾提交”的持久权威，不调用采集器或修改接纳状态 |
-| 容量治理 | 汇总链路资源计划、全局内存/线程/FD 预算和卷容量，执行 Start/Resume 准入及低水位保护 |
-| 运行观测 | 从上述责任域读取有界快照，生成计数、速率、延迟、资源和覆盖事实；观测导出不得成为数据热路径的同步依赖 |
+| Task control | Task Config、desired state、control generation、Operation ledger；只消费逐 Pipeline outcome/snapshot，不直接改 Writer/Plugin 私有状态 |
+| Persistence | immutable config、Stream Identity State、Task Control Record、Recovery Record、Durable Artifact Ledger；不进入 Record hot path |
+| Pipeline control | instance、Admission Gate、Prepare/Open/Drain/cleanup ownership；不重新定义 Task intent |
+| Descriptor/Source | immutable Canonical Descriptor、Source/Acquisition operational facts、bounded registry/cardinality |
+| Admission/Payload | Record/byte/Payload/Queue/SegmentCapacity token、AcceptanceSequence commit；不执行 Storage/network I/O |
+| Writer/Storage | 按 SegmentReservation 串行写入、BatchResult、rotation/seal；不发布最终 artifact |
+| Commit/Volume | SegmentReservation 的 Volume/Commit ownership、fsync/rename/parent fsync、Ledger fact、Volume watermarks |
+| Artifact/Catalog | committed fact 查询、读租约、verification、retention/Reset；不控制 Acquisition |
+| Observability | 从各 owner 的 bounded snapshot/counter 生成 rate/latency/coverage/resource view；不成为同步数据依赖 |
 
-依赖装配、配置描述检查、插件能力检查、资源计划和 ABI 检查在启动录制链路前完成。采集器把记录提交给 `rodaq` 模块，`rodaq` 模块再按接纳后的有序路径批量交给存储器。两个插件只依赖明确的宿主接口，不得访问任务控制或彼此的私有对象，因此替换采集协议或存储格式时，任务控制、滚动策略和产物提交顺序可以复用。
-
-构建依赖必须保持单向。高层模块只依赖下层稳定接口或项目值类型，不得为了复用实现细节反向包含上层私有类型；跨模块事件和快照使用拥有明确语义的 contract 类型，不共享可写内部状态。`common/` 位于依赖图底部，且不得以“公共”为理由吸收领域对象。
+构建依赖必须保持单向，高层只能依赖下层稳定接口或 contract value。禁止 `pipeline` 反向依赖 Task state-machine 私有类型，禁止 Storage Plugin 依赖 Volume/Commit 私有状态，禁止 Acquisition Plugin 直接取得 Writer/Queue 对象，禁止 `common` 依赖任何业务模块。
 
 ```mermaid
 flowchart TB
     Web["web"] --> Server["server"]
-    Server --> Task["task / rodaq public API"]
-    Task --> PipelineCtl["pipeline control contract"]
-    PipelineCtl --> Pipeline["pipeline"]
-    Pipeline --> Acquisition["acquisition host wrapper"]
-    Pipeline --> Storage["storage host wrapper"]
-    Storage --> Artifact["segment commit / artifact"]
-    Acquisition --> Plugin["self-contained C plugin ABI"]
-    Storage --> Plugin
-    Task --> Persist["persistence / capacity contracts"]
+    Server --> Public["rodaq public API"]
+    Public --> Task["task control"]
+    Task --> PipelineCtl["pipeline control"]
+    PipelineCtl --> Pipeline["pipeline data path"]
+    Pipeline --> AcquisitionHost["acquisition host wrapper"]
+    Pipeline --> StorageHost["storage host wrapper"]
+    Pipeline --> Volume["volume / commit / artifact"]
+    AcquisitionHost --> PluginABI["self-contained C plugin ABI"]
+    StorageHost --> PluginABI
+    Task --> Persist["persistence contracts"]
     Pipeline --> Persist
-    Artifact --> Persist
-    Task --> Common["common"]
+    Volume --> Persist
+    Public --> Common["common"]
+    Task --> Common
     Pipeline --> Common
-    Acquisition --> Common
-    Storage --> Common
+    AcquisitionHost --> Common
+    StorageHost --> Common
+    Volume --> Common
     Persist --> Common
 ```
 
-允许的依赖关系是面向接口的单向依赖，而不是要求每个图节点对应一个物理库。Acquisition/Storage 的 Core 侧 host wrapper 可以使用 `common/` 项目类型，但稳定插件 C ABI 头必须保持自包含、可由 C 编译器独立包含，不依赖 C++ `Status/Result` 或其它 Core 私有类型。明确禁止 `pipeline` 反向依赖 Task 状态机类型、`storage` 依赖 Task/Pipeline 私有状态、`plugin` 访问 Core 领域对象、`common` 依赖任何业务模块，以及通过共享可写单例绕过上述方向。
-
 ### 2.8 执行域与阻塞边界
+
+执行域定义**谁拥有可写状态、哪里允许阻塞、超时后 owner 如何保留**，不等于“一个执行域一条线程”。V1 逻辑域冻结为：
 
 ```mermaid
 flowchart LR
-    HTTP["HTTP / caller"] --> TC["per-Task Control Strand"]
+    Caller["HTTP / local caller"] --> TC["per-Task Control Strand"]
     TC --> PC["Pipeline Control"]
     PC --> AP["Admission hot path"]
-    PC --> PS["Plugin control slot"]
+    PC --> PS["Plugin control slots"]
     AP --> W["Writer lane"]
-    W --> S["Storage call"]
+    W --> S["Storage calls"]
     W --> C["Commit lane"]
     C --> F["filesystem + Artifact Ledger"]
     M["Maintenance / read"] --> F
@@ -372,7 +382,19 @@ flowchart LR
     C -. completion .-> TC
 ```
 
-执行域冻结的是**允许阻塞的位置和状态写入权**，不是线程数量。Task Control Strand 是单 Task 生命周期唯一写入权，不在状态转换、Guard 或结构锁内执行插件、网络、文件同步或无界等待；Pipeline Control 只编排实例和工作归属。Admission 热路径不得等待网络、文件系统或 Storage；Writer lane 允许执行受监测的 Storage 调用；Commit lane 负责文件/目录 durability 与 Durable Artifact Ledger 登记；可能迟返的插件控制调用使用链路专属或严格分区的执行槽位；维护/读取使用与控制、Writer、Commit 分离的有界容量。所有异步完成都以项目事件回到对应 Task Control Strand，不能由工作线程直接写 Task 状态。
+| 执行域 | 允许的工作 | 明确禁止 |
+| --- | --- | --- |
+| Task Control Strand | desired state、Operation、Prepare/Open/Stop 编排和状态投影 | 插件调用、网络 I/O、fsync、等待 Writer/Commit、无界计算 |
+| Pipeline Control | Gate、instance/reservation owner、quiesce/drain orchestration | 直接写 Task 状态；持锁执行 plugin/filesystem I/O |
+| Admission hot path | bounded validation、Payload hold、Record/Queue/SegmentCapacity reservation、sequence commit | Storage、磁盘、网络、控制等待、普通动态扩容 |
+| Plugin control slot | `prepare/start/quiesce/prepare_descriptor` 等可能迟返调用 | 与所有 Pipeline 共用一个可被单插件永久耗尽的无配额线程池 |
+| Writer lane | bounded batch、lazy open、write/get-size/seal；同 Pipeline Storage mutation 串行 | Task state mutation、fsync/final publish、等待外部控制 |
+| Commit lane | sealed Segment durability、atomic publish、parent fsync、Ledger registration | Acquisition/Storage Plugin 业务调用；无限 pending Segment |
+| Maintenance/read | verification、Catalog/read lease、retention/Reset、导出 | 抢占控制/Writer/Commit 保留容量；反向控制 Acquisition |
+
+所有 plugin/filesystem operation 都必须在其 owner 域外部等待并通过 completion/event 回到 Task Control Strand 更新控制投影。Task/Stream/Gate 的短结构锁内禁止执行 plugin、filesystem、network callback。RoDAQ watchdog 先到但调用未实际返回时，原 execution slot、instance/borrow/reservation owner 继续保留；不得通过另一个执行域并发 destroy/quiesce 同一 mutable owner。
+
+控制、Writer、Commit、Maintenance 可以共享底层线程池，但必须有独立或严格分区的有界容量，证明一个永久迟返的 plugin call、慢盘 fsync 或长读取不会耗尽 Stop、health query 和其它资源独立 Pipeline 的推进能力。
 
 ## 3. 领域对象与控制语义
 
@@ -439,7 +461,7 @@ classDiagram
 | 录制实例 | 一个录制链路的一次执行。重新启动分配新实例标识，用于资源归属、恢复对账和迟返隔离；不作为记录的全局排序空间 |
 | 数据流 | 以 Topic 等业务地址和稳定流身份标识的逻辑记录序列。每条数据流独立分配接纳序号；同一逻辑流可随解释属性变化产生多个 Stream Descriptor |
 | 数据来源 | 可选的实际生产者身份。来源重启或生产者变化可以建立新的来源标识，而逻辑数据流可以保持不变；协议无法稳定识别生产者时明确标记缺失 |
-| Stream Descriptor | 绑定数据地址、载荷编码、Schema、来源时钟域、时间角色及有界扩展信息的不可变版本化描述。解释属性变化必须创建新 Descriptor |
+| Stream Descriptor | 绑定 `data_profile/channel_name/message_encoding/schema_name/schema_encoding/schema` 及 profile-specific typed facts 的不可变版本化描述。解释属性变化必须创建新 Descriptor |
 | 已接纳记录 | 由 `stream_id + acceptance_sequence` 唯一标识的数据记录，同时保存所属任务、链路、录制实例、Descriptor、时间、可选来源和载荷 |
 | 分片 | 可独立验证并读取的一次持久化提交，具有稳定标识、文件清单与覆盖信息 |
 | 覆盖报告 | 描述录制有效时段、已知缺口和无法判定区间的证据，按任务、链路、数据流和时间范围查询 |
@@ -547,7 +569,7 @@ stateDiagram-v2
 
 同一任务只允许一个修改生命周期的操作在途。Stop 可以接管在途的 Start、Pause 或 Resume，但接管本身也必须先持久建立新的控制代次，使旧操作的开放入口、自动恢复和后续状态推进请求失效。其他冲突请求返回当前在途操作。迟返结果只能结算其原 `operation_id`、控制代次、录制实例和资源所有权，不得推进更新代次的任务状态。
 
-Start/Resume 的结果必须区分 `Succeeded`、`PartiallySucceeded` 与 `Failed`。准备阶段完成所有可能失败或阻塞的工作：解析当前部署引用、生成 Effective Recording Configuration、一次性预留硬资源、创建并配置插件、准备 Stream Descriptor 与 Storage、持久记录新 `instance_id` 及 Prepared facts。准备完成的 Pipeline 仍保持 Admission Gate Closed，不得提前接纳业务记录。
+Start/Resume 的结果必须区分 `Succeeded`、`PartiallySucceeded` 与 `Failed`。Prepare 阶段完成所有**无需创建正式录制 Segment、且不依赖未来输入数据即可提前完成**的配置解析、runtime qualification、Core resource admission、插件 create/prepare、Storage workload-envelope proof、初始 Descriptor prepare、首个 `SegmentReservation` 取得以及 Prepared facts 持久化。准备完成的 Pipeline 仍保持 Admission Gate Closed，不得提前接纳业务记录。Lazy `open_segment()` 保留，因此 Prepare Barrier 不承诺 Operational I/O 永不失败；它只保证普通 Segment/Volume/Commit quota 不会在 Accepted 之后第一次发现不足。
 
 `AllRequired` 的 Prepare Barrier 只有在全部 Required Pipeline 都处于 Ready 且其 **Prepared instance facts** 已经持久发布后才能通过；任一 Required 准备失败时，所有尚未授权开放的 Prepared Pipeline 直接按正常静止规则回收，因此不会产生“普通准备失败但某 Required Pipeline 已接纳记录”的中间状态。Optional 失败不阻止 Required Barrier，通过后可形成 `PartiallySucceeded + Degraded`。`BestEffort` 在至少一条允许运行的 Pipeline Ready 且所有准备结果确定后通过 Barrier，只选择成功 Pipeline。
 
@@ -627,8 +649,8 @@ V1 交付连续录制和滚动录制两种模式。两种模式在 Start 或 Res
 | 标识域 | 所有参与持久引用和迟返隔离的 ID 都有冻结作用域；`task/pipeline/stream/descriptor/instance/segment/operation/boot/clock epoch` 不因数值相同跨作用域比较或复用 |
 | 运行归属 | 每条已接纳记录同时具有确定的 `task_id / pipeline_id / instance_id` 运行归属，迟返和资源结算只能作用于原归属 |
 | 接纳提交 | 接纳提交点之前可以因为入口关闭、描述失效或资源不足被拒绝；越过接纳提交点后结果只能进入已提交、已知失败或未知，不能重新解释成接纳前拒绝 |
-| 接纳前资源完备 | 正常已接纳路径需要的队列槽位、记录/字节额度和载荷持有资源必须在接纳提交前取得；普通资源压力不得在接纳后才被发现 |
-| 描述先于记录 | 正常写入的记录引用某个 Stream Descriptor 时，存储器已经具备解释并保存该 Descriptor 所需的 Schema 和 Required 扩展信息 |
+| 接纳前资源完备 | 正常已接纳路径需要的队列槽位、记录/字节额度、载荷持有以及 `SegmentCapacityToken` 必须在接纳提交前取得；对应 SegmentReservation 已预留 Volume/seal/Commit capacity，普通资源压力不得在接纳后才被发现 |
+| 描述先于记录 | 正常写入的记录引用某个 Stream Descriptor 时，存储器已经具备解释并保存该 Canonical Descriptor 及其 typed profile facts 的能力 |
 | 提交蕴含接纳 | 任何正常提交记录都必须来自先前成功接纳的记录，禁止用恢复扫描或插件迟返凭空增加正常提交计数 |
 | Pause 成功边界 | Pause 成功意味着接纳切点之前的全部已接纳记录均已进入正常持久提交产物；存在已知失败、未知写入或污染分片时只能失败并报告影响范围 |
 | 载荷释放 | 已接纳载荷在 Writer、存储器或其它合法使用者可能继续访问期间保持有效，所有持有方式都必须 exactly-once 释放且计入物理资源预算 |
@@ -644,7 +666,7 @@ V1 交付连续录制和滚动录制两种模式。两种模式在 Start 或 Res
 | Reset 单一权威 | `reset_generation` 和 Reset intent 只由 Task Control Record 持有；Recovery Record 只保存当前 Reset 的逐卷执行进度 |
 | Required 启动 | `AllRequired` 先完成全部 Required Pipeline 的 Prepare Barrier，再执行不会调用插件/I/O/普通分配的 Open Admission；Barrier 失败前任何 Required Pipeline 都不得接纳业务记录 |
 | 生效配置 | 每个 Recording Instance 绑定唯一 `effective_config_id`；运行中 Deployment 变化不得原地改变实例，恢复时必须重新证明配置兼容性 |
-| 有界长期运行 | Core 硬计费资源、Plugin 声明资源和共享/外部资源分别治理；队列、载荷池、对象基数、操作账本、审计、隔离产物、待提交 Segment、维护作业和查询均受显式上限或保留策略约束 |
+| 有界长期运行 | Application/Deployment、Task ResourceProfile、Core 硬计费资源和 backend/external qualification 分层治理；队列、载荷池、对象基数、操作账本、审计、隔离产物、待提交 Segment、维护作业和查询均受显式上限或保留策略约束 |
 | 提交积压 | Writer 与 Commit Lane 可以解耦，但 sealed Segment 数量、物理字节和 commit 执行容量严格有界；Pause/Stop 必须等待本实例 commit backlog 结算 |
 
 ### 3.7 统一失败与结果模型
@@ -688,13 +710,13 @@ ROS 2 任务持久保存明确的 Topic 列表，以及每个 Topic 的消息类
 
 数据流观测至少区分三个维度：采集入口是否就绪、来源连接/会话状态、近期来源活动。`0 Hz` 只表示观测窗口内没有收到记录，不能替代来源连接状态。对 ROS 2，发布者未出现时可报告入口已就绪、来源活动为静默；对有显式连接的协议则同时报告连接中、已连接、断开或退避重连等状态。告警和自动恢复分别依据连接事实、活动事实和接纳事实，避免把正常低频或静默来源误判为链路故障。
 
-MQTT 采集器按配置的 Broker 和完整 Topic 名称建立订阅。首版的订阅范围来自任务中明确列出的 Topic，每条流配置 QoS 和载荷编码。准备阶段验证本地配置、资源与接收执行域。默认 `local_ready` 启动策略允许 Broker 暂不可达时链路进入 `Running + Degraded` 或 `Protected` 并以有界退避等待连接；若链路配置要求 `source_connected`，则 Broker 连接和订阅确认必须在 Start/Resume 成功前完成。两种策略下都分别展示连接状态与实际收数，连接恢复后按正常入口录制匹配 Topic 的消息。
+MQTT 采集器按配置的 Broker 和完整 Topic 名称建立订阅。V1 资格范围固定为 MQTT 3.1.1、QoS 0/1 与 `CleanSession=1`；断线重连后重新订阅配置 Topic。每条流保存明确的 payload encoding；首个验收 payload 为 JSON，可选配置 JSON Schema。MQTT Descriptor 使用 `generic` profile，`channel_name` 等于完整 Topic；不增加 MQTT-specific Descriptor metadata bag。
 
-首版 MQTT 验收覆盖 MQTT 3.1.1 与 QoS 0、1。每次连接使用 `CleanSession=1`，连接后重新订阅已配置 Topic，从实际交付的应用消息继续录制。断线区间按可验证证据记录覆盖。QoS 和协议确认与 RoDAQ 接纳及持久提交分别统计。
+Acquisition operational facts 通过 role-specific `AcquisitionEvent` 上报：Broker/transport connected/disconnected 映射为 TransportReady/Lost，订阅确认/失效映射为 StreamReady/Unavailable；client/native queue overflow、invalid payload 和 adapter drop 使用有界 delta-count evidence。`0 Hz`、Broker 断开、Topic 没有新消息必须是三个不同事实。默认 `local_ready` 策略允许 Broker 暂不可达时实例完成本地 prepare，但 Task 依据策略投影 Degraded/Protected；若配置要求 `source_connected`，则对应 Transport/Stream readiness 必须在 Prepare Barrier deadline 内满足。
 
-初次订阅在本地接纳就绪后发起。验收覆盖 Broker 在订阅确认前发送匹配消息的情况。Broker 在订阅时发送且带 `RETAIN` 标记的保留消息按正常接纳规则录制，并标记为保留样本。接收时间记录实际到达时刻，来源时间沿用来源证据。[MQTT 3.1.1 规范](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html)
+Broker 在订阅时交付且 native API 明确带 `RETAIN` 标志的消息按普通 Admission 流程处理，并在 Canonical Record `delivery_flags` 中置 `RETAINED`；该事实随 StorageRecord/Segment 保存。QoS/protocol ack 与 RoDAQ Accepted/Persisted 分别计数，不把 QoS 1 PUBACK 解释成 RoDAQ 持久提交。TLS/认证 secret 不进入可移植 Task Configuration；若 V1 启用认证，使用 Deployment secure source 与已冻结 typed credential mechanism。
 
-每个 MQTT 采集器实例的连接请求和待处理数据受资源预算约束。停止或替换实例时取消重连，并按 `quiesce` 规则结算连接和消息回调。可在准备阶段确认的配置错误按链路准备失败处理，运行期间收到的协议错误按链路故障处理规则记录和处置。
+每个 MQTT 实例的 reconnect/backoff、pending callback/native queue 必须有界；停止或替换实例时取消重连并通过 `quiesce()` 证明 callback 静止。可在 prepare 前确定的 URI/Topic/QoS/encoding/schema 配置错误立即失败；运行期网络错误通过 AcquisitionEvent 进入结构化 readiness/coverage/failure 事实。
 
 首版允许同一 Topic 同时被多个任务录制，各任务独立订阅、接纳、计费和写入。相同 Topic 的两份输入计入各任务额度和全局预算。一个任务的 Pause、Stop 或 Reset 作用于该任务自己的入口、状态和产物。
 
@@ -718,7 +740,7 @@ flowchart LR
 ```
 
 1. **获取。** 采集器插件报告逻辑数据流、当前 Stream Descriptor、可选来源标识和来源序号、一个有界时间集合以及载荷。时间集合至少允许表达 RoDAQ 接收时间和来源提供的时间；每个非主机时间都明确关联其时钟域和角色。协议对象和格式库对象留在插件内。RoDAQ 在入口记录主机单调时间、接收壁钟、Clock Epoch 和当前录制实例。
-2. **预留。** `rodaq` 模块执行结构校验、单记录限制和 Descriptor 代次检查，然后一次性取得正常接纳路径需要的记录额度、逻辑字节额度、物理载荷额度和队列位置。不能在此时取得的资源按策略有限等待或接纳前拒绝；不得先宣布 Accepted 再等待普通队列或内存资源。
+2. **预留。** `rodaq` 模块执行结构校验、单记录限制和 Descriptor 代次检查，然后一次性取得正常接纳路径需要的记录额度、逻辑字节额度、物理载荷额度、队列位置和某个已存在 SegmentReservation 的 segment-capacity token。不能在此时取得的资源按策略有限等待或接纳前拒绝；不得先宣布 Accepted 再等待普通队列或内存资源。
 3. **持有。** 按采集器和链路生效约束允许的载荷持有方式，把输入转换为可跨提交调用、Writer 和存储调用安全存在的宿主持有对象。载荷稳定以后才允许进入接纳提交。
 4. **接纳。** 在每条数据流自己的短同步域内复核入口、控制代次、录制实例、当前 Descriptor 和 Clock Epoch，分配该数据流下一 `acceptance_sequence`，并把完整记录发布到有界队列。这个逻辑提交是记录从“提交尝试”变为“已接纳记录”的唯一线性化点。
 5. **写入。** 每条链路只有一个逻辑有序 Writer，以有界批次把已接纳记录交给存储器。Writer 保持同一数据流的 `acceptance_sequence` 顺序；不同数据流之间只保留实际队列/批次交付顺序，不建立额外的业务全局序列。存储写入、分片封口和最终持久提交分别记录进度。
@@ -736,18 +758,18 @@ flowchart LR
 
 Pause、Stop 和 failure cutoff 首先原子关闭或推进 Pipeline Admission Gate 代次，使新的提交不能进入 commit domain，然后等待已经进入该域的有限 in-flight 提交完成。等待结束时，cut 前的 accepted set 被唯一冻结：并发提交要么已经完成接纳并成为必须结算的记录，要么观察到新 Gate 代次并作为接纳前拒绝结束，不存在第三种结果。Descriptor Cut 仍是 per-Stream 边界，但必须与该 Stream 的 commit 在同一短同步域排序。接纳序号不回滚、不复用，队列发布失败不能发生在已经越过提交点之后。
 
-Admission Gate 的关闭、代次推进和 in-flight 收敛不得等待插件、磁盘或网络 I/O。所有普通队列、记录额度和 Payload 资源必须在进入 commit domain 前已经取得，因此关闭 Gate 后只需等待一个严格有界的 Core 临界区，而不是等待下游 Storage。
+Admission Gate 的关闭、代次推进和 in-flight 收敛不得等待插件、磁盘或网络 I/O。所有普通队列、记录额度、Payload 与 Segment settlement capacity 必须在进入 commit domain 前已经取得，因此关闭 Gate 后只需等待一个严格有界的 Core 临界区，而不是等待下游 Storage。
 
 接纳后的 Storage、磁盘或进程故障不会改写历史接纳结果。已接纳记录的终态只允许归入正常持久提交、已知失败或结果未知。这样 Pause、Stop、覆盖报告和故障对账都使用同一条边界。
 
 #### 4.2.2 Stream Descriptor 切换
 
-Stream Descriptor 是不可变对象。Schema、载荷编码、来源时钟域、时间角色或影响解释的 Required 扩展信息发生变化时，创建新的 Descriptor，而不是原地修改。每条数据流维护当前 Descriptor 标识和仅用于运行期切换的**描述代次**。
+Stream Descriptor 是不可变对象。data profile、channel/message encoding、schema name/encoding/content 或 typed profile fact 发生变化时，创建新的 Descriptor，而不是原地修改。每条数据流维护当前 Descriptor 标识和仅用于运行期切换的**描述代次**。
 
 Descriptor 切换按以下顺序进行：
 
 1. 采集器提出新的描述事实，`rodaq` 模块完成结构、大小和链路组合校验。
-2. 存储器确认该 Descriptor、Schema 和 Required 扩展可以表示，并在需要时完成写入前的描述准备。
+2. 存储器确认该 Canonical Descriptor 与 typed profile facts 可以表示，并在需要时完成写入前的描述准备。
 3. 在该数据流的描述切换同步域内更新当前 Descriptor 和描述代次，形成唯一切点。
 4. 切点之后的新提交只能引用新 Descriptor。切点之前已经越过接纳提交的旧 Descriptor 记录继续正常排空。
 5. 尚未接纳且携带旧描述代次的迟到提交被接纳前拒绝，不能重新激活旧 Descriptor。
@@ -801,11 +823,11 @@ V1 Storage 的必选数据接口采用**同步有界批次**。一次批次调�
 → 持久提交进度
 ```
 
-同步批次返回后，只有存储器不再访问相应载荷时才可以释放本次借用。插件资源计划必须覆盖其同步调用内部可能持有的额外缓冲。写入调用若超过插件操作时限，入口关闭但相关载荷、实例和执行容量继续归原调用所有，直到迟返、局部清理成功或整进程恢复终止所有访问可能性。
+同步批次返回后，只有存储器不再访问相应载荷时才可以释放本次借用。Storage 同步调用内部的格式/压缩临时资源属于 backend 实现资源，必须由 backend 配置和生产资格证明有界，不能转化为 Plugin ResourcePlan。写入调用若超过插件操作时限，入口关闭但相关载荷、实例和执行容量继续归原调用所有，直到迟返、局部清理成功或整进程恢复终止所有访问可能性。
 
-同步批次是否足以满足 V1 性能目标由真实 ROS 2 → MCAP、目标文件系统和目标磁盘资格验证决定。若同步模型在声明负载下无法保持有界积压、CPU 和尾延迟，则必须在 V1 发布前引入经过独立审查的异步批次能力，把“宿主可以释放载荷”和“持久结果已确定”分别建模；不能通过扩大无界队列掩盖同步路径性能不足。异步能力通过可选 ABI 扩展加入，不改变同步批次的既有语义。
+同步批次是否足以满足 V1 性能目标由真实 ROS 2 → MCAP、目标文件系统和目标磁盘资格验证决定。若同步模型在声明负载下无法保持有界积压、CPU 和尾延迟，则必须在 V1 发布前引入经过独立审查的异步批次能力，把“宿主可以释放载荷”和“持久结果已确定”分别建模；不能通过扩大无界队列掩盖同步路径性能不足。若确实需要异步 Storage，必须作为 Storage Role Protocol 的明确 minor 演进重新冻结 ownership/completion 语义；不恢复通用 Extension Registry，也不改变同步批次的既有语义。
 
-超载默认拒绝新增记录，避免录制反向拖慢机器人控制。若来源支持明确的流控且已验证对控制无影响，可在该插件的配置规则中单独配置。采集回调和接纳路径不等待网络 I/O、磁盘同步或控制服务。录制保存采集器交付的原始序列化应用载荷，连同编码、Schema、时间、来源和 Required 扩展信息；字段解析和格式转换留在读回或导出阶段。格式支持的无损压缩须通过解压后的载荷逐字节对账验证。
+超载默认拒绝新增记录，避免录制反向拖慢机器人控制。若来源支持明确的流控且已验证对控制无影响，可在该插件的配置规则中单独配置。采集回调和接纳路径不等待网络 I/O、磁盘同步或控制服务。录制保存采集器交付的原始序列化应用载荷，连同 Canonical Descriptor、逐 Record 时间/来源 facts 和 delivery flags；字段解析和格式转换留在读回或导出阶段。格式支持的无损压缩须通过解压后的载荷逐字节对账验证。
 
 ### 4.3 时间与顺序
 
@@ -866,14 +888,16 @@ stateDiagram-v2
 | 归属与顺序 | 分片标识和序号、任务标识、控制代次、配置版本、录制链路与实例 |
 | 运行契约 | `effective_config_id`、Deployment Generation、采集器和存储器精确标识及版本、资源档位、关键链路生效约束和本次启用的载荷持有方式 |
 | 格式与校验 | 格式版本、文件名、物理大小及校验信息 |
-| 数据描述 | 逻辑数据流、来源标识可用性、Stream Descriptor、载荷编码、Schema 及 Required 扩展信息 |
+| 数据描述 | 逻辑数据流、来源标识可用性、Stream Descriptor、载荷/Schema 编码及 typed profile facts |
 | 时间与覆盖 | 接收时间和录制时间范围、`system_boot_id`、Clock Epoch、来源时间角色/sequence scope、时钟质量及覆盖摘要 |
 
 初始本地存储方案采用同卷临时目录和最终目录。验收覆盖文件格式、RoDAQ 提交行为及独立读回结果。[Linux 文件与目录同步](https://man7.org/linux/man-pages/man2/fsync.2.html) · [Linux 原子重命名及防覆盖](https://man7.org/linux/man-pages/man2/rename.2.html)
 
 分片在第一条待写记录到达写入器时创建。按分片配置的时长或大小滚动，任一达到目标即在记录边界切分。时长从开段起用单调时钟计算，静默时也封口已打开的分片，下一条记录到来时再开段。大小是滚动目标而不是硬上限，允许完成已开始的有界写入批次，单条记录完整归入一个分片。
 
-通用 Storage ABI 必须为活跃分片提供宿主可读取的大小度量，至少区分逻辑载荷字节与当前物理产物字节；若封口会产生显著额外索引、元数据、压缩尾部或数据库开销，还需提供经过资格验证的保守封口上界或由资源档位声明该上界。Core 的 size-based rotation 以 Storage 声明的物理大小口径加允许的批次 overshoot 判断，不能用输入 Payload 字节数假定等于最终文件大小。无法提供可靠物理大小规则的后端只能声明不支持按物理大小滚动。单记录上限和卷容量预算独立生效，容量估算同时计入批次、存储器内部缓冲和封口余量。分片滚动只改变写入产物的边界。
+V1 Storage ABI 的 `get_segment_size()` 是 required operation，所有 V1 backend 都必须提供当前格式对象的物理字节事实；不能可靠报告者不能进入 V1。Core 的 size-based rotation 依据该物理大小和 Core-owned target/hard policy，不能用输入 Payload 字节假定最终文件大小。
+
+Seal 安全不靠运行期猜测。Storage instance 在 Prepare Barrier 前接收 Core-owned workload envelope（segment records/input bytes/descriptors、seal 前 physical bytes、seal reserve、file/path limits），并必须针对固定 backend config 证明任意合法 Segment 都满足该 envelope。每个 Segment 的 Core `SegmentReservation` 按 `max_segment_physical_bytes + seal_reserve_bytes` 预留 Volume capacity，并同时预留 Commit backlog slot/bytes；Record 在 Admission Commit 前还要取得属于某个 reservation 的 `SegmentCapacityToken`。因此 commit backlog 满、Volume budget 不足或没有后继 Segment slot 都只能在 Accepted 之前形成拒绝/保护。
 
 #### 5.1.1 Writer 与 Commit Lane
 
@@ -918,7 +942,7 @@ flowchart LR
 
 ROS 2 的每个已提交 MCAP 分片都携带独立解码所需的 Channel、Schema、消息定义及其依赖。格式验收分别覆盖两条路径。独立读取工具依据分片内嵌定义解码，包括含嵌套自定义类型的记录。在已安装相应 ROS 2 消息包的参考环境，标准 `ros2 bag play` 可直接播放单个分片的 MCAP 文件，由独立订阅端核对消息数、Topic 与字段。验证覆盖滚动后的分片。[MCAP ROS 2 格式约定](https://mcap.dev/spec/registry#ros2) · [Humble MCAP 回放用法](https://github.com/ros2/rosbag2/blob/humble/rosbag2_storage_mcap/README.md#usage)
 
-MQTT JSON 分片按配置的 Topic 写入 Channel，载荷编码声明为 `json`。源消息的应用字节原样保存，配置提供的可用 Schema 随分片保存。保留样本标记通过分片内的记录写入顺序关联到对应记录，作为录制元数据与数据文件一同提交。用独立读回工具核对 Topic、接收时间、记录数、原始字节及保留标记，并验证 JSON 样本可解码。[MCAP JSON 编码](https://mcap.dev/spec/registry#json) · [MCAP 消息字段](https://mcap.dev/spec#message-op0x05)
+MQTT → MCAP 使用 generic Canonical Descriptor。V1 JSON 资格场景把完整 Topic 写入 Channel name、`message_encoding=json`，存在配置 JSON Schema 时写入 `jsonschema` schema；没有 schema 时保持 schema triple 为空。MCAP 独立 reader 必须逐条核对原始 payload bytes、Topic、接收时间与 retained delivery flag。该组合不宣称 `ros2 bag play` 兼容，也不要求 MCAP 理解 MQTT client 私有对象。
 
 rosbag2 SQLite3 存储器采用同一分片提交协议。每个已发布分片按参考发行版的 rosbag2 SQLite3 约定组织 `.db3` 和 `metadata.yaml`，以分片目录作为读回和回放入口。标准布局无法表达的录制元数据随分片保存，并与对应记录保持可核对的关联。若启用 WAL，封口需生成不依赖临时 WAL 的发布副本，或在产物清单中包含所有读取所需文件，并以只读方式验证整份产物可以从发布目录独立读取。[rosbag2 SQLite3 存储器](https://github.com/ros2/rosbag2/blob/jazzy/rosbag2_storage_sqlite3/README.md) · [SQLite WAL 持久状态](https://www.sqlite.org/wal.html#the_wal_file)
 
@@ -1009,38 +1033,39 @@ RoDAQ 自己拥有的外部配置和结构化持久事实统一使用**严格 JS
 
 #### 6.1.1 Deployment Generation 与 Effective Recording Configuration
 
-`deployment.json` 每次成功加载并通过语义校验后形成不可变的 **Deployment Generation**，由规范化部署配置及发布环境中需要参与运行语义的稳定引用生成标识。运行中的 Recording Instance 永远绑定启动时的 Deployment Generation；后续修改部署文件不会原地改变已经开放的实例。
+`deployment.json` 每次成功加载并通过语义校验后形成不可变的 **Deployment Generation**。此外，daemon 在启动时依据发布支持矩阵解析一个 Core-owned `qualified_runtime_profile_id`，覆盖会改变 backend 行为/兼容性的受支持运行环境事实，例如 OS/arch、精确 plugin artifact/build identity、ROS 2 distro/RMW implementation，以及发布矩阵声明为关键的 process-shared SONAME/version/build identity。该 ID 不是 Plugin 提供的 environment fingerprint，也不探测任意瞬时网络/Topic/设备状态。运行中的 Recording Instance 永远绑定启动时的 Deployment Generation + qualified runtime profile；文件或运行库变化不会原地改变已经开放的实例。
 
 Task Config 只保存可移植的逻辑引用，例如插件逻辑标识、输出根名称、资源档位名称和凭据引用。Start、Resume 或自动恢复在 Prepare 阶段把以下事实一次性解析并冻结为本次实例的 **Effective Recording Configuration**：
 
 ```text
 Task config_version
 + Deployment Generation
++ qualified_runtime_profile_id
 + collector/storage exact plugin identity + version
 + resolved output volume identity
 + resolved non-secret plugin/deployment parameters
-+ effective QoS / capability limits
-+ Plugin Resource Plans
++ effective protocol/QoS settings
 + Effective Pipeline Limits
-+ credential reference version/fingerprint（不含 secret）
++ credential reference version（不含 secret；不表示 V1 Plugin Common ABI 已提供 secret handoff）
 = effective_config_id
 ```
 
-同一个 `config_version` 在不同 Deployment Generation 下可以得到不同 `effective_config_id`，不得把两者视为相同运行契约。Recovery Record 为每个实例保存 `effective_config_id`；Segment Manifest 同样记录它及必要的可审计组成事实。重启恢复必须重新解析当前 Deployment Generation，并按明确兼容规则判断能否继续原 Run intent；解析不到同一输出卷、插件/能力不兼容或关键安全引用发生不允许的变化时，进入 Protected/诊断而不是静默使用新环境续录。
+同一个 `config_version` 在不同 Deployment Generation 或不同 `qualified_runtime_profile_id` 下得到不同 `effective_config_id`，不得视为相同运行契约。Recovery Record 为每个实例保存 `effective_config_id` 和 runtime profile identity；Segment Manifest 同样记录用于审计的 runtime profile/plugin build facts。重启时 Core 重新解析当前 Deployment Generation 和实际 qualified runtime profile：若组合仍在发布支持矩阵内，则创建**新实例/新 effective_config_id** 继续 Run intent；如果关键 RMW/共享库/plugin build 组合未受支持、输出卷身份不符或 Role/config 不兼容，则进入 Protected/诊断。运行环境变化不允许被旧 `effective_config_id` 静默吸收。
 
-#### 6.1.2 资源分类与长期基数上限
+#### 6.1.2 资源 authority 与长期基数上限
 
-资源治理分三层，避免把 Core 无法精确控制的共享资源错误承诺为“已预留”：
+系统资源由上层策略和 Core 统一管理，不由 Plugin 申报预算：
 
 | 资源层 | 责任与典型对象 |
 | --- | --- |
-| Core 硬计费资源 | 队列槽位、Record 数、逻辑字节、Payload 物理块、Core 执行槽位、Core 打开的 FD、维护作业、读租约；必须在代码中严格有界并支持原子准入/归还 |
-| Plugin 声明资源 | 插件内部缓冲、内部线程/执行者、FD、压缩工作区、协议暂存等；通过 Plugin Resource Plan 声明上界并由资格测试验证声明可信 |
-| 共享/外部资源 | DDS/RMW history、内核 socket buffer、文件系统 page cache、设备队列、内存带宽、CPU 调度与磁盘服务时间；由部署限制、cgroup/系统配置和生产资格共同约束，不能伪装成 Core 精确 reservation |
+| Application / Deployment | 守护进程总 CPU/memory/I/O policy、可用 Volume、全局 Task/Pipeline/cardinality 上限、cgroup/systemd 等进程级约束 |
+| Task ResourceProfile | 单 Task/Pipeline 可使用的 Record/byte/payload、Queue、callback/control execution、Segment/Commit 与 Volume budget 档位 |
+| Core/Pipeline hard accounting | Admission token、Queue slot、Payload physical charge、Writer/Commit backlog、Segment reservation、读租约和长期对象；代码中严格 acquire/transfer/release |
+| Backend implementation / external | DDS/RMW history、backend thread/FD、MCAP compression、SQLite page/WAL、kernel socket/page cache；不作为 Plugin 资源申请，使用 backend 配置、发布支持矩阵、进程级限制和 stress/soak qualification 约束 |
 
-除热路径字节资源外，长期对象数量也必须显式有界。Deployment 至少冻结 `max_pipelines_per_task`、`max_streams_per_pipeline`、`max_sources_per_pipeline`、`max_descriptors_per_stream`、单个及累计 Schema/Descriptor/扩展字节、Clock Epoch 产生速率/保留数量、同时存在的实例/隔离 Segment/待提交 Segment、Durable Artifact Ledger 活跃事实数量与字节预算、指标标签和诊断条目上限。达到上限时拒绝新身份/描述或进入保护状态并保留原因，不通过无界 map、vector、日志或指标 cardinality 吸收异常来源行为。
+ResourceProfile 不包含“插件预计会使用多少内部线程/内存”的预测值，也不因输入流量升高动态放宽。Start/Resume/自动恢复由 Task/Core 根据 ResourceProfile、全局 Capacity、Volume budget 与当前已占用资源执行 admission；成功后把与 Role 行为直接相关的 Effective Limits 下发给 Pipeline/Plugin。资源不足时链路准备失败或运行期 PreAdmission Reject/Protected，不让插件通过私有 queue 或动态扩容绕过预算。
 
-任务配置只引用部署允许的插件和输出根，并按名称引用链路资源档位。档位定义一条链路可以申请的记录数、逻辑字节、物理载荷内存、插件内部缓冲、执行槽位、线程和文件描述符等硬上限，而不是手工重复填写插件当前配置的预计占用。Start、Resume 和自动恢复先解析插件参数并得到采集器、存储器各自的资源计划，再与资源档位、Core 全局限制和卷容量共同执行准入。档位缺失、资源计划超限、插件能力不满足或无法形成链路生效约束时，按链路报告准备失败；不得靠运行后动态超分来满足启动。
+除热路径字节资源外，长期对象数量也必须显式有界。Deployment 至少冻结 `max_pipelines_per_task`、`max_streams_per_pipeline`、`max_sources_per_pipeline`、`max_descriptors_per_stream`、`max_ros2_qos_profiles_per_descriptor`、单个及累计 Schema/Descriptor bytes、Clock Epoch 产生速率/保留数量、同时存在的实例/隔离 Segment/待提交 Segment、Durable Artifact Ledger 活跃事实数量与字节预算、指标标签和诊断条目上限。达到上限时拒绝新身份/描述或进入保护状态并保留原因，不通过无界 map、vector、日志或指标 cardinality 吸收异常来源行为。
 
 首次安装显式初始化受管任务配置和恢复目录。安装流程使用与守护进程相同的排他约束，检查状态目录及所有配置输出根中的 RoDAQ 管理命名空间。确认新部署后创建目录，并在初始化持久完成后报告成功。重复初始化保留有效部署。发现既有部署痕迹但受管目录缺失或不可核验时，报告原因并保留现有文件。
 
@@ -1123,11 +1148,11 @@ flowchart LR
 
 | 阶段 | 可验收结果 |
 | --- | --- |
-| A. 核心契约冻结 | 冻结标识域与 Stream Sequence 持久唯一性、Boot Reconciliation、Reset authority、Pipeline Admission Gate、`Required/Optional × AllRequired/BestEffort` 投影矩阵、Process Shutdown Drain≠Stop、Deployment Generation/Effective Configuration、Durable Artifact Ledger、三层资源与 metadata cardinality、模块依赖 DAG、插件并发/重入、System Boot/SourceSequence scope、Writer/Commit lane 和统一失败模型；同时冻结 Descriptor、Payload 与 Storage 基础契约。形成并发/崩溃/故障不变量测试矩阵后才进入正式数据路径实现 |
+| A. 核心契约冻结 | 冻结标识域与 Stream Sequence 持久唯一性、Boot Reconciliation、Reset authority、Pipeline Admission Gate、`Required/Optional × AllRequired/BestEffort` 投影矩阵、Process Shutdown Drain≠Stop、Deployment Generation/Effective Configuration、Durable Artifact Ledger、单一资源 authority 与 metadata cardinality、模块依赖 DAG、插件并发/重入、System Boot/SourceSequence scope、Writer/Commit lane 和统一失败模型；同时冻结 Descriptor、Payload 与 Storage 基础契约。形成并发/崩溃/故障不变量测试矩阵后才进入正式数据路径实现 |
 | B. 核心录制 | 通过采集和存储插件录制 ROS 2 相机与关节数据到 MCAP，按时长和物理大小分片。暂停后切点前已接纳记录可读回，恢复后继续写入新分片。用独立工具解码并执行标准 ROS 2 回放 |
-| C. `rodaq` 模块实现验收 | 通过开发验收程序验证显式初始化、持久控制、配置导入导出、多任务、连续与滚动录制、历史查询、产物读取、Durable Artifact Ledger/Catalog 重建、资源计划准入和完整运行快照。覆盖 Descriptor 切换、资源耗尽、Unknown 写入、Segment filesystem durability→Ledger 登记各 crash window、磁盘保护、进程重启、正常 Shutdown Drain 和 Reset |
+| C. `rodaq` 模块实现验收 | 通过开发验收程序验证显式初始化、持久控制、配置导入导出、多任务、连续与滚动录制、历史查询、产物读取、Durable Artifact Ledger/Catalog 重建、Task/Core 资源准入和完整运行快照。覆盖 Descriptor 切换、资源耗尽、Unknown 写入、Segment filesystem durability→Ledger 登记各 crash window、磁盘保护、进程重启、正常 Shutdown Drain 和 Reset |
 | D. 本机应用 | 阶段 C 通过后设计 HTTP 接口，再接入 Web 和 `/api/`。从安装包启动应用，通过本机操作验证阶段 C 的任务控制、流量/积压/资源展示、历史查询和产物获取 |
-| E. 后端与互操作 | MQTT → MCAP 样本核对原始 JSON 字节、Topic 和保留标记，验证 3.1.1、QoS 0/1 及重新订阅。ROS 2 → rosbag2 SQLite3 从发布目录独立读回并标准回放。用 PlotJuggler 样本核对 ROS 2 → MCAP 的字段和时间轴，并在源码树外编译、装载插件示例 |
+| E. 后端与互操作 | MQTT 3.1.1 QoS 0/1 → MCAP 验证 Broker 晚启动/断线重连、Topic、JSON payload、retained flag 与结构化 readiness/drop evidence；ROS 2 → rosbag2 SQLite3 从发布目录独立读回并标准回放。用 PlotJuggler 样本核对 ROS 2 → MCAP 的字段和时间轴，并在源码树外编译、装载插件示例 |
 
 #### 7.1.1 首个录制闭环
 
@@ -1159,12 +1184,12 @@ flowchart LR
 | 正常 Process Shutdown Drain | Running Task 在关停时关闭 Gate 并排空实例，但 `desired_state`、用户 `control_generation` 和 Run intent 不改变；重启后按原策略自动恢复。验证关停不生成伪造 Stop operation，Drain 迟返只结算原 work/resource |
 | Segment filesystem durability / Ledger crash window | 分别在 final rename、parent fsync、Ledger entry 写入/同步/发布及 Catalog publish 前后终止进程。filesystem durable 但 Ledger 缺失只能进入 RegistrationPending/VerificationRequired；恢复补齐 Ledger 后才能 Committed。Ledger 已有 fact 而 Segment 被外部删除时必须报告 HistoricalArtifactLostOrCorrupt；存在合法 retention/Reset 删除意图时不得误报 |
 | 更新配置、Stream Identity State、持久控制或恢复记录时中断 | 在写临时文件、文件同步、原子发布和父目录同步各点注入终止；Stream sequence 新区间只有持久上界发布后可使用，崩溃后废弃未用尾部而不复用；未完成回收或 Reset 按各自权威事实续办 |
-| Deployment 在停止/重启之间变化 | 同一 `config_version` 在新 Deployment Generation 下重新形成 `effective_config_id`；兼容变化产生新实例并保留两代运行契约，不兼容插件/卷/能力变化进入 Protected/诊断而不是静默续录 |
+| Deployment 在停止/重启之间变化 | 同一 `config_version` 在新 Deployment Generation 下重新形成 `effective_config_id`；兼容变化产生新实例并保留两代运行契约，不兼容 plugin/Role/config/Volume 或 `qualified_runtime_profile_id` 变化进入 Protected/诊断而不是静默续录 |
 | System reboot 与时钟正向/反向跳变 | reboot 产生新的 `system_boot_id`；同一 boot 内跳变建立新 Clock Epoch。跨 boot monotonic/epoch 不直接比较，录制时间与查询保留 boot/epoch/correlation 证据 |
 | SourceSequence 作用域变化/缺失 | 有稳定 Source/Session scope 时可验证 gap/duplicate/reset；作用域缺失、多 Publisher 混合或重连后 scope 变化时，只保留诊断值，不错误报告来源 `0 loss` |
 | Reset 受理后崩溃或遇到慢读取 | `reset_generation` 只从 Task Control Record 恢复，Recovery Record 只恢复逐卷进度；新读取被阻止，旧读租约在期限内完成或取消，引用未释放时保持 Pending，不删除仍被访问文件 |
 | Descriptor 在高并发提交期间变化 | 新 Descriptor 先完成存储准备再形成切点；切点前已接纳记录继续使用旧 Descriptor，切点后迟到的旧描述提交被拒绝，产物可以独立解码两代记录 |
-| 插件资源计划超过资源档位 | 在创建插件实例和开放接纳前失败，已取得的其它链路资源按启动策略安全回收，不以运行中 OOM/线程耗尽作为正常准入手段 |
+| Task/Core ResourceProfile 或当前全局/Volume capacity 不足 | 在创建插件实例和开放接纳前失败，已取得的其它链路资源按启动策略安全回收；backend 内部资源不通过 Plugin ResourcePlan 参与 admission |
 | 载荷持有异常 | 覆盖复制、所有权转移和共享持有启用组合的拒绝、Stop、存储失败及迟返，验证无提前释放、double release、资源泄漏和预算绕过 |
 | 持续下游变慢或 Commit lane 落后 | Queue、最老记录年龄、pending Segment/physical bytes 和提交滞后按预期增长；达到 Writer/Commit 任一硬预算前进入保护，Admission Gate 关闭且不无界创建 Segment。Pause/Stop 等待 backlog 结算或返回带 Data Impact 的失败 |
 | 统一失败映射 | 对资源耗尽、超时、插件不可用、Unknown、权限、状态冲突和内部异常核对 Status Code、Retryability、Failure Domain、Data Impact 及 HTTP/C ABI 映射；任何恢复逻辑不解析错误字符串 |
@@ -1203,12 +1228,12 @@ V1 的核心设计不能把正确性或性能相关契约留到“实现时再�
 | `rodaq` 公共接口 | 期望控制状态、执行条件、操作结果、逐链路状态、数据流和产物查询；公共接口不暴露状态机、HTTP 或插件框架私有类型 |
 | 标识、记录与时间 | 冻结全部 ID scope；`stream_id / acceptance_sequence` 通过持久区间预留跨重启唯一，明确 SourceSequence scope、`system_boot_id`、Clock Epoch、时间角色/时钟域及 Descriptor identity |
 | 录制链路与控制恢复 | 一采集器一存储器拓扑、Pipeline Admission Gate、Descriptor Cut、Pause/Stop/failure cutoff、`Required/Optional × AllRequired/BestEffort` 运行集合与状态投影、Process Shutdown Drain≠Stop、Prepare Barrier、Boot Reconciliation、已知失败/Unknown 终态及迟返规则 |
-| 载荷 | 复制、所有权转移和共享持有的所有权/释放语义，实际启用集合由插件能力与性能资格决定；所有模式都纳入物理资源预算 |
-| 插件边界 | 入口符号、结构布局、版本、配置描述、能力、资源计划、链路生效约束、控制调用串行规则、callback 最大并发、Storage 单 lane、重入限制、可选扩展和依赖共存资格 |
+| 载荷 | 复制、所有权转移和共享持有的所有权/释放语义；Acquisition 逐 Record 选择合法模式，Core Admission 对实际 `physical_charge` 计费，所有模式都纳入物理资源预算 |
+| 插件边界 | 入口符号、结构布局、版本、Plugin Schema/validate、Role baseline、Canonical Descriptor/Record、Core 下发 limits、控制调用串行规则、Storage 单 lane、重入限制、Role minor-tail 演进和依赖共存资格 |
 | Storage 与 Segment Commit | 同步有界批次、前缀/未写入/Unknown 结果、物理大小、封口余量、Writer/Commit 双 lane、pending Segment/bytes 上限；明确 parent fsync 的 filesystem durability point 与 Durable Artifact Ledger fact 的 normal Committed linearization point；若同步写入性能不合格则在 V1 发布前补齐异步能力 |
 | 持久状态 | 严格 JSON 数据模型、不可变 Task Config、Stream Identity State、Task Control Record、Recovery Record、Durable Artifact Ledger、Segment Manifest 各有单一职责；冻结 `config_version`、Deployment Generation、`effective_config_id`、Reset authority、操作恢复窗口、Recovery Record 写放大/大小预算、Ledger 有界压缩、原子发布、紧急余量和 Boot Reconciliation |
 | 模块与执行域 | 冻结 `common` 的最小职责、核心模块单向依赖 DAG、per-Task Control Strand、Admission/Writer/Commit/Plugin control/Maintenance 的阻塞边界，禁止通过私有类型或共享可写状态形成反向耦合 |
-| 资源、错误与观测 | 区分 Core 硬计费、Plugin 声明、共享外部资源；冻结对象 cardinality、记录/字节/物理内存、线程、FD、卷、Recovery/Ledger 元数据和 commit backlog 上限，并统一 Status Code + Retryability + Failure Domain + Data Impact；观测覆盖 Receive→Admission→Writer→Storage→FilesystemDurability→Ledger→Commit |
+| 资源、错误与观测 | 冻结 Application/Deployment→Task ResourceProfile→Core/Pipeline 的单一资源 authority；Core 对记录/字节/物理 Payload、Queue、执行槽位、卷、Recovery/Ledger 元数据和 commit backlog 硬计费，backend 内部线程/FD/middleware/cache 通过配置和资格验证而非 Plugin ABI 申报，并统一 Status Code + Retryability + Failure Domain + Data Impact；观测覆盖 Receive→Admission→Writer→Storage→FilesystemDurability→Ledger→Commit |
 | 生产资格 | 真实 ROS 2 → MCAP 性能、故障注入、72 小时工程预资格、连续 7×24 小时生产画像、控制周期影响和产物独立读回 |
 
 以下能力可以在不降低 V1 录制核心承诺的前提下后续扩展：

@@ -22,18 +22,18 @@
 | 语言、工具链 | C++17，GCC 11.x / Clang 14.x，CMake 3.22 + CTest | 以 Ubuntu 22.04 为可复现构建基线 |
 | Task 状态机 | **Boost.Ext SML** | `rodaq` 模块私有依赖，集中定义事件、Guard 和转换，支持多个独立 Task 实例 |
 | 通用并发 | C++17 标准线程、互斥锁、条件变量、原子操作 | `rodaq` 模块从进程总量为链路分别预留串行写入与采集控制容量，另留停止和诊断容量 |
-| 数据队列、接纳与预算 | 固定容量有界队列 + Pipeline Admission Gate + 项目维护的接纳/载荷预算 | 链路启动前同时预留记录数、逻辑字节和物理载荷内存；Gate 只建立 Pipeline-wide cut，per-Stream commit 负责 Descriptor/Sequence。队列槽位和 Payload 在 commit 前取得，Pause/Stop 关闭 Gate 后只等待有界 commit-domain in-flight |
+| 数据队列、接纳与预算 | 固定容量有界队列 + Pipeline Admission Gate + Core Record/Payload/Segment reservation | Record/byte/Payload/Queue 和 `SegmentCapacityToken` 在 Admission Commit 前取得；每个可写 Segment 绑定预留的 Volume/seal/Commit capacity。Gate 只建立 Pipeline-wide cut，per-Stream commit 负责 Descriptor/Sequence；Pause/Stop 关闭 Gate 后只等待有界 commit-domain in-flight |
 | 日志和格式化 | spdlog 1.17.0 + fmt 11.2.0 | 应用拥有日志设施；fmt 作为 C++17 公共格式化依赖，spdlog 仅作为实现侧后端；统一配置日志限额和关停策略 |
 | 错误与结果 | 项目 `Status`、`Result<T>`，固定复用 TartanLlama/expected `1770e355` 作为底层存储 | 冻结 Status Code、Retryability、Failure Domain 和 Data Impact 四个维度；操作结果、Task 执行条件和数据影响保持正交。C ABI 使用独立结果码并稳定映射到 Core 语义 |
 | JSON 配置与持久状态 | nlohmann/json | RoDAQ 自有的部署配置、任务配置、Stream Sequence/Identity 状态、Task Control Record、恢复记录和分片清单统一采用严格 JSON。Deployment Generation、`config_version` 和 `effective_config_id` 使用冻结的规范化规则生成稳定身份 |
-| 插件配置描述 | **JSON Schema Draft 7 + nlohmann-json-schema-validator 2.4.1**（`9abddfa905bb4889cc4ae55f87adcaa71dd3bc23`）作为 RoDAQ 验证基线 | 与现有 nlohmann/json 配置边界复用；Schema 支持多版本 catalog，禁止 remote/file `$ref`，不把 default 隐式写回持久配置。Schema validator 不跨插件 C ABI，插件仍执行协议相关语义校验 |
+| 插件配置 Schema | **JSON Schema Draft 7 + nlohmann-json-schema-validator 2.4.1**（`9abddfa905bb4889cc4ae55f87adcaa71dd3bc23`）作为 RoDAQ 验证基线 | 与现有 nlohmann/json 配置边界复用；Schema 支持多版本 catalog，禁止 remote/file `$ref`，不把 default 隐式写回持久配置。Schema validator 不跨插件 C ABI，插件仍执行协议相关语义校验 |
 | HTTP Server | **Drogon v1.9.14** 作为接入基线 | 根目录 `server/` 私有依赖，提供控制与查询 API 及前端静态资源 |
 | Web 前端 | **原生 HTML、CSS 和 JavaScript**，通过 Fetch 调用 HTTP JSON API | 根目录 `web/`，以静态文件随服务端发布，基础构建无需 Node.js 工具链 |
-| 采集 | 首个闭环使用 ROS 2 `rclcpp`，第二个采集器为 MQTT。gRPC 为扩展候选 | 协议依赖限定在各采集器插件及其验证环境 |
+| 采集 | 首个闭环使用 ROS 2 `rclcpp`；V1 第二个采集器为 MQTT 3.1.1（QoS 0/1，首个验收 JSON payload）。Fast DDS/direct DDS 后移 | 用 ROS 2 与 MQTT 两种差异明显的入口验证同一 Acquisition Role；协议依赖只存在于对应插件 |
 | 存储 | 首个闭环用 MCAP C++，第二个验证的存储器用 rosbag2 SQLite3 布局 | 两种 ROS 2 组合分别验证格式封口、独立读回和标准 ROS 2 回放 |
 | 身份、任务与控制持久化 | 不可变任务配置 + Stream Sequence Identity State + Task Control Record + 独立恢复记录 | Stream 接纳序号以持久区间预留跨重启不复用；Task Control Record 保存 Run/Reset authority 和操作账本；Recovery Record 保存实例/续录/逐卷清理进度，三者职责不重叠 |
 | 指标与测试 | HdrHistogram_c，GoogleTest，Google Benchmark，Clang/GCC Sanitizer | 支持接纳、写入、封口和提交尾延迟，记录 CPU/RSS/线程/FD/队列和物理载荷高水位。真实 ROS 2/MCAP、文件系统和 72h/168h 资格有独立测试入口 |
-| 插件装载 | 受管 Plugin Package + 独立 Bootstrap Foundation + versioned Common/Role C ABI + `RTLD_NOW\|RTLD_LOCAL` | `manifest.json` 在 `dlopen` 前完成身份、digest、target、schema 和依赖准入；bootstrap 不依赖 Common ABI 类型，只协商 Common ABI 后返回 opaque descriptor。运行时再验证 feature floor、Role Protocol、symbol provenance 与 descriptor/manifest 一致；已注册库句柄随进程退出回收，不热卸载 |
+| 插件装载 | 受管 Plugin Package + 独立 Bootstrap Foundation + versioned Common/Role C ABI + `RTLD_NOW\|RTLD_LOCAL` | `manifest.json` 在 `dlopen` 前完成身份、digest、target、schema 和依赖准入；V1 schema identity 直接使用 `plugin_id`。bootstrap 不依赖 Common ABI 类型，只协商 Common ABI 1.x 后返回 opaque descriptor；Foundation 保留未来 multi-major 能力，但 V1 不实现 multi-major DSO framework。运行时再验证 Role Protocol、symbol provenance 与 descriptor/manifest 一致；已注册库句柄随进程退出回收，不热卸载 |
 
 ## 3. `rodaq` 模块依赖接入要求
 
@@ -51,9 +51,9 @@
 
 日志模板在 C++17 调用侧使用固定版本 fmt，因此 fmt 是 `rodaq::logging` 的公共编译依赖；spdlog 只存在于 Logging 实现与链接侧，不出现在 RoDAQ 公共 API 类型中。若安装的 `Result<T>` 模板间接包含 tl::expected，随 C++ SDK 交付所需的头文件。插件 C ABI 使用独立的 C 头和 ABI 类型。
 
-插件配置描述固定使用 JSON Schema Draft 7，RoDAQ 基线为 nlohmann-json-schema-validator 2.4.1，third_party pin 固定为 `9abddfa905bb4889cc4ae55f87adcaa71dd3bc23`；其使用的 nlohmann/json 必须与 RoDAQ 主工程锁定为同一版本。RoDAQ 禁止 remote/file `$ref`，只允许 manifest 已登记的 package-local schema 资源；不应用 validator 产生的 default patch 去修改持久 Task Config。Schema/validator 类型不进入公共接口，插件 ABI 只接收 RoDAQ 定义的只读 Config API，插件不能保存调用期借用指针。
+插件配置 Schema 固定使用 JSON Schema Draft 7，RoDAQ 基线为 nlohmann-json-schema-validator 2.4.1，third_party pin 固定为 `9abddfa905bb4889cc4ae55f87adcaa71dd3bc23`；其使用的 nlohmann/json 必须与 RoDAQ 主工程锁定为同一版本。RoDAQ 禁止 remote/file `$ref`，只允许 manifest 已登记的 package-local schema 资源；不应用 validator 产生的 default patch 去修改持久 Task Config。Schema/validator 类型不进入公共接口，插件 ABI 只接收 RoDAQ 定义的只读 Config API，插件不能保存调用期借用指针。
 
-插件并发资格按 Plugin 公共契约冻结：同一 instance mutable control 由 RoDAQ 串行化，不同 instance 默认允许并发；immutable descriptor/query 必须 library-level thread-safe；数据 callback 按声明的最大并发；Storage mutable 调用单逻辑 lane。RoDAQ watchdog 超时不等于 ABI call 已返回，owner/resource 保留到迟返、quiescent 或整进程终止。Conformance 覆盖多 instance、callback/quiesce、迟返、fingerprint TOCTOU、destroy 前静止和禁止未声明重入。
+插件并发资格按 Plugin 公共契约冻结：同一 instance mutable control 由 RoDAQ 串行化，不同 instance 默认允许并发；immutable descriptor/table 必须 library-level thread-safe；Acquisition 同时在途 RoDAQ callback 不得超过 Core 下发的 `max_callback_concurrency`；Storage mutable 调用单逻辑 lane。RoDAQ watchdog 超时不等于 ABI call 已返回，owner/resource 保留到迟返、quiescent 或整进程终止。Conformance 覆盖多 instance、callback/quiesce、迟返、Core-owned `qualified_runtime_profile_id` 变化、destroy 前静止和禁止未声明重入，不再测试已删除的 Plugin environment fingerprint TOCTOU。
 
 `rodaq` 模块的数据热路径优先采用固定容量队列和按大小分档的有界载荷池，具体块尺寸由 800 B 高频记录、80 KiB 聚合记录、编码帧和约 2.76 MiB 原始帧的混合基准决定。标准分配器仍可用于控制面和非热路径对象；如果真实资格表明载荷分配、调度或内存带宽成为瓶颈，再分别评估 `std::pmr`、oneTBB 或其它经过基准证明的实现，不能以增加无界缓存代替优化。
 
@@ -97,7 +97,7 @@ Boost.Ext SML 是独立的 `boost-ext/sml` 项目，许可证为 BSL-1.0。选�
 
 ## 6. 真实后端与持久化
 
-ROS 2 采集和 MCAP 存储分别由采集器和存储器插件提供。使用真实链路验证消息对账、独立解码、标准 ROS 2 回放、Descriptor 切换、滚动和写入失败处理。ROS 2 插件验证执行器线程、QoS、序列化载荷所有权、来源/时间事实和关闭条件；其配置生成资源计划，并声明可用的载荷持有方式。MCAP 插件负责格式写入、索引与封口，报告物理产物大小、保守封口余量、批次限制和所需内部资源。RoDAQ 在开放接纳前形成链路生效约束，负责分片描述、发布和资源结算。
+ROS 2/MQTT Acquisition 与 MCAP/SQLite3 Storage 分别由插件提供。真实链路验证消息对账、Canonical Descriptor、独立解码/回放、Descriptor 切换、滚动和失败处理。ROS 2 插件验证 executor、QoS、序列化载荷 ownership、来源/时间事实和 quiesce；MQTT 插件验证 Broker/session、Topic、QoS 0/1、CleanSession、reconnect、retained delivery、JSON payload、结构化 readiness/drop evidence 与 quiesce。MCAP/SQLite3 只负责格式写入和 seal，系统资源、Volume 与最终 publish 由 Task/Core 管理。Fast DDS/direct DDS 是后续扩展，不进入 V1 发布门禁。
 
 Writer 与 Commit 使用两个逻辑 lane：Writer 只负责有序格式写入、切段和把 sealed Segment 交给有界 commit queue；Commit lane 执行文件/目录同步、原子发布，并在 filesystem durability 后通过 Core persistence contract 持久登记 Durable Artifact Ledger committed fact。`max_pending_segments`、pending physical bytes、Ledger 登记积压和同卷 fsync 并发都属于硬预算，资格测试必须测量 seal/fsync/Ledger 尾延迟并证明 backlog 达到稳态。压缩按实际 CPU、吞吐、磁盘数据量和尾延迟决定。[MCAP 格式规范](https://mcap.dev/spec)
 
@@ -107,11 +107,11 @@ RoDAQ 自有的 Deployment Configuration、Task Configuration、Stream Identity 
 
 | 后端 | 候选依赖或交付约定 | 资格验证 |
 | --- | --- | --- |
-| MQTT 采集器 | 第二个支持的采集器，先验收 MQTT 3.1.1、QoS 0/1 的 MQTT → MCAP JSON 样本。Eclipse Paho MQTT C++ 为候选。[VDA 5050 传输协议](https://github.com/VDA5050/VDA5050/blob/main/VDA5050_EN.md?plain=1#4-transport-protocol) | 验证 Broker 晚启动、重连建立新协议会话和重新订阅、精确 Topic、保留消息、载荷大小限制与停止静止。独立读回核对原始载荷、接收时间、记录数和保留标记 |
+| MQTT 采集器 | V1 第二个 Acquisition；MQTT 3.1.1、QoS 0/1、`CleanSession=1`，首个资格 payload 为 JSON。Eclipse Paho MQTT C++ 为候选实现 | 验证 Broker 晚启动、断线重连/重新订阅、精确 Topic、retained delivery、payload 上限、结构化 Transport/Stream readiness 与 drop/overflow evidence、quiesce；独立 MCAP 读回核对 Topic、原始 payload、接收时间和 retained flag |
 | gRPC 采集器 | gRPC C++ 为候选，协议由指定服务、方法与消息定义约束 | 测试流终止、取消与迟返、接收上限、重连后覆盖证据和实例收尾 |
 | SQLite3 存储器 | 采用 rosbag2 的 SQLite3 布局。优先验证复用目标发行版的 rosbag2 写入接口 | 验证 `.db3` 和 `metadata.yaml` 的目录级读回、载荷与时间戳对账、标准回放、封口和 WAL 相关文件完整性 |
 
-候选依赖在确定交付范围后锁定版本并验证。PlotJuggler 的 MQTT 插件依赖记录可作为 Paho 的参考。[PlotJuggler 官方插件依赖](https://github.com/PlotJuggler/pj-official-plugins)
+候选依赖在确定交付范围后锁定版本并验证。MQTT client/OpenSSL（若启用 TLS）与 ROS 2/RMW/MCAP 等 process-shared 依赖必须按实际同进程组合进入发布支持矩阵；Loader 不在运行期自行推导任意依赖闭包兼容性。Fast DDS/direct DDS 后移，不参与 V1 required support matrix。
 
 ### 6.2 PlotJuggler 互操作参考
 
@@ -119,7 +119,7 @@ PlotJuggler 官方插件将实时接入、离线文件加载和消息解析分�
 
 | 能力 | PlotJuggler 支持与 RoDAQ 验证关系 |
 | --- | --- |
-| 实时接入 | 有 ROS 2、MQTT 等实时插件。MQTT 的载荷解析取决于所选消息解析器。[ROS 2 Subscriber](https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_stream_ros2#readme) · [MQTT Subscriber](https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_stream_mqtt#readme) |
+| 实时接入 | PlotJuggler 可用于 ROS 2 与 MQTT 实时参考；RoDAQ 的正式互操作仍以录制产物独立读回为准，不能把 PlotJuggler 实时插件行为当作 RoDAQ Acquisition contract。[ROS 2 Subscriber](https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_stream_ros2#readme) · [MQTT Subscriber](https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_stream_mqtt#readme) |
 | 文件加载 | 官方清单包括 MCAP、CSV、Parquet 和 ULog 等。MCAP Loader 依据 Channel 和 Schema 绑定消息解析器。互操作验收须核对实际可读取的 Topic、字段和时间轴。[MCAP Loader](https://github.com/PlotJuggler/pj-official-plugins/tree/main/data_load_mcap#readme) |
 | rosbag2 SQLite3 | ROS 插件可通过 ROS bag 的 `metadata.yaml` 与相应 rosbag2 存储插件读包。[ROS bag Loader 源码](https://github.com/PlotJuggler/plotjuggler-ros-plugins/blob/main/src/DataLoadROS2/dataload_ros2.cpp#L29-L105) |
 | gRPC | 官方通用实时插件清单未列出通用 gRPC 接入。Protobuf 解析是独立能力，RoDAQ gRPC 采集器需按具体服务验证。[官方插件清单](https://github.com/PlotJuggler/pj-official-plugins) |
@@ -127,8 +127,8 @@ PlotJuggler 官方插件将实时接入、离线文件加载和消息解析分�
 ## 7. 依赖管理与构建边界
 
 1. 生产第三方源码采用固定提交，记录来源、标签、完整提交、许可证和启用的构建选项。使用固定提交的 Git submodule，支持依赖准备后的离线构建。系统提供的 ROS 2 环境独立记录版本和目标平台。
-2. 按构建目标管理依赖。`rodaq` 模块公共接口使用项目类型。SML 属于任务控制实现，HTTP 框架归 `server/`，前端工具归 `web/`，JSON 仅用于边界解析、序列化与持久状态实现。ROS 2 与 MCAP 各归对应插件。接入时单独构建 `rodaq` 模块，核对它可在没有 HTTP 框架和录制后端的环境中构建。[模块与构建依赖](architecture.md#27-模块与构建依赖)
-3. 随包发布 `plugin/abi/` C headers、`plugin/` C++17 authoring headers 以及 C/C++ 最小插件示例。用 C 编译器独立检查每个 ABI 头，用 C++17 编译器验证 Factory/Instance/adapter，并在源码树之外构建、装载和调用两类示例。检查独立 Bootstrap Foundation、Common/Role 协议版本协商、唯一 bootstrap 符号、符号可见性及错误结果。 Plugin ABI 的反向能力注入采用 typed service table + typed opaque handle：公共 `PluginServices` 只聚合 Clock、Logging，Config API 按调用显式传入，Acquisition 使用独立 `AcquisitionServices`；不采用 RoDAQ/Core/Runtime/Context 总对象，也不使用 `void* role_services`。
+2. 按构建目标管理依赖。`rodaq` 模块公共接口使用项目类型。SML 属于任务控制实现，HTTP 框架归 `server/`，前端工具归 `web/`，JSON 仅用于边界解析、序列化与持久状态实现。ROS 2/MQTT Acquisition 与 MCAP/SQLite3 Storage 各归对应插件。接入时单独构建 `rodaq` 模块，核对它可在没有 HTTP 框架和录制后端的环境中构建。[模块与构建依赖](architecture.md#27-模块与构建依赖)
+3. 随包发布 `plugin/abi/` C headers、`plugin/` C++17 authoring headers 以及 C/C++ 最小插件示例。用 C 编译器独立检查每个 ABI 头，用 C++17 编译器验证 Factory/Instance/adapter，并在源码树之外构建、装载和调用两类示例。检查独立 Bootstrap Foundation、Common/Role 协议版本协商、唯一 bootstrap 符号、符号可见性及错误结果。 Plugin ABI 的反向能力注入采用 typed service table + typed opaque handle：公共 `PluginServices` 只聚合 Logging，Config API 按调用显式传入，Acquisition 使用独立 `AcquisitionServices`；不采用 RoDAQ/Core/Runtime/Context 总对象，也不使用 `void* role_services`。Pre-instance authoring API 固定为 `validate_config + create`：ResourceProfile、Volume admission 和 Effective Limits 由 Task/Core 形成，Plugin 不提供 ResourcePlan/ConfiguredCapability/environment fingerprint。后端差异通过各自 Schema、Canonical Descriptor/Record/Segment facts 和 Role Protocol minor-tail 表达；V1 不冻结通用 Extension Query/Common feature registry。V1 Common ABI 不包含 SecretBundle 或 Clock service；Deadline 明确采用 Linux `CLOCK_MONOTONIC` absolute ns。Task/Pipeline/Instance/Operation/EffectiveConfig identity 不进入 Plugin ABI；ROS 2 专用 typed QoS 放在独立 `abi/ros2.h` 而不是基础 `types.h`。运行环境兼容身份由 Core/Deployment 的 `qualified_runtime_profile_id` 负责，不恢复 Plugin environment fingerprint。V1 MQTT 基线若不冻结 credential mechanism，则发布资格限定为不需要 secret handoff 的 broker；启用 TLS/认证前必须先冻结 typed credential mechanism。
 4. 开发工具和运行时产物分别打包。分别记录接入、验证和发布资格状态。升级第三方库后，重跑直接受影响的接口契约与性能检查。
 5. 对新候选选择可复现的发行版本。接入时记录完整提交并执行许可证审查，避免从浮动分支或在线配置阶段隐式下载。
 
@@ -139,21 +139,21 @@ PlotJuggler 官方插件将实时接入、离线文件加载和消息解析分�
 | SML 探针 | GCC 11 和 Clang 14 的 C++17 Debug/Release 构建通过，警告和 ASan/UBSan 检查通过。验证两个独立 Task 的状态、非法事件、Pause 收尾与迟返 |
 | Server 与 Web | 验证 Drogon 在目标工具链上的链接及打包。验证 Web 和本机自动化共用 `/api/`，覆盖回环绑定、幂等冲突、配置导入导出、慢连接、请求饱和、关停及录制负载下的资源隔离 |
 | `rodaq` 模块依赖 | 配置和结果头可独立使用，发布包链接边界正确。记录依赖的版本、许可和启用选项 |
-| 插件接口契约 | 用可控插件验证配置描述、语义校验、能力、资源计划、链路生效约束和可选扩展。覆盖 Collector 控制串行、声明的 callback 并发、Storage 单 lane、非法重入、`quiesce` 成功/超时/迟返及 destroy 前静止证明；对批次成功、确定部分写入和未知后缀核对结果及载荷释放时间 |
+| 插件接口契约 | 用可控插件验证 Schema/`validate_config`、Core 下发 Effective Limits、Canonical Descriptor/Record/Segment、Role minor-tail 兼容和生命周期。覆盖 Acquisition 控制串行、Core callback concurrency limit、`SubmitResult.disposition × payload_hold`、Acquisition operational events、Storage workload-envelope proof/单 lane、非法重入、`quiesce` 成功/超时/迟返及 destroy 前静止；对批次成功、确定部分写入和未知后缀核对结果及载荷释放时间 |
 | 接纳、身份与载荷 | 验证 Stream Sequence 持久区间预留跨重启不复用、Pipeline Admission Gate 与多 Stream 并发 commit 的唯一 cut、Descriptor 高并发切换，以及复制/所有权转移/共享持有组合的释放和资源计费；不允许 Gate pass 后因普通队列或内存不足失败 |
-| 执行容量与启动事务 | 验证 Core 硬计费、Plugin 声明、共享外部资源三层模型和对象 cardinality 上限。`AllRequired` 必须在所有 Required Ready 后才 Open Admission；任一 Prepare 失败时不得已有 Required 业务记录。验证暂停释放额度后的 Resume 重新准入、插件挂起、迟返和超额输入 |
-| 真实录制 | ROS 2 → MCAP 覆盖连续滚动、Descriptor 变化、Pause/Resume、写入失败及 PlotJuggler 样本验证。ROS 2 → rosbag2 SQLite3 验证目录级读回与标准回放。MQTT → MCAP 验证明确定义的 Topic、Broker 晚启动及 JSON 原始载荷对账 |
+| 执行容量与启动事务 | 验证 Application/Deployment→Task ResourceProfile→Core/Pipeline 的单一资源 authority、首个 `SegmentReservation`/Commit capacity 在 Prepare Barrier 前闭合、每条 Accepted Record 具有 `SegmentCapacityToken`，backend 内部资源只走配置/资格验证。`AllRequired` 必须在所有 Required Ready 后才 Open Admission；验证 Lazy Open 明确失败、插件挂起、迟返和超额输入 |
+| 真实录制 | ROS 2 → MCAP 覆盖连续滚动、Descriptor 变化、Pause/Resume、写入失败及 PlotJuggler/ros2 bag 样本验证。MQTT → MCAP 覆盖 Broker 晚启动、断线重连、QoS 0/1、JSON raw payload、Topic、retained flag 与结构化 Coverage evidence。ROS 2 → rosbag2 SQLite3 验证目录级读回与标准回放 |
 | 性能与稳定性 | 参考压力画像覆盖 10 路原始 720p30 与 100 路高频关节混合，真实 ROS 2/MCAP/文件系统测接收、接纳、Writer/Commit backlog、逻辑/物理写入、提交滞后、CPU、RSS、物理载荷、p99/p99.9 和控制周期影响；验证 pending Segment/bytes 上限，并通过 72h 工程预资格和 168h 生产画像 |
 
 SML 的第一个任务是建立小型、可重复的选型探针。只覆盖 Task 核心转换和两个独立实例，同时比较手写枚举方案的可读性和编译代价。接入生产目标之前须记录实际结果、完整提交和运行配置。
 
 ## 9. V1 引入顺序
 
-1. **先完成 F0 Core Contract Closure。** 冻结 Identifier Domain 与 Stream Sequence 持久区间、Boot Reconciliation、Reset 单一权威、Pipeline Admission Gate、AllRequired Prepare Barrier、Deployment Generation/Effective Configuration、三层资源与 metadata cardinality、插件并发/重入、System Boot/SourceSequence scope、Writer/Commit lane 和统一失败模型；同时锁定 Descriptor、Payload、Storage 基础契约，并用可控组件完成并发、崩溃和资源不变量测试。
+1. **先完成 F0 Core Contract Closure。** 冻结 Identifier Domain 与 Stream Sequence 持久区间、Boot Reconciliation、Reset 单一权威、Pipeline Admission Gate、AllRequired Prepare Barrier、Deployment Generation/Effective Configuration、单一资源 authority、Segment/Commit reservation 与 metadata cardinality、插件并发/重入、System Boot/SourceSequence scope、Writer/Commit lane 和统一失败模型；同时锁定 Descriptor、Payload、Storage 基础契约，并用可控组件完成并发、崩溃和资源不变量测试。
 2. **实现 ROS 2 → MCAP 核心闭环。** 通过 `rodaq` 模块正式控制和查询接口验证有界接纳、分片、Pause/Resume、独立回放、Descriptor 变化及完整资源结算。同步 Batch 必须直接参加真实性能资格；如果不能满足声明画像，异步 Storage 能力在 V1 发布前补齐。
-3. **完成持久 Task 与长期录制能力。** 实现 Task Control Record、恢复记录、多任务、连续与滚动录制、资源计划准入、频率/流量/积压快照、历史查询、自动恢复、回收和 Reset，覆盖磁盘保护、Unknown 写入、进程重启和持久文件提交阶段故障。
+3. **完成持久 Task 与长期录制能力。** 实现 Task Control Record、恢复记录、多任务、连续与滚动录制、Task/Core 资源准入、频率/流量/积压快照、历史查询、自动恢复、回收和 Reset，覆盖磁盘保护、Unknown 写入、进程重启和持久文件提交阶段故障。
 4. **完成生产性能与长期资格。** 在目标硬件使用真实 ROS 2、MCAP、文件系统和磁盘执行相机、关节与混合画像，归档 CPU、RSS、线程/FD、物理内存、逻辑/物理吞吐、p99/p99.9、提交滞后、控制周期影响、72h 和 168h 结果。
-5. **再接入本机应用与替换后端。** `rodaq` 模块通过前述门槛后设计 HTTP 路由和 Web；验证 MQTT → MCAP、ROS 2 → rosbag2 SQLite3、PlotJuggler 读回及源码树外插件示例，形成发布支持矩阵。
+5. **再接入本机应用与替换后端。** `rodaq` 模块通过前述门槛后设计 HTTP 路由和 Web；验证 MQTT → MCAP、ROS 2 → rosbag2 SQLite3、PlotJuggler/独立 reader 读回及源码树外插件示例，形成发布支持矩阵。
 
 ## 参考
 

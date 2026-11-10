@@ -111,7 +111,8 @@ readiness policy
 - 同一 Task Config 内 ID 必须唯一；
 - 导出可保留 Task-scope Pipeline/Stream ID，它们在导入为新 Task 后仍只在新 Task scope 内解释，不造成跨 Task 身份冲突；
 - `acquisition.config / storage.config / stream_config` 保持 Strict JSON object，由对应 Plugin Schema + semantic validation 负责；
-- credential 只保存引用，不保存 secret material。
+- V1 Plugin Schema identity 直接使用 `plugin_id`，Task 不保存独立 `schema_id`；`schema_version` 只在该 `plugin_id` 的 package catalog 内精确解析，禁止猜测兼容或隐式升级；
+- credential 只保存引用，不保存 secret material；V1 Plugin Common ABI 不直接交付 secret bytes，未来需要凭据的 backend 通过单独冻结的 typed credential service 或对应 Role Protocol minor 获取。
 
 `config_version` 在 ID 分配、结构/语义校验和规范化完成后计算，因此它标识的是**实际持久化、可运行的 Task 配置**，而不是尚未分配稳定 ID 的原始输入文本。
 
@@ -341,14 +342,17 @@ flowchart LR
     G --> H["Operation terminal result"]
 ```
 
-Prepare 阶段完成所有可能失败或阻塞的工作：
+Prepare 阶段完成所有**能够在不创建正式录制 Segment、且不依赖未来输入数据的情况下提前完成**的可预见验证、资源准入和可能阻塞初始化：
 
-- 解析当前 Deployment Generation；
+- 解析当前 Deployment Generation 与 `qualified_runtime_profile_id`；
 - 形成 `effective_config_id`；
-- 资源准入；
-- 插件实例创建和配置；
-- Stream Descriptor / Storage prepare；
+- Task/Core 资源准入与 callback/control execution capacity；
+- 插件实例创建、配置和 Storage workload-envelope format-bound proof；
+- Acquisition/Storage `prepare()` 与所有 Required 初始 Stream Descriptor 的 `prepare_descriptor()`；
+- 为每条准备开放的 Pipeline 取得首个 Core `SegmentReservation`，包含 Volume/seal/Commit backlog capacity，但**不创建正式录制文件**；
 - Prepared instance facts 持久化。
+
+Prepare Barrier 的承诺不是“Operational 阶段再也不会发生 I/O 故障”。Lazy Segment Open 保留：第一条 Accepted Record 到达 Writer 后才执行真实 `open_segment()`，以避免空 Segment。Core 在 Gate Open 前已经闭合普通 Segment/Volume/Commit capacity，因此 `open_segment()` 失败只能来自真实 staging/backend I/O 或后端运行故障，不能来自普通 quota 未预留。明确的首次 open 失败按 `AcceptedKnownFailed` 结算已接纳但未写入的 Record；watchdog 先到且调用仍在途时保留 ownership/PendingCleanup，待迟返后结算。
 
 Prepared Pipeline 的 Admission Gate 保持 Closed。
 
@@ -489,13 +493,12 @@ Task config_version
 + resolved output volume identity
 + resolved non-secret parameters
 + effective protocol/QoS settings
-+ Plugin Resource Plans
 + Effective Pipeline Limits
-+ credential reference version/fingerprint
++ credential reference version
 = effective_config_id
 ```
 
-运行中的实例绑定其 `effective_config_id`。Deployment 改变不得原地修改已开放实例。
+运行中的实例绑定其 `effective_config_id`。Deployment 改变不得原地修改已开放实例。 `effective_config_id` 同时纳入 Core/Deployment 解析出的 `qualified_runtime_profile_id`，用于区分支持矩阵中声明的 OS/arch、插件 build 和关键进程共享运行库/RMW 组合；该 ID 不是 Plugin environment fingerprint。 `effective_config_id` 中的资源部分只记录 Task/Core 最终形成的 Effective Pipeline Limits，不记录插件对未来流量或内部线程/缓冲的预测。
 
 **并发与所有权。**
 

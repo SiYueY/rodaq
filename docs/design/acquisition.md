@@ -80,41 +80,33 @@ Acquisition-specific configuration 由插件定义，例如：
 - subscription/topic/service；
 - message/type/encoding；
 - protocol QoS；
-- source readiness policy；
 - reconnect/backoff；
-- protocol-specific bounded buffers；
+- protocol-specific bounded/history parameters；
 - source identity policy；
 - timestamp extraction；
-- payload holding preference。
+- payload ownership strategy。
 
 配置描述通过 Plugin Configuration Schema 发布。
 
 插件语义校验必须拒绝：
 
 - 协议不支持的组合；
-- 超出声明最大记录；
-- 无法形成有界资源计划的配置；
 - Required Source/Descriptor 信息缺失；
-- 可能造成未声明无界缓存的配置。
+- 明确会导致插件自身应用层无界缓存、无限重试或无法 quiesce 的配置。
 
-**Acquisition Capability。**
+**后端差异边界。**
 
-Acquisition Capability 至少表达：
+Acquisition Role 不定义预创建 Capability/ResourcePlan。V1 正式支持 **ROS 2 + MQTT** 两类 Acquisition；Fast DDS/direct DDS 后移，不作为 V1 ABI Freeze 或发布门禁的必需 backend。后端差异由插件配置和运行时提交事实自然表达：
 
-| 能力 | 说明 |
-| --- | --- |
-| source identity | 是否能稳定识别实际 producer |
-| source sequence | 是否提供 native sequence，以及 sequence scope 类型 |
-| source timestamp | 可用时间角色和 clock domain |
-| payload encoding | 交付给 RoDAQ 的字节语义 |
-| max record | 最大单 Record |
-| payload modes | Copy / Transfer / Retain |
-| callback concurrency | 最大并发 callback |
-| descriptor behavior | static / runtime change |
-| reconnect behavior | 是否形成新 Source Session |
-| readiness | 能否判断 source/subscription ready |
+- ROS 2 配置 namespace/domain、Topic/type、QoS、RMW 相关策略，并通过 ROS 2 introspection/type support/discovery 形成 `ros2` Canonical Descriptor；
+- MQTT V1 配置 Broker、完整 Topic、QoS 0/1、载荷编码和可选 JSON Schema。V1 资格基线为 MQTT 3.1.1 + `CleanSession=1`；每次重连后重新订阅明确配置的 Topic；
+- 两类 backend 可以拥有完全不同的 callback thread、连接/重连、Source identity 与 payload lifetime，但都必须转换为同一 `DescriptorProposal / SourceEvent / AcquisitionEvent / RecordAttempt / Payload`；
+- 后端不能提供的 SourceId、SourceSequence、source timestamp 等事实直接通过对应 `has_* == 0` 或缺少 timestamp 表达，不需要 Capability bit；
+- Copy/Transfer/Retain 是 RecordAttempt 的逐条 ownership 语义。无法安全支持 detached Transfer/Retain owner 的后端必须使用 Copy；不得为了零拷贝违反 lifetime contract。
 
-不能提供的能力必须显式缺失，不得填入伪值。
+Core 不要求插件预测未来 Topic 流量、callback 速率、broker/network backlog 或 retained payload 峰值。最大 Record、callback 并发等系统约束由 Task/Core 形成 Effective Limits 并在创建实例时下发；Acquisition 必须遵守，超过时由 Core submit path 返回明确拒绝。
+
+Fast DDS、SocketCAN 等未来 Acquisition 只有在现有 `Descriptor/SourceEvent/AcquisitionEvent/RecordAttempt/Payload` 无法表达 Core 必须理解的新语义时，才推动 Acquisition Role minor tail；协议内部 API、线程模型、reconnect 或 native queue 差异本身不构成扩展 ABI 理由。
 
 ### 2.2 Source Identity 与 SourceSequence
 
@@ -201,10 +193,10 @@ Acquisition 提供 Stream 的解释事实。
 
 Descriptor 至少可以形成：
 
-- payload encoding；
-- schema/type；
-- source clock/time role；
-- namespaced metadata extension。
+- `data_profile` 与规范 `channel_name`；
+- payload `message_encoding`；
+- `schema_name / schema_encoding / schema bytes`；
+- typed Canonical profile facts（当前仅 `generic/ros2`）。
 
 Descriptor 不可变。
 
@@ -234,8 +226,8 @@ new submissions use new descriptor generation
 
 若协议已经产生新格式数据，而 Descriptor 尚未 ready：
 
-- 插件可使用 Resource Plan 中声明的有界 staging；
-- staging 满时 PreAdmission Reject/drop with evidence；
+- 不建立额外的 RoDAQ-facing 私有 backlog；若协议 runtime 已经具有受配置约束的 native history/cache，可在其既有语义内短暂持有；
+- 当前样本无法等待 Descriptor ready 时，按协议/配置执行 drop 或 PreAdmission Reject，并保留 bounded evidence；
 - 不允许阻塞无限期；
 - 不允许无界积累；
 - 不允许错误使用旧 Descriptor。
@@ -274,18 +266,9 @@ RoDAQ 返回的结果至少区分：
 
 **Callback 线程模型。**
 
-Acquisition 可以从多个协议线程产生 callback，但必须在 Capability/Resource Plan 中声明最大并发。
+Acquisition 可以从多个协议线程产生 callback，但同时在途的 RoDAQ callback 数不得超过 Core 在 `AcquisitionInstanceConfig` 中下发的 `max_callback_concurrency`。这个值是 **Core limit，不是插件资源申请**。
 
-RoDAQ 依据该值预留：
-
-- callback execution capacity；
-- commit-domain concurrency；
-- temporary submission metadata；
-- payload accounting。
-
-插件不得在声明 `max_callback_concurrency=N` 后产生超过 N 个同时在途 callback。
-
-若后端无法自然限制，插件必须在内部做有界调度。
+如果 ROS 2 executor、MQTT client callback thread 或其它后端会产生更高原生并发，插件必须在适配边界串行化/限流到该上限，或者在 `create()`/`prepare()` 明确返回无法满足约束；不得要求 Core 根据插件线程数反向扩大系统预算。Core 自己负责 callback service、Admission commit 和 Payload accounting 的容量。
 
 **Callback 与 RoDAQ 的重入。**
 
@@ -324,7 +307,7 @@ RoDAQ 若选择 Copy：
 
 **Ownership Transfer。**
 
-若 Capability 声明支持 Transfer：
+当某条 RecordAttempt 使用 `RODAQ_PAYLOAD_MODE_TRANSFER`：
 
 - 提供唯一 owner handle；
 - 通过 `acquire()` 显式、可失败地转移 ownership；
@@ -334,7 +317,7 @@ RoDAQ 若选择 Copy：
 
 **Shared Retain。**
 
-若 Capability 声明支持 Retain：
+当某条 RecordAttempt 使用 `RODAQ_PAYLOAD_MODE_RETAIN`：
 
 - 使用同一 `acquire()/release()` ABI 表达 RoDAQ 额外持有；
 - callback stack 结束不影响 RoDAQ 已 acquire 的 payload；
@@ -416,11 +399,11 @@ Acquisition readiness 与数据活动分离。
 
 Task 可配置 Required readiness policy，例如：
 
-- subscription created 即可；
+- subscription/connection established 即可；
 - 至少发现一个匹配 source；
-- 必须在 deadline 内收到首条数据。
+- 必须在 deadline 内观察到首条数据。
 
-Readiness policy 必须在 Start Prepare 阶段可有界判定。
+**Readiness policy 属于 Task/Core，不属于 Plugin config。** Acquisition 只报告它能够观察到的协议事实（连接/订阅建立、SourceEvent、RecordAttempt/receive counter）；Core 根据 Task policy 和 deadline 做有界判定。这样 ROS 2 与 MQTT 可以用不同 native 事件表示 subscription/connection/readiness，而不需要在 Plugin ABI 里声明 readiness capability。
 
 **Backpressure。**
 
@@ -432,12 +415,11 @@ Pipeline Admission 不承诺接受每个 Record Attempt。
 PreAdmission Reject(ResourceExhausted)
 ```
 
-Acquisition 必须遵守插件自己的 overflow policy。
+Acquisition 必须遵守后端协议与配置已经定义的 overflow/drop 语义；Core 的资源预算不会因为输入流量升高而扩容。
 
 允许：
 
 - protocol-native drop；
-- bounded plugin queue；
 - bounded retry where protocol semantics allow。
 
 不允许：
@@ -453,7 +435,7 @@ Acquisition 负责提供来源侧能观察到的证据：
 
 - source disconnect/reconnect；
 - protocol sequence gap；
-- plugin queue overflow；
+- backend/adapter 明确可观察的 drop 或 overflow（若后端能提供结构化证据）；
 - plugin-side drop；
 - invalid payload；
 - source/session change；
@@ -510,86 +492,31 @@ quiesce timeout：
 - instance 保留；
 - Acquisition Services handle 与 callback target 保留；
 - library 保留；
-- instance 仍可能访问的 Resource Plan 占用保留；已 acquire payload 的独立 charge 由 Pipeline owner 继续保留到 release；
+- instance、协议对象及仍可能被旧调用访问的实现资源保留；已 acquire payload 的独立 charge 由 Pipeline owner 继续保留到 release；
 - 后续迟返仍归旧 instance；
 - 达到局部清理 deadline 后进入 process recovery。
 
-**Acquisition Resource Plan。**
+**资源与后端实现边界。**
 
-角色专有资源至少包括：
+Acquisition Plugin 不向 Core 提交 Resource Plan。系统级资源由 Task/Core 管理：Record/byte/payload quota、Admission capacity、Queue capacity、callback service limit、Stream/Source/Descriptor cardinality 都以 Core 的 Effective Limits 为权威。插件内部的 ROS 2 executor、DDS receive/history、socket/FD、middleware allocation 等无法按 Record 流量在 create 前精确预测，不能伪装成系统 reservation。
 
-- protocol receive buffers；
-- subscription count；
-- source/session entries；
-- internal bounded queue；
-- max callback concurrency；
-- threads/executors；
-- socket/FD；
-- TLS/protocol memory；
-- max payload；
-- optional staging；
-- retained payload upper bound；
-- discovery metadata cardinality。
-
-ROS 2/DDS、MQTT 等中间件内部资源无法由 Core 精确计费时，列为 Plugin-declared 或 Shared/External，并进入资格测试。
+插件仍必须满足实现质量要求：不自行创建无界应用层 queue；能够由 QoS/backend 配置限制的 history/cache 必须显式配置；quiesce 后线程/connection/subscription 能够收敛；RSS/thread/FD 和 source interference 在真实后端 stress/soak 中无未解释增长。进程级 cgroup/服务资源限制属于 Deployment，不通过 Plugin ABI 下发。
 
 **Security。**
 
-Acquisition 配置不得直接把 secret 导出到可移植 Task Configuration。
-
-Task 保存 credential reference。
-
-Deployment/secure source 解析：
-
-- password；
-- token；
-- certificate；
-- private key。
-
-Acquisition 实例只获得运行所需 secret material。
-
-不得：
-
-- 写入 Segment Manifest；
-- 写入普通日志；
-- 返回 HTTP；
-- 保存到 Task export。
-
-可以保存不敏感的 credential version/fingerprint 用于 `effective_config_id` 和审计。
+Acquisition 配置不得直接把 secret 导出到可移植 Task Configuration。V1 ROS 2 不需要通用 secret handoff；V1 MQTT **required qualification baseline** 使用不需要 secret handoff 的 Broker 配置。TLS/用户名密码/证书认证只有在发布前另行冻结 typed credential mechanism 后才进入该发布支持矩阵；否则明确属于 V1 非必需能力。不得把 secret 本体或任意 secret file path 写入 plugin config、Segment Manifest、普通日志、HTTP 输出或 Task export。
 
 **后端映射要求。**
 
-具体后端文档必须说明如何映射 Acquisition 接口契约。
+每个 backend 文档必须说明 native 语义如何映射到同一 Acquisition Role，而不是为自己增加私有 Core 接口。
 
-**ROS 2。**
+**ROS 2 Acquisition。** 至少冻结：subscription/serialized-message API、RMW/QoS、Topic/type discovery、publisher identity、callback executor、serialized payload lifetime、source timestamp、动态 type/descriptor change、multiple publishers 与 quiesce。ROS 2 类型定义必须能够产生后续 MCAP/rosbag2 SQLite3 所需的 `ros2` Canonical profile facts。
 
-至少说明：
+**MQTT Acquisition。** V1 至少冻结：Broker/session、完整 Topic、MQTT 3.1.1、QoS 0/1、`CleanSession=1`、reconnect/backoff、订阅确认、retained delivery、payload size/encoding、callback thread、可选 TLS/credential boundary（非 required baseline）与 quiesce。V1 首个 MQTT 验收 payload 为 JSON：`channel_name = exact topic`、`message_encoding = json`；若任务配置 JSON Schema，则 `schema_encoding = jsonschema` 并携带 schema bytes，否则 generic Descriptor 允许 schema triple 为空。MQTT 使用 `RODAQ_DATA_PROFILE_GENERIC`，不为 V1 新增 MQTT-specific Descriptor profile。
 
-- subscription type；
-- serialized payload lifetime；
-- QoS；
-- publisher identity；
-- callback executor；
-- source timestamp；
-- discovery；
-- multiple publishers；
-- shutdown/quiesce。
+MQTT Broker/session/transport 状态通过 `AcquisitionEvent` 结构化上报；Topic 来源活动、可解释的 session/source identity 仍通过 SourceEvent/Record facts 表达。Broker 在订阅时交付且 native API 明确标记 retained 的样本，Record 使用 Common Canonical `RODAQ_RECORD_DELIVERY_RETAINED` bit；该 bit 只表示“source protocol 明确标记的 retained/bootstrap delivery”，不推断 ROS 2 transient-local 历史样本。
 
-**MQTT。**
-
-至少说明：
-
-- Broker/session；
-- Topic；
-- QoS；
-- retained；
-- reconnect；
-- payload；
-- packet/message identity；
-- callback thread；
-- TLS credential。
-
-具体实现不能重新定义通用 Accepted/Descriptor/Payload 语义。
+Fast DDS/direct DDS 后移为未来 backend。未来如果接入，必须映射到现有 Canonical facts；不能因为使用 DDS CDR 就自动声明 ROS2 profile。
 
 ### 5.2 内部组成与 Role ABI
 
@@ -606,7 +533,7 @@ Acquisition 插件内部建议至少拆分：
 | `DescriptorPublisher` | 产生 immutable Descriptor proposal |
 | `RecordDispatcher` | 把协议 callback 转换为 RoDAQ RecordAttempt |
 | `PayloadAdapter` | Copy/Transfer/Retain 所有权适配 |
-| `AcquisitionSnapshot` | bounded readiness/source/receive/drop 快照 |
+| `AcquisitionSnapshot` | Core 根据 Acquisition callbacks/instrumentation 维护的 bounded readiness/source/receive/drop 快照；不属于插件 ABI |
 
 不得让协议 client object 直接调用 Pipeline/Storage 私有对象。
 
@@ -616,13 +543,12 @@ Acquisition 插件内部建议至少拆分：
 
 ```c
 typedef struct rodaq_acquisition_services rodaq_acquisition_services_t;
-typedef struct rodaq_acquisition_capability rodaq_acquisition_capability_t;
-typedef struct rodaq_acquisition_resource_plan rodaq_acquisition_resource_plan_t;
 typedef struct rodaq_acquisition_instance_config rodaq_acquisition_instance_config_t;
 typedef struct rodaq_acquisition_stream_config rodaq_acquisition_stream_config_t;
 typedef struct rodaq_record_attempt rodaq_record_attempt_t;
 typedef struct rodaq_descriptor_proposal rodaq_descriptor_proposal_t;
 typedef struct rodaq_source_event rodaq_source_event_t;
+typedef struct rodaq_acquisition_event rodaq_acquisition_event_t;
 typedef struct rodaq_acquisition_instance* rodaq_acquisition_instance_t;
 
 typedef struct rodaq_acquisition_operations {
@@ -631,18 +557,6 @@ typedef struct rodaq_acquisition_operations {
     rodaq_result_code_t (*validate_config)(
         const rodaq_config_api_t* config_api,
         rodaq_config_node_t config,
-        rodaq_error_buffer_t* error);
-
-    rodaq_result_code_t (*get_configured_capability)(
-        const rodaq_config_api_t* config_api,
-        rodaq_config_node_t config,
-        rodaq_acquisition_capability_t* capability,
-        rodaq_error_buffer_t* error);
-
-    rodaq_result_code_t (*get_resource_plan)(
-        const rodaq_config_api_t* config_api,
-        rodaq_config_node_t config,
-        rodaq_acquisition_resource_plan_t* resource_plan,
         rodaq_error_buffer_t* error);
 
     rodaq_result_code_t (*create)(
@@ -673,9 +587,9 @@ typedef struct rodaq_acquisition_operations {
 } rodaq_acquisition_operations_t;
 ```
 
-`header.version_major/minor` 是 **Acquisition Role Protocol** 版本，不是 Common ABI 版本；RoDAQ 同时校验 descriptor 中的 role protocol、operation table header 和 `role_operations_size`。V1 `RODAQ_ACQUISITION_OPERATIONS_BASE_SIZE` 覆盖 `validate_config / get_configured_capability / get_resource_plan / create / prepare / start / quiesce / destroy`，这些 required function pointer 全部不得为 NULL。ABI Freeze 后函数顺序、required prefix 与已发布 result/output 语义不得在 minor 中改变，只能尾扩展。具体内部 C++ 命名可调整，但 ABI 字段/函数职责不能重新合并。`rodaq_acquisition_instance_t` 只允许传给 Acquisition operations；任何跨 role instance pointer 转换都属于调用方错误，C/C++ conformance 示例以 `-Werror` 验证类型误传不能通过。`role_operations_size` 必须等于 operation table 自身 `header.struct_size`；descriptor role protocol version 必须与 operation table header 完全一致。V1 同时冻结 `RODAQ_ACQUISITION_CAPABILITY_BASE_SIZE`、`RODAQ_ACQUISITION_RESOURCE_PLAN_BASE_SIZE`、`RODAQ_ACQUISITION_INSTANCE_CONFIG_BASE_SIZE`、`RODAQ_ACQUISITION_STREAM_CONFIG_BASE_SIZE`、`RODAQ_RECORD_ATTEMPT_BASE_SIZE`、`RODAQ_DESCRIPTOR_PROPOSAL_BASE_SIZE`、`RODAQ_SOURCE_EVENT_BASE_SIZE` 与 `RODAQ_PAYLOAD_BASE_SIZE`。
+`header.version_major/minor` 是 **Acquisition Role Protocol** 版本，不是 Common ABI 版本；RoDAQ 同时校验 descriptor 中的 role protocol、operation table header 和 `role_operations_size`。V1 `RODAQ_ACQUISITION_OPERATIONS_BASE_SIZE` 覆盖 `validate_config / create / prepare / start / quiesce / destroy`，这些 required function pointer 全部不得为 NULL。ABI Freeze 后函数顺序、required prefix 与已发布 result/output 语义不得在 minor 中改变，只能尾扩展。具体内部 C++ 命名可调整，但 ABI 字段/函数职责不能重新合并。`rodaq_acquisition_instance_t` 只允许传给 Acquisition operations；任何跨 role instance pointer 转换都属于调用方错误，C/C++ conformance 示例以 `-Werror` 验证类型误传不能通过。`role_operations_size` 必须等于 operation table 自身 `header.struct_size`；descriptor role protocol version 必须与 operation table header 完全一致。V1 同时冻结 `RODAQ_ACQUISITION_INSTANCE_CONFIG_BASE_SIZE`、`RODAQ_ACQUISITION_STREAM_CONFIG_BASE_SIZE`、`RODAQ_RECORD_ATTEMPT_BASE_SIZE`、`RODAQ_DESCRIPTOR_PROPOSAL_BASE_SIZE`、`RODAQ_SOURCE_EVENT_BASE_SIZE`、`RODAQ_ACQUISITION_EVENT_BASE_SIZE` 与 `RODAQ_PAYLOAD_BASE_SIZE`。
 
-官方 C++ 开发路径使用 `rodaq::plugin::AcquisitionFactory` 与 `rodaq::plugin::Acquisition`，由 `export.hpp` adapter 自动生成上述 C operation table。`acquisition.hpp` 中的 `AcquisitionCapability`、`AcquisitionResourcePlan`、`AcquisitionInstanceConfig`、`AcquisitionServices` 与本节 C ABI 事实一一对应；`prepare()` 和 `start()` 当前没有额外参数结构，只接收 `Deadline`。这些 C++ 类型只在插件 DSO 内使用，不成为 RoDAQ↔Plugin ABI。ROS 2、MQTT 等官方 Acquisition 后端应优先实现 C++ 接口，而不是手写 C trampoline。
+官方 C++ 开发路径使用 `rodaq::plugin::AcquisitionFactory` 与 `rodaq::plugin::Acquisition`，由 `export.hpp` adapter 自动生成上述 C operation table。`acquisition.hpp` 中的 `AcquisitionInstanceConfig`、`AcquisitionServices` 与本节 C ABI 事实一一对应；`prepare()` 和 `start()` 当前没有额外参数结构，只接收 `Deadline`。这些 C++ 类型只在插件 DSO 内使用，不成为 RoDAQ↔Plugin ABI。ROS 2、MQTT 等 V1 官方 Acquisition 后端应优先实现 C++ 接口，而不是手写 C trampoline。
 
 **Acquisition V1 value layout。** 下列结构都是 Acquisition Role Protocol 的正式 C ABI；`header.version_major/minor` 写当前调用 negotiated Role version。V1 的 `*_BASE_SIZE` 等于下列 V1 required prefix 的末尾，未来 minor 只能尾扩展。
 
@@ -685,90 +599,45 @@ typedef struct rodaq_descriptor_token {
     uint64_t generation;
 } rodaq_descriptor_token_t;
 
-typedef struct rodaq_acquisition_capability {
-    rodaq_abi_header_t header;
-    rodaq_environment_fingerprint_t environment_fingerprint;
+typedef uint32_t rodaq_payload_mode_t;
 
-    uint64_t max_record_bytes;
-    uint64_t payload_mode_bits;
-    uint64_t source_identity_bits;
-    uint64_t source_sequence_bits;
-    uint64_t source_timestamp_role_bits;
-    uint64_t descriptor_behavior_bits;
-    uint64_t readiness_bits;
-
-    uint32_t max_callback_concurrency;
-    uint32_t reserved0;
-} rodaq_acquisition_capability_t;
-
-typedef struct rodaq_acquisition_resource_plan {
-    rodaq_abi_header_t header;
-    rodaq_environment_fingerprint_t environment_fingerprint;
-
-    uint64_t rodaq_buffer_bytes;
-    uint64_t plugin_buffer_bytes;
-    uint64_t max_inflight_bytes;
-    uint64_t max_retained_payload_bytes;
-    uint64_t max_staging_bytes;
-
-    uint32_t max_inflight_records;
-    uint32_t max_staging_records;
-    uint32_t thread_count;
-    uint32_t executor_count;
-    uint32_t fd_count;
-    uint32_t max_callback_concurrency;
-    uint32_t max_sources;
-    uint32_t reserved0;
-} rodaq_acquisition_resource_plan_t;
+enum {
+    RODAQ_PAYLOAD_MODE_INVALID = 0,
+    RODAQ_PAYLOAD_MODE_COPY = 1,
+    RODAQ_PAYLOAD_MODE_TRANSFER = 2,
+    RODAQ_PAYLOAD_MODE_RETAIN = 3
+};
 
 typedef struct rodaq_acquisition_stream_config {
     rodaq_abi_header_t header;
     rodaq_stream_id_t stream_id;
     rodaq_config_node_t config;
     uint64_t max_record_bytes;
-    uint32_t readiness_policy;
     uint32_t reserved0;
 } rodaq_acquisition_stream_config_t;
 
 typedef struct rodaq_acquisition_instance_config {
     rodaq_abi_header_t header;
-
-    rodaq_task_id_t task_id;
-    rodaq_pipeline_id_t pipeline_id;
-    rodaq_instance_id_t instance_id;
-    rodaq_effective_config_id_t effective_config_id;
-    uint64_t control_generation;
-
-    rodaq_environment_fingerprint_t expected_environment_fingerprint;
-
-    uint64_t max_record_bytes;
-    uint64_t max_inflight_bytes;
-    uint64_t max_retained_payload_bytes;
-    uint32_t max_inflight_records;
-    uint32_t max_callback_concurrency;
-
-    const rodaq_secret_bundle_t* secrets;
     const rodaq_acquisition_stream_config_t* streams;
     uint32_t stream_count;
-    uint32_t reserved0;
+    uint32_t max_callback_concurrency;
 } rodaq_acquisition_instance_config_t;
 ```
 
-`rodaq_effective_config_id_t` 是 Common ABI 中独立的 256-bit 语义类型，不与任意普通 digest typedef 混用。`rodaq_acquisition_stream_config_t::config`、`streams`、`secrets` 以及其内部 string/bytes/node 只在 `create()` 调用期间 borrowed；插件在返回前复制跨调用需要的普通配置与凭据。`stream_count` 必须不超过 Effective Limits，`streams == NULL` 仅在 `stream_count == 0` 时合法。所有 `reserved0` 必须为 0。
+`rodaq_acquisition_stream_config_t::config`、`streams` 以及其内部 node/string 只在 `create()` 调用期间 borrowed；插件在返回前复制跨调用需要的普通配置。`stream_count` 必须不超过 Core 的 Pipeline cardinality limit，`streams == NULL` 仅在 `stream_count == 0` 时合法。`max_record_bytes` 是 Core 对每个 Stream 下发的单 Record 上限；`max_callback_concurrency` 是 Core 对该实例允许的同时在途 callback 上限。二者都来自 Task/Core Effective Limits，不是插件声明或申请。
 
-Capability 与 Resource Plan 的 `environment_fingerprint` 必须完全相同；count 使用 `uint32_t`，byte size 使用 `uint64_t`。RoDAQ 只有在 caller-owned capability/plan 的 `header.struct_size >= 对应 BASE_SIZE` 时调用插件；adapter 对返回后的 header/version/reserved/上界进行再次校验。
+Task/Pipeline/Instance identity、`control_generation` 和 `effective_config_id` 都属于 Core 控制/恢复域，不传给 Acquisition Plugin。实例归属已经由 opaque `rodaq_acquisition_instance_t` 与该实例绑定的 `AcquisitionServices` target 唯一确定；Logging 上下文也由 Core 绑定。
 
-`create()` 只建立准入后的本地实例。`config_api`、根 config node、Stream config node/string、Stream 数组和 secret bundle 只在 create 调用期间有效；`services` 与 `acquisition_services` 在 create 失败时返回前失效，成功后可由该 Acquisition instance 保存到 destroy 返回。`create()` 必须重新观察影响 capability/resource plan 的环境并与 `expected_environment_fingerprint` 比较；不一致时返回 Conflict/Unavailable 且不发布 instance，RoDAQ 重新执行 capability→plan→admission。
+`create()` 只建立本地实例并复制配置/limits；`services` 与 `acquisition_services` 在 create 失败时返回前失效，成功后可由实例保存到 destroy 返回。真实 participant/node/subscription/discovery 检查属于 `prepare()`，不是 pre-instance capability 探测。
 
 角色调用顺序冻结为：
 
 | 调用 | 可以执行的工作 | 返回成功后保证 |
 | --- | --- | --- |
 | `validate_config` | 纯配置语义检查 | 配置可由本插件解释 |
-| capability / plan | 读取配置及必要环境事实，不创建运行实例 | 得到可准入的确定能力/资源事实 |
-| `create` | 建立本地 instance 对象和已获准的固定资源 | 不启动外部连接/订阅，不产生 callback |
-| `prepare` | 建立连接/订阅、准备 Source/Descriptor、执行 readiness 前置工作 | 外部资源已建立到可以 start 的状态 |
-| `start` | 启用协议接收/callback，完成配置要求的 start readiness | callback 域已工作且受声明并发上限约束 |
+| `create` | 建立本地 instance、复制 backend config 与 Core limits | 不启动外部连接/订阅，不产生 callback |
+| `prepare` | 建立 node/participant、连接/订阅，准备初始 Source/Descriptor，并报告 native readiness facts | 外部采集入口已建立到可以 start 的状态 |
+| `start` | 启用协议接收/callback | callback 域已工作且受 Core callback concurrency limit 约束 |
 | Pipeline Open Admission | **不是插件调用** | 从此之后符合条件的 Record Attempt 才可能 Accepted |
 
 因此 `prepare/start` 都属于 Task Prepare Barrier。插件在 `start` 成功后、Pipeline Open Admission 之前可能已经观察到 native 数据；此时 submit 得到 `GateClosed` 属于**录制覆盖尚未开始**，不能被解释为“已开始录制后的数据丢失”。正式 Coverage 从 Pipeline Open Authorization/Open boundary 建立。
@@ -801,12 +670,18 @@ typedef struct rodaq_acquisition_services {
     rodaq_result_code_t (*report_source_event)(
         rodaq_acquisition_services_handle_t handle,
         const rodaq_source_event_t* event);
+
+    rodaq_result_code_t (*report_acquisition_event)(
+        rodaq_acquisition_services_handle_t handle,
+        const rodaq_acquisition_event_t* event);
 } rodaq_acquisition_services_t;
 ```
 
-`rodaq_acquisition_services_t::header.version_major/minor` 使用**已协商的 Acquisition Role Protocol version**。V1 定义 `RODAQ_ACQUISITION_SERVICES_BASE_SIZE`；table、handle 以及 base prefix 内 `submit_record/propose_descriptor/report_source_event` 均为 required、不得为 NULL。未来 role-service tail 只有在 negotiated Role minor、`struct_size` 和对应 Configured Capability/role feature 同时允许时才可使用。它与 `PluginServices` 的 Common ABI version domain 明确分离。
+`rodaq_acquisition_services_t::header.version_major/minor` 使用**已协商的 Acquisition Role Protocol version**。V1 定义 `RODAQ_ACQUISITION_SERVICES_BASE_SIZE`；table、handle 以及 base prefix 内 `submit_record/propose_descriptor/report_source_event/report_acquisition_event` 均为 required、不得为 NULL。未来 role-service tail 只有在 negotiated Role minor 与 `struct_size` 同时允许时才可使用。它与 `PluginServices` 的 Common ABI version domain 明确分离。
 
-Acquisition service callback 不允许同步调用同一 Acquisition instance 的 mutable control operation。`submit_record()` 是热路径有界调用，不执行 Storage I/O；`propose_descriptor()` 可能触发 Storage prepare，因此必须从非热回调锁域调用并携带 operation deadline。`report_source_event()` 必须是有界、非阻塞或短临界区状态更新。RoDAQ 对同一 Source/Session 的重复连接状态、活动状态和连续 gap 事件进行 coalesce/计数，而不是为每次协议抖动创建永久对象；如果事件无法记录则返回结构化错误，插件将“来源证据记录失败”计入自身 bounded counter，并通过 Logging 留痕，而不是静默假装 Coverage 完整。RoDAQ 通过 bounded source-state/cardinality 限制防止事件风暴形成无界内存。
+Acquisition service callback 不允许同步调用同一 Acquisition instance 的 mutable control operation。`submit_record()` 是热路径有界调用，不执行 Storage I/O；`propose_descriptor()` 可能触发 Storage prepare，因此必须从非热回调锁域调用并携带 operation deadline。`report_source_event()` 与 `report_acquisition_event()` 都必须有界、非阻塞或只执行短临界区状态更新。
+
+`SourceEvent` 只表达 producer/source identity、session 和 source sequence 事实；`AcquisitionEvent` 表达 adapter/transport/stream readiness、运行故障和来源侧丢失证据。两者不是通用 Event Bus。RoDAQ 对重复 readiness 抖动和高频 drop/overflow 使用有界 state + delta counter 合并，而不是为每个 native 事件创建永久对象；事件记录失败必须返回结构化错误并使 Coverage 标记 evidence-incomplete，同时 Logging 仅用于人类诊断，不能替代控制事实。
 
 **RecordAttempt ABI。**
 
@@ -816,50 +691,96 @@ RoDAQ 对一个合法 ABI submit 调用使用独立 disposition 返回业务接�
 typedef uint32_t rodaq_submit_disposition_t;
 
 enum {
-    RODAQ_SUBMIT_ACCEPTED = 0,
-    RODAQ_SUBMIT_GATE_CLOSED = 1,
-    RODAQ_SUBMIT_OBSOLETE_INSTANCE = 2,
-    RODAQ_SUBMIT_STALE_DESCRIPTOR = 3,
-    RODAQ_SUBMIT_DESCRIPTOR_NOT_READY = 4,
-    RODAQ_SUBMIT_INVALID_RECORD = 5,
-    RODAQ_SUBMIT_RECORD_TOO_LARGE = 6,
-    RODAQ_SUBMIT_RESOURCE_EXHAUSTED = 7,
-    RODAQ_SUBMIT_PAYLOAD_ACQUIRE_FAILED = 8
+    RODAQ_SUBMIT_INVALID = 0,
+    RODAQ_SUBMIT_ACCEPTED = 1,
+    RODAQ_SUBMIT_GATE_CLOSED = 2,
+    RODAQ_SUBMIT_OBSOLETE_INSTANCE = 3,
+    RODAQ_SUBMIT_STALE_DESCRIPTOR = 4,
+    RODAQ_SUBMIT_DESCRIPTOR_NOT_READY = 5,
+    RODAQ_SUBMIT_INVALID_RECORD = 6,
+    RODAQ_SUBMIT_RECORD_TOO_LARGE = 7,
+    RODAQ_SUBMIT_RESOURCE_EXHAUSTED = 8,
+    RODAQ_SUBMIT_PAYLOAD_ACQUIRE_FAILED = 9
+};
+
+typedef uint32_t rodaq_payload_hold_t;
+
+enum {
+    RODAQ_PAYLOAD_HOLD_NONE = 0,
+    RODAQ_PAYLOAD_HOLD_ACQUIRED = 1
 };
 
 typedef struct rodaq_submit_result {
     rodaq_abi_header_t header;
     rodaq_submit_disposition_t disposition;
+    rodaq_payload_hold_t payload_hold;
+    uint32_t reserved0;
 } rodaq_submit_result_t;
 ```
 
-`submit_record()` 的函数返回码表示 RoDAQ callback 本身是否成功执行；对于正常的 PreAdmission Reject，函数返回 `RODAQ_RESULT_OK`，具体原因由 `disposition` 表达。函数返回非 OK 表示 RoDAQ/ABI 级异常，Record 同样视为未接纳，插件不得把它计为 Accepted。
+`submit_record()` 的函数返回码表示 RoDAQ callback 本身是否成功执行；`disposition` 表达业务接纳结果，`payload_hold` 独立表达 Core 是否已经成功取得非 Copy Payload 的稳定 hold。对于正常 PreAdmission Reject，函数返回 `RODAQ_RESULT_OK`，但 `payload_hold` 仍可能是 `ACQUIRED`；因此“Record rejected”绝不等于“Plugin 仍负责 owner”。
+
+对一个 ABI 参数/header/output buffer 均合法的调用，RoDAQ 必须在任何可能调用 `payload.acquire()` 之前把 `submission` 初始化为 `disposition = RODAQ_SUBMIT_INVALID, payload_hold = RODAQ_PAYLOAD_HOLD_NONE`；一旦 `acquire()` 成功，必须在任何后续 reject/error return 前将 `payload_hold` 置为 `ACQUIRED`，且不得再改回 NONE。即使 callback 最终返回非 OK，调用方仍必须先依据 `payload_hold` 决定 owner 责任；这类 callback/ABI failure 的 `disposition` 保持 `RODAQ_SUBMIT_INVALID`，不能伪造成业务 Reject。**这是 Plugin 公共“non-OK output 默认不可读”规则的显式 role-specific 例外：只要调用输入/header/output buffer 已通过初始 ABI 校验，`submission.payload_hold` 在任何返回码下都有效。** 只有在初始 ABI 参数本身非法、RoDAQ 保证尚未调用 acquire 的路径上，整个 output 才允许不可读。
 
 `rodaq_record_attempt_t`、Descriptor proposal 与 Source event 的 V1 required layout 固定如下。时间戳采用固定容量 inline array，避免跨 ABI 动态 vector：
 
 ```c
 #define RODAQ_RECORD_TIMESTAMP_CAPACITY 4u
 
-typedef uint32_t rodaq_timestamp_role_t;
-typedef uint32_t rodaq_clock_domain_t;
 typedef uint32_t rodaq_source_event_kind_t;
-typedef uint32_t rodaq_sequence_scope_t;
 
-typedef struct rodaq_record_timestamp {
-    rodaq_timestamp_role_t role;
-    rodaq_clock_domain_t clock_domain;
-    int64_t value_ns;
-} rodaq_record_timestamp_t;
+enum {
+    RODAQ_SOURCE_EVENT_INVALID = 0,
+    RODAQ_SOURCE_EVENT_DISCOVERED = 1,
+    RODAQ_SOURCE_EVENT_LOST = 2,
+    RODAQ_SOURCE_EVENT_SESSION_STARTED = 3,
+    RODAQ_SOURCE_EVENT_SESSION_ENDED = 4,
+    RODAQ_SOURCE_EVENT_SEQUENCE_GAP = 5,
+    RODAQ_SOURCE_EVENT_SEQUENCE_RESET = 6
+};
+
+typedef uint32_t rodaq_acquisition_event_kind_t;
+
+enum {
+    RODAQ_ACQUISITION_EVENT_INVALID = 0,
+    RODAQ_ACQUISITION_EVENT_TRANSPORT_READY = 1,
+    RODAQ_ACQUISITION_EVENT_TRANSPORT_LOST = 2,
+    RODAQ_ACQUISITION_EVENT_STREAM_READY = 3,
+    RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE = 4,
+    RODAQ_ACQUISITION_EVENT_DROPPED = 5,
+    RODAQ_ACQUISITION_EVENT_OVERFLOW = 6,
+    RODAQ_ACQUISITION_EVENT_INVALID_PAYLOAD = 7,
+    RODAQ_ACQUISITION_EVENT_SOURCE_TIMESTAMP_DISCONTINUITY = 8,
+    RODAQ_ACQUISITION_EVENT_RECOVERABLE_FAILURE = 9,
+    RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE = 10
+};
+
+typedef struct rodaq_acquisition_event {
+    rodaq_abi_header_t header;
+    rodaq_acquisition_event_kind_t kind;
+    rodaq_result_code_t status;
+    rodaq_stream_id_t stream_id;
+    rodaq_source_id_t source_id;
+    uint64_t count;
+    uint8_t has_stream_id;
+    uint8_t has_source_id;
+    uint8_t reserved[6];
+} rodaq_acquisition_event_t;
 
 typedef struct rodaq_descriptor_proposal {
     rodaq_abi_header_t header;
     rodaq_stream_id_t stream_id;
-    rodaq_string_t encoding;
+    rodaq_data_profile_t data_profile;
+    uint32_t reserved0;
+    rodaq_string_t channel_name;
+    rodaq_string_t message_encoding;
     rodaq_string_t schema_name;
+    rodaq_string_t schema_encoding;
     rodaq_bytes_t schema;
-    rodaq_digest256_t schema_digest;
-    uint64_t source_timestamp_role_bits;
-    uint64_t flags;
+    rodaq_string_t ros2_type_description_hash;
+    const rodaq_ros2_qos_profile_t* ros2_offered_qos_profiles;
+    uint32_t ros2_offered_qos_profile_count;
+    uint32_t reserved1;
 } rodaq_descriptor_proposal_t;
 
 typedef struct rodaq_source_event {
@@ -870,7 +791,6 @@ typedef struct rodaq_source_event {
     uint64_t source_sequence;
     rodaq_source_event_kind_t kind;
     rodaq_sequence_scope_t sequence_scope;
-    uint32_t flags;
     uint8_t has_source_id;
     uint8_t has_source_session_id;
     uint8_t has_source_sequence;
@@ -879,7 +799,7 @@ typedef struct rodaq_source_event {
 
 typedef struct rodaq_payload {
     rodaq_abi_header_t header;
-    uint32_t mode;
+    rodaq_payload_mode_t mode;
     uint32_t reserved0;
     const uint8_t* data;
     uint64_t logical_size;
@@ -902,9 +822,9 @@ typedef struct rodaq_record_attempt {
     rodaq_payload_t payload;
     rodaq_record_timestamp_t timestamps[RODAQ_RECORD_TIMESTAMP_CAPACITY];
 
-    uint64_t flags;
     rodaq_sequence_scope_t sequence_scope;
     uint32_t timestamp_count;
+    rodaq_record_delivery_flags_t delivery_flags;
     uint8_t has_source_id;
     uint8_t has_source_session_id;
     uint8_t has_source_sequence;
@@ -912,30 +832,45 @@ typedef struct rodaq_record_attempt {
 } rodaq_record_attempt_t;
 ```
 
-`descriptor_token.value == 0` 或 `generation == 0` 无效；token 只对绑定的 Stream/instance generation 有意义。`timestamp_count <= RODAQ_RECORD_TIMESTAMP_CAPACITY`，未使用的 timestamp slots 必须清零。presence flag 只允许 0/1；对应 `has_* == 0` 时相关 ID/sequence 字段必须为零值。Proposal/Event/RecordAttempt 内的 string/bytes 只在 callback 调用期间 borrowed，除非 payload acquire 规则明确延长 payload 本身的 lifetime。
+Descriptor 的 encoding/profile vocabulary 是稳定数据契约，不是 Plugin Extension：`message_encoding/schema_encoding` 是大小写敏感的稳定 ASCII token，V1 每项最大 64 bytes；`channel_name/schema_name` 是有效 UTF-8、无嵌入 NUL，V1 每项最大 1024 bytes。`schema`、ROS2 type hash/QoS 数组与其它 Descriptor 字段共同受 Core 的单 Descriptor/累计 Descriptor byte/cardinality limit 约束，超限 proposal 以 PreAdmission `ResourceExhausted` 拒绝而不改变当前 Descriptor。
+
+Acquisition 不提交 `schema_digest`：Core 在接受 proposal 时对 schema bytes 计算并保存内部 digest，避免 `schema + digest` 双事实不一致。Descriptor 也不声明 `source_timestamp_role_bits`；每条 `RecordAttempt.timestamps[]` 已自描述实际存在的 timestamp role/clock domain，新增或缺失 source timestamp 不需要制造 Descriptor Cut。
+
+`RODAQ_DATA_PROFILE_GENERIC` 时 `ros2_type_description_hash` 必须为空，`ros2_offered_qos_profiles == NULL` 且 count 为 0。`RODAQ_DATA_PROFILE_ROS2` 时 `message_encoding` 必须为 `cdr`，`schema_encoding` 必须是当前支持的 `ros2msg` 或 `ros2idl`，`schema_name/schema` 必须能够独立解释消息类型。`ros2_type_description_hash` 是可选、最大 128 bytes 的 ASCII REP-2011 type-description hash；来源无法可靠提供时为空，不允许猜测生成。QoS 使用独立 `abi/ros2.h` 的 typed `rodaq_ros2_qos_profile_t[]`，不在 Canonical Descriptor 中存 MCAP/rosbag2 YAML 文本。array/count 遵循 NULL/0 一致性并受 Core `max_ros2_qos_profiles_per_descriptor` 限制。Core 对 QoS list 做字段校验、去重和确定性排序后形成 immutable Descriptor；Storage 后端再按自己的外部格式序列化。Fast DDS plugin 不能仅因为 payload 是 CDR 就声明 ROS2 profile。
+
+`AcquisitionEvent` 语义固定：
+
+- `TRANSPORT_READY/TRANSPORT_LOST` 可以 instance-wide；`has_stream_id == 0` 时 `stream_id` 必须为零，`has_source_id == 0` 且 `count == 0`；
+- `STREAM_READY/STREAM_UNAVAILABLE` 必须 `has_stream_id == 1`，`has_source_id == 0`、`count == 0`；
+- `DROPPED/OVERFLOW/INVALID_PAYLOAD/SOURCE_TIMESTAMP_DISCONTINUITY` 是 Coverage evidence，`count > 0`，至少带 Stream scope；能可靠识别 Source 时可同时带 Source，否则 `source_id` 必须为零；
+- `RECOVERABLE_FAILURE/TERMINAL_FAILURE` 的 `status` 必须是对应非 OK result code，`count == 0`，可按已知范围携带 Stream/Source scope；其它所有 event 的 `status` 固定为 `RODAQ_RESULT_OK`；
+- 所有 `has_*` 只允许 0/1，absent ID 必须全零，reserved 必须全零；Unknown kind/status/flag 组合 fail-closed。
+
+Core 使用 TRANSPORT/STREAM event 更新 readiness snapshot，SourceReady 仍由 SourceEvent，Receiving 由实际 receive/submit counters 形成；loss evidence 进入 Coverage，Recoverable/Terminal failure 驱动 Pipeline 的结构化 failure/recovery decision。日志不得替代这些状态。
+
+`delivery_flags` V1 只允许 `RODAQ_RECORD_DELIVERY_RETAINED`；ROS 2 正常为 0，MQTT 仅在 native client 明确报告 RETAIN 标记时置位。未知 bit 是 Contract Violation。
+
+`descriptor_token.value == 0` 或 `generation == 0` 无效；token 只对绑定的 Stream/instance generation 有意义。`timestamp_count <= RODAQ_RECORD_TIMESTAMP_CAPACITY`，未使用的 timestamp slots 必须清零。presence flag 只允许 0/1；对应 `has_* == 0` 时相关 ID/sequence 字段必须为零值。`has_source_sequence == 1` 时 `sequence_scope` 必须是 Common ABI 已发布的非零 scope；否则 scope 必须为 `INVALID`。`payload.mode` 只允许 `COPY/TRANSFER/RETAIN`，0 与未知值均非法。`source_event.kind` 只允许上表 V1 值，未知值 fail-closed。Proposal/Event/RecordAttempt 内的 string/bytes 只在 callback 调用期间 borrowed，除非 payload acquire 规则明确延长 payload 本身的 lifetime。 `DISCOVERED/LOST` 描述 Source identity 的可见性变化，`SESSION_STARTED/ENDED` 描述已记录 SourceSession 的生命周期，`SEQUENCE_GAP/RESET` 只有在 `has_source_sequence==1` 且 scope 可解释时合法；这些 event 只更新 Core 的 bounded source/readiness state，不形成新的通用 Event/Diagnostic 总线。
 
 **Payload ABI。**
 
-- Copy：`owner_context/acquire/release` 全部为 NULL；`data` 在 `submit_record()` 返回前有效，RoDAQ 若接纳必须在返回前复制到 RoDAQ-owned bounded memory。
-- Transfer/Retain：`data`、`owner_context`、`acquire`、`release` 全部必须有效；`acquire()` 成功后，**payload owner lifetime 与 Acquisition instance lifetime 解耦**。`data + owner_context + release function` 必须一直有效到 RoDAQ 最后一次 exactly-once `release()`，即使原 Acquisition instance 已经 quiesce/destroy。
-- Transfer：`acquire()` 成功即把唯一 ownership 转移给 RoDAQ，插件随后不得再访问或释放该 owner；若 Admission Commit 前最终 Reject，RoDAQ 仍负责 release。
-- Retain：`acquire()` 为 RoDAQ 增加一份稳定持有，插件可保留其它引用；RoDAQ 只释放自己的持有。
+- `RODAQ_PAYLOAD_MODE_COPY`：`owner_context/acquire/release` 全部为 NULL；`data` 在 `submit_record()` 返回前有效，RoDAQ 若接纳必须在返回前复制到 RoDAQ-owned bounded memory。
+- `RODAQ_PAYLOAD_MODE_TRANSFER/RODAQ_PAYLOAD_MODE_RETAIN`：`data`、`owner_context`、`acquire`、`release` 全部必须有效；`acquire()` 成功后，**payload owner lifetime 与 Acquisition instance lifetime 解耦**。`data + owner_context + release function` 必须一直有效到 RoDAQ 最后一次 exactly-once `release()`，即使原 Acquisition instance 已经 quiesce/destroy。
+- Transfer：`acquire()` 成功即把唯一 ownership 转移给 RoDAQ，插件随后不得再访问或释放该 owner；`submit_result.payload_hold` 必须为 `ACQUIRED`。即使 Admission Commit 前最终 Reject，RoDAQ 仍负责 exactly-once release。
+- Retain：`acquire()` 为 RoDAQ 增加一份稳定持有，插件可保留其它引用；成功时 `payload_hold = ACQUIRED`，RoDAQ 只 exactly-once release 自己的 hold。
 - 非 Copy 的 `acquire/release` 必须 thread-safe、non-blocking、bounded，且**不得访问 Acquisition instance、PluginServices、AcquisitionServices 或 instance-owned pool 生命周期对象，也不得反调 RoDAQ/插件控制接口**。如果底层 native buffer 来自 instance-local pool，插件必须把实际 backing/引用计数提升为独立 payload-owner object，使 pool 的必要 backing 至少活到最后一次 release。
-- `acquire()` 失败时不越过 Admission Commit；`physical_charge` 是准入/持有期间的保守物理资源收费，不能低于资格规则要求。
+- `acquire()` 未调用或失败时 `payload_hold = NONE`，Admission Commit 不得发生；`physical_charge` 是准入/持有期间的保守物理资源收费，不能低于资格规则要求。COPY 永远返回 `payload_hold = NONE`。
 
 因此 Acquisition `quiesce()` 只证明 instance/callback/control 域静止，不要求已接纳 Record 已完成 Storage drain；它能够安全 destroy 的前提是所有仍在 Pipeline 中的非 Copy payload 已通过上面的独立 owner contract 脱离 instance lifetime。DSO 本身保持 resident，保证 `release` function pointer 在 payload owner 存活期间不会失效。对应的 `physical_charge`、retained-payload count/bytes 与 backing memory reservation 也随 payload owner 转移到 Pipeline owner 域，在最后一次 release 前不得因为 Acquisition instance destroy 而归还给全局容量池；instance 自身其它已静止资源可以正常释放。这样 ownership lifetime 与 resource-accounting lifetime 保持一致。
 
 **Stream 配置映射。**
 
-RoDAQ 在 create/prepare 时提供固定 Stream 关联表：
+RoDAQ 在 `create()` 时提供固定 Stream 关联表；Task readiness policy 与初始 Descriptor/Prepare Barrier 状态留在 Core，不进入 Acquisition instance config：
 
 ```text
-stream handle
 stable stream_id
-plugin-specific address/config
-initial descriptor expectation
-effective limits
-readiness policy
+plugin-specific stream config
+max_record_bytes
 ```
 
 插件只能对这些 Stream 提交 Record。V1 不因为协议动态发现新 native source/topic 就自动新增 RoDAQ Stream。
@@ -971,17 +906,9 @@ callback 禁止执行：
 
 **Callback 并发控制。**
 
-插件必须明确：
+Plugin ABI 只约束同时在途的 **RoDAQ callbacks**：不得超过 Core 下发的 `max_callback_concurrency`。ROS 2 executor、MQTT client callback thread 等 native callback concurrency 属于 backend 实现细节，不要求通过 ABI 声明。
 
-```text
-max_native_callbacks
-max_rodaq_callbacks
-internal_queue_records
-internal_queue_bytes
-overflow_policy
-```
-
-如果协议天然并发高于声明上限，插件内部用有界执行器/队列收敛；不能把超额并发直接推给 RoDAQ。
+如果 native 并发高于 Core limit，adapter 可以直接在 native callback 中尝试提交、使用有界串行化/执行器，或按 backend 已定义的 overflow policy 丢弃；选择何种实现由 backend 决定，但不得建立无界 RoDAQ-facing queue，也不得要求 Core 动态放宽 limit。任何 adapter queue 都是 backend 实现资源，通过配置/资格验证约束，不成为 Task resource authority。
 
 **SourceTracker。**
 
@@ -1016,7 +943,7 @@ backoff 使用 monotonic clock，配置 initial/max delay、jitter 和 retry bud
 
 **Readiness 实现。**
 
-Readiness 发布结构化 snapshot：
+Core 根据 callback/source/receive facts 发布结构化 readiness snapshot：
 
 ```text
 Configured
@@ -1040,7 +967,7 @@ observe native schema/type change
 → subsequent records use new token
 ```
 
-等待期间只能使用 Resource Plan 中声明的有界 staging，或立即 drop/reject；不得挂住 callback 等待 Storage prepare。
+等待期间不得建立额外的无界插件 staging；可利用协议自身已经配置为有界的 native history/cache，或者立即 drop/reject。callback 不得挂住等待 Storage prepare。
 
 **PayloadAdapter。**
 
@@ -1123,7 +1050,6 @@ Acquisition conformance harness 必须能让测试插件主动制造：
 - quiesce race；
 - Descriptor change storm；
 - source/session 高基数；
-- resource-plan 与实际不符；
 - acquire/release failure；
 - payload lifetime violation；
 - reconnect storm。
@@ -1146,7 +1072,7 @@ plugins/
   mqtt/
 ```
 
-目录已经表达 Acquisition 领域，因此内部文件不再重复 `acquisition_` 前缀，也不保留 `types.*` 这类兜底文件。文件按实际职责命名；确需共享值类型时放入最接近其所有权的文件或公开 `plugin/acquisition.hpp`，不能把新增领域对象不断堆入 `types/common/utils/detail`。通用 `acquisition/` 不包含 ROS 2、MQTT 第三方头。
+目录已经表达 Acquisition 领域，因此内部文件不再重复 `acquisition_` 前缀，也不保留 `types.*` 这类兜底文件。文件按实际职责命名；确需共享值类型时放入最接近其所有权的文件或公开 `plugin/acquisition.hpp`，不能把新增领域对象不断堆入 `types/common/utils/detail`。通用 `acquisition/` 不包含 ROS 2、MQTT 或其它具体后端第三方头。
 
 ## 6. 不变量与资格
 
@@ -1157,7 +1083,7 @@ plugins/
 3. Acquisition 不直接调用 Storage。
 4. Stream 集合 V1 有界且配置驱动。
 5. Descriptor 语义变化必须经过 Descriptor Cut。
-6. callback concurrency 不超过声明。
+6. callback concurrency 不超过 Core 下发的实例上限。
 7. Copy baseline 对所有 V1 Acquisition 可用。
 8. 非 Copy 模式必须显式 acquire/release 且资源计费。
 9. SourceSequence 只有 scope 明确时才具有 loss 语义。
@@ -1179,7 +1105,7 @@ plugins/
 - Copy/Transfer/Retain；
 - callback late return；
 - quiesce hang；
-- declared resource overflow。
+- callback concurrency limit violation。
 
 用于验证 RoDAQ 规则，不作为生产性能证据。
 
@@ -1208,9 +1134,9 @@ plugins/
 资格必须证明协议配置不会不可接受地反向影响机器人控制，例如：
 
 - ROS 2 reliable history/backpressure；
-- MQTT broker flow control；
-- socket buffer pressure；
-- discovery storms；
+- ROS 2 RMW history/backpressure 与 discovery traffic；
+- MQTT broker/client flow control、socket buffer pressure；
+- reconnect/discovery storms；
 - duplicate subscriptions；
 - reconnect storms。
 
@@ -1221,9 +1147,11 @@ plugins/
 Acquisition 角色契约完成需要：
 
 - Fake Acquisition conformance 全通过；
-- ROS 2 Acquisition 能按通用规则实现而无需修改 Pipeline 核心语义；
+- ROS 2 与 MQTT Acquisition 都能映射到同一 Canonical Descriptor/Record/Payload/OperationalEvent 契约而无需修改 Pipeline 核心语义；
 - Source/Sequence/Time/Payload 每个可选事实都有明确 absence 语义；
 - callback 与 quiesce race 可证明；
 - sustained overload 时所有队列与 metadata 有界；
 - Copy 路径通过正确性资格；
-- 若 Copy 性能不足，至少一个非 Copy 模式在发布前通过所有权和真实负载资格。
+- `submit_result.payload_hold` 覆盖 Accepted/Reject/ABI-error late-path 全矩阵，证明不存在 double-release、use-after-free 或 leak；
+- ROS 2 与 MQTT 的 readiness/disconnect/drop/overflow/invalid-payload evidence 可结构化驱动 Core snapshot/Coverage，而不是解析日志；
+- 若 Copy 性能不足，至少一个非 Copy 模式在发布前通过所有权和真实负载资格。真实 backend 必须专项验证 `acquire → Acquisition quiesce/destroy → delayed release`；若 native backing/release 依赖 subscription/client/instance-local pool/特定线程，则该 backend 不得启用 Transfer/Retain，只能 Copy。

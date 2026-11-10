@@ -48,9 +48,13 @@ RoDAQ 自有 Deployment Configuration、Task Configuration、Stream Identity Sta
 
 一次通过校验并被守护进程采用的不可变部署配置身份。运行中的录制实例绑定其启动时的部署代次，后续修改 `deployment.json` 不会原地改变该实例。
 
+**资格运行环境标识（Qualified Runtime Profile ID）**
+
+由 Core/Deployment 在 daemon 启动时根据发布支持矩阵解析的运行环境身份，覆盖会影响 backend 兼容性的 OS/架构、精确插件 build、ROS 2 distro/RMW 以及声明为关键的 process-shared 依赖版本/identity。它不是 Plugin 提供的 environment fingerprint，也不包含瞬时 Topic、Broker、网络或设备状态。
+
 **生效录制配置（Effective Recording Configuration）**
 
-Start、Resume 或自动恢复时，由 Task 配置、Deployment Generation、精确插件版本、输出卷身份、解析后的非敏感参数、能力与资源计划等共同形成的本次录制实例运行契约，以稳定 `effective_config_id` 标识。
+Start、Resume 或自动恢复时，由 Task 配置、Deployment Generation、`qualified_runtime_profile_id`、精确插件 identity/version/build、输出卷身份、解析后的非敏感参数、effective protocol/QoS 和 Task/Core Effective Limits 共同形成的本次录制实例运行契约，以稳定 `effective_config_id` 标识。
 
 **链路资源档位（Pipeline Resource Profile）**
 
@@ -66,7 +70,7 @@ Start、Resume 或自动恢复时，由 Task 配置、Deployment Generation、�
 
 **准备屏障（Prepare Barrier）**
 
-Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 先完成所有可能失败或阻塞的准备并保持 Admission Gate 关闭；只有启动策略要求的 Pipeline 全部 Ready 后才允许执行 Open Admission。
+Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 在 Admission Gate 关闭时完成所有无需创建正式录制 Segment、且不依赖未来输入数据即可提前完成的配置/运行环境验证、Core resource admission、插件 create/prepare、Storage workload-envelope proof、初始 Descriptor prepare，并取得首个 `SegmentReservation`。Lazy Segment Open 仍可在第一条 Accepted Record 到达 Writer 后执行真实 I/O，因此 Barrier 不承诺 Operational I/O 永不失败。
 
 **任务重置（Task Reset）**
 
@@ -74,7 +78,7 @@ Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 先完成所�
 
 ## 插件
 
-**采集器插件（Collector Plugin）**
+**采集器插件（Acquisition Plugin）**
 
 为 RoDAQ 提供一类数据源接入能力、交付数据流及其记录的插件。
 
@@ -90,13 +94,9 @@ Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 先完成所�
 
 插件随版本提供的机器可读参数结构与约束，用于在创建实例前检查插件专有配置。它描述字段结构，不替代插件自身的协议语义校验。
 
-**插件资源计划（Plugin Resource Plan）**
-
-插件根据已经验证的当前配置给出的有界资源申请，包括内部缓冲、线程或执行者、文件描述符、最大在途数据及其它硬资源。它必须落在部署允许的链路资源档位内。
-
 **链路生效约束（Effective Pipeline Limits）**
 
-由链路资源档位、Core 限制以及采集器和存储器的能力与资源计划共同得到的本次录制实例有效上限和可用能力。开放接纳前必须确定。
+由 Task 引用的 Pipeline Resource Profile、Core 全局/Volume capacity、配置语义和系统硬上限解析出的本次 Pipeline 有效限制。插件不申报 Resource Plan；与 Role 行为直接相关的 limit 由 Core 下发，backend 内部无法精确按实例控制的资源通过配置、进程级限制和 qualification 管理。
 
 ## 数据与产物
 
@@ -114,7 +114,7 @@ Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 先完成所�
 
 **Stream Descriptor**
 
-对一条数据流某一版解释语义的不可变描述，包含载荷编码、Schema、来源时钟/时间角色以及必要的有界扩展信息。解释属性变化时创建新的 Descriptor。
+对一条数据流某一版解释语义的不可变 Canonical 描述，至少包含 `data_profile`、`channel_name`、`message_encoding`、`schema_name`、`schema_encoding`、schema bytes 以及 profile-specific typed facts。逐 Record timestamp/source/delivery facts 不属于 Descriptor capability。解释语义变化时创建新的 Descriptor。
 
 **记录接纳序号（Acceptance Sequence）**
 
@@ -122,11 +122,15 @@ Start 或 Resume 开放接纳前的任务级边界。各 Pipeline 先完成所�
 
 **接纳提交点（Admission Commit Point）**
 
-一次记录提交从“可以被接纳前拒绝”变成“必须作为已接纳记录结算”的唯一逻辑切点。普通队列和内存资源必须在该切点前取得。
+一次记录提交从“可以被接纳前拒绝”变成“必须作为已接纳记录结算”的唯一逻辑切点。Record/byte/Payload/Queue 以及 `SegmentCapacityToken` 必须在该切点前取得；普通 Segment/Volume/Commit capacity 不能第一次在 Accepted 之后失败。
 
 **Pipeline Admission Gate**
 
 每条录制链路用于建立 Start/Open、Pause、Stop 和 failure cutoff 全链路线性化边界的轻量门。它与各 Stream 自己的 Descriptor/Sequence 同步域配合，不承担插件或 Storage 工作。
+
+**Segment Reservation**
+
+Core 为一个可写 Segment 预留的有界 settlement capacity，至少绑定 Segment slot、Volume bytes、seal reserve、Commit backlog slot/bytes，并持有剩余 Record/input-byte/Descriptor 容量。Prepare Barrier 前取得首个 reservation；每条 Record 在 Admission Commit 前取得属于某个 reservation 的 `SegmentCapacityToken`。它是 Core 私有资源合同，不进入 Plugin ABI。
 
 **描述切换（Descriptor Cut）**
 

@@ -186,22 +186,27 @@ Record Identity：
 
 ### 2.3 Stream Descriptor
 
-Stream Descriptor 是记录解释语义的不可变对象，至少包含：
+Stream Descriptor 是记录解释语义的不可变对象。为避免 Storage 反向理解 ROS 2/MQTT 等 Acquisition 私有配置，Core 冻结一组最小 **Canonical Descriptor** 事实：
 
-- `descriptor_id`；
-- payload encoding；
-- schema/type information；
-- source clock/time role；
-- bounded namespaced extensions；
-- Storage 需要的 Required extension facts。
+- `descriptor_id / stream_id`；
+- `data_profile`：`generic` 或已冻结的 typed profile（V1 包含 `ros2`）；
+- `channel_name`：写入 Storage channel/topic/table 所需的规范通道名；
+- `message_encoding`：payload 字节编码，例如 `cdr/json/protobuf`；
+- `schema_name`：类型/Schema 的稳定名称；
+- `schema_encoding`：Schema bytes 的解释方式，例如 `ros2msg/ros2idl/omgidl/jsonschema`；
+- schema bytes；Core 在 proposal 接纳时计算内部 schema digest，digest 不由 Acquisition Plugin 提交；
+- profile-specific typed facts。V1 `ros2` profile 增加 optional `type_description_hash` 与 bounded typed offered-QoS profile set，不允许任意 key/value metadata bag。
 
-以下变化必须创建新 Descriptor：
+`generic` profile 只承诺上述通用编码/schema 事实，不承诺 ROS 2 标准回放。`ros2` profile 则承诺 Descriptor 足以生成 ROS 2-compatible storage projection：`message_encoding=cdr`、schema encoding 为已支持的 ROS 2 schema vocabulary，并携带 optional REP-2011 type-description hash 与 typed offered QoS profiles。QoS 在 Canonical Descriptor 中不是 YAML/string blob；Core 把 proposal 中的结构化 profile 做字段校验、去重和确定性排序，Storage 再按 MCAP 或 rosbag2 SQLite3 的外部格式序列化。ROS 2 Acquisition 应直接产生这些事实。MQTT V1 使用 `generic` profile，首个 JSON 验收场景使用 `message_encoding=json` 和可选 `schema_encoding=jsonschema`。Fast DDS/direct DDS 后移；未来接入时也不能让 Storage 根据 CDR 字节猜测“这大概是 ROS 2”。
 
-- encoding；
-- schema；
-- source clock interpretation；
-- time role；
-- Required extension 的解释语义。
+以下任一解释语义变化都必须创建新 Descriptor：
+
+- data profile；
+- channel/message encoding；
+- schema name/encoding/content；
+- typed profile fact。
+
+每条 Record 的 timestamp role/clock domain 是 Record fact，不是 Descriptor capability；仅仅某条消息有/没有 source timestamp 不创建新 Descriptor。
 
 **Descriptor Cut。**
 
@@ -235,7 +240,7 @@ V1 不提供通用无界 staging。
 若新 Descriptor 尚未由 Storage prepare 完成：
 
 - 对新解释语义的 Record 不得用旧 Descriptor 接纳；
-- Acquisition 可使用自己已经纳入 Resource Plan 的有界短暂缓存；
+- Acquisition 不建立额外的 RoDAQ-facing 私有 backlog；协议 runtime 自身已有且由 backend 配置约束的 native history/cache 可按协议语义短暂持有；
 - 否则进行 PreAdmission Reject；
 - Coverage/诊断记录拒绝原因。
 
@@ -528,22 +533,22 @@ OpenAuthorized 但没有 OpenedObserved 的实例恢复时必须按“可能已�
 
 **Effective Pipeline Limits。**
 
-Pipeline 在 Open 前固定：
+Pipeline 在 Open 前依据 Task ResourceProfile、Core Capacity 与 Volume policy 固定：
 
 - max record size；
 - max inflight records；
 - max logical bytes；
 - max physical payload bytes；
 - queue capacity；
-- supported payload holding modes；
+- Core allowed payload holding modes（策略/资格允许集合，不是插件 Capability 声明）；
 - batch size；
 - stream/descriptor limits；
-- plugin callback concurrency；
+- Core 下发的 plugin callback concurrency limit；
 - Storage physical/seal limits；
 - execution slots；
-- plugin resource ownership。
+- plugin instance/call ownership（不代表插件拥有系统资源预算）。
 
-运行中不能因为压力临时放宽这些限制。
+运行中不能因为压力临时放宽这些限制。 插件不能通过自己的 queue、thread pool 或 backend cache 反向改变这些系统预算；Core 只对它能实际计量/控制的资源做硬 admission。
 
 ### 4.3 资源、事实与模块依赖
 
@@ -681,9 +686,10 @@ SubmitResult submit_record(const RecordAttempt& attempt);
 
 `RecordAttempt` 是借用输入，只在调用期间有效，除非 Payload mode 明确提供 transfer/retain。
 
-`SubmitResult` 至少区分：
+`SubmitResult` 包含两个**正交**事实：业务接纳 `disposition` 与 Core 是否已经取得非 Copy Payload hold 的 `payload_hold`。Admission disposition 至少区分：
 
 ```text
+Invalid
 Accepted
 GateClosed
 ObsoleteInstance
@@ -693,10 +699,9 @@ InvalidRecord
 RecordTooLarge
 ResourceExhausted
 PayloadAcquireFailed
-Internal
 ```
 
-Accepted 之外的结果均为 PreAdmission Reject，不分配 sequence。
+除 Accepted 外都表示 Record 未越过 Admission Commit，但这**不决定 Payload owner**。`payload_hold = Acquired` 不蕴含 Accepted：Transfer/Retain 可能在 acquire 成功后因 Gate/Descriptor/cancellation 变化而 Reject，此时 Core 仍 exactly-once release 已取得的 owner/hold。`payload_hold = None` 表示 Core 从未成功取得非 Copy hold。Pipeline/SDK 不得只根据 `disposition` 或函数 status 猜测释放责任。
 
 ### 5.2 并发、Admission 与资源预留
 
@@ -736,7 +741,7 @@ fsync while holding Pipeline control lock
 | 逻辑执行域 | 顺序要求 | 线程实现要求 |
 | --- | --- | --- |
 | Pipeline control lane | 同一 instance 控制事件串行 | 可由共享有界 control executor 承载 |
-| Acquisition callback domain | 按插件声明的最大并发 | 插件线程或受控 callback executor |
+| Acquisition callback domain | 同时在途 callback 不超过 Core Effective Limit | 插件 native thread 或受控 adapter，超过上限必须限流/串行化或失败 |
 | Sequence persistence lane | 同一 Task Identity State 更新串行 | 可由共享持久化 executor 承载 |
 | Writer lane | 同一 Pipeline Storage mutation 串行 | 可由共享 worker pool 上的 per-Pipeline serial queue 承载 |
 | Commit lane | 同一 Segment 单 owner；同卷并发有上限；filesystem durability 与 Artifact Ledger 登记完成后才产生 normal Committed | 卷级有界 commit executor，Ledger 持久化不得绕过 commit backlog 预算 |
@@ -744,9 +749,9 @@ fsync while holding Pipeline control lock
 
 V1 不要求“一个 Pipeline 一个线程”。任何线程池实现都必须证明：不会因为某个插件永久阻塞而耗尽所有控制/停止/诊断容量。
 
-**AdmissionReservation。**
+**AdmissionReservation 与 Segment settlement capacity。**
 
-所有普通容量在 commit 前通过私有 RAII reservation 获取：
+所有普通容量在 commit 前通过私有 RAII reservation 获取。除了 Record/byte/Payload/Queue，V1 还必须为每条即将 Accepted 的 Record 取得一个 **SegmentCapacityToken**；它把该 Record 绑定到一个已经存在的 Core-owned `SegmentReservation` 的剩余 records/input-bytes 容量。这样 Admission Commit 之后不会第一次发现“没有 Segment 可以承接这条 Record”。
 
 ```cpp
 struct AdmissionReservation {
@@ -754,20 +759,36 @@ struct AdmissionReservation {
     ByteQuotaToken logical_bytes;
     PayloadQuotaToken payload;
     QueueCapacityToken queue_capacity;
+    SegmentCapacityToken segment_capacity;
+};
+
+struct SegmentReservation {
+    SegmentSlotToken segment_slot;
+    VolumeBytesToken volume_bytes;
+    CommitSlotToken commit_slot;
+    CommitBytesToken commit_bytes;
+
+    uint64_t remaining_records;
+    uint64_t remaining_input_bytes;
+    uint32_t remaining_descriptor_slots;
 };
 ```
 
-这是实现概念，不进入公共 API。
+这些都是 Core 私有实现概念，不进入 Plugin ABI。`SegmentReservation` 的容量来自 Task ResourceProfile、Storage Effective Limits 和 Volume/Commit capacity；其中 `volume_bytes` 至少覆盖该 Storage instance 冻结的 `max_segment_physical_bytes + seal_reserve_bytes`，`commit_slot/commit_bytes` 预先占住该 Segment 将来进入 Commit lane 所需的 backlog 额度。staging→final 是同一受管文件系统上的 ownership/publish 转移，不把这份 Volume reservation 重复计算成两份磁盘空间。
 
-行为：
+行为冻结为：
 
-- 任一 reserve 失败：已取得 token 自动回滚；
-- payload acquire 失败：全部回滚；
-- commit 前 cancellation/gate close：全部回滚；
-- Admission Commit 时 queue capacity token 被消费为一个实际 queue entry，其它资源 token 转移给 Accepted Record；
-- Record/Storage/Commit 最终结算后逐项归还。
+- Prepare Barrier 前为每条准备开放的 Pipeline 至少取得**首个 SegmentReservation**；这一步只预留 Core capacity，不创建文件，因此不破坏 Lazy Segment Open；
+- Descriptor 被绑定到某个可写 Segment 前必须取得该 Segment 的 descriptor slot；运行期 Descriptor Cut 如果没有可用 descriptor slot/后继 SegmentReservation，在新 Descriptor 成为 Active 前关闭或保护 Admission；
+- Record Admission 根据 record input bytes/record count 从当前或已预留后继 Segment 取得 `SegmentCapacityToken`；无法取得时是 PreAdmission Reject，绝不能先 Accepted 再等待 Segment/Commit capacity；
+- 任一 reserve 失败：已取得 token 自动回滚；payload acquire 失败：全部回滚；commit 前 cancellation/gate close：全部回滚；
+- Admission Commit 时 queue token 被消费为实际 queue entry，Record/byte/Payload/SegmentCapacity ownership 一并转移给 Accepted Record；Writer 只能把该 Record 写入 token 所属 SegmentReservation；
+- Lazy `open_segment()` 发生在该 reservation 的第一条 Record 到达 Writer 时。open 失败不会改变“Record 已 Accepted”的事实，按已知未写入路径结算；
+- Segment seal 成功时，`SegmentReservation` 中的 Volume/Commit reservation 与 sealed Segment 一起 move 到 Commit lane；filesystem durable + Ledger/Catalog 结算后释放；
+- Writer 不能在 Commit backlog 已满后再无界创建新 Segment。无法取得后继 `SegmentReservation` 时，后续 Record 在 Admission Commit 前被拒绝/保护，已经 Accepted 且持有 segment token 的 Record 仍有确定的 bounded drain path；
+- Record/Segment/Commit 最终结算后逐项归还所有 token。
 
-不允许在 commit 后再次执行可能失败的普通 quota acquisition。
+**核心不变量：`Admission Gate == Open` 不代表无限下游容量，而是每个 Accepted Record 在 commit 前都已经取得 queue + payload + segment settlement capacity。** 不允许在 Admission Commit 后再次执行会因普通 Record/Segment/Commit quota 不足而失败的资源取得。plugin/backend I/O 仍可能发生真正的运行故障，但“Commit queue 满”“没有 Segment slot”“Volume budget 不足”不能第一次出现在 Accepted 之后。
 
 **AdmissionGate 实现语义。**
 
@@ -946,12 +967,17 @@ Writer 的基本循环：
 
 ```text
 while instance has accepted work:
-    pop bounded batch
+    pop bounded batch for one SegmentReservation
+    lazily open the reserved Segment before its first write
     preserve per-stream sequence order
     call storage.write_batch
-    validate result
+    validate result and Storage physical-size envelope
     settle confirmed prefix
     settle definitely-unwritten suffix
+    on rotation/cut:
+        seal current reserved Segment
+        transfer its reservation to Commit lane
+        switch only to an already-reserved successor Segment
     on Unknown:
         close admission
         mark segment contaminated
@@ -960,7 +986,7 @@ while instance has accepted work:
     publish progress snapshot
 ```
 
-Writer 不读取 Task Desired State 来决定 Record 是否丢弃；是否继续接纳由 Gate 决定，已经 accepted 的 Record 必须结算。
+Writer 不读取 Task Desired State 来决定 Record 是否丢弃；是否继续接纳由 Gate 决定，已经 accepted 的 Record 必须结算。 Queue entry 必须同时携带或可无歧义解析其 `SegmentCapacityToken` 所属 SegmentReservation；Writer 不允许把已经 Accepted 的 Record 临时改派到一个尚未取得 Volume/Commit reservation 的新 Segment。
 
 **Writer 与控制并发。**
 
@@ -1068,6 +1094,8 @@ pipeline/
 10. 仅 Prepared 的实例不产生 Coverage；OpenAuthorized 的实例按可能已开放恢复。
 11. 超时不释放仍可能被旧执行访问的资源。
 12. Pipeline 不拥有 Task Desired State。
+13. 每个 Accepted Record 在 Admission Commit 前已经取得属于某个 `SegmentReservation` 的 `SegmentCapacityToken`；Commit/Volume/Segment 普通容量不足不能在 Accepted 之后首次出现。
+14. `SubmitResult.payload_hold` 与 admission disposition 正交；Core 取得 hold 后无论 Accepted/Rejected 都承担 exactly-once release。
 
 ### 6.2 验收矩阵
 
@@ -1090,6 +1118,7 @@ pipeline/
 
 **Payload。**
 
+- `SubmitResult.disposition × payload_hold` 全矩阵：acquire 前 Reject、acquire success 后 Gate close/Descriptor change、acquire failure、callback error late-path；
 - Copy / Transfer / Retain；
 - PreAdmission Reject；
 - Storage success / known failure / Unknown；
@@ -1104,7 +1133,7 @@ pipeline/
 - Unknown；
 - malformed plugin result；
 - sustained slow storage；
-- commit backlog saturation；
+- commit backlog/Volume/Segment slot saturation：新 Record 必须在 Admission Commit 前因 `SegmentCapacityToken` 失败而 Reject/Protect，已 Accepted Record 仍在既有 reservation 内结算；
 - segment rotation 与 Stop/Pause。
 
 **Recovery。**
