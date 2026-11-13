@@ -1,1572 +1,4222 @@
-# RoDAQ Plugin 公共框架设计
+# RoDAQ Plugin 通用插件系统设计
+
+🧩
+
+**文档说明**
+
+本文件是 RoDAQ 通用插件系统的唯一权威详细设计，覆盖稳定 C ABI、C++17 Plugin SDK、插件运行时、插件包/插件目录/加载器、生命周期、异常保留、常驻插件库生命周期、第三方插件交付和资格验证。
+
+本文档以“可直接指导实现”为目标。除明确标注为待冻结的名称或数值外，开发人员不应自行改变影响 ABI/API、所有权、并发、生命周期或错误语义的设计。
+
+</aside>
 
 | 文档属性 | 内容 |
 | --- | --- |
-| 文档类型 | 模块详细设计 |
-| 状态 | V1 详细设计基线 |
-| 适用范围 | RoDAQ 动态插件公共 ABI、装载、配置、生命周期、角色协议与兼容性 |
-| 上位设计 | [系统架构设计](architecture.md) |
-| 关联设计 | [Pipeline](pipeline.md) · [Acquisition](acquisition.md) · [Storage](storage.md) · [技术选型](technology_selection.md) |
+| 文档名称 | RoDAQ Plugin Framework 详细设计 |
+| 文档标识 | `plugin.md` |
+| 文档版本 | **0.2.3** |
+| 状态 | **实现就绪详细设计候选（Implementation-Ready Detailed Design Candidate）** |
+| 语言基线 | C ABI + C++17 |
+| 平台基线 | Linux ELF；Ubuntu 22.04 / 24.04；amd64 / arm64 |
+| 设计范围 | C ABI、C++ SDK、插件运行时、Plugin Package、Plugin Catalog、Loader、生命周期、异常保留、常驻插件库生命周期、交付与资格验证 |
+| 非设计范围 | 具体业务模型、具体协议/Backend 语义、跨进程插件、插件沙箱、自动 Plugin 依赖图、透明热升级 |
 
-## 1. 目标与边界
+# 1. 文档概述与设计基线
 
-Plugin 框架负责让 Acquisition 和 Storage 后端能够以稳定、可验证、资源有界的方式装载到 RoDAQ 守护进程中。
+本章建立 RoDAQ Plugin Framework 的 V1 设计边界。V1 的目标不是构造一个通用插件平台，而是为 RoDAQ 的 Acquisition、Storage 等可扩展能力提供稳定、可维护、能够长期运行的插件机制。
 
-Plugin 公共框架负责：
+## 1.1 设计目标
 
-- 动态库发现、身份校验与装载；
-- 具有显式 ABI/Protocol 版本字段的稳定 C ABI；
-- 插件元数据与角色识别；
-- Configuration Schema 与 `validate_config()`；
-- Logging 最小公共 Plugin Service；
-- 结构大小、所有权、错误码和字符串/缓冲区规则；
-- 线程安全、重入、deadline/late-return 与 quiescence 基础规则；
-- Acquisition/Storage Role Protocol 的公共版本演进规则；
-- ABI conformance 与已发布后端组合的依赖资格。
+V1 必须同时满足：
 
-Plugin 公共框架**不拥有系统运行策略**，尤其不负责：
+- Linux ELF / `dlopen()` 插件加载；
+- Ubuntu 22.04 / 24.04，amd64 / arm64；
+- 稳定 C ABI，C++17 SDK；
+- 一个 Plugin 可以提供多个 Operation Interface；
+- RoDAQ Application 可以向 Plugin 提供 Service Interface；
+- Plugin DSO 成功加载后保持常驻，直到进程退出；
+- Plugin Instance 可以安全创建、配置、调用和关闭；
+- Plugin 异常或关闭迟返不得导致未定义行为；
+- 普通插件开发者不需要理解 C ABI trampoline、Loader、调用保护和内部状态管理；
+- Framework 的内部复杂度不能反向扩散到 Application 或 Plugin API。
 
-- Task 状态机、Resource Profile、Capacity admission 或资源调度；
-- Pipeline Admission、Queue/Payload/Writer/Commit 预算；
-- Volume identity、磁盘水位、文件系统资格、staging/final publish、Artifact Ledger；
-- Deployment 策略或后端组合选择；
-- Acquisition 的 Source/Stream/Record 业务语义；
-- Storage 的 Batch/Segment/Commit 业务语义；
-- HTTP 或 Web；
-- 把所有后端业务参数统一成一个大配置结构。
+V1 明确不以支持运行期 DSO 卸载、热更新、多 Runtime Domain、插件沙箱、跨进程插件和自动 Plugin 依赖图为目标。
 
-**职责闭合原则。** Plugin 是协议/格式适配层，不是第二套 Runtime。插件可以在实现内部创建完成适配所需的对象、线程、middleware handle 或格式 writer，但不能决定系统给某个 Task/Pipeline 分配多少内存、队列、磁盘、执行槽位或提交容量。系统资源策略由 Application/Deployment → Task → Core/Capacity → Pipeline 逐层收敛为 Effective Limits；插件只接收和遵守与其接口行为直接相关的限制。无法由 Core 精确控制的第三方 runtime 内部资源通过受支持配置和生产资格验证，而不是通过 Plugin Resource Plan 伪造精确 reservation。
+## 1.2 规范性用语
 
-**设计参考与取舍。** 本文借鉴成熟插件框架中已经被长期验证的机制，但不复制其业务对象模型。关键映射如下：
+本文使用：
 
-| 参考机制 | RoDAQ 吸收的原则 | 明确不照搬的部分 |
+- **必须**：实现必须满足；
+- **不得**：实现明确禁止；
+- **应该**：推荐实现；偏离时应有明确理由；
+- **可以**：允许的实现选择。
+
+文档根据具体上下文分别使用“规范、规则、约定、语义、约束”等表述。
+
+## 1.3 三类开发者
+
+整套设计只区分三类开发角色。
+
+### 应用开发者
+
+应用开发者负责 RoDAQ 上层 Application / Core / Server，主要使用：
+
+- `PluginManager`；
+- `PluginLibrary`；
+- `PluginInstance`；
+- `ServiceRegistry`；
+- Acquisition / Storage 等业务 Interface SDK；
+- Plugin 配置与诊断接口。
+
+普通应用开发者不需要理解 C ABI、Loader 内部结构、调用计数、Plugin DSO 句柄或异步关闭执行器。
+
+### 插件开发者
+
+插件开发者实现 ROS 2 Acquisition、MQTT Acquisition、MCAP Storage、SQLite3 Storage 等 Plugin，主要使用：
+
+- `PluginBase`；
+- `PluginSetup`；
+- 标准 Interface SDK；
+- `RODAQ_DEFINE_PLUGIN`；
+- `rodaq_register_plugin()`。
+
+普通插件开发者不直接编写 C ABI、vtable、Adapter、trampoline、Manifest 或 Loader 代码。
+
+### 框架开发者
+
+框架开发者负责：
+
+- Stable C ABI；
+- C++17 Plugin SDK；
+- Interface SDK；
+- PluginManager / Loader；
+- Plugin 生命周期与并发安全；
+- Package / Manifest / PluginCatalog；
+- ABI、SDK、Runtime 与集成资格验证。
+
+Interface SDK 的设计和维护属于框架开发工作，不再单独定义第四类开发角色。
+
+## 1.4 核心设计原则
+
+1. **稳定 C ABI 是唯一跨 DSO 二进制规范。**
+2. **C++17 SDK 只是 C ABI 的类型安全封装，不形成第二套跨 DSO 协议。**
+3. **Framework 使用 Interface-first 模型，不定义 Acquisition/Storage 等 Plugin Type enum。**
+4. **Operation 由 Plugin 提供，RoDAQ Application 查询并调用。**
+5. **Service 由 RoDAQ Application 提供，Plugin 在配置阶段查询并使用。**
+6. **Plugin Instance 只有完成初始化后才发布给 Application；Application 不接触任何半初始化对象。**
+7. **Plugin 生命周期关闭使用 `shutdown()`，它表示“收敛到可以安全 destroy 的状态”，不等于 Acquisition Stop 或 Storage Finalize。**
+8. **同步关闭使用 `close()`，异步关闭使用 `async_close()`；Framework 不暴露 request-close/ticket/completion 等内部实现概念。**
+9. **成功加载的 Plugin DSO 在进程退出前保持常驻；V1 不实现运行期物理卸载。**
+10. **所有仍可能执行 Plugin ABI 的调用都必须受到统一调用准入保护。**
+11. **Plugin shutdown 未能完成时不得强制 destroy；实例进入 Unresolved，进程需要受控重启。**
+12. **Framework 只保留解决 V1 实际问题所必需的对象和状态，不为未来潜在扩展提前建立通用机制。**
+
+## 1.5 版本模型
+
+V1 只有三个需要在设计层明确理解的版本。
+
+| 版本 | 维护者 | 用途 |
 | --- | --- | --- |
-| Vulkan Loader/Driver | manifest/pre-load discovery、独立 bootstrap/interface negotiation、协商后再解释具体 ABI | 不引入 Vulkan 式全局 proc-address API |
-| OpenSSL Provider | 双向能力交换、framework services 与 plugin operations 分离、opaque state ownership | 不采用 `function_id + void(*)()` 的通用 dispatch；RoDAQ 保留 typed table |
-| PipeWire SPA | Factory/Handle/Interface、support injection、低依赖 C ABI | 不采用字符串 type + `void*` 的通用 support array |
-| GStreamer | Plugin → Feature/Factory → Instance 分层、统一 logging、静态注册事实不依赖瞬时环境 | 不引入 GObject/property 体系和运行期任意属性修改 |
-| OBS | role descriptor 与 create/start/stop/destroy 的实例职责分离 | 不引入 module-level mutable lifecycle 或 UI settings API |
-| PlotJuggler SDK | package/manifest、C ABI、CMake authoring helper、export/ABI gate | 不把其业务 plugin 类型直接映射为 RoDAQ role |
-| ROS class_loader/pluginlib | C++ 插件作者体验、Factory/RAII wrapper | C++ inheritance/RTTI/STL 不作为跨 DSO 稳定 ABI |
+| Plugin Version | 插件开发者 / Plugin Project | 表示一个 Plugin 发行版本；使用 Semantic Versioning |
+| Interface Version | 框架 / Interface SDK | 表示 Operation / Service Interface 的兼容版本 |
+| Plugin ABI Version | Plugin Framework | 表示跨 DSO Foundation ABI 的兼容版本 |
 
-因此 RoDAQ 的稳定边界采用 **Bootstrap Foundation + Common C ABI + Role Protocol + typed Services + C++ authoring adapter**。跨 DSO 不传 C++ 对象、STL、RTTI 或 exception，不把 GObject/SPA 对象系统引入项目。[Vulkan Loader Interface](https://vulkan.lunarg.com/doc/view/latest/windows/LoaderDriverInterface.html) · [OpenSSL Provider](https://docs.openssl.org/3.3/man7/provider/) · [PipeWire SPA Plugins](https://pipewire.pages.freedesktop.org/pipewire/page_spa_plugins.html) · [GStreamer GstPlugin](https://gstreamer.freedesktop.org/documentation/gstreamer/gstplugin.html) · [OBS Modules](https://docs.obsproject.com/reference-modules) · [PlotJuggler SDK](https://github.com/PlotJuggler/plotjuggler_sdk) · [ROS class_loader](https://github.com/ros/class_loader)
+### Plugin Version
 
-**V1 边界。** 一个受管插件 package 对应一个逻辑 `plugin_id`、一个角色和一个主 DSO；一个 DSO 不同时注册多个 RoDAQ plugin id，也不同时承担 Acquisition 与 Storage 两种角色。V1 不支持进程内热升级、热卸载或插件自行发现/加载其它 RoDAQ 插件。插件属于受信任的同进程组件，ABI 与资格测试用于约束合作式行为，不能提供恶意代码或内存破坏隔离；需要进程级隔离属于后续能力。
+Plugin 开发者只维护自己的 Plugin Version，例如：
 
-**双层开发接口。** Plugin SDK 同时提供 C ABI 与 C++ authoring API。C ABI 是唯一跨 DSO 的稳定二进制边界，也是 RoDAQ Loader、第三方语言绑定和 ABI conformance 的权威契约；C++ API 是插件作者的首选开发接口，用 `Status/Result`、RAII、强类型、抽象基类和自动 adapter 降低开发成本。C++ 对象、STL、RTTI 和异常**不跨 DSO**：插件内部 C++ 实现通过 SDK adapter 转换为同一套 C descriptor/function table，因此 C++ 开发效率不能削弱 C ABI 的稳定性。
-
-**命名规则。** 文件名、导出符号名、函数名、类名和宏名不编码发布版本，例如使用 `manifest.schema.json`、`rodaq_plugin_get_descriptor`、`rodaq_bootstrap_request_t`，不使用 `*_v1`、`*V2*` 或 `*_1_1`。版本只作为 manifest/schema/ABI 字段和数值存在。公开 C ABI 采用 **project prefix + snake_case + `_t`** 的类型命名：`rodaq_string_t`、`rodaq_plugin_descriptor_t`、`rodaq_acquisition_instance_t`；对应 struct tag 使用 `struct rodaq_string` 这类无 `_t` tag，函数使用 `rodaq_xxx()`，常量/枚举值使用 `RODAQ_XXX`。callback/function-pointer typedef 使用 `*_fn_t` 或语义更明确的 `*_cb_t`。公开 C++ SDK 位于 `rodaq::plugin`，类型使用 PascalCase、函数保持项目统一的 lowercase_snake_case。这样 C/C++ 两层在调用点可立即区分，同时保持文件和符号身份与发布版本解耦。POSIX 对 `_t` 存在保留规则，但 RoDAQ 接受这一已知工程取舍，依靠唯一 `rodaq_` 前缀、受控公共头和 ABI conformance gate 避免命名冲突。
-
-变量、字段和类型名优先表达**领域语义**，不表达数据流方向或占位角色。公共接口中禁止把裸 `in`、`out`、`args`、`context`、`info`、`data`、`value` 作为缺少领域限定的命名；应使用 `descriptor`、`instance_config`、`member`、`element`、`batch_result`、`segment_size`、`submission`、`services` 等具体名。只有当所属类型已经完全限定语义时才允许简短字段，例如 `rodaq_string_t::data`、`rodaq_bytes_t::data` 和 typed getter 的 `value`。同一规则适用于 C++ API，避免 `CreateArgs`、`Context`、`Info` 这类为了以后扩展而预留的宽泛对象。
-
-## 2. 插件接口契约与实例生命周期
-
-### 2.1 模型、版本与配置
-
-**设计原则。**
-
-**ABI 保持稳定，业务语义分层。**
-
-公共边界采用 C ABI，插件内部可以使用 C++17。
-
-ABI 只表达稳定跨库事实：
-
-- fixed-width scalar；
-- 明确大小的 POD struct；
-- opaque handle；
-- borrowed buffer/string view；
-- RoDAQ-provided output buffer；
-- function table；
-- explicit result code。
-
-禁止稳定 C ABI 暴露：
-
-- STL；
-- exceptions；
-- RTTI；
-- `std::string` / `std::vector`；
-- `nlohmann::json`；
-- ROS 2 / MQTT / MCAP / SQLite3 等后端 C++ 类型；
-- 编译器相关对象布局。
-
-**公共 ABI 小而稳定。**
-
-核心 ABI 只放所有 Acquisition/Storage 都必须具备的机制。V1 不预先冻结通用 Extension Query 或 Common feature-bit registry。后端差异首先由各自的 Configuration Schema、Role Protocol 已有调用以及 Canonical Descriptor/Record/Segment facts 表达；Core 真正需要理解的新角色语义通过 Role Protocol minor + `struct_size` 尾扩展增加。只有未来出现一个已经有明确消费者、生命周期和失败语义、且无法由 Role minor 安全表达的独立可选协议时，才单独设计命名明确的 typed optional protocol。不能为了“可能以后会需要”提前冻结万能扩展入口。
-
-**所有权必须显式。**
-
-任何跨 ABI 的对象必须声明：
-
-- owner；
-- borrow duration；
-- acquire/release；
-- callback validity；
-- destroy 前静止条件。
-
-“调用返回后通常还有效”不能作为可依赖的接口契约。
-
-**Plugin Package 与动态库模型。**
-
-V1 插件以受管 package 交付，而不是把裸 `.so` 直接暴露给 Task：
-
-```text
-plugins/<package>/
-  manifest.json
-  lib/<plugin-artifact>.so
-  schemas/<schema-digest>.json
-  licenses/...
+```
+plugin_id      = com.rodaq.acquisition.ros2
+plugin_version = 1.2.0
 ```
 
-`manifest.json` 是 **pre-dlopen admission manifest**，至少包含：manifest format version、`plugin_id`、role、plugin semantic version、最低 Common ABI、role protocol version、目标 OS/architecture、build identity、主 artifact 相对路径及 SHA-256、配置 schema catalog 及各 schema digest、关键共享依赖事实。所有相对路径必须在 package 根内解析，禁止绝对路径、`..` 逃逸和远程引用。
+Plugin Version 使用完整 Semantic Versioning，可以包含 prerelease 和 build metadata，例如：
 
-Task Configuration 的单个插件配置对象只保存 `plugin_id + schema_version + config`，不保存磁盘路径。字段已经处于 PluginConfig 作用域，不重复 `plugin_`/`config_` 前缀。Deployment Configuration 定义受管 `plugin_roots`、`allowed_plugins`、可选 `required_plugins`、可选 exact version/artifact digest pin 以及依赖共存支持矩阵。V1 每个 plugin root **只扫描一级 package 子目录**，不做任意递归文件发现；Deployment 同时冻结 `max_plugin_roots`、`max_plugin_packages`、`max_manifest_bytes`、`max_schemas_per_plugin`、`max_schema_bytes`、`max_dependencies_per_plugin`、`max_plugin_artifact_bytes` 和扫描总字节/诊断条目上限。
-
-Plugin package discovery/admission/DSO validation 在 daemon 初始化阶段完成，形成该进程生命周期内 immutable catalog；Task Create/Start 不触发目录重扫或新的 `dlopen()`。单个非 required plugin 校验失败时将其排除并记录有界诊断，Core 仍可启动；Deployment 声明的 `required_plugins` 任一无法完成 package+DSO validation 时，daemon 不进入 control-ready。RoDAQ 在每个 `dlopen()` 前完成 manifest、路径/权限、目标架构、allow-list 和 artifact digest 校验，因此未获准 artifact 不得先进入 daemon 地址空间再判断身份。
-
-`plugin_id` 是 ASCII、大小写敏感、无首尾空白的稳定命名空间标识，V1 最大 128 bytes，推荐 `rodaq.<role>.<name>`，例如 `rodaq.acquisition.ros2`、`rodaq.storage.mcap`。同一扫描范围内出现多个同 `plugin_id` artifact 且 Deployment 未通过 exact version+digest 唯一选择时，Catalog 必须 fail-closed，不能依赖目录顺序、首次发现或最后发现决定胜者。
-
-Manifest version 使用 `<major>.<minor>` 十进制形式。V1 RoDAQ 支持 `1.0`：major 必须为 1，minor 必须 `<= RoDAQ 支持的最大 minor`；较新 minor 对旧 RoDAQ 报 `Unavailable`，旧 RoDAQ 不尝试忽略未知字段实现“猜测式前向兼容”。每个支持的 manifest minor 都由 Core-owned schema 精确定义允许字段，未知顶层字段拒绝。V1 `1.0` 顶层字段固定为：
-
-```json
-{
-  "manifest_version": "1.0",
-  "plugin_id": "rodaq.acquisition.ros2",
-  "plugin_version": "1.2.3",
-  "role": "acquisition",
-  "required_common_abi": { "major": 1, "min_minor": 0 },
-  "role_protocol": { "major": 1, "min_minor": 0 },
-  "target": { "os": "linux", "arch": "amd64" },
-  "build_id": "...",
-  "artifact": { "path": "lib/librodaq_acquisition_ros2.so", "sha256": "..." },
-  "schemas": [
-    { "schema_version": "1", "dialect": "draft-07", "path": "schemas/<schema-sha256>.json", "sha256": "..." }
-  ],
-  "dependencies": []
-}
+```
+1.2.3
+1.2.3-rc.1
+1.2.3+build.7
 ```
 
-`plugin_version` 使用 SemVer 2.0.0 文本并限制 64 bytes；`build_id` 最大 128 bytes；SHA-256 使用 64 个小写十六进制字符。Manifest role 只允许 `"acquisition"` / `"storage"`，分别映射 ABI role 1/2；V1 target 只允许 `os="linux"` 且 `arch="amd64" | "arm64"`；其它合法 target 对当前 RoDAQ 视为 `Unavailable`，格式非法则为 `InvalidArgument`。Manifest 自身由 Core-owned `manifest.schema.json` 按 strict JSON + Draft 7 校验；不是由插件提供 schema 来定义“插件清单如何解释”。`dependencies[]` 只记录发布支持与装载安全真正需要核对的关键共享依赖或 package-private dependency。`rodaq_add_plugin()` 从最终 ELF 的 `DT_NEEDED/RUNPATH` 生成并交叉检查这些事实；声明但实际缺失的 package-private dependency、RUNPATH 越出 package root 或与发布支持矩阵明确冲突的共享依赖使 package gate 失败。Loader 不在现场求解任意依赖闭包兼容性，官方组合以发布支持矩阵和联合资格为权威。
+构建系统只有一个最终 Plugin Version 权威：`rodaq_register_plugin()` 先解析可选 `PLUGIN_VERSION`，未提供时才回退到 CMake `PROJECT_VERSION`。生成的 Descriptor 与 Manifest 必须使用同一个最终版本值。
 
-`config_schema_catalog_digest` 不依赖 JSON 文本键顺序。V1 不定义独立 `schema_id`：**插件的 schema identity 就是 `plugin_id`**，一个 package 内只允许该 namespace 下的多个 `schema_version`。`schemas[]` 按数值化后的 `schema_version` 升序排序；digest 输入以 ASCII domain separator `rodaq.schema_catalog\0` 开始，随后追加 `uint16 big-endian format_revision = 1`、`plugin_id` 的 `uint32 big-endian length + raw UTF-8 bytes`，再对每项依次追加 `schema_version / dialect / normalized relative path` 的 `uint32 big-endian length + raw UTF-8 bytes`，再追加解码后的 32-byte schema SHA-256，最后对整个字节流取 SHA-256。`rodaq_add_plugin()` 生成该 digest 并嵌入 descriptor，RoDAQ 在 pre-dlopen manifest 校验后独立重算，再与 runtime descriptor 比较。重复 `schema_version`、非规范相对路径或长度超过 `uint32` 直接拒绝。Schema 文件本身仍逐项按各自 SHA-256 校验，因此 catalog digest 证明的是“该 plugin identity 下版本集合与引用元数据一致”，而不是替代 schema artifact digest。
+V1 明确区分：
 
-Manifest 本身有独立最大字节数/深度/成员数限制。SHA-256 只提供 package 内部完整性，不提供对未受信任目录的身份认证；V1 的 trust root 是受管安装流程、Deployment allow-list 以及 package root 的 owner/permission。Plugin root 只能来自 Deployment 配置的受信任绝对路径；package root、manifest、artifact、schema 和 package-local dependency 必须是 regular file/directory，canonical path 位于 package root 内，且 owner 属于 daemon 配置的 trusted UID/root，group/world writable 默认拒绝。symlink 不作为 V1 package artifact/schema/dependency 载体。
+- **Plugin Version Identity**：完整 SemVer 字符串，包括 prerelease 和 build metadata；
+- **Version Precedence**：按 Semantic Versioning 比较版本优先级；build metadata 不参与 precedence。
 
-Package 在 daemon 运行期间视为不可变。安装/升级必须构造完整新 package、完成 digest/permission 校验后以受管发布步骤切换，并通过 daemon 重启生效；不得原地覆盖正在加载的 DSO/schema/dependency。未来若需要第三方市场分发签名，应在 package admission 层增加签名/证书协议，不改变插件 C ABI。
+例如 `1.2.3+build.7` 与 `1.2.3+build.8` 是两个不同的 Plugin Version Identity，但具有相同的 SemVer precedence。
 
-**Bootstrap、Common ABI 与 Role Protocol。**
+Plugin Package 是不可变发行物。同一个完整 Plugin Version Identity 对应固定的 DSO 与 Manifest。Plugin 私有配置格式发生不兼容变化时，应发布新的 Plugin Version。
 
-插件兼容性分为一个永久稳定的 Bootstrap Contract 与四个独立版本域：
+### Interface Version
 
-| 版本层 | 作用 | 兼容策略 |
+Interface Version 由 Interface SDK 维护。Backend Plugin 只依赖对应 Interface SDK，不手工填写 Interface 版本。
+
+### Plugin ABI Version
+
+Plugin ABI Version 由 Plugin Framework 管理。普通 Plugin 开发者不手工填写。
+
+Manifest 文件格式版本、RoDAQ SDK/Package 发行版本仍然可以存在于 Tooling 和构建系统中，但它们不是 Plugin Runtime 的独立兼容版本域，不在本节作为 Plugin 开发者需要理解的版本模型。
+
+## 1.6 设计依据
+
+| 设计问题 | 主要参考 | RoDAQ 采用 |
 | --- | --- | --- |
-| Bootstrap Foundation | 在不知道 Common ABI layout 的前提下协商一个 Common ABI major/minor，并返回 opaque descriptor 地址/大小 | **永久固定**；只使用 `abi/bootstrap.h` 自己的 primitive 类型，不依赖 Common ABI struct/result |
-| Common Plugin ABI | 公共基础类型、Plugin Services、descriptor 公共字段 | major 不兼容；minor 只做向后兼容尾扩展 |
-| Role Protocol | Acquisition/Storage operation table | 各角色独立 major/minor + minimum table size |
-| Config Schema | `plugin_config` 的持久数据契约 | 与二进制 ABI 独立，多版本并存，不隐式迁移 |
-| Plugin/SDK Version | 产品发布与开发工具版本 | 用于审计和支持矩阵，不直接代替 ABI 协商 |
+| 稳定 C ABI | PlotJuggler 4、PipeWire SPA | opaque context、typed vtable、struct size |
+| C++ Plugin 开发体验 | PlotJuggler 4 | PluginBase、导出辅助、Adapter/trampoline 自动生成 |
+| 多 Interface | PipeWire SPA | 一个 Plugin Instance 可提供多个 typed Interface |
+| Interface 查询 | PipeWire SPA、OpenSSL Provider | stable string ID + version query |
+| Service 注入 | PlotJuggler、PipeWire support | typed immutable ServiceRegistry |
+| ABI 演进 | PlotJuggler、PipeWire SPA | frozen prefix + append-only tail |
+| DSO 生命周期 | Linux loader semantics | 成功加载后常驻到进程退出 |
+| 异常恢复 | RoDAQ-specific | Faulted Library / Unresolved Instance + restart_required |
 
-Bootstrap 导出入口固定为：
+参考项目用于证明机制可行性，不意味着复制其全部对象模型。
 
-```text
-rodaq_plugin_get_descriptor
-```
+## 1.7 关键架构决策
 
-该符号名与函数签名属于永久稳定的 Bootstrap Foundation，后续版本**不得**通过 `_v2`、`_v3` 等新符号名演进。Bootstrap Foundation 不包含 Common ABI 的 `rodaq_result_code_t`、`rodaq_error_buffer_t`、`rodaq_plugin_descriptor_t` 或任何 Role/Service 类型；因此即使未来 Common ABI major 的 layout 完全不兼容，旧 Loader 仍能安全完成“是否支持该 major”的探测。
-
-一次 bootstrap 调用只请求一个 `requested_common_abi_major`，并给出该 major 下 Loader 能理解的最大 minor。插件若支持该 major，返回不高于请求 minor 的最高兼容 minor及该 Common ABI descriptor 的 opaque pointer/size；若不支持则返回 bootstrap-level `UNSUPPORTED_ABI`。Bootstrap 调用必须纯、幂等、无副作用，因此支持多个 Common ABI major 的 Loader 可以按自身优先级重复探测不同 major；不得依赖第一次 probe 创建任何需要 teardown 的状态。
-
-初始冻结值为：Common Plugin ABI `1.0`；Acquisition Role Protocol `1.0`；Storage Role Protocol `1.0`。ABI role 数值固定为 `0 = Invalid`、`1 = Acquisition`、`2 = Storage`，其它值当前为 unknown。所有 `0` major version 都是 invalid，不作为“自动协商”哨兵。
-
-Minor 协商遵循统一规则：major 必须完全匹配；调用方声明自己支持的最大 minor 和实际 `struct_size`；接收方只能使用双方都理解且落在实际 size 内的字段。对于 Common/Role protocol，plugin descriptor/header 的 `version_minor` 表示该 artifact **支持的最大兼容 minor**，manifest 的 `min_minor` 表示它要求 RoDAQ 至少支持的 minor；RoDAQ 只有在 `rodaq_major == plugin_major && rodaq_minor >= plugin_min_minor` 时才继续，并以 `min(rodaq_minor, plugin_max_minor)` 作为 negotiated minor。新增字段不能改变旧字段语义或默认值。
-
-**Plugin Descriptor。**
-
-Bootstrap 返回的 descriptor 是 library-lifetime immutable table，至少包含：Common ABI version、descriptor size、`plugin_id`、plugin version、role、build identity、role protocol version/operation table、配置 schema catalog digest。运行时 descriptor 的 `plugin_id/role/version/build identity/schema catalog digest` 必须与 pre-dlopen manifest 一致。
-
-Descriptor 中的字符串和静态表由插件保持到 library lifetime 结束；RoDAQ 若需要跨 library 生命周期保存则复制。V1 library 不热卸载，因此正常运行期可借用这些 immutable descriptor facts。
-
-**配置 Schema 多版本。**
-
-Task 保存：
-
-```text
-plugin_id
-schema_version
-config
-```
-
-V1 manifest 的 `required_common_abi` 只声明一个 Common ABI major/minor floor，因此一个 V1 package 只按该 Common ABI major 进入运行时协商；Bootstrap Foundation 的 repeated-major probe 是为未来 manifest schema 明确声明多-major alternatives 时预留，不表示 V1 package 已支持跨 major 多描述符发布。
-
-一个插件 package 可以同时支持多个历史 schema。V1 的 schema identity **强制等于 `plugin_id`，不再单独持久化或发布 `schema_id` 字段**；`schema_version` 是十进制 `uint32` 的规范文本形式，范围 `1..4294967295`，禁止前导零和别名写法。Manifest 的 schema catalog 对每个版本只记录 `schema_version`、本地相对文件、digest 和 dialect。RoDAQ 以 Task 保存的 `plugin_id` 选择 package，再以 `schema_version` 取得**精确 schema**进行结构校验；package schema lookup 缺失返回 `NotFound`，Task Prepare 将“已安装插件无法解释所需 schema”报告为 `Unavailable`，不猜测兼容，也不自动升级 Task Config。配置迁移只允许通过显式 Configure 生成新的不可变 Task Configuration version。
-
-V1 配置 Schema 固定采用 **JSON Schema Draft 7 validation dialect**，RoDAQ 实现基线使用 `nlohmann-json-schema-validator` 2.4.1（`9abddfa905bb4889cc4ae55f87adcaa71dd3bc23`）；Schema validator 和 `nlohmann::json` 都只存在于 Core 配置边界，不进入插件 C ABI。
-
-V1 只开放配置所需的有限 validation subset：`$schema`、`$id`、受限 `$ref`、`type`、`properties`、`required`、`additionalProperties`、`items`、`minItems/maxItems`、`minProperties/maxProperties`、`enum`、`const`、`minimum/maximum/exclusiveMinimum/exclusiveMaximum`、`multipleOf`、`minLength/maxLength`、以及分支数受限的 `allOf/anyOf/oneOf/not`。`pattern`、`patternProperties`、`format`、`content*`、`dependencies/propertyNames/contains/if/then/else` 等 V1 不需要的关键字默认拒绝，而不是静默忽略；协议地址、Topic、QoS、URI、文件格式等复杂语义由插件 `validate_config` 检查。以后新增 Schema keyword 必须作为配置契约变更单独资格化。
-
-`$id` 只作为逻辑 schema identity，必须使用 `urn:rodaq:plugin-schema:<plugin_id>:<schema_version>` 形式，不参与网络定位。V1 禁止 remote/network `$ref` 和任意 `file://` 引用；允许的 `$ref` 只能是同一 schema 文档内 fragment 或 package `schemas/` 根内、manifest 已列出并校验 digest 的相对资源。Schema 文档字节数、引用深度、分支数量、对象/数组成员和累计 validation error 数受 Deployment 硬上限约束。RoDAQ 不应用 schema `default` 产生的 patch 去隐式修改持久 Task 配置；默认值必须在 Configure 时显式物化或由插件语义层给出确定行为。结构 schema 是 RoDAQ 权威，协议/后端语义仍由插件 `validate_config` 最终检查。
-
-配置边界固定为：
-
-```text
-Strict JSON Task Config
-  ↓ exact schema version lookup
-bounded Core schema validation
-  ↓
-read-only Config API
-  ↓
-plugin semantic validation
-```
-
-配置校验严格分两级：RoDAQ Schema validation 负责类型、required、enum、范围、结构和 `additionalProperties` 等声明性约束；插件 `validate_config()` 只负责 schema 难以表达的字段关系与 backend 语义。两级都是有界、无副作用的 pre-instance 操作，不得联网、打开设备、创建线程、写文件或改变 process-global state。需要实际外部资源才能验证的条件必须延迟到 `prepare()`。
-
-插件不得保存 Config API node/string 超过当前 ABI 调用，也不得自行从 Task 参数打开额外配置文件来绕过 schema 和 Deployment 边界。
-
-### 2.2 后端差异、系统资源边界与实例生命周期
-
-**后端差异如何表达。**
-
-RoDAQ 不要求 ROS 2、MQTT、MCAP、SQLite3 等后端具有相同内部实现，只要求它们在各自角色的稳定边界上提供一致语义。差异按以下层次表达：
-
-1. **Configuration Schema + `validate_config()`**：表达只属于该后端的配置，例如 ROS 2 QoS、MQTT Broker/Topic/QoS 配置、MCAP chunk/compression、SQLite journal/WAL 选项；Core 不理解这些字段的业务含义。
-2. **Canonical role facts**：Acquisition 把后端事实投影为 Descriptor、SourceEvent、RecordAttempt/Payload；Storage 消费 Canonical Record/Descriptor，并把后端结果投影为 BatchResult、SegmentSize、SealedFile。后端内部类型不跨 ABI。
-3. **Role Protocol minor tail**：只有当 Core 必须理解一个新的 Acquisition/Storage 语义，而且现有调用无法表达时，才通过该 Role 的 minor + `struct_size` 尾扩展新增 typed 字段或 operation；旧 Core 对未知 tail 不读取。
-4. **新的独立 optional protocol**：只有出现明确真实需求且 Role tail 会造成职责混乱时才设计；V1 不预留通用 Extension Query。
-
-因此“后端不同”不等于“需要一个任意 capability map”。例如 ROS 2 与 MQTT 的 discovery/连接、QoS、载荷描述和 callback 线程模型可以完全不同，但最终都通过 Acquisition Role 提交同一种 Canonical Descriptor/Record；MCAP 可以形成单文件 Segment，SQLite3 可以形成多文件/metadata Segment，但都通过 Storage Role 的 `open_segment/write_batch/seal_segment` 和文件清单完成交接。
-
-**系统资源边界。**
-
-Plugin 不生成 Resource Plan，也不参与 Task/Pipeline 资源 admission。系统资源 authority 固定为：
-
-```text
-Application / Deployment policy
-        ↓
-Task resource_profile
-        ↓
-Core Capacity / Volume policy
-        ↓
-Effective Pipeline Limits
-        ↓
-Plugin Instance + Core data path
-```
-
-Core 负责能够精确控制的 queue、payload charge、accepted-record backlog、Writer/Commit backlog、segment/disk budget、execution slot 和长期对象 cardinality。插件仅接收与自己行为直接相关的 effective limit，例如最大单 Record、允许的 callback 并发、batch 上限或 Segment 文件/path 上限；达到限制时必须按 Role contract 返回 reject/failure，不能自行扩大全局预算。
-
-插件内部实现必然可能申请 middleware/writer buffer、线程、socket/FD、compression workspace 等资源，但这些是**实现资源，不是系统资源分配权**。能够通过 backend 配置显式限制的，应由配置 Schema/语义校验约束；第三方库内部无法精确按实例控制的，通过固定版本、配置 profile、cgroup/进程级限制、stress/soak 和 RSS/thread/FD/HWM 资格验证。Plugin ABI 不承诺在 create 前预测未来数据流量，也不把 DDS history、page cache、kernel socket buffer 等伪装成精确 reservation。
-
-**配置与运行环境。**
-
-V1 不定义 `ConfiguredCapability`、`describe_configuration()` 或 `environment_fingerprint`。稳定的 artifact/build/dependency 事实属于 Package/发布支持矩阵；需要访问真实 Topic、DDS participant、设备、文件系统或其它运行环境才能确认的条件在 Role `prepare()` 中检查。这样避免在 pre-instance 阶段建立一套和实际运行状态重复、且容易 TOCTOU 的 capability snapshot。
-
-**Instance Lifecycle。**
-
-公共框架只描述真正存在的插件生命周期，不把 Core resource admission 建模成 Plugin 状态：
-
-```mermaid
-stateDiagram-v2
-    [*] --> PackageValidated
-    PackageValidated --> DescriptorValidated: dlopen + bootstrap validation
-    DescriptorValidated --> ConfigValidated: schema + semantic validation
-    ConfigValidated --> Created: Core 已在外部完成资源/volume admission 后 create
-    Created --> Prepared: role prepare success
-    Prepared --> Operational: role start/open as applicable
-    Created --> Quiescing: failure / shutdown
-    Prepared --> Quiescing: failure / shutdown
-    Operational --> Quiescing: quiesce / shutdown
-    Quiescing --> Quiescent: all instance access settled
-    Quiescent --> Destroyed: destroy
-    Destroyed --> [*]
-```
-
-Core resource admission 是 `create()` 的前置条件，但不是 Plugin Framework 的状态或 API。`Operational` 只是公共占位，Acquisition 细化为 Started/callback-capable，Storage 由自己的 Segment/Writer 状态表达。**一旦 create 成功返回 instance，无论后续 prepare/start/open 等成功还是失败，在 destroy 前都必须完成 quiesce。** `quiesce()` 是幂等收敛操作：对 Created/Prepared/Operational/failed instance 均合法；已 Quiescent 再调用返回 OK。create 失败时 `instance` 必须保持 null，插件自行清理未发布 partial state，RoDAQ 不对半实例调用 destroy。
-
-Plugin DSO/bootstrap 本体没有独立业务生命周期：`dlopen + rodaq_plugin_get_descriptor()` 只完成静态 ABI/descriptor 暴露，不联网、不打开设备、不启动线程、不创建业务资源；成功进入 Catalog 后 DSO 常驻到 daemon 退出。真正有副作用的生命周期全部属于 role instance。Task 的 Pause/Resume 也不是 Plugin lifecycle：Pause 不映射为 `quiesce()`，Resume 不映射为第二次 `start()`；暂停期间如何关闭 admission/丢弃或抑制数据由 Pipeline 与 role 详细设计决定。
-
-**DSO-global state policy。** V1 允许 DSO 级 immutable descriptor/table、只读 lookup data 和经过资格验证的 thread-safe backend metadata；默认禁止插件拥有 mutable operational singleton、DSO-global business queue、共享业务连接/设备句柄，或任何必须依赖 plugin-level teardown 才能正确回收的业务资源。不可避免的第三方 process-global state 必须进入 backend/dependency qualification，证明线程安全、并发边界和 daemon-exit 回收行为；不得把运行期 `dlclose()` 或一个不存在的 `plugin_shutdown()` 当作恢复机制。
-
-Quiescence 是唯一销毁前安全证明。destroy 只释放已经 Quiescent 的本地资源，不执行首次 unsubscribe、flush、seal、外部 I/O、未知线程 join 或 RoDAQ callback；不得成为 quiesce fallback。destroy 必须 noexcept-equivalent，并通过资格测试证明在已 Quiescent 前提下具有有界完成时间。destroy 返回后插件不得再访问 instance、RoDAQ service state 或借用对象；library handle 生命周期长于所有实例、callback、operation table 和 function pointer。
-
-**Plugin Services。**
-
-V1 公共 Plugin Services 固定为：**Logging**；read-only Config API 是 per-call 配置读取协议，不属于运行时 service directory。Acquisition 另有显式 typed role services。V1 不定义通用 Diagnostic、Reporting、Event、Metrics、Resource、Volume、Filesystem、Task/Pipeline controller 或 service discovery。未来新增公共 service 必须先证明它是所有 Role 共同需要的 framework capability，而不是某个后端/业务模块的职责。
-
-每个 RoDAQ callback 必须逐函数冻结 `version/struct_size`、owner/lifetime、允许调用的线程域、是否可并发、是否可阻塞/分配、是否可能反调插件、失败输出和最大工作量。公共基线由 Logging 与各 Role callback 分别冻结；Role callback 的更严格规则由 Acquisition/Storage 文档定义。
-
-Plugin Services 不暴露 Task state machine、Pipeline private object、HTTP、arbitrary filesystem service、global singleton 或 mutable system container。
-
-## 3. ABI 行为与并发
-
-### 3.1 Result 与 Buffer
-
-**Result Model。**
-
-C ABI 使用稳定的 plugin result code，不直接暴露 C++ Status。
-
-公共 result code 与当前 Core `StatusCode` **一一同值**：Ok、InvalidArgument、InvalidState、NotFound、Conflict、ResourceExhausted、DeadlineExceeded、Unavailable、PermissionDenied、DataLoss、Internal。`PersistenceUnknown` 等角色级数据语义不扩张公共错误字符串，而由 Storage 等 role result struct 的结构化字段表达。
-
-已发布 result 数值不重排、不复用。RoDAQ 收到当前 Common ABI 未定义的 result 数值时不得直接 cast 成 Core Status；应按 Plugin Contract Violation 记录原始数值，并对本次调用映射为 Internal/Unavailable，停止依赖该未知结果推进状态机。每次失败可通过 caller-owned ErrorBuffer 提供有界 error detail；error text 不参与恢复逻辑；C++ exception 必须在插件 ABI wrapper 内捕获，`std::bad_alloc` 映射 ResourceExhausted，其它未知异常映射 Internal，任何 exception 都不得跨越 C ABI。
-
-**Buffer 与字符串规则。**
-
-跨 ABI buffer/string 使用：
-
-```text
-pointer + size
-```
-
-必须明确：
-
-- null + zero 是否合法；
-- max size；
-- encoding；
-- 是否 NUL-terminated；
-- input borrow duration；
-- output capacity；
-- truncation rule；
-- required size reporting。
-
-稳定 ABI 不返回由另一侧用 `free()` 释放的隐式堆内存。
-
-V1 公共 ABI 优先使用 caller-owned output buffer 或 plugin-owned immutable lifetime-defined view；公共 Plugin Services 不提供通用跨 ABI allocator。若某个角色确实需要跨调用动态所有权，必须在对应 Role Protocol 中定义成对 acquire/release 和 Core 计费语义，不能要求另一侧调用普通 `free()`。
-
-### 3.2 Thread Safety、Reentrancy 与 Quiescence
-
-**Thread Safety 与多实例。**
-
-V1 默认**不同 plugin instance 可以被 RoDAQ 并发调用**；插件不得依赖“整个 DSO 被 RoDAQ 全局串行化”这一隐含条件。descriptor、operation table、schema/manifest cross-check facts 都必须是 library-lifetime immutable 并可并发读取。实例 mutable state 必须归属该 instance；若第三方 backend 使用 process-global state，该状态必须 thread-safe、进入 dependency qualification，并接受发布支持矩阵和进程级长期资源资格验证。
-
-同一实例公共默认：
-
-| 调用类型 | 默认调用规则 |
+| ID | 决策 |
 | --- | --- |
-| `create` | RoDAQ 可与其它 instance create 并发；同一 `instance` 只有一个 owner |
-| mutable control calls | 同一实例 RoDAQ 串行；一个未返回 mutable call 存在时不启动冲突 mutable call |
-| role-specific data callbacks | 不超过 Core 在 instance config 中下发的并发上限 |
-| Storage mutable operations | 单逻辑 lane |
-| immutable descriptor/table | library-level thread-safe，可并发 |
-| `destroy` | 仅 Quiescent instance，RoDAQ 保证与该 instance 的其它调用不并发 |
+| PF-01 | C ABI 是唯一跨 DSO 二进制规范。 |
+| PF-02 | Framework 使用 Interface-first 模型，不使用业务 Plugin Type。 |
+| PF-03 | 一个 Plugin Instance 可以提供多个 Operation Interface。 |
+| PF-04 | Operation 与 Service 都使用稳定字符串 ID、独立 Interface Version 和 typed vtable。 |
+| PF-05 | Application Service 通过 immutable ServiceRegistry 提供给 Plugin。 |
+| PF-06 | Plugin 初始化成功后 Operation 集合冻结；运行期间不动态增加/删除 Operation。 |
+| PF-07 | Plugin Instance 只在初始化完成后发布给 Application。 |
+| PF-08 | `PluginBase` 只暴露 `configure()` 与 `shutdown()` 两个生命周期入口。 |
+| PF-09 | Application 使用 `close()` / `async_close()` 关闭 Plugin Instance。 |
+| PF-10 | Plugin ABI 使用 Major/Minor + struct size + required prefix 演进。 |
+| PF-11 | Query 与 Operation 调用使用统一的 Runtime call admission 和 active-call accounting。 |
+| PF-12 | Deadline 只限制等待时间，不代表 Framework 可以强制终止 Plugin/native code。 |
+| PF-13 | Plugin shutdown 成功且所有受管调用返回后才允许 destroy。 |
+| PF-14 | PluginManagerState 持有所有活动、关闭中和 Unresolved Instance 的生命周期所有权。 |
+| PF-15 | Plugin Package / Artifact identity 用于加载验证和诊断，不作为普通 Task 配置的主要身份。 |
+| PF-16 | PluginCatalog 是内部发现索引；Application 通过 PluginInfo 枚举插件。 |
+| PF-17 | 一个 Package 对应一个主 Plugin DSO / Plugin Definition。 |
+| PF-18 | Public PluginLibrary handle 释放不触发 DSO unload。 |
+| PF-19 | Plugin destructor / destroy 必须 no-throw。 |
+| PF-20 | 同一个实际 Plugin Artifact 在一个 PluginManager 中只发布一个 PluginLibraryState。 |
+| PF-21 | 异步关闭执行资源必须有界；关闭卡死时进入 Degraded，而不是无界创建线程或强制取消。 |
+| PF-22 | Plugin create ABI 违约时将 PluginLibraryState 标记 Faulted、禁止后续 create，并要求进程重启。 |
+| PF-23 | Plugin shutdown 无法完成时 PluginInstanceState 进入 Unresolved，并由 PluginManagerState 保留到进程退出。 |
+| PF-24 | PluginManager 提供显式 `shutdown()`，内部关闭新的 refresh/load/create 准入并收敛 Framework 资源。 |
+| PF-25 | Plugin Configuration 属于 Plugin 私有语义；Framework 只做有界传递，不解析或校验 Plugin-specific 配置结构。 |
+| PF-26 | Plugin 版本选择由 PluginManager 内部的 Catalog / Resolver 完成；Public API 只提供按 ID 或 ID + exact version 加载。 |
+| PF-27 | Service 查询使用单一 `service&lt;T&gt;()`；是否把 NotFound 视为错误由 Plugin 自己决定。 |
+| PF-28 | Service Interface C++ 调用对象使用 `Reference`，Operation 使用 `Handle`。 |
+| PF-29 | V1 每个进程只有一个 process-lifetime PluginManager authority；第一次 create 成功后 authority 持续到进程退出，即使进入 Stopped 也不在同进程重新创建第二套 Manager。 |
+| PF-30 | V1 不提供 Plugin DSO 主动物理卸载、热更新或可独立卸载的 Service Provider。 |
 
-插件不得把未声明的 library-global mutex/queue/thread pool 当成资源和并发语义的隐藏前提。如果确实需要 DSO-wide serialization，V1 视为不受支持的插件能力，不能要求 RoDAQ 猜测。
+## 1.8 对外集成接口与内部二进制依赖
 
-**Reentrancy。**
+公开 Framework CMake target 仍只有：
 
-默认禁止隐式重入。插件在 RoDAQ→Plugin 调用期间调用 RoDAQ callback 时，必须遵守该 callback 的逐函数规则；RoDAQ callback 默认不得同步反调同一 instance 的 mutable operation：
-
-```text
-RoDAQ -> Plugin mutable call
-Plugin -> RoDAQ callback
-RoDAQ -> same Plugin mutable call   // forbidden
+```
+rodaq::plugin
 ```
 
-插件不得持有会与 quiesce/control 路径互斥的全局锁去调用 RoDAQ callback。需要重入的未来能力必须作为独立 protocol 明确设计和资格验证。
+Application：
 
-**Deadline、Timeout 与 Late Return。**
-
-ABI 中的 deadline 是 operation 的绝对 RoDAQ monotonic deadline，不是“RoDAQ 到点就能取消同步函数”。必须区分：
-
-1. plugin 自己观察 deadline 并**返回** `DEADLINE_EXCEEDED`：调用已经结束；
-2. RoDAQ watchdog 到期但 plugin 函数仍未返回：状态是 `TimedOutButInFlight`，调用仍拥有 instance、输入借用/retained payload、execution slot 和其它可能被访问资源。
-
-第二种情况下 RoDAQ 立即停止启动与该调用冲突的新 mutable operation，并关闭/保护对应 Pipeline 入场，但不得 destroy instance、释放可能仍被访问的 buffer、归还执行容量或把 timeout 当成 quiescence。迟返结果仍归原 `work_id/instance/generation`，只能按原工作结算；它不能推进已经被新控制代次接管的 Task。若迟返长期不发生，按系统定义的局部清理期限升级为进程级恢复，而不是在同进程中强行取消未知第三方代码。
-
-**Quiescence。**
-
-Quiescence 是 **instance 销毁安全条件**，不是“调用了 stop”。成功返回必须同时证明：没有未返回 RoDAQ→Plugin call、没有未返回 Plugin→RoDAQ instance callback、插件后台任务不再访问 instance/RoDAQ service state、**instance-owned** Payload/Buffer 不再被访问、role-specific I/O ownership 已结束。Acquisition 在 Admission Commit 前已经成功转移/retain 的 detached payload-owner object 不属于 instance quiescence domain：它可以在 instance quiesce/destroy 后继续存在，但其 `release` callback、backing 与 resource charge 必须完全脱离原 instance/PluginServices/AcquisitionServices，并一直有效到最后一次 release。`quiesce()` 必须幂等，并允许在此前 operation 已失败后、或一个 RoDAQ-watchdog 超时调用**最终迟返后**继续收敛。
-
-如果某个 same-instance mutable ABI call 在 watchdog 到期后仍实际执行，RoDAQ 只登记 quiesce pending，不与它并发调用 quiesce；等旧调用迟返后再进入 quiesce。旧调用永久不返时无法通过同进程 quiesce 获得静止证明，达到局部清理期限后升级整进程恢复。`quiesce` 自身 timeout/RoDAQ watchdog 到期时 instance、library、buffer 和 execution capacity 均保持原 owner；只有最终证明 Quiescent 或通过整进程终止消除全部访问可能性后才能回收这些资源。
-
-## 4. 装载、故障与角色边界
-
-### 4.1 装载、依赖与打包
-
-**Package Admission 与 Library Lifetime。**
-
-Loader 的顺序固定为：
-
-```text
-scan managed package roots
-→ parse bounded manifest.json
-→ canonicalize package/artifact/schema paths
-→ verify owner/permission + no symlink/path escape
-→ verify OS/architecture + Deployment allow-list
-→ verify artifact/schema digests + dependency policy
-→ resolve duplicate plugin_id
-→ dlopen exact artifact with RTLD_NOW | RTLD_LOCAL
-→ dlsym fixed bootstrap symbol
-→ verify bootstrap symbol provenance
-→ call descriptor entry
-→ validate Common ABI / role protocol
-→ cross-check runtime descriptor against manifest
-→ register immutable Catalog entry
+```
+find_package(RoDAQ REQUIRED)
+target_link_libraries(app PRIVATE rodaq::plugin)
 ```
 
-`dlopen()` 可能执行 ELF constructor/C++ static initializer，因此 plugin identity、artifact digest、路径、权限和 allow-list 必须在它之前由 sidecar manifest 决定。V1 使用 `RTLD_NOW | RTLD_LOCAL`；禁止 `RTLD_GLOBAL`、`RTLD_DEEPBIND` 和 `dlmopen` namespace。成功装载后的 library handle 保留到 RoDAQ daemon 退出，不执行运行期 `dlclose()`；插件升级通过整进程重启生效。
+Backend Plugin：
 
-`dlsym(handle, "rodaq_plugin_get_descriptor")` 成功还不够。RoDAQ 必须用 `dladdr()` 或等价机制验证 bootstrap function 的 defining object canonical path 就是当前候选主 DSO，不能接受从 dependency closure 偶然解析到的同名 symbol。**所有由 descriptor 返回的 Role ABI function pointer 也必须解析到同一主 DSO**；第三方依赖只能由插件内部 wrapper 调用，不能把依赖库函数直接暴露成 RoDAQ ABI operation。这样 provenance 规则单一、可测试，也避免依赖升级后无意改变 ABI owner。CI 同时用 ELF symbol table 证明主 DSO 只导出允许的 RoDAQ bootstrap/必要平台 symbol。
+```
+find_package(RoDAQ REQUIRED)
 
-**Dependency Coexistence。**
+add_library(my_plugin SHARED
+    src/my_plugin.cpp
+)
 
-C ABI 稳定不等于进程内依赖一定兼容。Manifest 与 qualification 必须区分：
+target_link_libraries(my_plugin
+    PRIVATE
+        my_private_dependencies
+)
 
-- process-shared dependency：如目标系统 libstdc++、ROS 2/RMW/DDS、OpenSSL、protobuf/grpc 等可能与 RoDAQ/其它插件共享的 SONAME；
-- plugin-private dependency：只为当前 package 使用且经过符号可见性/共存资格验证的依赖。
+rodaq_register_plugin(my_plugin
+    PLUGIN_ID com.example.my_plugin
+    PLUGIN_NAME "Example Plugin"
+)
+```
 
-插件私有依赖使用受管 package-local RUNPATH（优先 `$ORIGIN` 相对路径）解析，不依赖当前工作目录，不要求 daemon 在运行时修改 `LD_LIBRARY_PATH`。Deployment/package root 及 DSO/schema/dependency 文件不得由非授权普通用户写入。发布支持矩阵至少记录 critical SONAME、exact version/build identity、symbol visibility、C++ runtime/allocator、TLS/OpenSSL、compression、ROS 2/DDS、protobuf/grpc 等共享依赖；未通过联合验证的组合在加载/Deployment admission 阶段 fail-closed。
+`add_library()` 负责创建和配置 CMake target；`rodaq_register_plugin()` 只把已有 shared-library target 注册为 RoDAQ Plugin，并自动注入内部 authoring support、导出符号、Descriptor/Manifest、Package 与安装规则。普通 Application / Plugin 不链接 Framework 内部实现 target。
 
-**Process-global 行为限制。**
+## 1.9 建议阅读路径
 
-插件不得把以下进程级副作用作为正常初始化/运行机制：修改 signal handler、cwd、environment、locale、umask、process-wide terminate/new handler、RoDAQ logging backend 或全局 CPU affinity。DSO static initializer/constructor 不得启动后台线程、联网、打开业务设备、写文件或调用 RoDAQ；真正的运行对象只能在 Core 完成资源/Volume admission 后的 `create/prepare` 中建立并受实例生命周期管理。Plugin-owned mutable DSO singleton、全局业务 queue/thread/connection/device 默认禁止；无法满足这些规则的第三方库组合不得进入 V1 production support。
-
-### 4.2 异常与进程级故障
-
-同进程插件只能隔离**合作式故障**：结构化 error、声明范围内的 resource exhaustion、RoDAQ watchdog/late-return 所有权、可验证的 malformed value。不能承诺隔离 segmentation fault、非法指针/wild write、UB、heap corruption、process-global deadlock、无限分配或 signal misuse；这些属于 process-fatal plugin failure，由外部 supervisor 重启 daemon。Conformance 对这类破坏性样例必须使用独立子进程，不能把“RoDAQ 在同地址空间抵抗任意插件内存破坏”写成验收承诺。
-
-**Plugin Contract Violation。**
-
-以下事实不是普通业务失败，而是插件违反已发布契约：未知/不可能 result code、invalid enum、short/oversized contradictory struct、manifest/descriptor identity mismatch、实际 callback concurrency 超过 Core 下发上限、callback after successful quiesce、required output 未按规则初始化等。RoDAQ 必须 fail-closed：关闭受影响 Pipeline 的新入场，保留仍在途 owner，停止对该 instance 发起新的非清理 mutable work，记录 bounded contract-failure context through RoDAQ logging，并将 instance/plugin 标记 unhealthy。若违例可能已经破坏进程级不变量或无法安全收敛，则升级为整进程恢复；不得无限 retry 同一 contract violation。
-
-**SDK 与插件作者工具。**
-
-Plugin SDK/交付必须同时包含 self-contained C ABI headers、C++17 authoring headers、package/manifest/schema specification、C 与 C++ 两套最小 Acquisition/Storage 示例、RoDAQ-side conformance harness、compatibility matrix，以及统一 CMake authoring helper `rodaq_add_plugin()`。该 helper 负责 hidden-by-default visibility、唯一 bootstrap export/linker script、package-local RUNPATH policy、manifest/schema validation、artifact digest/build identity 生成、post-build `nm/readelf` export gate 和可复用 ABI test fixture；插件作者不应在每个 backend 中手工复制这些规则。
-
-公共 ABI 头必须能由 C11/C17 编译器独立包含，不依赖 C++、ROS 2、DDS、MCAP、JSON 库或其它第三方头。
-
-### 4.3 ABI / Package Conformance 与兼容门禁
-
-Plugin ABI Freeze 不是一次 `sizeof` 测试，而是 SDK、RoDAQ、package 和真实 DSO 的持续兼容门禁。至少覆盖：
-
-| 类别 | 必须验证 |
+| 读者 | 建议阅读 |
 | --- | --- |
-| Header/Layout | C11/C17 C ABI headers 与 C++17 authoring headers 分别独立编译；amd64/arm64 `sizeof/align/offsetof` baseline；min prefix；old/new struct size；unknown tail；null/zero；canary；固定 enum/result/bit 数值与 reserved-zero 规则；ROS2 QoS nested layout/enum/duration 逐项 fixture |
-| ABI Evolution | old RoDAQ + compatible new plugin；new RoDAQ + old plugin；Common/Role major mismatch；minor tail compatibility；未知 tail 忽略、已知 required prefix 不足必须拒绝 |
-| Bootstrap | `bootstrap.h` 可独立 C11/C17 编译且不 include Common ABI；固定 `rodaq_plugin_get_descriptor` symbol 缺失/错误；unsupported Common major；同一 DSO 多次 probe 必须纯/幂等；malformed response/descriptor size；bootstrap symbol 从 dependency 解析必须拒绝 |
-| Services | Config/Plugin/Logging/Acquisition service 的 wrong version、short prefix、NULL required table/handle/function；create fail 后 callback；destroy 后 callback |
-| Manifest/Package | malformed/oversized manifest；artifact/schema digest mismatch；wrong OS/arch；symlink/`..` escape；不安全可写 package；duplicate `plugin_id` 未唯一选择必须 fail-closed |
-| Config Schema | `plugin_id` 作为唯一 schema identity；manifest 不接受独立 `schema_id`；多 schema version；重复 version 拒绝；旧 schema 支持/不支持；schema digest；remote/file `$ref` 拒绝；超深/超大/复杂 schema 有界失败 |
-| Lifecycle | create fail 保持 null；create success + prepare/start/open fail 后必须 quiesce；repeated quiesce；Quiescent destroy；destroy 不执行首次业务清理 |
-| Timeout/Late Return | instance operation 与 pre-instance validate/create 都覆盖 RoDAQ watchdog 先到、late success/failure、永久阻塞；有 Deadline 的调用另测 plugin 自返 DeadlineExceeded；input/partial-state owner 在实际返回/进程终止前不提前释放 |
-| Threading | 多 instance 并发；Core 下发 callback concurrency limit；illegal same-instance concurrent mutable call；descriptor/table 并发读取；callback/quiesce race；forbidden reentrancy |
-| Resource | Resource Profile/Effective Limits 由 Core 生成；插件不得扩大 Core-owned budget；真实 backend 组合持续测量 RSS/thread/FD/HWM 与泄漏；无法按实例精确归属的第三方资源只做 qualification，不进入 Plugin ABI |
-| Error/Contract | unknown result/enum；malformed data profile/ROS2 QoS/type hash；`SubmitResult.disposition × payload_hold` ownership 矩阵；AcquisitionEvent scope/status/count 矩阵；contradictory struct；missing required output；exception boundary；ErrorBuffer truncation；callback after quiesce；Storage BatchResult 非法矩阵 |
-| ELF/Dependency | export allow-list；RUNPATH；missing/wrong SONAME；联合加载 ROS2+MCAP 首发组合；未验证依赖组合拒绝 |
-| C++ Adapter | C++ Factory/Instance → C descriptor/table 的映射与直接 C 实现语义一致；`RODAQ_EXPORT_PLUGIN` 只导出固定 C bootstrap；Result/exception/ownership/late-return 转换完整；源码树外 C++ 插件可独立构建 |
-| Long Run | 多 Task/多 instance 重复 create→prepare→operate→quiesce→destroy，RSS/thread/FD/TLS/内部 registry 无未解释单调增长 |
+| 应用开发者 | 第 2 章 → 第 5 章 → 第 7 章 |
+| 插件开发者 | 第 2 章 → 第 4 章 → 第 7.3 节 |
+| 框架开发者 | 第 3～8 章 |
 
-ASan/UBSan 用于 RoDAQ-side wrapper、SDK fixture 与首发插件；并发关键 fake/plugin 使用 TSan 或等价 race qualification。会故意触发 segfault、invalid pointer、wild write、abort、constructor crash 的 hostile fixture 必须在子进程运行，只验证进程级故障分类与 supervisor 恢复，不能要求同进程 RoDAQ 保持内存安全。
+第一次阅读时，先理解第 2 章的 Application / Plugin / Framework 关系和完整使用流程，再进入 ABI 与 Runtime 细节。
 
-发布 ABI baseline 必须版本控制。普通 minor release 只能在允许的 version/struct tail 规则内演进；CI 使用 ABI layout fixture、ELF export gate 和兼容样例阻止无意改动已冻结 prefix、数值和 symbol。
+## 1.10 非目标
 
-### 4.4 与角色文档的分工
+V1 不设计：
 
-| 职责项 | Plugin 公共文档 | Acquisition 文档 | Storage 文档 |
-| --- | --- | --- | --- |
-| ABI version/layout | 权威 | 引用 | 引用 |
-| loader/library lifetime | 权威 | 引用 | 引用 |
-| config schema mechanism | 权威 | 定义采集参数语义 | 定义存储参数语义 |
-| backend variability / role evolution | 定义 Role minor/tail 规则 | 定义 Acquisition canonical facts 与 backend 映射 | 定义 Storage canonical facts 与 backend 映射 |
-| system resource authority | 明确不属于 Plugin | 接收 Core limits，不规划资源 | 接收 Core/Segment limits，不规划 Volume/资源 |
-| thread/reentrancy baseline | 权威 | callback/quiesce 细化 | write/seal lane 细化 |
-| Source/Stream/Record | 不定义 | 权威 | 消费 Descriptor/Record |
-| Batch/Unknown/Segment | 不定义 | 不定义 | 权威 |
+- Plugin DSO runtime unload；
+- hot reload / state migration；
+- 多个独立 Plugin Runtime Domain；
+- 自动 Plugin 依赖图；
+- 跨进程 Plugin；
+- Plugin sandbox；
+- hostile/untrusted DSO 的进程内安全隔离；
+- 通用动态 Service Provider code lifetime；
+- 通用 Plugin Configuration Schema / validator；
+- Foundation 级 Acquisition / Storage 业务状态机。
 
-## 5. 开发实现设计
+# 2. 总体架构与对象模型
 
-### 5.1 ABI 入口、布局与基础类型
+本章从 Application 和 Plugin 的实际使用关系出发描述 V1。内部实现只保留三个主要共享状态对象：`PluginManagerState`、`PluginLibraryState` 和 `PluginInstanceState`。
 
-**ABI 头文件分层。**
+## 2.1 Application、Plugin 与 Framework
 
-Plugin SDK 的公开头采用**单独 ABI 子目录 + C++ 根目录**：只有需要长期二进制稳定的 C ABI 放入 `abi/`，C++ authoring headers 直接位于 `include/rodaq/plugin/`，文件名只表达领域职责。
+RoDAQ Plugin Framework 只连接两侧：
 
-```text
-include/rodaq/plugin/
-  abi/
-    bootstrap.h
-    types.h
-    config.h
-    services.h
-    plugin.h
-    ros2.h
-    acquisition.h
-    storage.h
-  config.hpp
-  services.hpp
-  ros2.hpp
-  acquisition.hpp
-  storage.hpp
-  export.hpp
+```
+RoDAQ Application
+        │
+        │ load / create / query / close
+        ▼
+   Plugin Framework
+        │
+        ▼
+      Plugin
 ```
 
-`abi/` 是唯一跨 DSO 的稳定 C ABI；`include/rodaq/plugin/` 根目录是插件作者使用的 C++17 source API。各文件职责和 include 方向冻结为：
+其中：
 
-| 文件 | 只负责 | 允许 include |
-| --- | --- | --- |
-| `abi/bootstrap.h` | 永久稳定的 bootstrap result/request/response/error buffer 与唯一入口；不依赖 Common ABI | `<stdint.h>`、`<stddef.h>` |
-| `abi/types.h` | Common ABI header、result、string/bytes、error buffer、跨插件边界所需强类型 ID/digest、Canonical data profile/delivery flags、time/sequence、deadline | `<stdint.h>`、`<stddef.h>` |
-| `abi/config.h` | 只读 Config API | `types.h` |
-| `abi/services.h` | Logging 与 Plugin Services | `types.h` |
-| `abi/plugin.h` | Common ABI plugin descriptor 与 role metadata | `bootstrap.h`、`types.h` |
-| `abi/ros2.h` | ROS 2 Canonical interoperability typed facts（当前为 QoS） | `types.h` |
-| `abi/acquisition.h` | Acquisition instance/stream configuration、Descriptor/Source/Record/Payload 与 role operations/services | `plugin.h`、`config.h`、`services.h`、`ros2.h` |
-| `abi/storage.h` | Storage instance configuration、Canonical Descriptor/Record、Batch/Segment role operations | `plugin.h`、`config.h`、`services.h`、`ros2.h` |
+- **RoDAQ Application**：使用插件的上层应用，包括 Core / Server；
+- **Plugin**：被加载的插件实现，例如 ROS 2 Acquisition、MQTT Acquisition、MCAP Storage；
+- **Plugin Framework**：负责发现、加载、ABI 适配、实例生命周期和调用安全。
 
-`config.hpp` 对应 `abi/config.h`，`services.hpp` 对应 `abi/services.h`，`ros2.hpp` 包装 `abi/ros2.h` 的 Canonical ROS 2 类型；根目录下的 C++ headers 只依赖所需的同级 C++ header 与 `abi/` header。禁止通过一个 umbrella header 把所有插件接口全量引入。`abi/` 是唯一额外接口层次；C++ authoring API 直接使用 `rodaq/plugin/*.hpp`，不再设置 `api/`、`sdk/` 等中间目录。
+## 2.2 Operation 与 Service
 
-公共 C 头必须可由 C11/C17 独立包含，不依赖 C++ 或第三方 header、不依赖 packing pragma，所有跨 ABI scalar 使用明确宽度类型。
+Plugin 与 Application 的扩展方向只有两种：
 
-V1 公共头系统依赖只允许 `<stdint.h>` 和 `<stddef.h>`，并统一提供 C++ `extern "C"` guard。Linux export 宏固定为 default visibility，普通符号由构建系统 hidden-by-default：
+```
+                     Operation
+RoDAQ Application ─────────────────► Plugin
+                  查询并调用 Plugin 能力
 
-```c
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
-#define RODAQ_PLUGIN_EXPORT __attribute__((visibility("default")))
-
-/* ABI declarations */
-
-#if defined(__cplusplus)
-}  /* extern "C" */
-#endif
+                      Service
+RoDAQ Application ◄───────────────── Plugin
+                  Plugin 调用 Application 能力
 ```
 
-`RODAQ_PLUGIN_EXPORT` 与 bootstrap function declaration 都归 `abi/bootstrap.h`；只有该 bootstrap symbol 使用 default visibility。function-table 中的函数由普通内部符号地址填入，不要求成为 dynamic export。Windows/macOS 不属于 V1 ABI support，不在该宏中提前加入未经资格验证的分支。
+因此：
 
-**Stable Bootstrap Entry。**
+- **Operation 由 Plugin 提供，Application 查询并调用**；
+- **Service 由 Application 提供，Plugin 查询并调用**。
 
-公共常量先冻结为：
+Operation 在 C++ Interface SDK 中使用 `Handle`；Service 使用 borrowed `Reference`。
 
-```c
-#define RODAQ_COMMON_ABI_MAJOR 1u
-#define RODAQ_COMMON_ABI_MINOR 0u
-#define RODAQ_ACQUISITION_PROTOCOL_MAJOR 1u
-#define RODAQ_ACQUISITION_PROTOCOL_MINOR 0u
-#define RODAQ_STORAGE_PROTOCOL_MAJOR 1u
-#define RODAQ_STORAGE_PROTOCOL_MINOR 0u
+两者都使用：
 
-typedef uint32_t rodaq_plugin_role_t;
-enum {
-    RODAQ_PLUGIN_ROLE_INVALID = 0,
-    RODAQ_PLUGIN_ROLE_ACQUISITION = 1,
-    RODAQ_PLUGIN_ROLE_STORAGE = 2
-};
+- 稳定字符串 `interface_id`；
+- Interface Version；
+- typed vtable；
+- opaque context；
+- 明确的线程、阻塞、错误与生命周期规则。
+
+## 2.3 Application 的完整使用流程
+
+V1 的普通路径只有：
+
+```
+PluginManager
+    │
+    ├── refresh()
+    ├── plugins()
+    └── load(plugin_id [, plugin_version])
+              │
+              ▼
+         PluginLibrary
+              │
+              └── create_instance(services, config)
+                          │
+                          ▼
+                    PluginInstance
+                       │
+                       ├── query<Interface>()
+                       ├── close()
+                       └── async_close()
 ```
 
-`abi/bootstrap.h` 是整个插件 ABI 的永久最小根，不 include `types.h`，只依赖 `<stdint.h>` / `<stddef.h>`。Bootstrap result、error buffer、request/response 都在该头中自行定义，不能复用 Common ABI 类型：
+一次完整流程：
 
-```c
-#define RODAQ_PLUGIN_BOOTSTRAP_SYMBOL "rodaq_plugin_get_descriptor"
-
-typedef uint32_t rodaq_bootstrap_result_t;
-enum {
-    RODAQ_BOOTSTRAP_OK = 0,
-    RODAQ_BOOTSTRAP_INVALID_ARGUMENT = 1,
-    RODAQ_BOOTSTRAP_UNSUPPORTED_ABI = 2,
-    RODAQ_BOOTSTRAP_INTERNAL = 3
-};
-
-typedef struct rodaq_bootstrap_error_buffer {
-    char* message;
-    uint32_t capacity;
-    uint32_t required_size;
-} rodaq_bootstrap_error_buffer_t;
-
-typedef struct rodaq_bootstrap_request {
-    uint32_t struct_size;
-    uint16_t requested_common_abi_major;
-    uint16_t requested_common_abi_minor;
-    uint32_t reserved0;
-} rodaq_bootstrap_request_t;
-
-typedef struct rodaq_bootstrap_response {
-    uint32_t struct_size;
-    uint16_t common_abi_major;
-    uint16_t common_abi_minor;
-    const void* descriptor;
-    uint32_t descriptor_size;
-    uint32_t reserved0;
-} rodaq_bootstrap_response_t;
-
-typedef rodaq_bootstrap_result_t (*rodaq_plugin_get_descriptor_fn_t)(
-    const rodaq_bootstrap_request_t* request,
-    rodaq_bootstrap_response_t* response,
-    rodaq_bootstrap_error_buffer_t* error);
-
-RODAQ_PLUGIN_EXPORT rodaq_bootstrap_result_t
-rodaq_plugin_get_descriptor(
-    const rodaq_bootstrap_request_t* request,
-    rodaq_bootstrap_response_t* response,
-    rodaq_bootstrap_error_buffer_t* error);
+```
+发现插件
+→ 加载 Plugin Library
+→ 创建并初始化 Plugin Instance
+→ 查询 Operation
+→ 调用 Operation
+→ 业务层停止/Finalize
+→ 关闭 Plugin Instance
+→ PluginManager shutdown
 ```
 
-Bootstrap Foundation 定义 `RODAQ_BOOTSTRAP_REQUEST_BASE_SIZE` 与 `RODAQ_BOOTSTRAP_RESPONSE_BASE_SIZE`，两者的 required prefix 永久固定；`request == NULL`、`response == NULL` 或 request/response 小于对应 base size 时返回 `RODAQ_BOOTSTRAP_INVALID_ARGUMENT`，且 `reserved0` 必须写 0。`request` 和 `response` 都由 Loader 提供并先清零，`response.struct_size` 由 Loader 写入自身可接受大小；插件只能写该范围内的已定义字段。`RODAQ_BOOTSTRAP_OK` 时必须满足 `response.common_abi_major == request.requested_common_abi_major`、`response.common_abi_minor <= request.requested_common_abi_minor`、`descriptor != NULL` 且 `descriptor_size` 至少覆盖所选 Common ABI 的 descriptor base prefix。`UNSUPPORTED_ABI` 时 `descriptor == NULL` 且 `descriptor_size == 0`。其它失败同样不得发布 descriptor。
+Application 不接触半初始化的 Plugin Instance。`create_instance()` 只有在 create + configure + Operation publish 全部成功后才返回 `PluginInstance`。
 
-Bootstrap error buffer 可为 NULL；非 NULL 时只用于有界的人类诊断。`capacity > 0` 时 `message` 必须非 NULL 且 NUL-terminated；`message == NULL && capacity == 0` 合法。`required_size` 是完整 UTF-8 消息的字节数，不含 NUL。该诊断不参与版本选择或控制逻辑。Bootstrap Foundation 只负责 Common ABI major/minor 协商，不承担 Role 能力发现或系统资源协商。
+## 2.4 Plugin 开发流程
 
-`abi/plugin.h` 才进入 Common Plugin ABI：它 include `bootstrap.h` 与 `types.h`，定义 `rodaq_plugin_descriptor_t` 与 Role metadata。Common ABI major 的 descriptor layout 只允许在 bootstrap 返回成功并确认 major 后解释。Bootstrap Foundation 允许未来经过 manifest schema 明确声明的 DSO 为不同 Common ABI major 返回不同 immutable descriptor；V1 package 只声明并实现 Common ABI `1.x`，Loader 不猜测 manifest 未声明的其它 major。
+插件开发者只需要：
 
-运行时装载在 pre-dlopen package admission 之后执行：
+```
+PluginBase
+├── configure(PluginSetup&)
+└── shutdown(Deadline)
 
-```text
-dlopen(RTLD_NOW | RTLD_LOCAL)
-→ dlsym(rodaq_plugin_get_descriptor)
-→ verify symbol provenance
-→ call bootstrap for preferred Common ABI major/minor
-→ if unsupported, probe another Loader-supported major if any
-→ validate bootstrap response + opaque descriptor size
-→ interpret descriptor only as negotiated Common ABI
-→ validate descriptor prefix
-→ validate role protocol header/minimum table size
-→ manifest/descriptor cross-check
-→ register immutable Catalog entry
+PluginSetup
+├── config()
+├── service<T>()
+└── provide<T>()
 ```
 
-任何校验失败都发生在创建实例前；library handle 即使校验失败也只在不存在任何回调/实例/function pointer 使用时关闭，正常已注册插件则保持到 daemon 退出。
+其中：
 
-**ABI 公共结构头。**
+- `configure()` 读取配置、查询 Application Service、创建必要资源并发布 Operation；
+- `shutdown()` 停止 Plugin-owned worker/callback/async work，使实例进入可以安全 destroy 的状态；
+- `shutdown()` 不是 Acquisition Stop，也不是 Storage Finalize；业务停止/完成仍由对应 Interface 定义。
 
-所有可扩展 struct 以公共 header 开头：
+## 2.5 对外对象职责
 
-```c
-typedef struct rodaq_abi_header {
-    uint32_t struct_size;
-    uint16_t version_major;
-    uint16_t version_minor;
-} rodaq_abi_header_t;
+| 对象 | 作用 |
+| --- | --- |
+| PluginManager | 发现、枚举、加载 Plugin，并在进程退出前统一 shutdown Framework |
+| PluginInfo | Application 可见的插件静态摘要：ID、名称、版本 |
+| PluginArtifactInfo | Session 审计使用的实际插件 ID、版本与主 Artifact SHA-256 |
+| PluginLibrary | 一个已经验证并加载的 Plugin Definition，可以创建多个 Instance |
+| PluginInstance | 一个已经完成初始化、可供 Application 调用的 Plugin 实例 |
+| CloseFuture | `async_close()` 返回的异步关闭结果对象 |
+| Operation Handle | Application 对 Plugin Operation 的类型安全受管调用句柄 |
+| Service Reference | Plugin 对 Application Service 的类型安全借用引用 |
+| ServiceRegistry | Application 提供给 Plugin 的 Service 集合 |
+
+Application 不需要理解 Loader、Catalog、调用计数、close worker 或 DSO handle。
+
+## 2.6 Framework 内部状态与 Public Handle
+
+V1 内部只保留三个主要共享状态对象。
+
+命名统一遵循：
+
+```
+State  = 长生命周期共享对象，持有资源、同步原语和完整内部状态
+Phase  = 生命周期状态机当前阶段的枚举值
+Status = 一次操作的成功/失败结果
+```
+
+因此 `PluginManagerState / PluginLibraryState / PluginInstanceState` 都是内部 C++ class/object，不是枚举；对应生命周期值分别使用 `PluginManagerPhase / PluginLibraryPhase / PluginInstancePhase`。
+
+### PluginManagerState
+
+表示整个进程中唯一 PluginManager 的运行状态，负责：
+
+```
+PluginManagerState
+├── PluginCatalog
+├── loaded_plugins
+├── instances
+├── AsyncCloseExecutor
+├── Capacity
+├── Diagnostics
+├── active_refresh_count
+├── phase
+└── restart_required
+```
+
+它是 Plugin Framework 的进程级所有权根。
+
+### PluginLibrary
+
+`PluginLibrary` 是只引用已发布 `PluginLibraryState` 的 move-only Public Handle。其完整 Public 声明以 §5.1 为唯一来源；析构或覆盖 Public Handle 不触发 DSO unload。成功发布的 DSO 仍按 Resident DSO 规则常驻到进程退出。
+
+### PluginInstanceState
+
+表示一个 Plugin Instance 的共享状态：
+
+```
+PluginInstanceState
+├── Instance ID
+├── phase
+├── raw Plugin Instance
+├── ServiceRegistry
+├── active_call_count
+├── close_result
+├── strong PluginLibraryState
+└── diagnostics
+```
+
+生命周期状态收敛为：
+
+```
+Initializing
+    │ success
+    ▼
+   Open
+    │ close / destructor / manager shutdown
+    ▼
+ Closing
+   ├── shutdown + drain + destroy success → Closed
+   └── shutdown cannot be proven safe      → Unresolved
+```
+
+`PluginInstanceState` 是内部长期共享对象，内部字段 `phase` 使用 `PluginInstancePhase`。`Initializing` 不发布给 Application，因此有效 Public `PluginInstance::phase()` 不会观察到 Initializing。
+
+`Unresolved` 表示 Framework 无法证明实例可以安全 destroy。此时实例状态继续由 `PluginManagerState` 持有，`restart_required = true`。
+
+## 2.7 所有权关系
+
+正常运行：
+
+```
+PluginManagerState
+├── strong PluginLibraryState ─owns→ resident DSO
+└── strong PluginInstanceState
+       ▲            ▲
+       │            │
+ PluginInstance   Operation Handle
+```
+
+异步关闭：
+
+```
+PluginManagerState ─strong→ PluginInstanceState
+CloseFuture       ─strong→ PluginInstanceState
+AsyncCloseExecutor ─temporary strong→ PluginInstanceState
+```
+
+关闭成功后：
+
+- raw Plugin Instance 已 destroy；
+- Instance-owned ServiceRegistry 和 backing 已释放；
+- `PluginInstanceState::phase = Closed`；
+- close result 固定；
+- PluginManagerState 从活动实例集合中移除该 State；
+- 如果仍有 `CloseFuture`，只会保留一个已经关闭的小型 State，不会保留 ROS 2 Subscription、MCAP writer 等业务资源。
+
+关闭结果直接保存在已经关闭的 `PluginInstanceState` 中。
+
+## 2.8 异常处理模型
+
+V1 的异常状态只保留两类：Faulted Plugin Library 与 Unresolved Plugin Instance。
+
+### Faulted Plugin Library
+
+如果 Plugin `create()` 违反 ABI，例如：
+
+- 返回 OK 但 Instance/vtable 不完整；
+- 返回 non-OK 但仍输出非默认 raw Instance；
+
+Framework：
+
+```
+mark PluginLibraryState.phase = Faulted
+→ record critical diagnostic
+→ reject future create_instance()
+→ PluginManagerState.restart_required = true
+```
+
+Framework 不调用未经验证的 destroy/function pointer。由于成功加载的 DSO 本身保持常驻，因此无需额外对象保活代码映射。
+
+### Unresolved Plugin Instance
+
+必须区分“Native shutdown 仍在执行”和“已经形成关闭终态失败”：
+
+```
+shutdown() remains in-flight beyond policy deadline
+→ PluginInstancePhase remains Closing
+→ PluginManagerPhase = Degraded
+→ restart_required = true
+
+shutdown() actually returns non-OK
+or Framework obtains equivalent terminal proof
+that safe destroy cannot be established
+→ PluginInstancePhase = Unresolved
+→ retain PluginInstanceState until process exit
+→ PluginManagerPhase = Degraded
+→ restart_required = true
+```
+
+Framework 不强制线程取消，也不执行不安全 destroy。只要 Native shutdown 仍未返回，就不得把仍在执行的 Instance 提前发布成 terminal Unresolved。
+
+## 2.9 标识与名称
+
+`ID` 表示 Identifier（标识符），不是数字序号。
+
+例如：
+
+```
+plugin_id      = com.rodaq.acquisition.ros2
+plugin_name    = ROS 2 Acquisition
+plugin_version = 1.2.0
 ```
 
 规则：
 
-- `struct_size` 是该内存对象实际可访问的字节数；
-- 对 **caller-owned output struct**：caller 先清零整个缓冲，写入自己的 `struct_size` 和请求的 version；callee 只写 caller 提供范围与自身已知字段的交集；
-- 对 **callee-owned static table/descriptor**：callee 填写自己实际结构的 `struct_size/version`，caller 只读取自己理解且在该 size 内的字段；
-- 接收方只读到 `min(struct_size, known_size)`；
-- caller-owned 输入/输出 struct 小于调用要求的 required prefix 时返回 `InvalidArgument`；callee-owned descriptor/table 小于 RoDAQ 所需 prefix 时由 Loader 判为 `Unavailable` 并拒绝注册；
-- 未知 tail 必须忽略并保持 caller 预置的零值；
-- 当前版本明确命名为 `reserved` 的输入字段/字节必须由 caller 写 0，callee-owned descriptor/table 的 reserved 也必须为 0；已知 reserved 非零视为 InvalidArgument 或 Plugin Contract Violation，不能提前私用；
-- 输入 enum/token 的未知值返回 InvalidArgument；插件输出未知 enum/result 属于 Contract Violation；ABI boolean 使用 `uint8_t` 时只允许 0/1；
-- callee 不得覆盖 caller buffer 的 canary/tail；
-- 不允许通过 `sizeof(new_struct)` 直接拒绝旧兼容结构。
-
-每个发布的 Common/Role protocol 都必须在头文件中提供稳定的 `MAJOR/MINOR` 常量。required prefix 常量按**语义**命名，不在标识符中编码版本，例如 `RODAQ_PLUGIN_DESCRIPTOR_BASE_SIZE`、`RODAQ_ACQUISITION_OPERATIONS_BASE_SIZE`、`RODAQ_STORAGE_OPERATIONS_BASE_SIZE`；后续新增 Role 语义若需要更长 prefix，使用对应语义名，而不是 `V2/V3` 或 `_1_1` 等版本后缀。字段可用性统一按 `struct_size >= offsetof(field)+sizeof(field)` 与 negotiated protocol minor 双重判断，不能只比较 `sizeof(current_type)`。Role operation base prefix 内的函数指针全部 required 且 non-NULL；未来可选 Role operation 只能作为明确的 tail 出现，并同时受 negotiated protocol minor 与 `struct_size` 约束。配置是否可用仍由 Schema/`validate_config()` 和 `prepare()` 的实际环境检查决定。
-
-所有 output pointer 在函数返回非 OK 时也必须遵守“**只写已声明有效的输出**”规则；role 文档逐函数说明哪些输出在错误返回时仍有效。未特别声明时，非 OK 返回只保证 error buffer，有效业务 output 不得被 caller 使用。
-
-**`rodaq_abi_header_t` 版本语义矩阵。** `version_major/minor` 不允许由每个结构自行解释，V1 固定为：
-
-| 对象类别 | header version 的含义 |
+| 名称 | 含义 |
 | --- | --- |
-| plugin-owned static `PluginDescriptor` / Role operation table | provider 对该 Common/Role protocol **支持的最大兼容版本** |
-| RoDAQ-injected `ConfigApi` / `PluginServices` / Logging table | 当前实例/调用已协商的 **Common Plugin ABI version** |
-| RoDAQ-injected Role Services | 当前实例已协商的 **对应 Role Protocol version** |
-| call-scoped Role input/output/value struct | 当前调用已协商的 **对应 Role Protocol version** |
+| plugin_id | 稳定机器标识符；跨版本保持稳定 |
+| plugin_name | 面向开发者和 UI 的插件名称 |
+| plugin_version | Plugin 发行版本 |
+| interface_id | 稳定 Interface 标识符 |
+| PluginInstanceId | 当前进程内用于诊断的实例 ID |
 
-因此 Acquisition/Storage 的 instance config、Record/Batch/Segment、callback input/output 等带 header 的 value struct 都写 negotiated Role version，不写插件支持的最大 minor。旧 minor caller 只初始化自己理解的 prefix；新 callee 不得通过 value struct header 宣称更高 minor 后写越界 tail。
+`*_id` 可以是字符串；`*_name` 才表示面向人的名称。
 
-**外层 size 与内层 header 的单一权威。** Bootstrap/descriptor 等场景保留外层 byte size，是为了在安全读取对象 header 前先界定可访问范围；一旦 header 可安全读取，V1 要求：
+Artifact digest、canonical path、actual file identity 等只用于 Loader 验证、去重和诊断，不作为普通 Application API 中的 Plugin 名称。
 
-```text
-bootstrap_response.descriptor_size == descriptor.header.struct_size
-descriptor.role_operations_size    == role_operations.header.struct_size
+## 2.10 Service 依赖模型
+
+PluginSetup 只提供一个 Service 查询入口：
+
+```cpp
+template <typename ServiceInterface>
+Result<typename ServiceInterface::Reference> service();
 ```
 
-不相等即 Contract Violation，不定义“取较小值继续运行”的第二套语义。`descriptor.role_protocol_major/minor` 与 Role operation table header 也必须完全一致。caller-owned value/output struct 不额外再传一份重复 size；唯一 size authority 是其 `header.struct_size`。
+缺失 Service 返回 `NotFound`。Framework 只报告“Service 是否存在以及是否版本兼容”，不替 Plugin 决定该 Service 是 Required 还是 Optional。
 
-V1 目标平台要求 C/C++ 的 `double` 为 IEEE-754 binary64；ABI conformance 在 amd64/arm64 构建时静态/运行期验证该前提。
+必需 Service：
 
-**基础 ABI 类型。**
+```cpp
+auto logging = setup.service<LoggingInterface>();
+if (!logging) {
+    return logging.status();
+}
+```
 
-字符串：
+可选 Service：
+
+```cpp
+auto tracing = setup.service<TracingInterface>();
+if (!tracing &&
+    tracing.status().code() != StatusCode::NotFound) {
+    return tracing.status();
+}
+
+if (tracing) {
+    // use optional service
+}
+```
+
+ServiceRegistry 在 Plugin Instance 初始化期间已经冻结，Plugin 不能修改它。
+
+## 2.11 Plugin Instance 创建与关闭
+
+### 创建
+
+```
+PluginLibrary::create_instance(services, config)
+→ reserve Instance State / capacity
+→ publish Manager ownership
+→ supervised Plugin ABI create()
+→ validate raw Instance
+→ attach immutable ServiceRegistry
+→ supervised Plugin configure()
+→ freeze Operation Registry
+→ publish PluginInstanceState = Open
+→ return PluginInstance
+```
+
+任一步失败都不向 Application 发布半初始化 Instance。
+
+如果 create/configure 已产生部分资源，Framework 调用 Plugin `shutdown()` 收敛部分初始化状态；只有 shutdown 成功后才 destroy。
+
+### 关闭
+
+```
+PluginInstance::close()
+or async_close()
+→ phase Open → Closing
+→ reject new Query / Operation calls
+→ invoke Plugin shutdown()
+→ wait active_call_count == 0
+→ destroy exactly once
+→ release ServiceRegistry / Instance backing
+→ phase = Closed
+```
+
+`close()` 是同步等待接口；`async_close()` 返回 `CloseFuture`。
+
+如果调用者等待超时：
+
+- `close()` / `CloseFuture::wait()` 返回 `DeadlineExceeded`；
+- 实际关闭继续在 Framework 的有界异步关闭执行器中推进；
+- timeout 不代表 Plugin 已停止，也不允许 unsafe destroy。
+
+## 2.12 PluginManager shutdown
+
+Application 正常退出顺序：
+
+```
+停止新的业务 Task
+→ 停止/Finalize 已有业务 Operation
+→ 关闭 Task 持有的 PluginInstance
+→ PluginManager::shutdown(deadline)
+→ process exit
+```
+
+`PluginManager::shutdown()` 是幂等观察接口：
+
+- Running：开始 shutdown 并等待同一流程；
+- ShuttingDown：继续观察同一流程；
+- Stopped：返回 Ok；
+- Degraded：返回已记录的终态失败。
+
+关闭流程：
+
+- 原子关闭新的 `load()` / `create_instance()` 准入；
+- 原子关闭新的 `refresh()` 准入；
+- **立即**对当前已经 Open 的 Instance 发起关闭；
+- **并行**监督已经进入的 refresh/load/create/configure 与 Pending/Running close work；
+- 已经进入的 refresh 只能完成内部扫描/解析；Manager 已非 Running 时必须丢弃新 Catalog generation，不得发布；
+- late initialization 在 Manager 已非 Running 时不得发布新的 Open Instance，而是进入 Manager-owned cleanup；
+- hung refresh/load/create/configure 达到 lifecycle operational threshold 后进入 Degraded / `restart_required`，但不得阻止其他健康 Instance 继续关闭；
+- 只有满足 Normal Shutdown Success Predicate（无 Faulted/Unresolved、无 active refresh/initialization、无 pending/running refresh/initialization/close work、`restart_required == false`）时，才停止内部执行资源并进入 `Stopped`；
+- 如果只是 observer deadline 到期，返回 DeadlineExceeded，但保持 `ShuttingDown` 并继续内部收敛；
+- 如果存在 Faulted/Unresolved、refresh/initialization supervision failure、Native Shutdown policy timeout 或已确认 lifecycle/close-executor liveness failure，则进入 `Degraded` 并返回对应失败。
+
+Manager Shutdown 不采用“先等 active refresh/load/create 全部返回，再关闭已有 Instance”的串行顺序。
+
+Application 不需要自行维护另一套 Plugin refresh/load/create 准入状态，也不需要拼接 Framework 内部 counter 来证明退出安全。
+
+# 3. 稳定 C ABI 详细设计
+
+本章定义 RoDAQ Application 与 Plugin 跨 DSO 边界时唯一稳定的二进制规范。C 类型名和函数名保持英文；正文使用中文说明语义、所有权和失败行为。
+
+## 3.1 ABI 基本规则
+
+允许跨 ABI：
+
+- fixed-width integer；
+- C POD struct；
+- pointer + length；
+- domain-typed opaque context pointer；
+- typed / opaque vtable pointer；
+- function pointer；
+- caller-owned output buffer。
+
+禁止跨 ABI：
+
+- C++ class / virtual interface；
+- STL；
+- exception；
+- RTTI；
+- compiler-specific C++ layout；
+- ownership 未定义的跨 DSO heap object；
+- Application / Plugin 互相 `free/delete` 对方对象。
+
+所有 ABI function 必须：
+
+- 不让异常越过 C ABI；
+- 在进入业务逻辑前初始化 output；
+- 明确 nullability 和 ownership；
+- non-OK 返回不得要求调用方解析 message 决定控制流。
+
+### Public C ABI 命名层级
+
+- RoDAQ-wide 基础类型使用 `rodaq_*`：Status/Error、String/Bytes/Buffer、Deadline、Struct Header；
+- Plugin Framework 特有对象使用 `rodaq_plugin_*`；
+- 通用 Interface binding/version/query 使用 `rodaq_interface_*`；
+- Acquisition / Storage / 第三方 Interface 使用各自前缀。
+
+Public C ABI 不直接使用裸 `void*` 表达领域 context：
 
 ```c
+typedef struct rodaq_interface_context
+    rodaq_interface_context_t;
+
+typedef struct rodaq_interface_vtable
+    rodaq_interface_vtable_t;
+
+typedef struct rodaq_service_registry_context
+    rodaq_service_registry_context_t;
+
+typedef struct rodaq_plugin_context
+    rodaq_plugin_context_t;
+```
+
+这些 opaque type 提供静态类型隔离；实际生命周期仍由 Framework 和 Interface 规则保证。
+
+### Public C 函数参数约定
+
+参数名称只表达领域对象，不使用 `in_`/`out_` 前缀。Public Header 通过 Doxygen 说明：
+
+- 输入 / 输出方向；
+- 是否允许 `nullptr`；
+- borrowed / owned；
+- 有效期；
+- non-OK 后 output 状态；
+- blocking / deadline；
+- concurrency / reentrancy；
+- 所有带单位的数值字段/参数的单位。
+
+Public 字段和参数名不编码物理单位，例如不使用 `_ns`、`_ms`、`_bytes` 后缀；单位由 Doxygen 明确规定。类型本身表达领域语义的名称（例如 `rodaq_bytes_t`）不属于参数单位后缀。
+
+## 3.2 状态码与基础类型
+
+```c
+typedef uint32_t rodaq_status_code_t;
+
+enum {
+    RODAQ_STATUS_OK                 = 0u,
+    RODAQ_STATUS_INVALID_ARGUMENT   = 1u,
+    RODAQ_STATUS_INVALID_STATE      = 2u,
+    RODAQ_STATUS_NOT_FOUND          = 3u,
+    RODAQ_STATUS_CONFLICT           = 4u,
+    RODAQ_STATUS_RESOURCE_EXHAUSTED = 5u,
+    RODAQ_STATUS_DEADLINE_EXCEEDED  = 6u,
+    RODAQ_STATUS_UNAVAILABLE        = 7u,
+    RODAQ_STATUS_PERMISSION_DENIED  = 8u,
+    RODAQ_STATUS_DATA_LOSS          = 9u,
+    RODAQ_STATUS_INTERNAL           = 10u
+};
+
 typedef struct rodaq_string {
     const char* data;
-    uint64_t size;
+    uint32_t size;
 } rodaq_string_t;
-```
 
-字节：
-
-```c
 typedef struct rodaq_bytes {
     const uint8_t* data;
-    uint64_t size;
+    uint32_t size;
 } rodaq_bytes_t;
-```
 
-二者都是 borrowed input/view，除非具体字段另有 lifetime 声明。公共规则固定为：`data == NULL && size == 0` 表示空值并合法；`data == NULL && size > 0` 非法；非空 `rodaq_string_t` 必须是有效 UTF-8、不要求 NUL 终止且不得包含嵌入 NUL；`rodaq_bytes_t` 可以包含任意字节。每个调用仍必须对字段施加更严格的长度/是否允许空值约束，RoDAQ/Plugin 不得用 `strlen()` 推断 ABI string 长度。
+typedef struct rodaq_buffer {
+    uint8_t* data;
+    uint32_t capacity;
+    uint32_t size;
+} rodaq_buffer_t;
 
-稳定实体标识统一使用 128-bit 二进制表示；sequence/generation 使用 `uint64_t`；内容摘要使用固定 256-bit 表示。`abi/types.h` 不只声明一个可互换的通用 ID，而是冻结以下**语义独立 C struct**：
-
-```c
-typedef struct rodaq_stream_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_stream_id_t;
-
-typedef struct rodaq_descriptor_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_descriptor_id_t;
-
-typedef struct rodaq_segment_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_segment_id_t;
-
-typedef struct rodaq_system_boot_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_system_boot_id_t;
-
-typedef struct rodaq_source_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_source_id_t;
-
-typedef struct rodaq_source_session_id {
-    uint64_t high;
-    uint64_t low;
-} rodaq_source_session_id_t;
-
-typedef struct rodaq_digest256 {
-    uint8_t bytes[32];
-} rodaq_digest256_t;
-
-typedef uint32_t rodaq_data_profile_t;
-typedef uint32_t rodaq_record_delivery_flags_t;
-
-enum {
-    RODAQ_DATA_PROFILE_INVALID = 0,
-    RODAQ_DATA_PROFILE_GENERIC = 1,
-    RODAQ_DATA_PROFILE_ROS2 = 2
-};
-
-enum {
-    RODAQ_RECORD_DELIVERY_NONE = 0,
-    RODAQ_RECORD_DELIVERY_RETAINED = 1u << 0
-};
-
-typedef uint32_t rodaq_timestamp_role_t;
-typedef uint32_t rodaq_clock_domain_t;
-typedef uint32_t rodaq_sequence_scope_t;
-
-enum {
-    RODAQ_TIMESTAMP_ROLE_INVALID = 0,
-    RODAQ_TIMESTAMP_ROLE_SOURCE = 1
-};
-
-
-enum {
-    RODAQ_CLOCK_DOMAIN_INVALID = 0,
-    RODAQ_CLOCK_DOMAIN_SOURCE_NATIVE = 1,
-    RODAQ_CLOCK_DOMAIN_UNIX_REALTIME = 2,
-    RODAQ_CLOCK_DOMAIN_MONOTONIC = 3
-};
-
-enum {
-    RODAQ_SEQUENCE_SCOPE_INVALID = 0,
-    RODAQ_SEQUENCE_SCOPE_SOURCE = 1,
-    RODAQ_SEQUENCE_SCOPE_SOURCE_SESSION = 2,
-    RODAQ_SEQUENCE_SCOPE_PRODUCER_EPOCH = 3
-};
-
-typedef struct rodaq_record_timestamp {
-    rodaq_timestamp_role_t role;
-    rodaq_clock_domain_t clock_domain;
-    int64_t value_ns;
-} rodaq_record_timestamp_t;
-```
-
-**ROS 2 Canonical interoperability ABI。** ROS 2 专用事实不继续堆入 `abi/types.h`，而放在独立 `abi/ros2.h`。该头只依赖稳定基础类型，不依赖 ROS 2/RMW/C++ 第三方头；MQTT 或其它 generic backend 不需要理解这些枚举语义。
-
-```c
-typedef uint32_t rodaq_ros2_qos_history_t;
-typedef uint32_t rodaq_ros2_qos_reliability_t;
-typedef uint32_t rodaq_ros2_qos_durability_t;
-typedef uint32_t rodaq_ros2_qos_liveliness_t;
-typedef uint32_t rodaq_ros2_qos_duration_kind_t;
-
-enum {
-    RODAQ_ROS2_QOS_HISTORY_INVALID = 0,
-    RODAQ_ROS2_QOS_HISTORY_SYSTEM_DEFAULT = 1,
-    RODAQ_ROS2_QOS_HISTORY_KEEP_LAST = 2,
-    RODAQ_ROS2_QOS_HISTORY_KEEP_ALL = 3,
-    RODAQ_ROS2_QOS_HISTORY_UNKNOWN = 4
-};
-
-enum {
-    RODAQ_ROS2_QOS_RELIABILITY_INVALID = 0,
-    RODAQ_ROS2_QOS_RELIABILITY_SYSTEM_DEFAULT = 1,
-    RODAQ_ROS2_QOS_RELIABILITY_RELIABLE = 2,
-    RODAQ_ROS2_QOS_RELIABILITY_BEST_EFFORT = 3,
-    RODAQ_ROS2_QOS_RELIABILITY_BEST_AVAILABLE = 4,
-    RODAQ_ROS2_QOS_RELIABILITY_UNKNOWN = 5
-};
-
-enum {
-    RODAQ_ROS2_QOS_DURABILITY_INVALID = 0,
-    RODAQ_ROS2_QOS_DURABILITY_SYSTEM_DEFAULT = 1,
-    RODAQ_ROS2_QOS_DURABILITY_TRANSIENT_LOCAL = 2,
-    RODAQ_ROS2_QOS_DURABILITY_VOLATILE = 3,
-    RODAQ_ROS2_QOS_DURABILITY_BEST_AVAILABLE = 4,
-    RODAQ_ROS2_QOS_DURABILITY_UNKNOWN = 5
-};
-
-enum {
-    RODAQ_ROS2_QOS_LIVELINESS_INVALID = 0,
-    RODAQ_ROS2_QOS_LIVELINESS_SYSTEM_DEFAULT = 1,
-    RODAQ_ROS2_QOS_LIVELINESS_AUTOMATIC = 2,
-    RODAQ_ROS2_QOS_LIVELINESS_MANUAL_BY_NODE = 3,
-    RODAQ_ROS2_QOS_LIVELINESS_MANUAL_BY_TOPIC = 4,
-    RODAQ_ROS2_QOS_LIVELINESS_BEST_AVAILABLE = 5,
-    RODAQ_ROS2_QOS_LIVELINESS_UNKNOWN = 6
-};
-
-enum {
-    RODAQ_ROS2_QOS_DURATION_INVALID = 0,
-    RODAQ_ROS2_QOS_DURATION_DEFAULT = 1,
-    RODAQ_ROS2_QOS_DURATION_FINITE = 2,
-    RODAQ_ROS2_QOS_DURATION_INFINITE = 3,
-    RODAQ_ROS2_QOS_DURATION_BEST_AVAILABLE = 4,
-    RODAQ_ROS2_QOS_DURATION_UNKNOWN = 5
-};
-
-typedef struct rodaq_ros2_qos_duration {
-    uint64_t nanoseconds;
-    rodaq_ros2_qos_duration_kind_t kind;
-    uint32_t reserved0;
-} rodaq_ros2_qos_duration_t;
-
-typedef struct rodaq_ros2_qos_profile {
-    rodaq_ros2_qos_history_t history;
-    uint32_t reserved0;
-    uint64_t depth;
-    rodaq_ros2_qos_reliability_t reliability;
-    rodaq_ros2_qos_durability_t durability;
-    rodaq_ros2_qos_duration_t deadline;
-    rodaq_ros2_qos_duration_t lifespan;
-    rodaq_ros2_qos_liveliness_t liveliness;
-    uint32_t reserved1;
-    rodaq_ros2_qos_duration_t liveliness_lease_duration;
-    uint8_t avoid_ros_namespace_conventions;
-    uint8_t reserved[7];
-} rodaq_ros2_qos_profile_t;
-```
-
-这些 Plugin ABI 中实际跨边界使用的 ID 即使 layout 相同也不是 C typedef alias，避免不同领域 ID 在调用点静默互换。Task/Pipeline/Instance/Operation/EffectiveConfiguration identity 属于 Core 控制域，不进入 Plugin Common ABI。V1 对上列 128-bit ID 冻结 `sizeof == 16`、`alignof == alignof(uint64_t)`、`offsetof(high)==0`、`offsetof(low)==8`；`rodaq_digest256_t` 冻结 `sizeof == 32`。新增实体 ID 只有在真实跨 Plugin ABI 边界时才增加独立 struct，不能为了 Core 内部便利扩大公共 ABI。
-
-`rodaq_data_profile_t` 同样属于跨 Acquisition/Storage 的 Canonical Data Model，而不是某个 Role 私有能力枚举。V1 只发布 `GENERIC/ROS2`；新 profile 必须有真实 Acquisition producer 与 Storage/reader consumer，并通过 Common ABI minor/文档 vocabulary 明确演进，数值不重排、不复用。 `rodaq_record_delivery_flags_t` 也是跨 Role 的逐 Record canonical fact；V1 只发布 `RETAINED`，用于 MQTT 等 source protocol 明确标记的 retained/bootstrap delivery。未知 bit fail-closed，普通 ROS 2 Record 为 0。
-
-`abi/ros2.h` 中的 `rodaq_ros2_qos_profile_t` 是 ROS2 Canonical profile 的固定 V1 nested layout，不直接复用 `rmw_qos_profile_t` 或 `rclcpp::QoS` 数值/布局。它保存 history/depth/reliability/durability/deadline/lifespan/liveliness/lease-duration/namespace-convention 这些跨 Acquisition→Storage 真正需要的语义；枚举值是 RoDAQ 自己冻结的稳定 vocabulary。duration 的 `kind != FINITE` 时 `nanoseconds` 必须为 0；`FINITE` 时使用无符号纳秒。`avoid_ros_namespace_conventions` 只允许 0/1；QoS enum 的 0/未发布值非法，`UNKNOWN` 是显式已发布语义而不是任意数值容错。`depth` 仅在 `KEEP_LAST` 时参与解释，其它 history 模式规范化为 0。所有 reserved 必须为 0。该 nested struct 不原地扩 stride；未来 ROS2 profile 需要新增字段时通过 Descriptor 的 Role/Common minor typed tail 或新的 profile struct 演进。
-
-时间/sequence 语义类型属于 Common ABI，而不是 Acquisition/Storage 各自重新定义。V1 中 `0` 都是 invalid；`SOURCE_NATIVE` 只说明“值来自 producer/native clock domain”，**不声明与 RoDAQ monotonic/realtime 可直接比较**。`UNIX_REALTIME` 表示 Unix realtime 语义；`MONOTONIC` 只有在对应 Source/Session/producer epoch identity 同时被记录时才具有域内比较意义。V1 只发布 `RODAQ_TIMESTAMP_ROLE_SOURCE`，其它 timestamp role 数值 `2..UINT32_MAX` 保留给未来 Common ABI minor，旧实现遇到未知 role/domain/scope 必须 fail-closed，不得猜测。
-
-持久 JSON 中 128-bit ID 使用固定 32 个小写十六进制字符（high 后 low、无前缀）；256-bit digest 使用 64 个小写十六进制字符。全零实体 ID 作为 invalid/sentinel，不分配给正常对象。Plugin ABI 中的 Stream/Descriptor/Segment identity 使用项目冻结的生成/派生规则；System Boot 和 Source identity 可以来自经过验证的系统/协议事实。Task/Pipeline/Instance/Operation identity 的持久格式由 Core 文档定义，不属于本 ABI。
-
-Deadline 使用 Linux `CLOCK_MONOTONIC` 的绝对纳秒值：
-
-```c
 typedef struct rodaq_deadline {
-    uint64_t monotonic_ns;
+    /**
+     * Absolute CLOCK_MONOTONIC deadline.
+     *
+     * Unit: nanoseconds.
+     */
+    int64_t monotonic_deadline;
 } rodaq_deadline_t;
+
+#define RODAQ_DEADLINE_INFINITE INT64_MAX
+
+typedef struct rodaq_struct_header {
+    uint32_t struct_size;
+} rodaq_struct_header_t;
+
+typedef struct rodaq_error {
+    rodaq_buffer_t message;
+} rodaq_error_t;
 ```
 
-V1 target 已限定 Linux，因此插件可直接用 `clock_gettime(CLOCK_MONOTONIC, ...)` 与该值比较，不需要 RoDAQ 注入 Clock service。Deadline 只表达控制操作的截止边界；Record 的 receive realtime/monotonic、SystemBootId 与 ClockEpoch 仍由 Core 在 Admission/Storage facts 中生成。
+`rodaq_status_code_t` / `rodaq_error_t` 是 RoDAQ-wide 公共类型，与 C++ `StatusCode` 一一映射。
 
-`monotonic_ns` 与 Linux `CLOCK_MONOTONIC` 属于同一 boot-local 时间域。插件不能把它解释为 realtime，也不能在内部为每个子步骤重新计算新的完整 timeout。
+`rodaq_struct_header_t` 只保存 `struct_size`。Plugin ABI Major/Minor 和 Interface Major/Minor 已有独立版本机制，不在每个 appendable struct 中重复保存版本字段。
 
-V1 插件 ABI 支持目标为 64-bit Linux amd64/arm64。ABI 的**字段语义和布局规则**在两种架构保持一致，但动态库本身仍是架构专用产物；不承诺同一个 `.so` 跨架构加载。所有持久/协议数值仍使用固定宽度类型，不依赖 LP64 的 `long` 或 `size_t`。
+### 字符串与字节序列
 
-**Result Code。**
+`rodaq_string_t` / `rodaq_bytes_t` 都是 non-owning pointer + length：
 
-公共 ABI 结果码固定使用 `uint32_t`，匿名 enum 只提供常量：
+- `{nullptr, 0}` 表示 empty；
+- `nullptr + nonzero size` 非法；
+- `rodaq_string_t` 必须是 UTF-8；
+- 类型本身不负责 free/realloc；
+- 同步输入默认只在当前 ABI call 内有效；
+- 需要长期保存必须复制。
+
+### 错误信息缓冲区
+
+Caller 提供 `data` 与 `capacity`；Callee 只写 buffer 内容和 `size`。
+
+- `size &lt;= capacity`；
+- message 可以截断，但必须保持 UTF-8 code-point 完整；
+- 不要求 NUL 终止；
+- `error == nullptr` 合法；
+- StatusCode 是唯一机器控制流依据，message 只用于诊断。
+
+Runtime 在 Plugin ABI 调用返回后必须验证 Plugin 写入的状态和 `rodaq_error_t` 输出：
+
+- `rodaq_status_code_t` 不属于 §3.2 已发布枚举值是 ABI contract violation；不得静默转换成 C++ `StatusCode` 或解释为成功；
+- `{data = nullptr, capacity = 0, size = 0}` 是唯一 empty Error Buffer；`data == nullptr && capacity != 0`、`size > capacity` 或 `size != 0 && data == nullptr` 均非法；
+- 非空 message 必须满足 §3.2 Public String 的 UTF-8 规则；
+- 合法 non-OK StatusCode 是主结果；即使 Error Buffer 结构非法，也不得覆盖该非 OK 状态，只记录 bounded contract diagnostic；
+- StatusCode == OK 却产生结构非法或非空 Error Buffer 时，当前操作返回 Internal，output 按对应 ABI 的 default-invalid/丢弃规则处理；
+- unknown status 出现在 create/configure 时按初始化 ABI 违约处理，Library → Faulted、禁止后续 create 并设置 `restart_required`；
+- unknown status 出现在 query/typed Operation 时，当前调用返回 Internal、不得发布 partial output，并记录 critical diagnostic；
+- unknown status 出现在 shutdown 时，当前关闭结果按 Internal 处理，且不得 destroy，实例进入既有 Unresolved 收敛路径。
+
+### Deadline
+
+`monotonic_deadline` 表示 Linux `CLOCK_MONOTONIC` 的绝对截止时间。单位由 Public Header 的 Doxygen 明确规定为 nanoseconds，不在字段名中编码单位。
+
+- `INT64_MAX`：无限等待；
+- 其他负值：非法；
+- finite value ≤ now：已过期；
+- Deadline 只限制等待，不表示取消执行；
+- 从 C++ duration 计算 absolute deadline 时必须使用检查/饱和算术，禁止 signed overflow；有限 duration 如果超过可表示范围，饱和到 `INT64_MAX - 1`（最晚有限 deadline），不得把有限等待隐式转换成 `RODAQ_DEADLINE_INFINITE`。
+
+## 3.3 Interface 版本与查询
 
 ```c
-typedef uint32_t rodaq_result_code_t;
+typedef struct rodaq_interface_version {
+    uint16_t major;
+    uint16_t minor;
+} rodaq_interface_version_t;
 
-enum {
-    RODAQ_RESULT_OK = 0,
-    RODAQ_RESULT_INVALID_ARGUMENT = 1,
-    RODAQ_RESULT_INVALID_STATE = 2,
-    RODAQ_RESULT_NOT_FOUND = 3,
-    RODAQ_RESULT_CONFLICT = 4,
-    RODAQ_RESULT_RESOURCE_EXHAUSTED = 5,
-    RODAQ_RESULT_DEADLINE_EXCEEDED = 6,
-    RODAQ_RESULT_UNAVAILABLE = 7,
-    RODAQ_RESULT_PERMISSION_DENIED = 8,
-    RODAQ_RESULT_DATA_LOSS = 9,
-    RODAQ_RESULT_INTERNAL = 10
-};
+typedef struct rodaq_interface_query {
+    rodaq_string_t interface_id;
+    uint16_t major;
+    uint16_t min_minor;
+    uint16_t max_minor;
+} rodaq_interface_query_t;
 ```
 
-结果字段始终使用固定宽度 `rodaq_result_code_t`；上面的匿名枚举只提供编译期常量，避免把 C enum 的实现相关宽度变成 ABI。数值发布后不重排。
+规则：
 
-角色级 Unknown/PersistenceUnknown 不靠新增随意字符串表达，而由 Storage role result struct 显式编码。
+- Interface ID 长度 1～255 bytes；
+- canonical ID 使用 lowercase ASCII `[a-z0-9._-]`；
+- 推荐 reverse-domain namespace，例如 `com.example.counter`；
+- Major 精确匹配；
+- Minor 选择双方共同支持的最高版本；
+- ID 不存在 → `NOT_FOUND`；
+- ID 存在但版本无交集 → `UNAVAILABLE`；
+- Query 非法 → `INVALID_ARGUMENT`。
 
-**Error detail 输出。**
-
-失败诊断采用 caller-owned buffer：
+## 3.4 InterfaceReference 与函数表
 
 ```c
-typedef struct rodaq_error_buffer {
-    char* message;
-    uint64_t capacity;
-    uint64_t required_size;
-    uint8_t truncated;
-    uint8_t reserved[7];
-} rodaq_error_buffer_t;
+typedef struct rodaq_interface_context
+    rodaq_interface_context_t;
+
+typedef struct rodaq_interface_vtable
+    rodaq_interface_vtable_t;
+
+typedef struct rodaq_interface_reference {
+    rodaq_interface_context_t* context;
+    const rodaq_interface_vtable_t* vtable;
+    uint32_t vtable_size;
+    rodaq_interface_version_t negotiated_version;
+} rodaq_interface_reference_t;
 ```
 
-约束：
+Raw `InterfaceReference` 是 borrowed。具体 Interface SDK 在验证 Interface ID/version/vtable size 后，把 opaque vtable 恢复为对应 typed vtable。
 
-- plugin 不返回要求 RoDAQ `free()` 的字符串；
-- `capacity` 包含结尾 NUL 的空间；
-- `required_size` 是完整 UTF-8 error detail 的字节数，不含结尾 NUL；
-- `capacity > 0` 时 `message` 始终 NUL-terminated；
-- 实际复制字节数为 `min(required_size, capacity - 1)`；
-- 未完整复制时 `truncated = 1`；
-- `message == NULL && capacity == 0` 对纯查询/验证类调用可用于 required-size probe；对 create/prepare/start/write/seal/quiesce 等可能有副作用或不可安全重放的调用，RoDAQ 不得为了取得完整 error detail 而重试原操作，正常使用预分配有界 buffer，`required_size` 仅用于截断统计；
-- error detail 不参与程序控制逻辑。
+`vtable_size` 的单位固定为 **bytes**，表示从 typed vtable 对象起始地址开始，Provider 承诺可安全读取的字节数。它不是 slot count。
 
-### 5.2 C++ 插件开发接口
+具体 Interface SDK 必须按以下顺序验证 typed vtable，不能先解引用 Header 再检查长度：
 
-C ABI 是稳定二进制契约，但**不是要求插件作者直接使用的主要开发接口**。SDK 在同一组 C ABI 之上提供 C++17 authoring API；官方 ROS 2、MQTT、MCAP、SQLite3 插件优先使用 C++ API 实现，同时 conformance fixture 保留直接 C ABI 插件以验证底层契约。
+```
+1. reference.context != nullptr
+2. reference.vtable != nullptr
+3. reference.vtable_size >= sizeof(rodaq_struct_header_t)
 
-**公开头文件。** C++ authoring API 直接放在 `include/rodaq/plugin/`：
+4. only now read typed_vtable.header.struct_size
 
-```text
-include/rodaq/plugin/
-  config.hpp
-  services.hpp
-  ros2.hpp
-  acquisition.hpp
-  storage.hpp
-  export.hpp
+5. typed_vtable.header.struct_size >= sizeof(rodaq_struct_header_t)
+
+6. readable_size =
+       min(
+           reference.vtable_size,
+           typed_vtable.header.struct_size,
+           sizeof(consumer_known_vtable)
+       )
+
+7. readable_size >= required_prefix_size
+8. validate each required/optional slot by byte range
 ```
 
-`config.hpp` 只包装 C Config API；`services.hpp` 提供 Logging/Services；`acquisition.hpp`、`storage.hpp` 定义对应 Factory/Instance 与角色值类型；`export.hpp` 只提供 C++→C adapter/export glue。C++ 文件不再使用宽泛的 `plugin.hpp`。文件名不携带发布版本；协议版本只保存在常量和运行时字段中。
+这只能防止“合法地址 + 错误长度/布局”造成的越界读取；V1 不提供不可信 DSO 的进程内内存隔离，因此不能防止恶意 Plugin 返回任意无效地址。
 
-C++ 公共命名空间固定为：
+Consumer 只有在以下条件全部满足时才能访问某个 slot：
 
-```cpp
-namespace rodaq::plugin {
-// ...
+```
+slot introduced minor <= negotiated minor
+AND required_prefix_size <= readable_size
+AND offsetof(TypedVTable, slot) + sizeof(slot) <= readable_size
+AND function pointer != nullptr
+```
+
+因此 ABI 兼容检查使用 byte range，而不是比较 Provider/Consumer 的完整 `sizeof`。新增 Minor slot 只能尾部追加。
+
+Query 调用前 output 必须初始化为唯一 default-invalid 表示：
+
+```c
+{
+    .context = NULL,
+    .vtable = NULL,
+    .vtable_size = 0,
+    .negotiated_version = {0, 0}
 }
 ```
 
-C++ API 直接复用项目 `rodaq::Status` 与 `rodaq::Result<T>`；类型使用 PascalCase，函数使用项目统一的 lowercase_snake_case。C++ authoring 层可以使用 `std::string_view`、`std::unique_ptr` 和 RAII，但 adapter 负责把这些对象完全终止在插件 DSO 内，RoDAQ 永远只观察 C ABI 类型。
+Query 返回 non-OK 后 output 必须保持该 default-invalid 状态。
 
-**公共 C++ 基础对象。**
+## 3.5 配置 ABI
 
-`config.hpp` 与 `services.hpp` 至少提供以下窄包装；ROS 2 profile 的 C++ value wrapper 放在 `ros2.hpp`，不污染基础 Services：
-
-```cpp
-namespace rodaq::plugin {
-
-class Config final {
-public:
-    Config() = delete;
-
-    [[nodiscard]] Result<ConfigType> type() const;
-    [[nodiscard]] Result<bool> contains(std::string_view key) const;
-    [[nodiscard]] Result<Config> member(std::string_view key) const;
-    [[nodiscard]] Result<Config> element(std::uint32_t index) const;
-    [[nodiscard]] Result<std::uint32_t> element_count() const;
-
-    [[nodiscard]] Result<bool> as_bool() const;
-    [[nodiscard]] Result<std::int64_t> as_i64() const;
-    [[nodiscard]] Result<std::uint64_t> as_u64() const;
-    [[nodiscard]] Result<double> as_f64() const;
-    [[nodiscard]] Result<std::string_view> as_string() const;
-
-private:
-    friend class ExportAdapter;
-    Config(const rodaq_config_api_t* api, rodaq_config_node_t node) noexcept;
-
-    const rodaq_config_api_t* api_;
-    rodaq_config_node_t node_;
-};
-
-class Deadline final {
-public:
-    [[nodiscard]] std::uint64_t monotonic_ns() const noexcept;
-    [[nodiscard]] bool expired() const noexcept;
-};
-
-enum class LogLevel : std::uint32_t {
-    Trace = RODAQ_PLUGIN_LOG_TRACE,
-    Debug = RODAQ_PLUGIN_LOG_DEBUG,
-    Info = RODAQ_PLUGIN_LOG_INFO,
-    Warning = RODAQ_PLUGIN_LOG_WARNING,
-    Error = RODAQ_PLUGIN_LOG_ERROR,
-    Critical = RODAQ_PLUGIN_LOG_CRITICAL,
-};
-
-struct LogSourceLocation final {
-    std::string_view file;
-    std::string_view function;
-    std::int32_t line{0};
-};
-
-class Services final {
-public:
-    [[nodiscard]] bool log_enabled(LogLevel level) const noexcept;
-    void log(LogLevel level, LogSourceLocation source, std::string_view message) const noexcept;
-};
-
-class AcquisitionServices final {
-public:
-    [[nodiscard]] Result<SubmitResult> submit(RecordAttempt record) const;
-    [[nodiscard]] Result<DescriptorToken> propose_descriptor(
-        DescriptorProposal proposal, Deadline deadline) const;
-    [[nodiscard]] Result<void> report_source_event(SourceEvent event) const;
-    [[nodiscard]] Result<void> report_acquisition_event(AcquisitionEvent event) const;
-};
-
-}  // namespace rodaq::plugin
-```
-
-这些 wrapper 是 borrowed façade，不取得 RoDAQ 侧数据所有权。`Config` 只能由 SDK `ExportAdapter` 通过 private constructor 从当前调用的 `config_api + node` 构造，插件作者不能自行制造任意 Config handle；其内部 node/string 不得跨当前配置调用保存。`Services`/`AcquisitionServices` 在 create 调用期间有效，create 失败后立即失效，create 成功后可由实例保存到 destroy 返回。wrapper 不隐藏底层错误，不通过 exception 表达正常失败。`Deadline` 保存 Linux `CLOCK_MONOTONIC` absolute deadline；SDK 的 `expired()` 直接读取同一 `CLOCK_MONOTONIC` 时间域比较，不依赖 Plugin Service，也不使用可能具有不同 epoch 表示的 `std::chrono::steady_clock::time_since_epoch()` 数值做 ABI 比较。
-
-**Role Factory 与 Instance 分离。**
-
-pre-instance 的配置校验与运行实例生命周期必须在 C++ API 中保持和 C ABI 相同的分离，不能为了写起来方便把所有方法塞进一个对象。Acquisition 形状固定为：
-
-```cpp
-namespace rodaq::plugin {
-
-class Acquisition {
-public:
-    virtual ~Acquisition() noexcept = default;
-
-    virtual Result<void> prepare(Deadline deadline) = 0;
-    virtual Result<void> start(Deadline deadline) = 0;
-    virtual Result<void> quiesce(Deadline deadline) = 0;
-};
-
-class AcquisitionFactory {
-public:
-    virtual ~AcquisitionFactory() noexcept = default;
-
-    virtual Result<void> validate_config(Config config) const = 0;
-    virtual Result<std::unique_ptr<Acquisition>> create(
-        Config config,
-        const AcquisitionInstanceConfig& instance_config,
-        Services services,
-        AcquisitionServices acquisition_services) const = 0;
-};
-
-}  // namespace rodaq::plugin
-```
-
-Storage 使用完全相同的分层。`write_batch()` 是一个例外：C ABI 允许“操作失败 + 有效写入进度”同时成立，因此不能用互斥 alternative 的 `Result<StorageBatchResult>` 表达，必须使用显式 outcome：
-
-```cpp
-struct StorageWriteOutcome {
-    Status status;
-    StorageBatchResult batch_result;
-};
-
-class Storage {
-public:
-    virtual ~Storage() noexcept = default;
-
-    virtual Result<void> prepare(Deadline deadline) = 0;
-    virtual Result<void> prepare_descriptor(
-        const StorageDescriptor& descriptor,
-        Deadline deadline) = 0;
-    virtual Result<void> open_segment(
-        const SegmentSpec& segment,
-        Deadline deadline) = 0;
-    virtual StorageWriteOutcome write_batch(
-        const StorageBatch& batch,
-        Deadline deadline) = 0;
-    virtual Result<SegmentSize> segment_size() = 0;
-    virtual Result<SegmentSealResult> seal_segment(Deadline deadline) = 0;
-    virtual Result<void> quiesce(Deadline deadline) = 0;
-};
-
-class StorageFactory {
-public:
-    virtual ~StorageFactory() noexcept = default;
-
-    virtual Result<void> validate_config(Config config) const = 0;
-    virtual Result<std::unique_ptr<Storage>> create(
-        Config config,
-        const StorageInstanceConfig& instance_config,
-        Services services) const = 0;
-};
-```
-
-上面的类型形状是 C++ 开发接口契约；Record、Descriptor、Batch、Instance Limits 的具体字段仍分别以 Acquisition/Storage 文档为权威。C++ 层不得增加 C ABI 中不存在的生命周期状态或弱化 deadline、late-return、quiescence、Core resource authority 与 ownership 语义。`StorageWriteOutcome.status` 一一映射 C ABI 函数返回码，`batch_result` 一一映射 `rodaq_storage_batch_result_t`；当 backend write 已开始时，即使 `status` 非 OK，`batch_result` 仍必须有效。`StorageBatch` 是 call-scoped non-owning view，`const&` 只避免复制 wrapper，不改变底层 records/payload 的借用期限。
-
-**自动 C ABI Adapter。**
-
-插件作者实现 Factory/Instance 后，只需要一个统一导出声明：
-
-```cpp
-#include <rodaq/plugin/export.hpp>
-
-RODAQ_EXPORT_PLUGIN(MyAcquisitionFactory)
-```
-
-`RODAQ_EXPORT_PLUGIN` 不导出 C++ class symbol；它只在插件 DSO 内实例化 SDK adapter，并生成唯一的：
-
-```text
-rodaq_plugin_get_descriptor
-```
-
-adapter 负责：
-
-- 构造 immutable C descriptor 与 Role operation table；
-- C `Config API` → C++ `Config`；
-- C per-call Config API + instance configuration + typed Plugin Services → C++ typed configuration/RAII wrapper；
-- 普通 `Result<T>` → C result/output struct；Storage `StorageWriteOutcome` → 函数 result code + `BatchResult` 双通道；
-- C++ exception containment；
-- `std::bad_alloc` → `ResourceExhausted`；
-- instance pointer 与 `std::unique_ptr` ownership 转换；
-- quiesce/destroy 的最终 owner 证明；
-- required output 清零、`struct_size`、enum/result validation。
-
-宏本身只负责声明导出入口和绑定 Factory 类型，不承载业务逻辑；所有转换实现由 SDK 统一提供，避免每个插件复制一套 C trampoline。V1 adapter **不保存 DSO-lifetime Factory singleton**：每次 `validate_config/create` trampoline 都在调用栈内构造一个短生命周期 Factory façade，调用一个 `const` 方法后立即销毁；`create()` 返回的运行状态只存在于新建的 Acquisition/Storage instance。Factory 必须可无参数构造，构造/析构 `noexcept`-equivalent、bounded、无 I/O、无线程、无业务资源、无跨调用 mutable state。这样 C++ authoring 模型与没有 factory handle/context 的 C ABI 完全一致，也不违反 DSO-global mutable state policy。
-
-`plugin_id`、role、plugin version、schema catalog、build identity 等 metadata 不在 C++ Factory 中重复手写。`rodaq_add_plugin()` 以同一组 CMake 参数生成 package manifest 和供 `export.hpp` 使用的 generated metadata，adapter 再据此构造 C descriptor；这样 manifest 与 runtime descriptor 只有一个构建期事实来源，避免插件作者在 CMake、JSON 和 C++ 三处维护相同身份信息。
-
-**C++ ABI 边界。**
-
-C++ authoring API 是**源码接口，不是跨 DSO ABI**。RoDAQ 不能 `dynamic_cast` 插件对象，不能接收 `std::unique_ptr<Acquisition>`，也不能调用插件类虚表；这些 C++ 对象只存在于插件 DSO 内，由 adapter 从稳定 C function table 调用。由此允许官方插件使用自然的 C++17 设计，同时不把 compiler、libstdc++、STL layout、RTTI 或 exception ABI 变成 RoDAQ 的二进制兼容承诺。
-
-SDK adapter 应尽量 header-only 或静态链接进插件 artifact，避免插件运行时再依赖一个带 C++ ABI 的 `librodaq_plugin_sdk.so`。若未来确有共享实现库，也只能暴露 C ABI 或作为与应用严格同版本部署、且不属于插件兼容承诺的内部依赖。 C++ Instance/Factory destructor 明确 `noexcept`；若实现违反该契约导致 `std::terminate()`，`catch (...)` 无法恢复，按进程级插件缺陷处理。adapter 的 exception containment 只覆盖正常 C++ 调用边界上可捕获的异常，不能宣称隔离 terminate/segfault/UB。
-
-**两条开发路径。**
-
-- 官方和普通第三方插件：优先使用 C++ Factory/Instance API + `RODAQ_EXPORT_PLUGIN`；
-- 需要其它语言绑定、极小运行时或自定义工具链的插件：可直接实现 C ABI，但必须通过同一 package/ABI conformance gate。
-
-两条路径最终生成完全相同的 Plugin Package、manifest、descriptor 和 Role Protocol，因此 RoDAQ 不区分插件是由 C 还是 C++ 实现。
-
-### 5.3 配置、Descriptor、Plugin Services 与实例
-
-**只读配置 ABI。**
-
-插件不直接接收 JSON library type，也不要求每个插件重复解析 JSON 文本。V1 固定使用 RoDAQ 提供的只读 Config API：
+Plugin Configuration 属于 Plugin 私有语义。Framework 只负责把有界的 UTF-8 JSON 文本传给 Plugin，不解析配置字段，也不执行 Plugin-specific Schema validation。
 
 ```c
-typedef const struct rodaq_config_node* rodaq_config_node_t;
-typedef uint32_t rodaq_config_type_t;
-
-enum {
-    RODAQ_CONFIG_NULL = 0,
-    RODAQ_CONFIG_OBJECT = 1,
-    RODAQ_CONFIG_ARRAY = 2,
-    RODAQ_CONFIG_BOOL = 3,
-    RODAQ_CONFIG_I64 = 4,
-    RODAQ_CONFIG_U64 = 5,
-    RODAQ_CONFIG_F64 = 6,
-    RODAQ_CONFIG_STRING = 7
-};
-
-typedef struct rodaq_config_api {
-    rodaq_abi_header_t header;
-
-    rodaq_result_code_t (*get_type)(
-        rodaq_config_node_t node,
-        rodaq_config_type_t* type);
-
-    rodaq_result_code_t (*object_get)(
-        rodaq_config_node_t object,
-        rodaq_string_t key,
-        uint8_t* found,
-        rodaq_config_node_t* member);
-
-    rodaq_result_code_t (*array_size)(
-        rodaq_config_node_t array,
-        uint32_t* element_count);
-
-    rodaq_result_code_t (*array_get)(
-        rodaq_config_node_t array,
-        uint32_t index,
-        rodaq_config_node_t* element);
-
-    rodaq_result_code_t (*get_bool)(
-        rodaq_config_node_t node,
-        uint8_t* value);
-
-    rodaq_result_code_t (*get_i64)(
-        rodaq_config_node_t node,
-        int64_t* value);
-
-    rodaq_result_code_t (*get_u64)(
-        rodaq_config_node_t node,
-        uint64_t* value);
-
-    rodaq_result_code_t (*get_f64)(
-        rodaq_config_node_t node,
-        double* value);
-
-    rodaq_result_code_t (*get_string)(
-        rodaq_config_node_t node,
-        rodaq_string_t* value);
-} rodaq_config_api_t;
+typedef struct rodaq_config {
+    rodaq_struct_header_t header;
+    rodaq_string_t json;
+} rodaq_config_t;
 ```
 
-Config API 的行为也属于 ABI：
+规则：
 
-- `rodaq_config_node_t` 只在**当前接收该 config node 的 ABI 调用期间**有效，包括 validate/create；plugin 不得把 node/string 交给后台线程或跨调用保存；
-- Config API 只读、bounded，不执行网络/文件 I/O，也不反调插件；同一 ABI 调用内可重复读取；
-- `object_get()` 在 key 不存在时返回 `OK + found=0 + member=NULL`，存在时返回 `OK + found=1`；非 object、非法 key 或空结果指针返回 InvalidArgument；
-- `array_get()` 越界返回 InvalidArgument 并把 `element` 置空；`array_size()` 返回 `element_count`，且配置边界保证它可表示为 `uint32_t`；
-- `get_bool()` 的 `value` 只允许 `0/1`；所有 `get_*` 类型不匹配返回 InvalidArgument，失败时对应结果值不可使用；
-- `get_string()` 返回的 string value 同样只在当前 ABI 调用期间 borrowed；
-- schema validation 已由 RoDAQ 执行，plugin 再做无副作用 semantic validation。
+- `json = {nullptr, 0}` 表示未提供 Plugin-owned 配置；
+- 非空内容按 Public String 规则必须是 UTF-8；
+- Framework 只执行通用大小限制和基础指针/长度合法性检查；
+- `json.size` 必须同时满足 `json.size &lt;= UINT32_MAX` 与 Runtime 的 `max_config_size`；
+- JSON syntax、字段结构、跨字段关系、环境依赖和业务语义由 Plugin `configure()` 自己解析与校验；
+- 配置无效时 Plugin 返回 `InvalidArgument`，message 用于给出插件自己的诊断；
+- `rodaq_config_t` 和 JSON backing 只在当前 `configure()` 调用内有效；
+- Foundation 不执行隐式配置迁移或配置格式转换。
 
-`rodaq_config_api_t::header.version_major/minor` 使用已协商的 Common Plugin ABI version，V1 required prefix 中所有 getter 都必须非 NULL；头文件定义 `RODAQ_CONFIG_API_BASE_SIZE`。Config API 本身不携带 instance state，也不允许插件保存其 node/string 到当前 ABI 调用之外。Role `create()` 与 validate 一样显式接收 `config_api + config`，而不是从 `PluginServices` 隐式取得配置访问能力。
+Framework V1 不定义通用的结构化配置错误、配置 Schema validator 或配置表单元数据模型。需要字段级结构化错误或 UI 表单描述时，由具体 Plugin / 业务 Interface / Application 配置层定义，而不是进入通用 Plugin Foundation。
 
-这样可以保持严格 JSON 作为外部格式，同时不把 JSON 库和 parser 复制进每个插件 ABI。
-
-**Plugin Descriptor 结构。**
-
-V1 descriptor required prefix 固定为：
+## 3.6 Service Registry ABI（Application 服务注册表）
 
 ```c
-struct rodaq_plugin_descriptor {
-    rodaq_abi_header_t header;              /* Common Plugin ABI */
+typedef struct rodaq_service_registry_context
+    rodaq_service_registry_context_t;
+
+typedef struct rodaq_service_registry_vtable {
+    rodaq_struct_header_t header;
+
+    rodaq_status_code_t (*query)(
+        rodaq_service_registry_context_t* context,
+        const rodaq_interface_query_t* query,
+        rodaq_interface_reference_t* interface,
+        rodaq_error_t* error);
+
+    rodaq_status_code_t (*enter_call)(
+        rodaq_service_registry_context_t* context,
+        rodaq_error_t* error);
+
+    void (*leave_call)(rodaq_service_registry_context_t* context);
+} rodaq_service_registry_vtable_t;
+
+typedef struct rodaq_service_registry_reference {
+    rodaq_service_registry_context_t* context;
+    const rodaq_service_registry_vtable_t* vtable;
+} rodaq_service_registry_reference_t;
+```
+
+`enter_call/leave_call` 是 append-only C ABI extension。Plugin 必须通过
+`header.struct_size` 判断 slot 是否可读；新 slot 用于把 Plugin-owned
+asynchronous callback 发起的 Application Service 调用纳入 managed-call
+self-wait 检测。旧长度 vtable 仍可被安全读取，但无法获得该检测能力。
+
+ServiceRegistry 在传给 Plugin 前已经冻结：
+
+- concurrent read query 必须 thread-safe；
+- 返回的 raw Service Interface reference 是 borrowed；
+- Plugin 不得修改 Registry；
+- Provider object/context 必须覆盖 Plugin 合法调用期；
+- Provider executable code 在 V1 中必须 process-resident。
+
+`query()`：
+
+| 项目 | 规则 |
+| --- | --- |
+| context | 必须属于有效 immutable Registry |
+| query | 满足 §3.3 Interface ID/version 规则 |
+| interface | 调用前 default-invalid；non-OK 后保持 invalid |
+| error | 可以为空，仅用于诊断 |
+| ID 不存在 | NotFound |
+| 版本无交集 | Unavailable |
+| blocking | 有界内存查找，不执行外部 I/O |
+
+## 3.7 Plugin Descriptor
+
+```c
+typedef struct rodaq_plugin_descriptor {
+    rodaq_struct_header_t header;
 
     rodaq_string_t plugin_id;
-    rodaq_string_t plugin_version;          /* SemVer text */
-    rodaq_string_t build_id;
-    uint32_t role;
-    uint32_t reserved0;
-
-    uint16_t role_protocol_major;
-    uint16_t role_protocol_minor;
-    uint32_t role_operations_size;
-    const void* role_operations;
-
-    rodaq_digest256_t config_schema_catalog_digest;
-
-};
+    rodaq_string_t plugin_name;
+    rodaq_string_t plugin_version;
+} rodaq_plugin_descriptor_t;
 ```
 
-Descriptor 和 Role operation table 都是 library-lifetime immutable。`role_operations` 是公共 descriptor 中**刻意保留的 discriminated opaque pointer**：唯一判别字段是 `role`，Loader 在注册阶段立即把它转换为对应 `rodaq_acquisition_operations_t` 或 `rodaq_storage_operations_t` 并完成 version/size/function validation，业务代码不得继续持有未经类型化的 `void*`。这里的类型擦除用于避免 `plugin.h` 反向依赖所有 Role headers，与被禁止的 generic `role_services/context` 不同。RoDAQ 同时检查 role protocol major/minor、`role_operations_size` 与 table 自身 header，二者矛盾视为 Contract Violation。配置 schema 内容来自已在 `dlopen` 前验证的 package schema catalog；descriptor 只携带 catalog digest 用于 cross-check，避免在 DSO 与 sidecar 两处维护两份可漂移 schema bytes。
+Descriptor：
 
-**Plugin Services。**
+- static / Plugin Library lifetime；
+- immutable；
+- 不包含可调用 Operation；
+- 不包含 Plugin-private configuration metadata；
+- `plugin_id` 是稳定机器标识；
+- `plugin_name` 是面向人的名称；
+- `plugin_version` 是 Plugin 发行版本；
+- Descriptor 不重复保存 Plugin ABI Minor requirement；
+- Manifest 与 Descriptor 交叉验证 Plugin ID / Name / Version；
+- Plugin ABI 兼容性以 `rodaq_plugin_abi_version()` 为唯一运行时事实源。
 
-RoDAQ 向插件注入的公共 runtime service 只保留 Logging。公共定义位于 `abi/services.h`；service table 使用 typed opaque handle，插件只能把 handle 原样传回对应函数，不能解引用或转换。
+Loader 在调用任何 Plugin-provided lifecycle function 前必须完成 Descriptor ingress validation：
 
-```c
-typedef uint32_t rodaq_plugin_log_level_t;
-
-enum {
-    RODAQ_PLUGIN_LOG_TRACE = 0,
-    RODAQ_PLUGIN_LOG_DEBUG = 1,
-    RODAQ_PLUGIN_LOG_INFO = 2,
-    RODAQ_PLUGIN_LOG_WARNING = 3,
-    RODAQ_PLUGIN_LOG_ERROR = 4,
-    RODAQ_PLUGIN_LOG_CRITICAL = 5
-};
-
-typedef struct rodaq_plugin_log_source {
-    rodaq_string_t file;
-    rodaq_string_t function;
-    int32_t line;
-    uint32_t reserved0;
-} rodaq_plugin_log_source_t;
-
-typedef struct rodaq_logging_services_handle* rodaq_logging_services_handle_t;
-
-typedef struct rodaq_logging_services {
-    rodaq_abi_header_t header;
-    rodaq_logging_services_handle_t handle;
-
-    uint8_t (*enabled)(
-        rodaq_logging_services_handle_t handle,
-        rodaq_plugin_log_level_t level);
-
-    void (*write)(
-        rodaq_logging_services_handle_t handle,
-        rodaq_plugin_log_level_t level,
-        const rodaq_plugin_log_source_t* source,
-        rodaq_string_t message);
-} rodaq_logging_services_t;
-
-typedef struct rodaq_plugin_services {
-    rodaq_abi_header_t header;
-    const rodaq_logging_services_t* logging;
-} rodaq_plugin_services_t;
-```
-
-`rodaq_plugin_services_t` 是不可变 runtime service directory，不携带 Config API 或 Core 控制对象。Common ABI `1.0` 的 Logging pointer、Logging handle 与 base-prefix function pointers 均 required、不得为 NULL；头文件提供 `RODAQ_PLUGIN_SERVICES_BASE_SIZE` 与 `RODAQ_LOGGING_SERVICES_BASE_SIZE`。未来确有新的跨角色公共 service 时，必须先证明其无法由 Result/ErrorBuffer、Logging 或 role-specific interface 表达，再通过 Common ABI minor tail 增加 typed table；不得预留空 service。
-
-Logging 是插件向 RoDAQ 提供运行记录的唯一通用信息通道，面向 operator/developer，允许按预算 drop，不参与控制逻辑。正式调用结果仍必须通过 result code 与 ErrorBuffer 表达；不得要求 RoDAQ 解析日志文本判断调用成功、驱动状态或恢复动作。
-
-Plugin logging severity 数值与现有 `rodaq::logging::Level` 的 Trace/Debug/Info/Warning/Error/Critical 一一映射，但使用 `RODAQ_PLUGIN_LOG_*` 常量避免与项目现有 `RODAQ_LOG_*` 宏族重名。V1 不增加 per-call category/logger-name：RoDAQ 在创建 Logging Services 时已经绑定 `plugin_id/role` 以及 Core 自己的 Task/Pipeline/Instance 上下文。`rodaq_plugin_log_source_t` 对应现有 `rodaq::logging::SourceLocation`；`file/function` 是当前调用 borrowed UTF-8 view，可为空，`line == 0` 表示未知，负值非法。由于 `rodaq_string_t` 不要求 NUL terminator，而现有 `SourceLocation` 使用 C string，Plugin adapter 必须在调用 `rodaq::logging::write()` 前把 file/function 复制到固定上限、NUL-terminated 的栈/inline buffer；不允许保存插件传入 view，也不允许为每条日志做无界 heap allocation。随后直接映射为 `rodaq::logging::should_log(level)` 与 `rodaq::logging::write(level, source, message)`。
-
-公共 ABI 固定 `log message <= 4096 bytes`，有效 UTF-8 且不含嵌入 NUL；source file/function 各自最大 1024 bytes。C++ authoring wrapper 在调用前执行同样检查。超限或 malformed 的 best-effort log 由 RoDAQ 丢弃并增加有界 contract counter。插件不得创建独立的进程级 logging backend、sink、rotation、logging thread pool，也不得修改 RoDAQ logging backend。
-
-Logging `enabled()/write()` 必须 thread-safe、bounded，允许按预算 drop，且不得反调插件。`rodaq_plugin_services_t`、Logging table/handle 以及 role-specific service table 在整个 `create()` 调用期间都有效；create 失败时插件不得保存，create 成功后可保存到该 role instance 的 `destroy()` 返回。Config API 仍是 per-call protocol，配置 node/string 必须在 create 返回前复制。
-
-Role-specific callback 不放入公共 `PluginServices`。Acquisition 的 Record/Descriptor/Source callback 由 `rodaq_acquisition_services_t` 明确承载；Storage 当前没有必须的反向 callback，因此不创建空的 `StorageServices` 占位类型。V1 不向插件提供 Clock、filesystem、Task controller、Pipeline private object、global registry 或 mutable system container。
-
-**Role Instance。**
-
-Common Plugin ABI 不定义一个可在角色之间互换的 `rodaq_plugin_instance_t`。每个 Role Protocol 使用自己的 opaque instance 类型，例如：
-
-```c
-typedef struct rodaq_acquisition_instance* rodaq_acquisition_instance_t;
-typedef struct rodaq_storage_instance* rodaq_storage_instance_t;
-```
-
-这样 Acquisition instance 不能误传给 Storage operation，role ownership 在 C ABI 层也保持强类型。实例布局完全私有于插件，RoDAQ 只保存 opaque pointer。create 的公共语义为：
-
-```text
-validated config + per-call Config API
-+ Core-resolved instance configuration / effective limits
-+ Plugin Services / role services
-→ role-specific instance
-```
-
-`create()` 成功是 instance ownership 从插件局部准备态交给 RoDAQ 的唯一边界；成功时 `instance` 必须非空，失败时必须保持空且插件自行清理尚未发布的 partial state。`create()` 只建立本地 role instance 和复制普通配置/effective limits，不执行协议连接、订阅、打开业务 Segment 或其它应由 `prepare()` 承担的外部开放。
-
-destroy：
-
-- 只允许在公共 quiescence 已证明完成后；
-- 不返回业务 flush 成功；
-- 不执行首次外部 shutdown/flush/seal/join；
-- 不调用 RoDAQ callback；
-- 必须 noexcept-equivalent 且有界完成；
-- `destroy()` 是 `void` 且没有可靠错误通道，因此所有可失败清理必须在 `quiesce()` 完成并报告；destroy 实现本身不得抛异常。SDK C++ wrapper 在最外层仍防御性 `catch (...)` 以阻止异常越过 C ABI，但该情况属于插件实现缺陷并由 conformance 判失败，不能依赖 destroy 阶段再上报业务诊断。
-
-### 5.4 Role 扩展性与后端差异
-
-Plugin Framework 不使用 Resource Plan、ConfiguredCapability 或通用 Extension Query 来表达后端差异。V1 扩展规则固定为：
-
-```text
-backend-specific configuration
-        ↓
-Configuration Schema + validate_config
-        ↓
-Role baseline operations
-        ↓
-Canonical Descriptor / Record / Batch / Segment facts
-        ↓
-if Core still lacks a required semantic:
-Role Protocol minor + typed tail
-```
-
-**Acquisition 示例。** ROS 2 backend 通过 node/domain、QoS、Topic/type discovery 产生 `ros2` Descriptor；MQTT backend 通过 Broker/Topic/QoS/session 产生 `generic` Descriptor，并用 `Record.delivery_flags` 保存 native retained fact。两者的 callback/connection/discovery 实现可以完全不同，但提交给 Core 的必须仍是相同的 Stream/Descriptor/Source/AcquisitionEvent/Record/Payload 事实，不能把 `rclcpp::*`、MQTT client object 或任意 backend context 放进公共 ABI。Fast DDS/direct DDS 是未来扩展，不是 V1 required backend。
-
-**Storage 示例。** MCAP backend 可以用一个主文件、Chunk/Summary/Footer 和压缩选项；SQLite3 backend 可以使用 DB + metadata、journal/WAL/checkpoint，并在 seal 时形成多文件清单。两者都只能消费同一 Canonical StorageRecord/Descriptor，并通过 `SegmentSealResult` 交回最终文件集合。文件系统 publish、Volume watermarks、fsync/rename/Artifact Ledger 仍由 Core 负责，不能因为 SQLite3 需要多个文件就把 Volume authority 下沉给 Storage Plugin。
-
-**何时允许 Role tail。** 新字段/operation 必须同时满足：Core 必须理解其语义；现有 baseline 无法无歧义表达；至少有一个真实 backend 和 Core consumer；ownership、threading、failure、minor compatibility 已冻结。仅仅因为某个 backend 有不同内部 API、线程模型、缓存或配置项，不构成新增 ABI 的理由。
-
-**未来 optional protocol。** 如果未来出现真正独立于 baseline Role、生命周期和版本也应独立的协议，再单独设计 typed optional protocol。它必须有明确语义名和具体消费者；不得恢复成 string-id + `void*` 的万能 Extension Registry。
-
-pre-instance `validate_config()` 和 `create()` 虽不携带显式 Deadline，仍受 Core-side bounded-work watchdog 监管：watchdog 先到而函数未返回时仍是 `TimedOutButInFlight`，当前输入借用、DSO、execution slot 和 create partial state 在实际迟返或进程终止前都不能提前释放/重试。`validate_config()` 不得联网、打开设备或探测 Topic；这些需要真实环境的检查必须留到 `prepare()`。
-
-### 5.5 Loader、异常边界与线程安全规则
-
-**装载器内部组成。**
-
-V1 loader 逻辑对象固定为：
-
-这些对象位于 `rodaq::plugin`，类型名不再重复 `Plugin` 前缀：
-
-| 对象 | 职责 |
+| 字段 | V1 验证规则 |
 | --- | --- |
-| `Manifest` | 严格解析/校验 `manifest.json`、schema catalog、artifact/dependency facts，不触碰 DSO |
-| `Package` | canonical package root、artifact/schema 路径、owner/permission/digest 与 target facts |
-| `Compatibility` | Deployment allow-list、role protocol 与发布支持矩阵 |
-| `SharedLibrary` | `dlopen/dlsym/dladdr/dlclose` 的窄 RAII；不解释业务 capability |
-| `ContractValidator` | bootstrap/descriptor/table/manifest cross-check、symbol provenance、required prefix/version 验证 |
-| `Catalog` | 保存唯一且已完整验证的 `plugin_id → CatalogEntry` immutable entry |
-| `InstanceFactory` | config semantic validation；在 Core 已完成 resource/volume admission 后创建 role instance |
-| `AcquisitionHandle` / `StorageHandle` | C ABI 到 Core `Status/Result` 的窄 role wrapper 与调用 instrumentation |
+| `plugin_id` | 1～255 bytes；lowercase ASCII `[a-z0-9._-]`；推荐 reverse-domain；不得包含 embedded NUL |
+| `plugin_name` | 1～255 bytes；有效 UTF-8；不得包含 embedded NUL |
+| `plugin_version` | 1～128 bytes；ASCII；必须是完整、严格合法的 Semantic Versioning 2.0.0 字符串；不得包含 embedded NUL |
 
-`Catalog` 不扫描文件系统、不创建 Task；`SharedLibrary` 不解析 manifest/config；`InstanceFactory` 不负责 DSO discovery。发现同 `plugin_id` 的 package 冲突必须在 Catalog 注册前解决。
+任何字段违反通用 String contract、长度、字符集或 SemVer 格式时，Library 在 publish 前被拒绝加载。Descriptor 与 Manifest 的 ID / Name / Version 必须字节级一致。
 
-**Linux Loader Policy。**
+## 3.8 Foundation Instance ABI
 
-V1 固定 `RTLD_NOW | RTLD_LOCAL`，不使用 `RTLD_GLOBAL/RTLD_DEEPBIND/dlmopen`。artifact 使用 package admission 得到的 canonical absolute path；Task 不提供路径。`dlsym` 后必须验证 bootstrap symbol provenance；所有失败都记录 bounded loader failure context。通过注册的 DSO 不在进程运行期间 `dlclose()`；只允许在 descriptor 校验失败且从未创建 instance、从未发布 function/table pointer、没有 constructor 留下受管资源的加载失败路径关闭句柄。若 constructor 已导致不可证明的进程级副作用，应按 contract violation/进程恢复处理，而不是假定 `dlclose()` 能逆转。
+Foundation 只保留四个动作：
 
-**符号与 ELF Hardening。**
+```
+configure
+query
+shutdown
+destroy
+```
 
-插件编译 `hidden` by default，主 DSO RoDAQ export allow-list 只包含当前 bootstrap symbol。`rodaq_add_plugin()` 生成/使用 linker version script（或等价机制），CI/post-build gate 通过 `readelf/nm` 检查 exported dynamic symbol、RUNPATH/NEEDED、target architecture 和意外 C++ symbol。Bootstrap symbol provenance 运行期用 `dladdr()` 等价验证；不把依赖库偶然暴露的同名 symbol 当作插件入口。
+ServiceRegistry 与 Plugin config 在 `configure()` 时一起传入。
 
-**Exception Boundary。**
+Foundation ABI 的 nullability 固定如下：
 
-每个 C ABI entry 都采用统一 wrapper：
+| Function | 参数 | Nullability / 默认值 |
+| --- | --- | --- |
+| configure | context | non-null |
+| configure | services | non-null；没有 Service 时传入 empty frozen Registry reference |
+| configure | config | non-null；没有 Plugin config 时使用 `config->json = {nullptr, 0}` |
+| configure | error | nullable |
+| query | context / query / interface | non-null |
+| query | error | nullable |
+| shutdown | context | non-null |
+| shutdown | error | nullable |
+| destroy | context | non-null |
+
+`rodaq_plugin_instance_t` 的唯一 default-invalid 表示为 `{nullptr, nullptr}`。`create()` 调用前由 Runtime 写入该值；任何 non-OK 正常失败都必须保持该值。
+
+```c
+typedef struct rodaq_plugin_context
+    rodaq_plugin_context_t;
+
+typedef struct rodaq_plugin_instance {
+    rodaq_plugin_context_t* context;
+    const struct rodaq_plugin_instance_vtable* vtable;
+} rodaq_plugin_instance_t;
+
+typedef struct rodaq_plugin_instance_vtable {
+    rodaq_struct_header_t header;
+
+    rodaq_status_code_t (*configure)(
+        rodaq_plugin_context_t* context,
+        const rodaq_service_registry_reference_t* services,
+        const rodaq_config_t* config,
+        rodaq_error_t* error);
+
+    rodaq_status_code_t (*query)(
+        rodaq_plugin_context_t* context,
+        const rodaq_interface_query_t* query,
+        rodaq_interface_reference_t* interface,
+        rodaq_error_t* error);
+
+    rodaq_status_code_t (*shutdown)(
+        rodaq_plugin_context_t* context,
+        rodaq_deadline_t deadline,
+        rodaq_error_t* error);
+
+    void (*destroy)(
+        rodaq_plugin_context_t* context);
+} rodaq_plugin_instance_vtable_t;
+```
+
+### configure
+
+`configure()` 同时完成：
+
+- 接收已经冻结的 Application ServiceRegistry；
+- 接收 Plugin-owned JSON configuration；
+- 调用 Backend `PluginBase::configure(PluginSetup&)`；
+- 构造并冻结 Plugin-side Operation Registry。
+
+成功后，Runtime 才把 Plugin Instance 发布为 Open。
+
+如果 configure 失败：
+
+- 不发布半初始化 Operation Registry；
+- Runtime 调用 `shutdown()` 清理可能已经建立的部分资源；
+- shutdown 成功后调用 destroy；
+- Application 只收到原始 configure failure，不得到半初始化 PluginInstance。
+
+### query
+
+`query()` 只允许对已经成功配置的 Instance 调用。
+
+- output 进入调用前 default-invalid；
+- ID 不存在 → NotFound；
+- Query 非法 → InvalidArgument；
+- 版本无交集 → Unavailable；
+- 必须是有界只读 lookup，不执行长期 I/O 或业务资源创建。
+
+Raw InterfaceReference 是 borrowed；C++ `OperationHandle` 可以跨 query 调用保存，但每次真正 Operation 调用仍重新进入 Runtime call admission。
+
+### shutdown
+
+`shutdown()` 的含义是：
+
+> Plugin 停止产生新的 Instance-dependent 后台工作，停止并收敛已有 worker/callback/task，使该 Instance 可以安全 destroy。
+>
+
+它必须对任意已经成功 create、但可能只完成部分 configure 的实例安全。
+
+`shutdown() == Ok` 必须证明：
+
+- Plugin-owned thread/task/executor/callback/source 已终止，或已经完成与 Instance 无关的安全 ownership handoff；
+- 之后不会再产生新的 Instance-dependent asynchronous work；
+- borrowed Service Reference 不再被 Plugin-owned work 使用，除非对应 Service Interface 明确定义独立 ownership handoff。
+
+`shutdown()` 不表示 Acquisition Stop 成功，也不表示 Storage Finalize 成功。
+
+### destroy
+
+`destroy()`：
+
+- 只在 `shutdown() == Ok` 且 Runtime 的 active ABI call 已全部返回后调用；
+- 最多一次；
+- no-status；
+- 不得与其他 Instance ABI call 并发；
+- Plugin destructor 必须 no-throw；
+- 返回后 raw context 不再可访问。
+
+### Foundation 函数规则
+
+| Function | 前置条件 | 失败/输出 | 阻塞与并发 |
+| --- | --- | --- | --- |
+| configure | context、services、config 有效；Instance 尚未发布 | failure 不发布部分 Operation Registry | control-plane；允许执行 Backend 初始化 |
+| query | Instance 已 Open；Runtime 已取得统一 CallGuard | output default-invalid；按 ID/version 返回结果 | bounded read-only lookup |
+| shutdown | Instance 正在关闭或初始化失败清理 | non-OK 表示安全停止未证明 | 可以阻塞；Runtime 不强制取消 |
+| destroy | shutdown 成功且 active_call_count == 0 | no-status；最多一次 | 不与其他 ABI call 并发 |
+
+## 3.9 Plugin ABI 引导与入口
+
+Bootstrap 不拥有独立版本域。
+
+```c
+#define RODAQ_PLUGIN_ABI_ENCODE(major, minor)     ((((uint32_t)(major)) << 16u) | ((uint32_t)(minor) & 0xffffu))
+
+#define RODAQ_PLUGIN_ABI_MAJOR(value)     ((uint16_t)(((uint32_t)(value)) >> 16u))
+
+#define RODAQ_PLUGIN_ABI_MINOR(value)     ((uint16_t)((uint32_t)(value) & 0xffffu))
+
+RODAQ_PLUGIN_EXPORT_SYMBOL uint32_t rodaq_plugin_abi_version(void);
+
+RODAQ_PLUGIN_EXPORT_SYMBOL
+const rodaq_plugin_entry_t* rodaq_plugin_get_entry(void);
+```
+
+兼容判定：
+
+```
+runtime.major == plugin_abi_version.major
+AND runtime.minor >= plugin_abi_version.minor
+```
+
+其中：
+
+- `rodaq_plugin_abi_version()` 返回 Plugin 构建并依赖的 Plugin ABI Major/Minor；
+- Plugin ABI Minor 同时表示该 Plugin 所需的最低 Runtime Minor；
+- Manifest 镜像同一个 Plugin ABI Major/Minor，只用于 `dlopen()` 前预筛选；
+- DSO 加载后必须将 Manifest ABI 与 `rodaq_plugin_abi_version()` 交叉校验；
+- Plugin ABI Minor 通过 append-only struct/vtable prefix 演进。
+
+Entry：
+
+```c
+typedef struct rodaq_plugin_entry {
+    rodaq_struct_header_t header;
+
+    const rodaq_plugin_descriptor_t* (*descriptor)(void);
+
+    rodaq_status_code_t (*create)(
+        rodaq_plugin_instance_t* instance,
+        rodaq_error_t* error);
+} rodaq_plugin_entry_t;
+```
+
+加载验证：
+
+```
+dlopen(RTLD_NOW | RTLD_LOCAL)
+→ resolve Plugin ABI version
+→ validate ABI Major
+→ resolve Entry
+→ validate Entry required prefix
+→ validate Descriptor
+→ Manifest / Descriptor cross-check
+→ publish PluginLibraryState
+```
+
+Create：
+
+- 成功后 Instance context/vtable 必须完整有效；
+- 失败后 output 必须保持 default-invalid；
+- create 不读取 Service/config，不启动长期业务 worker。
+
+如果 create 返回异常结果：
+
+| 返回结果 | Runtime 处理 |
+| --- | --- |
+| OK + valid Instance | 进入后续 configure |
+| non-OK + default-invalid | 正常失败 |
+| OK + malformed | Plugin ABI violation → PluginLibraryState.phase = Faulted |
+| non-OK + non-default | Plugin ABI violation → PluginLibraryState.phase = Faulted |
+
+ABI violation 时：
+
+- 不调用未经验证的 function pointer；
+- 不尝试猜测 destroy；
+- 禁止该 Library 后续 create；
+- 记录 critical diagnostic；
+- `PluginManagerState.restart_required = true`；
+- 已加载 DSO 继续常驻到进程退出。
+
+## 3.10 ABI 兼容演进规则
+
+### 完全冻结类型
+
+适用于 small value、array element、固定视图。发布后 layout 不变。所有 `struct_size` / `vtable_size` 字段的单位统一为 bytes。
+
+### 可尾部扩展类型
+
+适用于 vtable、Descriptor、request/response struct。
+
+规则：
+
+- 只允许尾部追加；
+- required prefix 明确；
+- 旧字段顺序、类型和语义不变；
+- 同一 Plugin ABI Major 下，既有函数的成功、失败、ownership、blocking、threading、shutdown 语义必须保持向后兼容；
+- 不使用 `struct_size == sizeof(current)` 判断兼容；
+- array element 不通过尾部追加改变 stride。
+
+Provider-returned const struct：
+
+```
+readable = min(provider.struct_size, consumer_known_size)
+```
+
+Caller-provided output struct：
+
+- Caller 先写自己的 `struct_size`；
+- Provider 最多写双方都知道的 size；
+- 不得按新版本 `sizeof` 覆盖旧 Caller buffer。
+
+## 3.11 异常与 Destroy 边界
+
+除 destructor `noexcept` 违约外，Plugin SDK trampoline 必须阻止 C++ exception 越过 C ABI。
+
+Plugin destructor 必须 no-throw。若 `noexcept` 析构链仍抛异常，语言语义可能触发 `std::terminate()`；Framework 不承诺进程内恢复。
+
+该风险通过：
+
+- 编码规范；
+- 静态检查；
+- 隔离子进程故障测试；
+
+降低，而不是通过更复杂的 Runtime recovery 对象掩盖。
+
+## 3.12 Callback 与延迟工作所有权
+
+任何 callback/deleter 如果可能在当前 ABI Call 返回后继续执行，都必须满足：
+
+```
+Callable Safe
+⇒ Code Alive
+∧ Context Alive
+∧ Backing Alive
+```
+
+V1 Plugin DSO 成功加载后保持常驻，因此 Plugin code mapping 在进程退出前有效；这不自动保证 callback context 或 backing 有效。
+
+具体 Interface 必须定义：
+
+- callback/deleter descriptor；
+- callback 线程与并发语义；
+- drain / stop；
+- context/backing ownership；
+- 如果工作需要在 Plugin Instance destroy 后继续，如何在 `shutdown()` 返回 Ok 前完成与 Instance 无关的 ownership handoff。
+
+普通 Service `Reference` 是 borrowed；默认不得被 shutdown 之后仍继续运行的 Plugin work 使用。只有对应 Service Interface 明确定义独立 ownership handoff 时才允许例外。
+
+Framework 不在 Stable C ABI 中暴露 `shared_ptr`、通用 retain/release RPC 或动态代码生命周期 token。
+
+## 3.13 Interface 规范模板
+
+每一个 Operation / Service Interface 必须说明：
+
+| 类别 | 必须定义 |
+| --- | --- |
+| Identity | Interface ID、Major/Minor |
+| Vtable | required prefix、可选 tail、Provider version |
+| Input / Output | nullability、size、borrowed/owned、失败后 output 状态 |
+| Threading | concurrent / reentrant / affinity |
+| Blocking | 是否阻塞、deadline、迟返 |
+| Lifecycle | 哪些 Plugin Instance 状态允许 query/call |
+| Callback | thread、drain、ownership handoff |
+| Ownership | context、buffer、backing、deleter |
+| Error | C status / C++ Result、partial result、retry |
+| Readiness | absent 与 temporarily unavailable 的区别 |
+| Performance | allocation、lock、scheduling 约束 |
+
+## 3.14 Plugin ABI 验证矩阵
+
+Runtime 按阶段验证：
+
+| 对象 | 兼容域 | 必须验证 | 失败处理 |
+| --- | --- | --- | --- |
+| Bootstrap symbols | Plugin ABI | version symbol + Entry getter | 拒绝加载 |
+| Plugin Entry | Plugin ABI | struct size、descriptor、create | 拒绝加载 |
+| Plugin Descriptor | Plugin metadata | ID、Name、Plugin Version | 拒绝加载 |
+| Foundation VTable | Plugin ABI | configure、query、shutdown、destroy | Instance 不发布 |
+| Typed Operation VTable | Interface Version | Interface-specific required prefix | Query 失败 |
+| Service Registry VTable | Plugin ABI / Interface | query slot | configure 失败 |
+
+Plugin ABI metadata cross-check：
+
+```
+manifest.plugin.abi.major == plugin_abi_version().major
+manifest.plugin.abi.minor == plugin_abi_version().minor
+runtime.plugin_abi.major == plugin_abi_version().major
+runtime.plugin_abi.minor >= plugin_abi_version().minor
+```
+
+### create() 后验证
+
+`create()` 返回 OK 后，在 configure 之前必须验证：
+
+- instance context 非空；
+- Foundation vtable 非空；
+- `struct_size` 覆盖 required prefix；
+- configure / query / shutdown / destroy required slot 非空。
+
+create 结果异常时：
+
+```
+do not call unvalidated function pointers
+→ mark PluginLibraryState Faulted
+→ reject further create_instance()
+→ emit critical diagnostic
+→ PluginManagerState.restart_required = true
+```
+
+未知 raw context 不解引用、不尝试 destroy；Library 进入 Faulted，最终由进程退出回收地址空间。
+
+# 4. C++17 Plugin SDK 详细设计
+
+本章定义插件开发者实际使用的 C++17 SDK。SDK 只封装第 3 章的稳定 C ABI，不增加第二套生命周期模型。
+
+## 4.1 对外 SDK 接口与内部链接模型
+
+公开构建入口只有：
+
+| 使用者 | 稳定入口 |
+| --- | --- |
+| 插件开发者 | `rodaq_register_plugin()` |
+| 应用开发者 | `rodaq::plugin` |
+| 纯 C Plugin / Interface | installed Stable C ABI headers |
+| 业务 Interface 使用者 | 对应 Interface SDK，例如 `rodaq::acquisition` |
+
+普通插件项目不选择或链接 Framework 内部 authoring/runtime target。
+
+```
+add_library(my_plugin SHARED ...)
+        ↓
+rodaq_register_plugin(my_plugin ...)
+        ↓
+mark existing target as RoDAQ Plugin
+→ inject public authoring support
+→ generate Descriptor / Manifest / ABI entry
+→ apply visibility / install / package rules
+```
+
+`rodaq_register_plugin()` 只注册已经存在的 CMake target，不替代 `add_library()`，也不接受 `SOURCES`。这样 Target 创建、Target 自身编译配置与 RoDAQ Plugin 注册保持职责分离。
+
+Framework 内部 target 名称和拆分属于实现细节，可以在不影响第三方工程的情况下改变。
+
+## 4.2 PluginBase 与 PluginSetup
+
+插件开发者只实现两个生命周期方法：
 
 ```cpp
-try {
-    return implementation_call(...);
-} catch (const std::bad_alloc&) {
-    return RODAQ_RESULT_RESOURCE_EXHAUSTED;
-} catch (const std::exception& e) {
-    write_bounded_error_detail(e.what());
-    return RODAQ_RESULT_INTERNAL;
-} catch (...) {
-    write_bounded_error_detail("unknown exception");
-    return RODAQ_RESULT_INTERNAL;
+namespace rodaq::plugin {
+
+class PluginBase {
+public:
+    virtual ~PluginBase() noexcept = default;
+
+    PluginBase(const PluginBase&) = delete;
+    PluginBase& operator=(const PluginBase&) = delete;
+
+    virtual Result<void> configure(PluginSetup& setup) = 0;
+    virtual Result<void> shutdown(Deadline deadline) = 0;
+
+protected:
+    PluginBase() = default;
+};
+
+}  // namespace rodaq::plugin
+```
+
+`PluginSetup` 只在当前 `configure()` 调用期间有效：
+
+```cpp
+class PluginSetup {
+public:
+    PluginSetup(const PluginSetup&) = delete;
+    PluginSetup& operator=(const PluginSetup&) = delete;
+    PluginSetup(PluginSetup&&) = delete;
+    PluginSetup& operator=(PluginSetup&&) = delete;
+
+    std::string_view config() const noexcept;
+
+    template <typename ServiceInterface>
+    Result<typename ServiceInterface::Reference> service();
+
+    template <typename OperationInterface, typename Implementation>
+    Result<void> provide(Implementation& implementation);
+};
+```
+
+插件开发者通过它完成三件事：
+
+1. 读取 Application 提供的 Plugin Configuration；
+2. 查询 Application 提供的 Service；
+3. 发布当前 Plugin Instance 提供的 Operation。
+
+规则：
+
+- `PluginSetup&` 不得保存到 configure 调用之外；
+- `service&lt;T&gt;()` 缺失时返回 `NotFound`；Plugin 自己决定该 Service 是必需还是可选；
+- Service `Reference` 是 borrowed，不延长 Registry/Provider lifetime；
+- `provide()` 只能在 configure 期间调用；configure 成功后 Operation 集合冻结；
+- `provide()` 不取得 Implementation ownership；Implementation 必须由 Plugin Instance-owned object 持有；
+- `configure()` 每个 Instance 只调用一次；
+- `shutdown()` 必须能够清理 configure 已经建立的全部或部分资源；
+- destructor 必须 `noexcept`。
+
+## 4.3 SDK 生命周期桥接
+
+SDK 每个 Instance 使用内部 `InstanceContext`：
+
+```
+InstanceContext
+├── Concrete Plugin Object
+├── validated ServiceRegistry binding
+└── Frozen Operation Registry
+```
+
+Foundation `configure()`：
+
+```
+validate services / config
+→ create OperationRegistry builder
+→ construct PluginSetup(config, services, builder)
+→ PluginBase::configure(setup)
+→ validate / freeze Operation Registry
+→ publish Frozen Operation Registry
+→ return
+```
+
+Foundation `shutdown()` 直接桥接到：
+
+```cpp
+PluginBase::shutdown(deadline)
+```
+
+Foundation `query()` 只查询已经冻结的 Operation Registry。
+
+Plugin 开发者不接触：
+
+- Service bind 阶段；
+- OperationRegistry；
+- Foundation vtable；
+- query trampoline；
+- destroy；
+- PluginInstanceState 的 Open/Closing/Closed 状态转换。
+
+## 4.4 配置访问
+
+```cpp
+std::string_view PluginSetup::config() const noexcept;
+```
+
+语义：
+
+- empty view 表示 Application 没有提供 Plugin-owned config；
+- non-empty 内容是 UTF-8 JSON 文本；
+- Framework 只保证通用 size / string contract，不理解 Plugin 配置结构；
+- Plugin 在 `configure()` 中负责 JSON parse、字段校验、跨字段约束、环境检查和默认值处理；
+- 配置无效时返回 `InvalidArgument`，并由 Plugin 提供可读诊断；
+- view 只在当前 configure 调用内有效；
+- Plugin 需要长期使用时必须复制或解析到 Instance-owned state。
+
+这使配置所有权保持清晰：Framework 负责传递，Plugin 负责解释。
+
+## 4.5 Interface SDK 与 Provider 模板
+
+Interface SDK 负责：
+
+1. Interface Definition；
+2. Operation 的 typed `Handle` 或 Service 的 typed `Reference`；
+3. 可复用 Provider Template；
+4. C ABI trampoline 与异常转换。
+
+Operation 示例：
+
+```cpp
+struct ExampleInterface {
+    using Vtable = rodaq_example_operation_vtable_t;
+    using Handle = ExampleHandle;
+
+    static constexpr std::string_view kInterfaceId =
+        "com.example.operation";
+    static constexpr std::uint16_t kMajor = 1;
+    static constexpr std::uint16_t kMinor = 0;
+
+    template <typename Implementation>
+    using Provider = ExampleProvider<Implementation>;
+};
+```
+
+Service 示例：
+
+```cpp
+struct LoggingInterface {
+    using Vtable = rodaq_logging_service_vtable_t;
+    using Reference = LoggingReference;
+
+    static constexpr std::string_view kInterfaceId =
+        "com.rodaq.service.logging";
+
+    template <typename Implementation>
+    using Provider = LoggingProvider<Implementation>;
+};
+```
+
+Provider Template 负责：
+
+- 编译期检查 Implementation 方法；
+- 生成 static typed vtable；
+- C ABI trampoline；
+- context → Implementation 转换；
+- `Result&lt;T&gt;` / Status 转换；
+- 阻止 exception 越过 C ABI。
+
+Operation `Handle` 是受管调用能力；Service `Reference` 是 borrowed Application Service 引用。
+
+## 4.6 OperationRegistry（SDK 内部）
+
+`OperationRegistry` 只存在于 SDK configure bridge 内部：
+
+```cpp
+class OperationRegistry {
+public:
+    template <typename Interface, typename Implementation>
+    Result<void> add(Implementation& implementation);
+
+private:
+    Result<void> freeze();
+};
+```
+
+规则：
+
+- 普通插件开发者只调用 `PluginSetup::provide()`；
+- `OperationRegistry::add()` 在 SDK 内部完成 Provider binding 的校验和保存；
+- raw context/vtable insertion 不形成独立 Public/Design API；
+- duplicate Interface ID/Major → Conflict；
+- invalid vtable/prefix/version → InvalidArgument；
+- configure 失败时整个 Registry 构建结果丢弃，不发布部分 Operation；
+- configure 成功后形成 immutable registry。
+
+## 4.7 PluginSetup 的 Application Service 访问
+
+统一入口：
+
+```cpp
+template <typename ServiceInterface>
+Result<typename ServiceInterface::Reference>
+PluginSetup::service();
+```
+
+行为：
+
+- ID 不存在 → NotFound；
+- ID 存在但版本不兼容 → Unavailable；
+- Registry/ABI 非法 → 对应错误；
+- 返回 typed borrowed `Reference`；
+- Framework 不区分 Required/Optional Service；
+- Plugin 根据自身业务决定 NotFound 是否导致 configure 失败。
+
+普通 Service Reference 默认只能在当前 Plugin Instance 有效期间使用。所有使用 Service Reference 的 Plugin-owned background work 必须在 `shutdown() == Ok` 前结束，除非该 Service Interface 明确定义独立 ownership handoff。
+
+## 4.8 导出辅助与自动生成元数据
+
+插件开发者只写：
+
+```cpp
+RODAQ_DEFINE_PLUGIN(MyPlugin)
+```
+
+`rodaq_register_plugin()` 与 `RODAQ_DEFINE_PLUGIN` 自动生成：
+
+- Plugin ABI version symbol；
+- Entry getter；
+- static Descriptor；
+- create/configure/query/shutdown/destroy trampoline；
+- Foundation vtable；
+- visibility/export declarations；
+- exception barrier；
+- Manifest metadata。
+
+V1 的 Concrete Plugin type 必须满足：
+
+- default-constructible；
+- destructor `noexcept`；
+- constructor 不执行可能长期阻塞的文件/网络/设备 I/O；
+- constructor 不启动长期 worker、callback source 或后台 executor；
+- 真实 Backend 初始化、Service 查询和 Operation publish 全部发生在 `configure()`。
+
+`RODAQ_DEFINE_PLUGIN` / authoring support 必须对可静态验证的条件执行 `static_assert`。
+
+Create：
+
+```
+default-invalid output
+→ allocate SDK InstanceContext
+→ construct Concrete Plugin Object
+→ publish context + static Foundation vtable
+```
+
+所有 SDK trampoline 都必须阻止 C++ exception 越过 C ABI，映射规则统一为：
+
+| Trampoline | `std::bad_alloc` | 其他 `std::exception` / unknown exception | Runtime 后续处理 |
+| --- | --- | --- | --- |
+| create | ResourceExhausted | Internal + bounded diagnostic | 不发布半初始化 Instance |
+| configure | ResourceExhausted | Internal + bounded diagnostic | 保留原错误并进入初始化失败 cleanup |
+| query / typed Provider | ResourceExhausted | Internal + bounded diagnostic | output 保持 default-invalid / 不发布 partial result |
+| shutdown | ResourceExhausted | Internal + bounded diagnostic | shutdown 未证明成功；进入关闭失败/Unresolved 收敛 |
+| destroy | 不允许异常 | 不允许异常 | destructor/noexcept 违约按 C++ `std::terminate` 语义处理 |
+
+Destroy：
+
+- 只在 Runtime 已证明 `shutdown() == Ok` 且 active ABI call 已归零后调用；
+- 销毁 Frozen Operation Registry 和 Concrete Plugin Object；
+- destructor 必须 no-throw；
+- 只执行一次；
+- 不重试。
+
+## 4.9 第三方 Counter 完整规范性示例
+
+本节用于证明：Interface SDK 可以封装全部 C ABI 适配，而两个独立 Backend Plugin 只实现业务 C++ 类。
+
+### Interface SDK：C ABI
+
+```c
+#define RODAQ_COUNTER_INTERFACE_ID "com.example.counter"
+
+typedef struct rodaq_counter_vtable {
+    rodaq_struct_header_t header;
+
+    rodaq_status_code_t (*increment)(
+        rodaq_interface_context_t* context,
+        int64_t delta,
+        int64_t* value,
+        rodaq_error_t* error);
+
+    rodaq_status_code_t (*current)(
+        rodaq_interface_context_t* context,
+        int64_t* value,
+        rodaq_error_t* error);
+} rodaq_counter_vtable_t;
+```
+
+### Interface SDK：定义、Handle 与 Provider 模板
+
+```cpp
+class CounterHandle;
+
+template <typename Implementation>
+struct CounterProvider;
+
+struct CounterInterface {
+    using Vtable = rodaq_counter_vtable_t;
+    using Handle = CounterHandle;
+
+    static constexpr std::string_view kInterfaceId =
+        RODAQ_COUNTER_INTERFACE_ID;
+    static constexpr std::uint16_t kMajor = 1;
+    static constexpr std::uint16_t kMinor = 0;
+
+    static constexpr std::size_t required_prefix_size() noexcept;
+
+    template <typename Implementation>
+    using Provider = CounterProvider<Implementation>;
+};
+
+class CounterHandle {
+public:
+    Result<std::int64_t> increment(std::int64_t delta);
+    Result<std::int64_t> current() const;
+
+private:
+    friend struct CounterInterface;
+    OperationHandle<CounterInterface> operation_;
+};
+```
+
+`CounterProvider&lt;Implementation&gt;` 由 Counter Interface SDK 实现，包含 compile-time method checks、typed vtable 与 C ABI trampoline。Backend Plugin 不实现 Adapter。
+
+### Backend A
+
+```cpp
+class AtomicCounter {
+public:
+    Result<std::int64_t> increment(std::int64_t delta);
+    Result<std::int64_t> current() const;
+
+private:
+    std::atomic<std::int64_t> value_{0};
+};
+
+class AtomicCounterPlugin final : public PluginBase {
+public:
+    Result<void> configure(PluginSetup& setup) override {
+        return setup.provide<CounterInterface>(counter_);
+    }
+
+    Result<void> shutdown(Deadline) override {
+        return {};
+    }
+
+private:
+    AtomicCounter counter_;
+};
+
+RODAQ_DEFINE_PLUGIN(AtomicCounterPlugin)
+```
+
+### Backend B
+
+```cpp
+class SharedMemoryCounter {
+public:
+    explicit SharedMemoryCounter(SharedCounterState& state);
+
+    Result<std::int64_t> increment(std::int64_t delta);
+    Result<std::int64_t> current() const;
+
+private:
+    SharedCounterState& state_;
+};
+
+class SharedMemoryCounterPlugin final : public PluginBase {
+public:
+    Result<void> configure(PluginSetup& setup) override {
+        return setup.provide<CounterInterface>(counter_);
+    }
+
+    Result<void> shutdown(Deadline) override {
+        return {};
+    }
+
+private:
+    SharedCounterState state_;
+    SharedMemoryCounter counter_{state_};
+};
+
+RODAQ_DEFINE_PLUGIN(SharedMemoryCounterPlugin)
+```
+
+两个 Backend 不包含 Adapter、vtable、trampoline、Descriptor、Manifest 或 Plugin ABI metadata。
+
+### 调用方（Consumer）调用路径
+
+`PluginInstance::query&lt;CounterInterface&gt;()` 返回 `Result&lt;CounterHandle&gt;`。
+
+```
+CounterHandle
+→ OperationHandle<CounterInterface>
+→ acquire Runtime CallGuard
+→ validate negotiated version / vtable_size / slot
+→ call rodaq_counter_vtable_t
+→ translate status_code to Result<T>
+→ release Runtime CallGuard
+```
+
+资格验证必须证明两个 Backend 可以只依赖同一个 Counter Interface SDK 独立构建。
+
+# 5. 插件运行时内部实现设计
+
+本章说明 Application 看到的 `PluginManager / PluginLibrary / PluginInstance` 如何映射到内部状态。V1 只保留三个主要共享状态对象：`PluginManagerState`、`PluginLibraryState`、`PluginInstanceState`。
+
+## 5.1 对外 API
+
+### PluginManagerOptions
+
+V1 只公开真正需要由 Application 配置的参数：
+
+```cpp
+struct PluginManagerOptions {
+    std::vector<std::filesystem::path> search_paths;
+
+    std::size_t max_loaded_plugins;
+    std::size_t max_instances;
+
+    /**
+     * Maximum Plugin configuration size.
+     *
+     * Unit: bytes.
+     */
+    std::size_t max_config_size;
+
+    DeadlineDuration shutdown_timeout;
+};
+```
+
+`PluginManager::create()` 必须验证 `max_config_size &lt;= UINT32_MAX`，因为 Stable C ABI 的 `rodaq_string_t::size` 是 `uint32_t`；超出范围返回 InvalidArgument。配置长度超过 `max_config_size` 时，在进入 Plugin ABI 前统一返回 ResourceExhausted；该行为不依赖 message 判断。
+
+close worker 数、内部 queue capacity、load single-flight bookkeeping 等使用 Framework 内部经过资格验证的默认值，不提前冻结为 Public API。Plugin 配置解析不属于 Framework。
+
+### PluginInfo
+
+```cpp
+struct PluginInfo {
+    std::string plugin_id;
+    std::string plugin_name;
+    std::string plugin_version;
+};
+
+struct PluginArtifactInfo {
+    std::string plugin_id;
+    std::string plugin_version;
+    std::string sha256;
+};
+```
+
+`PluginInfo` 是面向发现、选择和 UI 的稳定静态摘要；`PluginArtifactInfo` 是面向运行审计的只读实际 Artifact 身份，只暴露 Session metadata 所需事实，不暴露 canonical path、inode、native handle 等 Loader 实现细节。
+
+### PluginManager
+
+```cpp
+class PluginManager {
+public:
+    static Result<PluginManager> create(PluginManagerOptions options);
+
+    PluginManager(const PluginManager&) = delete;
+    PluginManager& operator=(const PluginManager&) = delete;
+    PluginManager(PluginManager&&) noexcept;
+    PluginManager& operator=(PluginManager&&) noexcept;
+    ~PluginManager() noexcept;
+
+    Result<void> refresh();
+
+    Result<std::vector<PluginInfo>> plugins() const;
+
+    // 选择最高兼容的已安装版本。
+    Result<PluginLibrary> load(std::string_view plugin_id);
+
+    // 选择精确 Plugin Version。
+    Result<PluginLibrary> load(
+        std::string_view plugin_id,
+        std::string_view plugin_version);
+
+    Result<PluginDiagnostics> diagnostics() const;
+
+    Result<void> shutdown(Deadline deadline);
+};
+```
+
+V1 一个进程只允许一个逻辑 PluginManager authority。第一次 `create()` 成功后，该 authority 持续到进程退出；即使 Manager 后续进入 Stopped，也不支持在同一进程重新创建第二套 PluginManager。之后再次 `create()` 返回 Conflict。
+
+`PluginManager` 是 move-only Public Handle。move 后源对象只允许析构或再次 move-assign。析构函数 `noexcept` 且不得阻塞等待 Plugin/native shutdown：
+
+- 正常退出路径必须显式调用 `shutdown()` 并检查结果；
+- 如果最后一个 Public Manager Handle 析构时 Framework 仍处于 Running/ShuttingDown，Framework 只触发或继续 best-effort 非阻塞收敛并记录 critical diagnostic，不把析构视为成功 shutdown；
+- process-level `PluginManagerState` 继续持有未 Closed/Unresolved Instance，直到内部收敛完成或进程退出。
+
+`shutdown()` 是幂等观察接口：
+
+- Running：开始一次 Manager shutdown 并等待该同一流程；
+- ShuttingDown：继续等待同一流程；
+- Stopped：返回 Ok；
+- Degraded：返回已记录的终态失败；Framework 仍可以在后台继续完成能够安全完成的迟返清理，但不会重新恢复为正常 authority。
+
+`shutdown()` 开始后：
+
+- 新 `refresh()` 返回 InvalidState；
+- 新 `load()` 返回 InvalidState；
+- 新 `create_instance()` 返回 InvalidState；
+- 已经进入的 refresh/load/create 允许正常返回；late refresh 不得发布新 Catalog generation；
+- Framework 开始收敛尚未关闭的 Plugin Instance。
+
+### PluginLibrary
+
+```cpp
+class PluginLibrary {
+public:
+    PluginLibrary() = delete;
+    PluginLibrary(const PluginLibrary&) = delete;
+    PluginLibrary& operator=(const PluginLibrary&) = delete;
+    PluginLibrary(PluginLibrary&&) noexcept;
+    PluginLibrary& operator=(PluginLibrary&&) noexcept;
+    ~PluginLibrary() noexcept;
+
+    explicit operator bool() const noexcept;
+
+    const PluginInfo& info() const noexcept;
+    const PluginArtifactInfo& artifact() const noexcept;
+
+    Result<PluginInstance> create_instance(
+        const ServiceRegistry& services,
+        std::string_view config) const;
+};
+```
+
+### PluginInstance
+
+```cpp
+enum class PluginInstancePhase {
+    Initializing,
+    Open,
+    Closing,
+    Closed,
+    Unresolved
+};
+
+class CloseFuture;
+
+class PluginInstance {
+public:
+    PluginInstance() = delete;
+    PluginInstance(const PluginInstance&) = delete;
+    PluginInstance& operator=(const PluginInstance&) = delete;
+    PluginInstance(PluginInstance&&) noexcept;
+    PluginInstance& operator=(PluginInstance&&) = delete;
+    ~PluginInstance() noexcept;
+
+    explicit operator bool() const noexcept;
+
+    template <typename Interface>
+    Result<typename Interface::Handle> query();
+
+    Result<void> close(Deadline deadline);
+    CloseFuture async_close() noexcept;
+
+    PluginInstancePhase phase() const noexcept;
+    PluginInstanceId id() const noexcept;
+};
+```
+
+Application 只能获得已经 Open 的 `PluginInstance`。
+
+`~PluginInstance()` 不阻塞等待 Plugin/native shutdown：如果当前 Handle 仍引用 Open Instance，它只发起或继续同一个异步关闭流程，然后释放 Public Handle。正常业务路径仍必须显式 `close()` 或 `async_close()` 并检查真实关闭结果。
+
+删除 move-assignment 是刻意的 API 约束：禁止通过 `target = std::move(source)` 隐式覆盖一个仍可能拥有实时业务生命周期的 Instance。需要替换 Handle 时，调用方必须先显式关闭旧 Instance，再构造或移动新的 Handle。
+
+### Public Handle 有效性、移动与线程安全
+
+`PluginLibrary` 是 move-only handle；`PluginInstance` 是 move-constructible、不可复制且不可 move-assign。move 后源对象进入有效但空的 moved-from 状态：
+
+- 可以析构；
+- `operator bool() == false`；
+- 除赋予新值所必需的构造/销毁操作外，不得调用要求有效 backing 的成员函数。
+
+对返回引用或 `noexcept` 值的访问器，例如 `PluginLibrary::info()`、`PluginLibrary::artifact()`、`PluginInstance::phase()`、`PluginInstance::id()`，前置条件统一为 `operator bool() == true`；Framework 不因此把这些轻量访问器改成 `Result<T>`。
+
+Public wrapper 对象本身遵循普通 C++ 对象规则：不得在一个线程 move/destroy 同一个 wrapper 的同时，由另一个线程通过该 wrapper 调用成员函数。下面的并发保证针对多个独立 Public Handle 或同一稳定 backing 上的并发调用。
+
+| Public API | 并发语义 |
+| --- | --- |
+| `PluginManager::refresh()` | 可与 `plugins()/load()` 并发；并发 refresh 使用 single-flight 并观察同一流程；仅 Running 状态可准入和发布 |
+| `PluginManager::plugins()` | 返回一个一致 Catalog snapshot |
+| `PluginManager::load()` | 观察某个完整 Catalog generation；同一 Artifact 使用 single-flight |
+| `PluginManager::shutdown()` | 多线程调用观察同一个 shutdown 流程；幂等 |
+| `PluginLibrary::info()/artifact()` | 可并发只读 |
+| `PluginLibrary::create_instance()` | 同一 Library 可并发调用，受 Manager/Library capacity 与 Faulted 状态约束 |
+| `PluginInstance::query()` | Open 阶段可并发；每次 query 进入统一 CallGuard |
+| `PluginInstance::async_close()` | 可并发且幂等；复用同一个 close shared state |
+| `PluginInstance::close()` | 多调用方只是观察同一个关闭流程，不创建第二次 shutdown/destroy |
+| `PluginInstance::phase()/id()` | 有效 Handle 上可并发只读 |
+
+`refresh()` 的 publication point 是新 Catalog generation 的原子替换点。已经开始的 `load()` 可以继续使用其捕获的旧 generation 完成解析；之后的新 `load()` 使用新 generation。
+
+Manager 进入 ShuttingDown/Degraded/Stopped 后，新的 `refresh()` 返回 InvalidState。已经进入的 refresh 可以完成内部扫描和解析，但其 Catalog generation 只能在 publication point 观察到 Manager == Running 时发布；否则必须丢弃并返回 InvalidState。并发 refresh 不创建第二个 Catalog build，后到调用等待并观察同一 refresh 结果。refresh 的调度、扫描/解析持续时间和发布阶段都进入 Lifecycle Supervision。
+
+`CloseFuture` 是可复制、可移动的 shared-state observer。复制 Future 不创建新的关闭流程，也不延长 Plugin 业务资源生命周期；多个 Future 只观察同一个 `PluginInstanceState` terminal publication。
+
+### CloseFuture
+
+```cpp
+enum class CloseWaitStatus {
+    Completed,
+    TimedOut
+};
+
+class CloseFuture {
+public:
+    CloseFuture() = delete;
+    CloseFuture(const CloseFuture&) noexcept = default;
+    CloseFuture& operator=(const CloseFuture&) noexcept = default;
+    CloseFuture(CloseFuture&&) noexcept;
+    CloseFuture& operator=(CloseFuture&&) noexcept;
+
+    explicit operator bool() const noexcept;
+    bool ready() const noexcept;
+
+    // 只表示本次等待是否观察到 terminal close。
+    CloseWaitStatus wait(Deadline deadline) const noexcept;
+
+    // 返回真实 close terminal result。
+    // Future 尚未 ready 时返回 InvalidState。
+    Result<void> result() const;
+};
+```
+
+`close()` 是普通同步接口，其语义等价于：
+
+```
+future = async_close()
+status = future.wait(observer_deadline)
+
+TimedOut  → return DeadlineExceeded
+Completed → return future.result()
+```
+
+因此：
+
+- `close().ok()` 只表示真实关闭已经成功完成；
+- 同步 `close()` 是 convenience API，`DeadlineExceeded` 可能来自两种来源：Observer Wait 超时，或真实 close terminal result 本身为 `DeadlineExceeded`；
+- 同步 `Result&lt;void&gt;` 不携带“DeadlineExceeded 来源”这一额外维度，调用方不得仅凭该 StatusCode 推断来源；
+- 需要区分来源的调用方必须使用 `async_close()`：先检查 `CloseFuture::wait()` 是否 TimedOut，再在 Completed 后读取 `CloseFuture::result()`；
+- Observer Wait 超时不会取消实际关闭；真实 terminal `DeadlineExceeded` 则表示 Plugin/Framework 已经形成一个完成态失败结果。
+
+`async_close()` 多次调用只复用同一个关闭流程，不创建第二次 shutdown/destroy。
+
+`ready()`、`wait()` 和 `result()` 必须观察同一个 terminal publication point。`result()` 在 Future 尚未 ready 时返回 InvalidState，不依赖调用者违反前置条件后产生未定义行为。
+
+Moved-from `CloseFuture` 是有效但空的 handle：可以析构或重新赋值，`operator bool() == false`；`ready()`、`wait()` 和 `result()` 要求 Future 有效，调用方应先检查 `operator bool()`。
+
+### ServiceRegistry
+
+V1 不再公开独立 Builder 类型：
+
+```cpp
+class ServiceRegistry {
+public:
+    ServiceRegistry();
+
+    ServiceRegistry(const ServiceRegistry&) = delete;
+    ServiceRegistry& operator=(const ServiceRegistry&) = delete;
+    ServiceRegistry(ServiceRegistry&&) noexcept;
+    ServiceRegistry& operator=(ServiceRegistry&&) noexcept;
+    ~ServiceRegistry() noexcept;
+
+    template <typename ServiceInterface, typename Implementation>
+    Result<void> add_shared(std::shared_ptr<Implementation> implementation);
+
+    template <typename ServiceInterface, typename Implementation>
+    Result<void> add_static(Implementation& implementation);
+
+    Result<void> freeze();
+    bool frozen() const noexcept;
+};
+```
+
+规则：
+
+- Public `ServiceRegistry` wrapper 是 move-only；
+- Registry 内部使用 immutable shared backing；`freeze()` 后该 backing 不再修改；
+- `add_shared()`：Registry backing 强持有 Provider object；
+- `add_static()`：只用于进程级静态 Provider；Registry 不取得 Provider object ownership；
+- `create_instance()` 只接受 frozen ServiceRegistry，并把同一个 immutable backing 的强引用捕获到 `PluginInstanceState`；
+- 因此调用 `create_instance()` 成功后，外部 `ServiceRegistry` wrapper 可以析构，而 Plugin 的 borrowed Service `Reference` 在 Instance 合法调用期仍保持有效；
+- 最后一个 backing owner 释放 `add_shared()` Provider 时，Provider destructor/custom deleter 不保证特定线程，但必须在 Framework 控制锁之外执行；
+- 如果某个 Provider 要求特定线程销毁，由 Provider 自身实现线程转交，不把 thread-affinity 变成通用 ServiceRegistry 机制；
+- Provider executable code 在 V1 中必须 process-resident。
+
+## 5.2 PluginManagerState
+
+`PluginManagerState` 是进程级插件管理状态：
+
+```
+PluginManagerState
+├── phase
+├── PluginCatalog
+├── loaded_plugins
+├── instances
+├── AsyncCloseExecutor
+├── active_refresh_count
+├── active_load_count
+├── active_create_count
+├── capacity
+├── diagnostics
+└── restart_required
+```
+
+`PluginManagerState` 是内部长期共享对象；生命周期值使用 Public `PluginManagerPhase`。
+
+Phase 转换：
+
+```
+Running
+→ ShuttingDown
+→ Stopped
+
+Running / ShuttingDown
+→ Degraded
+```
+
+含义：
+
+- `Running`：允许 refresh/load/create；
+- `ShuttingDown`：拒绝新的 refresh/load/create，正在收敛实例；
+- `Stopped`：Framework 已满足 Normal Shutdown Success Predicate；
+- `Degraded`：存在 Faulted Library、Unresolved Instance、refresh/load/create/configure 生命周期监督超时或卡死、Native Shutdown/close pipeline 超时或 liveness failure，Framework 已无法证明正常收敛，需要进程重启。
+
+Normal Shutdown Success Predicate：
+
+```
+restart_required == false
+AND no Faulted Library requiring process recovery
+AND no Unresolved Instance
+AND active_refresh_count == 0
+AND active_load_count == 0
+AND active_create_count == 0
+AND no pending/running refresh work
+AND no pending close work
+AND no running close work
+AND all normal instances == Closed
+```
+
+只有满足该谓词，`PluginManager::shutdown()` 才能进入 `Stopped` 并返回 Ok。
+
+`PluginManagerState` 强持有所有 Loaded Library 和所有尚未 Closed 的 Instance，因此不需要额外 Retention Registry。
+
+## 5.3 PluginLibraryState
+
+```
+PluginLibraryState
+├── NativeLibraryHandle
+├── PluginInfo
+├── PluginDescriptor
+├── PluginEntry
+├── ArtifactIdentity
+
+├── instance_count
+├── phase
+└── diagnostics
+```
+
+`PluginLibraryState` 是内部长期共享对象；其阶段使用内部枚举：
+
+```cpp
+enum class PluginLibraryPhase {
+    Loaded,
+    Faulted
+};
+```
+
+### Loaded
+
+正常可创建 Instance。
+
+### Faulted
+
+如果 create 返回违反 ABI 规范的 output：
+
+```
+Loaded
+→ Faulted
+→ reject future create_instance()
+→ manager.restart_required = true
+```
+
+Framework 不调用未经验证的 destroy；异常信息直接记录在 Faulted Library 和 Manager diagnostics 中。
+
+如果 Faulted Library 已经存在其他正常 Instance，这些 Instance 仍按正常 close/shutdown 路径关闭；Application 应根据 critical diagnostic 受控重启进程。
+
+成功发布的 Native DSO 在进程退出前保持常驻。
+
+## 5.4 Plugin Instance 创建与初始化监督
+
+`create_instance(services, config)` 是单一初始化入口。V1 把 create/configure 视为受监督生命周期调用，而不是普通无界同步函数。
+
+正常流程：
+
+```
+require manager == Running
+require library == Loaded
+require services.frozen()
+validate config size / Public String contract
+reserve max_instances slot
+allocate PluginInstanceState = Initializing
+publish strong Manager ownership
+active_create_count++
+
+supervised Plugin ABI create()
+→ validate Foundation Instance
+→ attach ServiceRegistry
+→ supervised Foundation configure(services, config)
+→ freeze Operation Registry
+→ enter Open Commit Point
+```
+
+Open Commit Point：
+
+```
+under PluginManagerState lock:
+
+if manager == Running
+    phase = Open
+    publish PluginInstance
+    active_create_count--
+    return PluginInstance
+
+if manager != Running
+    do not publish Open Instance
+    phase = Closing
+    publish Manager-owned Pending Close Work
+    active_create_count--
+    return InvalidState
+```
+
+Application 永远不会获得 Initializing Instance。
+
+`create_instance()` 返回 Ok 的线性化点就是 Open Commit Point：
+
+```
+create_instance() returns Ok
+⇒ returned Instance has already been committed as Open
+```
+
+### 初始化生命周期监督
+
+create/configure 必须通过 Framework 的有界 Lifecycle Supervision 执行。监督机制满足：
+
+- native call 不在 Manager structural lock 内执行；
+- 调用使用有界 lifecycle execution capacity，不允许每次超时创建新的永久线程；
+- 独立 health monitor 可以在执行 worker 被阻塞时继续观测 stage 与持续时间；
+- operational threshold 由 Framework qualification / deployment policy 管理，不为每个 Public API 增加独立 Deadline 参数；
+- threshold 只限制 Framework 的等待与健康判定，不代表可以取消 native code；
+- threshold 耗尽后，等待方可以得到 `DeadlineExceeded`，Manager 进入 Degraded，`restart_required = true`；
+- 仍在执行的 native call 及其所需 backing 必须继续被 Manager 强持有，直到真实迟返或进程退出；
+- 已公开的 Degraded / restart-required 结论不因迟返自动恢复。
+
+初始化监督阶段至少区分：
+
+```
+Create Scheduling
+Native Create
+Foundation Validation
+Native Configure
+Operation Freeze
+Open Commit
+Initialization Cleanup
+```
+
+这些是内部 health stage，不新增 Public lifecycle enum。
+
+### Catalog refresh 生命周期监督
+
+Catalog refresh 与 load/create/configure 使用同一套有界 Lifecycle Supervision，但保持独立 stage：
+
+```
+Refresh Scheduling
+Catalog Scan
+Manifest Read / Parse
+Catalog Build
+Catalog Publish
+```
+
+规则：
+
+- 只有 Manager == Running 时才能增加 `active_refresh_count` 并进入 refresh；
+- 并发 refresh 使用 internal single-flight，最多一个 Catalog generation build；后到调用等待并观察同一结果；
+- native filesystem scan / manifest parse 不在 Manager structural lock 内执行；
+- 独立 health monitor 必须能在 refresh worker 被阻塞时观测 stage 和持续时间；
+- operational threshold 耗尽后，等待方返回 `DeadlineExceeded`，Manager 进入 Degraded，`restart_required = true`；
+- late refresh completion 仍然执行 output validation 和资源清理，但 Manager 已非 Running 时必须丢弃 generation，不替换 Catalog，也不发布新的 Library/Instance；
+- refresh 不创建 Public Ticket/Future，也不增加每次调用的 Deadline 参数。
+
+该规则使 Manager shutdown 可以并行关闭现有 Instance，同时等待或监督已经进入的 refresh，而不形成“refresh 卡死则健康实例无法关闭”的顺序。
+
+### Manager shutdown 与初始化并发
+
+如果 Manager shutdown 在 create/configure 完成之前已经从 Running 切换为 ShuttingDown，则 shutdown 获胜：
+
+- 初始化调用可以继续迟返；
+- 不发布新的 Open Instance；
+- 已得到有效 raw Instance 时，在 native create/configure 返回并且不再并发执行后转入 Closing；
+- Framework 发布 Manager-owned Pending Close Work，再执行 shutdown/drain/destroy；
+- native create/configure 尚未返回时，不得并发调用同一 Instance 的 shutdown/destroy；
+- 如果初始化超过 operational threshold，Manager 进入 Degraded，但其他已经 Open 的健康 Instance 仍必须继续关闭。
+
+### create 失败
+
+如果 create 在建立 Plugin-owned resource 之前正常返回 failure：
+
+```
+rollback InstanceState
+release capacity
+active_create_count--
+return original Status
+```
+
+如果 create 违反 ABI：
+
+```
+mark PluginLibraryState Faulted
+manager.phase = Degraded
+manager.restart_required = true
+release ordinary Instance capacity bookkeeping
+active_create_count--
+return Internal
+```
+
+Framework 不解引用未知 raw context，不调用未经验证的 function pointer，也不猜测 destroy。
+
+如果 create 在 operational threshold 后迟返：
+
+- 先执行正常 ABI output validation；
+- Manager 已非 Running 时不得 publish Library/Instance；
+- valid Instance 进入初始化失败/Manager-shutdown cleanup；
+- malformed output 按 Faulted Library 处理；
+- `restart_required` 保持 true。
+
+### configure 失败
+
+configure 失败可能已经创建部分 worker/connection/backing，因此异步清理的所有权必须在原始错误返回前完成提交：
+
+```
+Manager already owns PluginInstanceState
+→ configure failure
+→ preserve original configure Status
+→ phase = Closing
+→ publish Pending Close Work
+→ only then return original configure failure to Application
+```
+
+cleanup：
+
+```
+Plugin shutdown()
+→ if Ok and active_call_count == 0
+     destroy
+     release ServiceRegistry/backing
+     phase = Closed
+     release capacity
+  else
+     phase = Unresolved
+     manager = Degraded
+     restart_required = true
+```
+
+需要特别区分：
+
+```
+create_instance() returns failure
+≠ cleanup completed
+≠ max_instances capacity already returned
+```
+
+如果 cleanup 仍在 Closing/Pending Close 中，Application 立即重试可能暂时得到 `ResourceExhausted`。这是安全语义，不引入 FailedInstanceHandle/CleanupFuture。
+
+## 5.5 统一调用准入
+
+Query 与普通 Operation 都属于对 Plugin Instance 的受管 ABI 调用，使用同一套：
+
+```
+CallGuard
+active_call_count
+```
+
+### Query
+
+```
+lock PluginInstanceState
+require phase == Open
+active_call_count++
+unlock
+
+call query()
+validate InterfaceReference
+attach strong PluginInstanceState ownership
+construct complete Operation Handle
+
+lock
+active_call_count--
+unlock
+```
+
+CallGuard 在完整 Managed Handle 构造完成后才释放。Handle 构造完成点之后，不得再访问 Provider metadata、raw vtable backing 或其他可能随 Instance close 被销毁的资源。Close 可以使这个 Handle 的后续调用返回 InvalidState，但不能在 Handle 构造过程中销毁其依赖 backing。
+
+### Operation
+
+```
+Operation Handle
+→ lock PluginInstanceState
+→ require phase == Open
+→ active_call_count++
+→ unlock
+→ call typed C ABI vtable
+→ active_call_count--
+```
+
+“检查 phase == Open”与“增加 active_call_count”必须在同一个线性化边界完成。
+
+Hot path：
+
+- 不取得 PluginManagerState 全局锁；
+- 不执行 heap allocation；
+- 不跨线程调度；
+- 不访问 PluginCatalog。
+
+Query 与 Operation 共用同一个 CallGuard 和 `active_call_count`。
+
+### 锁顺序与锁外执行
+
+如果实现确实需要同时持有 Manager 与 Instance 控制锁，统一顺序为：
+
+```
+PluginManagerState lock
+→ PluginInstanceState lock
+```
+
+不得反向取得。
+
+以下操作不得在 PluginManagerState / PluginInstanceState 控制锁内执行：
+
+- Plugin ABI function；
+- Application / Plugin callback；
+- Provider destructor；
+- `shared_ptr` custom deleter；
+- 可能重入 Plugin Framework 的任意第三方代码；
+- 可能阻塞的外部 I/O。
+
+需要释放 ServiceRegistry/provider/backing 时，应先在锁内完成 ownership detach 与状态/accounting 提交，再在锁外执行 destructor/deleter。
+
+## 5.6 Plugin Instance 关闭
+
+### async_close()
+
+```
+lock PluginInstanceState
+
+Closed:
+    return CloseFuture(state)
+
+Unresolved:
+    return CloseFuture(state)
+
+Closing:
+    return CloseFuture(state)
+
+Open:
+    phase = Closing
+    atomically publish Pending Close Work
+
+unlock
+
+AsyncCloseExecutor schedules/observes pending work
+return CloseFuture(state)
+```
+
+`PluginManagerState` 持有所有未 Closed Instance，异步关闭不会因为 Public wrapper 释放而失去所有者。
+
+`Closing` 同时意味着该 Instance 必须存在于 Manager 可发现的 Pending Close Work Set 中。关闭责任不能只存在于一次 queue insertion：
+
+- Open → Closing 与 Pending Work 发布必须形成确定的提交点；
+- queue 满或一次调度失败不得丢失 close work；
+- worker 完成、queue capacity 恢复、Manager shutdown 等事件必须重新扫描/推进 Pending Work；
+- 同一 Instance 同时最多一个 close task 进入真实 Plugin shutdown；
+- Pending Work 必须具有有界公平性；
+- `async_close() noexcept` 不得因为临时 heap allocation failure 丢失关闭责任。
+
+实现可以使用预留 slot、intrusive node、固定容量索引或等价无丢失机制，但不增加新的 Public 对象。
+
+### close()
+
+```
+future = async_close()
+wait = future.wait(observer_deadline)
+
+TimedOut  → return DeadlineExceeded
+Completed → return future.result()
+```
+
+`close().ok()` 只表示 Plugin Instance 已经安全 Closed，并且关闭成功发布点之前要求的 backing release、Manager accounting 和 instance capacity 归还已经完成。
+
+Observer DeadlineExceeded 只表示调用者停止等待，异步关闭继续。
+
+### 阻塞式 close 的调用限制
+
+如果当前线程正在执行同一个 Instance 的 Operation/callback，而该调用本身必须先返回才能完成关闭，则同步 `close()` 不得阻塞等待自己。
+
+规则统一定义为：
+
+> 任何等待条件要求当前 managed Plugin invocation 先退出才能完成的同步生命周期等待，都不得在该 invocation 调用链内阻塞。
+>
+
+因此：
+
+- callback/Operation 中允许 `async_close()` 本身；
+- callback/Operation 中不得同步等待同一 Instance 的 `close()`；
+- callback/Operation 中不得调用 `CloseFuture::wait()` 等待同一 Instance 完成关闭；
+- 如果 Manager shutdown 的完成条件包含当前 invocation 返回，则不得在该调用链内同步等待 `PluginManager::shutdown()`；
+- Debug/qualification 实现可以使用轻量 TLS 检测明确的 same-thread self-wait 并返回 InvalidState；
+- Framework 不承诺检测任意跨线程应用级死锁。
+
+TLS 检测属于实现辅助，不形成新的 Public Runtime 对象。
+
+## 5.7 AsyncCloseExecutor
+
+Plugin `shutdown()` 可能长时间阻塞，因此 destructor 和 `async_close()` 不能直接在调用线程同步执行 shutdown。
+
+Framework 使用内部有界 AsyncCloseExecutor：
+
+- worker 数使用 Framework 固定/内部配置，不进入 Public API；
+- 最大 pending close 数自然受 `max_instances` 限制；
+- PluginManagerState 持有所有 Closing Instance，因此 queue 满或调度迟延不会产生无主 Instance；
+- 不创建无界线程；
+- 不使用线程强制取消。
+
+关闭 worker：
+
+```
+PluginInstanceState.phase = Closing
+→ Plugin shutdown(deadline)
+→ if shutdown != Ok
+     phase = Unresolved
+     manager = Degraded
+     restart_required = true
+     stop
+→ wait active_call_count == 0
+→ destroy exactly once
+→ detach ServiceRegistry / Instance backing under control lock
+→ release detached backing outside control locks
+→ commit Manager instance removal / accounting
+→ release max_instances capacity
+→ close_result = Ok
+→ phase = Closed
+→ notify CloseFuture observers
+```
+
+### Observer Deadline 与 Native Shutdown Deadline
+
+V1 明确区分：
+
+| Deadline | 作用 |
+| --- | --- |
+| `PluginInstance::close(observer_deadline)` | Application 最多同步等待多久 |
+| `CloseFuture::wait(observer_deadline)` | Application 最多等待 Future 多久 |
+| `PluginManager::shutdown(observer_deadline)` | Application 最多等待 Manager 收敛多久 |
+| `PluginManagerOptions::shutdown_timeout` | Framework 对单个 Plugin Native Shutdown 的策略上限 |
+
+Framework 根据 `shutdown_timeout` 为每次 Foundation / PluginBase `shutdown()` 计算 absolute native shutdown deadline。Observer Deadline 不直接传给 Backend，也不会因为 Application 只愿意等待很短时间而缩短 Plugin 的安全关闭时间。
+
+### 全关闭链路健康监督
+
+Health Monitor 不能只观察 Plugin `shutdown()`。每个 Closing Instance 的完整关闭链路都必须具有内部可观察阶段和开始时间：
+
+| 内部阶段 | 需要监督的内容 |
+| --- | --- |
+| Pending Scheduling | pending age、公平性、是否持续无法获得 worker |
+| Native Shutdown | 调用开始时间、native deadline、迟返 |
+| Call Drain | `active_call_count` 与 drain 持续时间 |
+| Destroy | Foundation `destroy()` 调用持续时间 |
+| Backing Release | ServiceRegistry/provider/custom deleter 释放持续时间 |
+| Terminal Publication | close result、capacity/accounting、Future 通知是否完成 |
+
+这些阶段只用于内部监督、Logging/Metrics 和故障诊断，不新增 Public 生命周期枚举或新的长期共享对象。
+
+如果任一阶段超过其经过 Qualification 的 operational threshold：
+
+- 独立于被阻塞 close worker 的 health monitor 必须能够发现；
+- Manager 进入 Degraded，设置 `restart_required = true` 并发出包含 plugin/instance/close-stage/duration 的 critical diagnostic；
+- 不强制取消 Plugin 线程，不在未知状态下提前 destroy，也不跳过必须的 ownership release；
+- 如果阻塞调用后来迟返，Framework 继续从真实阶段向后推进，并保持 exactly-once destroy/terminal publication；
+- 已经公开的 Degraded/restart-required 结论不因迟返自动恢复。
+
+Native `shutdown()` 的 `shutdown_timeout` 是其中唯一传入 Plugin ABI 的 deadline；Call Drain、Destroy、Backing Release 的监督阈值属于 Framework 内部 operational policy，不进入 Public API。
+
+因此即使只有一个 close worker 卡在 Call Drain 或 Destroy、其他 worker 仍可工作，Framework 也必须能够独立识别该 Instance 的异常关闭持续时间，而不能只依赖“所有 worker 饱和”才发现问题。
+
+close executor 的 queue/worker/supervision 细节全部属于内部实现与 Metrics，不形成额外 Public 生命周期状态。
+
+## 5.8 Plugin shutdown 的 Plugin 侧要求
+
+`shutdown()` 必须：
+
+- 对部分初始化 Instance 安全；
+- 停止产生新的 Instance-dependent background work；
+- 唤醒/停止 Plugin-owned worker、executor、timer、callback source；
+- 等待或完成对这些工作的安全 ownership handoff；
+- 不销毁仍可能被已准入 Operation 使用的 backing；
+- 返回 Ok 后，任何随后继续执行的已准入 Operation 都不得重新创建新的 Instance-dependent background work。
+
+Framework 不规定 Plugin 必须实现一个名叫 “Async Work Admission” 的对象。Plugin 可以根据自身实现使用 atomic flag、mutex/state、executor stop token 等方式满足上述行为。
+
+## 5.9 ServiceRegistry 生命周期
+
+Application 构建并冻结 ServiceRegistry，随后可以复用于多个 Plugin Instance。
+
+`PluginInstanceState` 在 Instance 生命周期内强持有 immutable ServiceRegistry backing，因此 Plugin 的 borrowed Service `Reference` 在合法调用期有效。成功 `create_instance()` 后，Application 可以销毁或移动原始 Public `ServiceRegistry` wrapper，不影响已经创建的 Instance。
+
+关闭成功后：
+
+```
+Plugin shutdown() == Ok
+→ active_call_count == 0
+→ destroy
+→ release ServiceRegistry backing
+```
+
+Service `Reference` 本身不延长 Registry/Provider lifetime。最后一个 backing owner 释放 owned Provider 时，Provider destructor/custom deleter 必须在 Manager/Instance 控制锁之外执行；Framework 不保证具体销毁线程。
+
+## 5.10 并发加载、初始化监督与常驻 Library
+
+内部 PluginCatalog 和 Resolver 根据：
+
+- plugin_id；
+- 可选 exact plugin_version；
+- platform/architecture；
+- Plugin ABI compatibility；
+
+选择唯一 Artifact。
+
+并发加载同一实际 Artifact 使用 internal single-flight，避免重复 `dlopen()`。
+
+```
+resolve catalog entry
+→ validate path / digest / file identity
+→ loaded_plugins lookup
+   ├── already loaded → reuse PluginLibraryState
+   └── absent
+        → reserve load capacity
+        → supervised dlopen(RTLD_NOW | RTLD_LOCAL)
+        → validate symbol provenance
+        → validate ABI / Entry / Descriptor
+        → publish PluginLibraryState only if Manager is still Running
+```
+
+`dlopen()` 及其 static initializer 也属于 Lifecycle Supervision：
+
+- 不在 Manager structural lock 内执行；
+- operational threshold 耗尽时 Manager 进入 Degraded，设置 `restart_required`；
+- Framework 不尝试取消正在执行的 loader/native code；
+- shutdown 不得因为一个 hung load 而推迟对已有 Open Instance 的关闭；
+- 如果迟返时 Manager 已不是 Running，则不得新发布 PluginLibraryState；可以安全回滚的 transient unpublished handle 按 Loader rollback 规则释放；
+- 如果迟返结果表明已执行无法证明安全回滚的 Plugin/loader side effect，保持 Degraded 并要求进程恢复。
+
+成功 publish 后不主动 `dlclose()`。
+
+## 5.11 诊断
+
+Public diagnostics 只冻结稳定、对 Application 有价值的健康信息：
+
+```cpp
+enum class PluginManagerPhase {
+    Running,
+    ShuttingDown,
+    Degraded,
+    Stopped
+};
+
+struct PluginDiagnostics {
+    PluginManagerPhase phase;
+    bool restart_required;
+
+    std::size_t loaded_plugin_count;
+    std::size_t live_instance_count;
+    std::size_t closing_instance_count;
+    std::size_t unresolved_instance_count;
+    std::size_t faulted_plugin_count;
+
+    std::vector<DiagnosticRecord> recent_errors;
+};
+```
+
+`recent_errors` 是有界 snapshot，不是无界历史容器。Framework 内部使用固定容量 ring / bounded store；容量、单条 message 最大字节数和总诊断字节上限属于 Framework qualification limit，不冻结为 Public API。容量耗尽时按明确的 oldest-first eviction 或等价确定性策略覆盖，并记录 dropped/overwritten counter 到 Metrics。
+
+内部 worker count、queue depth、active call count、refresh/load/create/configure duration 等仍通过 Logging/Metrics 观测，不冻结成 Plugin Framework Public API。
+
+生命周期 Health Monitor 至少记录：
+
+- Refresh Scheduling / Catalog Scan / Manifest Parse duration；
+- Load Scheduling / Native Load duration；
+- Create Scheduling / Native Create duration；
+- Configure duration；
+- Pending Close Age；
+- 当前 close stage；
+- active-call drain duration；
+- Destroy duration；
+- Backing Release duration；
+- busy lifecycle/close workers；
+- terminal publication latency。
+
+每条 DiagnosticRecord 至少能够关联：
+
+- plugin_id；
+- plugin_version；
+- instance_id（适用时）；
+- status_code；
+- reason；
+- bounded message；
+- monotonic timestamp。
+
+## 5.12 PluginManager shutdown 与进程退出
+
+Application 正常退出顺序：
+
+```
+停止新的业务 Task
+→ 停止/Finalize 已有业务 Operation
+→ 关闭 Task 持有的 PluginInstance
+→ PluginManager::shutdown(deadline)
+→ process exit
+```
+
+`PluginManager::shutdown()` 是幂等观察接口：
+
+```
+Running
+→ atomically phase = ShuttingDown
+→ reject new refresh/load/create
+
+→ immediately trigger close for all currently Open instances
+│
+├── concurrently drain Pending / Running close work
+│
+└── concurrently supervise already-entered refresh/load/create/configure
+       ├── late refresh must not publish a Catalog generation
+       └── late successful initialization must not publish Open Instance
+
+→ evaluate Normal Shutdown Success Predicate
+```
+
+这里的关键约束是：**Manager 不得先串行等待 refresh/load/create/configure 返回，再开始关闭已有健康 Instance。** Existing Open Instance closure 与 in-flight refresh/initialization convergence 必须并行推进。
+
+已经进入的 refresh：
+
+- 允许已经开始的 native filesystem scan / parse 返回；
+- Manager 非 Running 时不得替换 Catalog generation；
+- hung refresh 达到 operational threshold 后，Manager 进入 Degraded，设置 `restart_required = true`；
+- hung refresh 不阻止其他健康 Instance 完成 shutdown/drain/destroy。
+
+已经进入的 load/create/configure：
+
+- 允许真实 native call 继续迟返；
+- Manager 不强制取消；
+- Manager 已非 Running 时不得 publish 新 Library/Open Instance；
+- valid late-created Instance 在 native initialization 返回后进入 Manager-owned Closing/Pending Close；
+- hung initialization 达到 operational threshold 后，Manager 进入 Degraded，设置 `restart_required = true`；
+- hung initialization 不阻止其他健康 Instance 完成 shutdown/drain/destroy。
+
+Normal Shutdown Success Predicate 仍要求：
+
+```
+restart_required == false
+AND no Faulted Library requiring process recovery
+AND no Unresolved Instance
+AND active_refresh_count == 0
+AND active_load_count == 0
+AND active_create_count == 0
+AND no pending/running refresh work
+AND no pending/running initialization work
+AND no pending/running close work
+AND all normal instances == Closed
+```
+
+结果语义：
+
+- predicate 成立：停止内部 lifecycle/close execution resources，进入 Stopped，返回 Ok；
+- 仅 observer deadline 到期，且尚未形成实际 Degraded 条件：保持 ShuttingDown，返回 DeadlineExceeded，内部收敛继续；
+- Faulted / Unresolved / lifecycle operational threshold / close-executor liveness failure：进入 Degraded，`restart_required = true`，返回对应 terminal failure；
+- Degraded 后迟返 cleanup 可以继续 exactly-once 收敛，但 authority 不恢复到 Running。
+
+Application 不需要自行维护另一套 refresh/load/create admission，也不需要拼接 Framework 内部 counter 判断是否可以退出。
+
+### 同步生命周期 API 的自等待限制
+
+任何会等待当前 managed Plugin invocation 返回的同步生命周期操作，都不得从该 invocation 的调用链中同步等待自身完成。至少包括：
+
+- 当前 Instance 的 `PluginInstance::close()`；
+- 会等待当前 Instance/Operation 收敛的 `PluginManager::shutdown()`。
+
+Operation/callback 只发送非阻塞控制请求或调用 `async_close()`，然后尽快返回；由独立 Application control thread 执行 `CloseFuture::wait()`、同步 `close()` 或 `PluginManager::shutdown()`。
+
+如果 Manager 进入 Degraded，Application/Supervisor 完成必要日志与 Artifact 状态处理后执行受控进程重启。Framework 不在内部直接调用 `std::_Exit()`。
+
+# 6. 插件包、插件目录与加载器设计
+
+本章说明磁盘上的 Plugin Package 如何被发现、选择、验证并加载。PluginCatalog、Resolver 和 LoadKey 都是 Framework 内部实现，不作为 Public API 对象暴露。
+
+## 6.1 Plugin Package 结构
+
+标准布局：
+
+```
+my_plugin/
+├── manifest.json
+└── lib/
+    ├── libmy_plugin.so
+    └── optional_private_dependency.so
+```
+
+规则：
+
+- `manifest.json` 位于 Package root；
+- 一个 Package 只有一个主 Plugin DSO；
+- private dependency 可以放 package-local `lib/`；
+- Manifest 中的相对路径 canonicalize 后必须仍位于 Package root；
+- symlink / canonical path 解析不得逃逸 Package root；
+- 已发布 Package 不允许原地覆盖正在使用的版本；
+- Plugin 可以自行携带说明文档、示例配置或其他私有资源，但这些文件不属于 Plugin Framework 的通用运行时规范，Framework 不解释其内容。
+
+V1 的 Manifest SHA-256 完整性承诺只覆盖 **主 Plugin Artifact**。Package-local private dependency 和其他 private resource 不逐文件写入 Framework Manifest；它们的不可变性由部署/包管理保证的 immutable release directory 负责。Framework 不把 Plugin Package 扩展成通用软件包管理系统。
+
+## 6.2 Manifest
+
+Manifest 由 `rodaq_register_plugin()` 自动生成，插件开发者不手写 Framework metadata。
+
+示例：
+
+```json
+{
+  "format_version": 1,
+  "plugin": {
+    "id": "com.example.atomic-counter",
+    "name": "Atomic Counter",
+    "version": "1.2.3",
+    "abi": {
+      "major": 1,
+      "minor": 0
+    }
+  },
+  "platform": {
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "artifact": {
+    "path": "lib/libatomic_counter_plugin.so",
+    "sha256": "..."
+  }
 }
 ```
 
-异常分类可以按项目策略更细，但任何 C++ exception 都不得穿越 C ABI。
+普通插件开发者只显式维护：
 
-**Threading 声明。**
+- Plugin ID；
+- Plugin Name；
+- Plugin Version。
 
-Operation table 和 RoDAQ callback 文档必须逐函数标记：
+Plugin ABI、platform/arch、artifact path、digest、Manifest format version 由 Tooling 生成。
 
-```text
-same-instance serialization
-cross-instance concurrency
-may run concurrently with role callback
-may block / bounded-work class
-operation deadline / RoDAQ watchdog semantics
-borrowed inputs lifetime
-outputs valid on each result class
-late-return ownership
-allowed RoDAQ callback / reentrancy
+Loader 必须把 Manifest 视为外部不可信文件输入，并在产生任何 Catalog entry 前执行以下 ingress validation：
+
+| 项目 | V1 规则 |
+| --- | --- |
+| JSON | UTF-8 严格 JSON；拒绝注释、尾随逗号、NaN/Infinity、重复对象键和超过 `max_manifest_size` 的输入 |
+| format version | `format_version` 必须是整数 `1`；缺失、类型错误或其他值 fail closed |
+| 字段集合 | V1 只允许示例中的 required 字段和嵌套字段；未知字段拒绝，未来格式通过新 `format_version` 定义 |
+| plugin metadata | `plugin.id/name/version` 遵循 §3.7 Descriptor ingress 规则；`abi.major/minor` 是无符号 16-bit 整数 |
+| platform | `os` 必须是 `linux`；`arch` 必须是 `amd64` 或 `arm64` |
+| artifact path | 非空相对路径，不得为绝对路径、包含 `..` 逃逸、指向 remote URL，或 canonicalize 后离开 Package root |
+| artifact digest | `sha256` 必须是 64 个 lowercase hexadecimal 字符，并与最终 DSO 内容匹配 |
+
+Manifest 解析、字段验证、Descriptor cross-check 任一步失败都必须拒绝该 Package，不能通过未知字段、默认值或宽松类型转换猜测未来格式。
+
+Manifest 中的 Plugin ABI Major/Minor 与 `rodaq_plugin_abi_version()` 表示同一个版本事实：
+
+- Manifest 用于 `dlopen()` 前快速预筛选；
+- DSO 加载后必须与 symbol 返回值完全一致；
+- Runtime 兼容条件为 Major 相同且 Runtime Minor 不低于 Plugin Minor。
+
+Manifest format version 是 Tooling 文件格式版本，不属于第 1.5 节的 Plugin Runtime 版本模型。
+
+## 6.3 Plugin Configuration 所有权
+
+Plugin Configuration 是 Plugin 私有输入，不属于 Plugin Framework 的可解释元数据。
+
+职责划分：
+
+```
+Application / Task
+    ↓ 提供 UTF-8 JSON configuration
+Plugin Framework
+    ↓ 只做 bounded transport
+Plugin::configure()
+    ↓ parse / validate / apply
+Plugin-owned state
 ```
 
-不能只在总说明写一句“thread-safe”。没有逐函数声明的 mutable function 采用最保守规则：同一实例串行、不得重入；library-level immutable query 则必须明确满足多实例并发读取。
+Framework 只负责：
 
-**ABI Static Assertions。**
+- 限制配置文本最大长度；
+- 验证通用 pointer/length/String contract；
+- 在 `configure()` 调用期间提供稳定的 configuration view；
+- 不修改、不迁移、不补默认值。
 
-C++ RoDAQ-side wrapper 和插件 SDK test 对关键 ABI 类型执行：
+Plugin 负责：
+
+- JSON syntax parse；
+- 字段类型和必填项；
+- 默认值；
+- 跨字段约束；
+- ROS 2 QoS、MQTT endpoint、MCAP/SQLite3 等 Plugin-specific 语义；
+- 文件、网络、设备等运行环境检查；
+- 无效配置时返回 `InvalidArgument` 和 Plugin-owned diagnostic message。
+
+因此 V1 的 Plugin Framework 不提供配置 Schema、通用配置 validator、字段级结构化配置错误类型或对应 CMake/Manifest 元数据。
+
+如果未来 Web UI 需要自动配置表单，应在具体业务配置层或独立可选的 Plugin Metadata Interface 中设计，不应把 UI Schema 校验职责耦合进 Plugin Foundation。
+
+## 6.4 PluginCatalog 与资源边界
+
+`PluginCatalog` 是 Framework 内部的已发现插件索引，不是 Public API 对象。
+
+Catalog entry 保存：
+
+```
+plugin_id
+plugin_name
+plugin_version
+Plugin ABI requirement
+platform / architecture
+artifact path / sha256
+package root
+```
+
+Discovery：
+
+```
+configured search paths
+→ bounded directory traversal
+→ enumerate manifest.json
+→ bounded manifest read / parse
+→ path containment + symlink escape rejection
+→ platform / ABI prefilter
+→ artifact digest verification
+→ build new Catalog generation
+→ atomic publish
+```
+
+所谓 `bounded` 必须由可执行的 Framework hard limit / qualification limit 定义，而不能只作为文字要求。至少覆盖：
+
+```
+max_plugin_roots
+max_package_entries
+max_manifest_size
+max_package_files
+max_artifact_size
+max_scan_bytes
+max_path_length
+max_catalog_diagnostics
+max_catalog_diagnostic_bytes
+```
+
+这些限制属于 Loader/Catalog 的防御性实现边界，V1 不全部暴露到 `PluginManagerOptions`。只有确实需要 Application 策略控制的 `max_loaded_plugins`、`max_instances`、`max_config_size` 保持 Public option；其余值由 Framework qualification 和部署基线冻结。
+
+达到扫描/解析资源上限时：
+
+- 不继续无界扫描或分配；
+- 对受影响 Package/refresh 返回 ResourceExhausted 或记录 bounded diagnostic，具体失败粒度由测试冻结；
+- 不污染已经发布的旧 Catalog generation；
+- `recent_errors` / Catalog diagnostics 都必须有界。
+
+单个无效 Package 记录诊断，不默认使整个 `refresh()` 失败；但是全局资源上限耗尽、Catalog 无法形成一致 generation 或 internal invariant failure 可以使 `refresh()` 整体失败。
+
+Application 通过：
 
 ```cpp
-static_assert(std::is_standard_layout<T>::value, ...);
-static_assert(std::is_trivially_copyable<T>::value, ...);
+PluginManager::plugins()
 ```
 
-并验证：
+获得一个一致 `PluginInfo` snapshot，不直接访问 CatalogEntry。
 
-- field offset、`sizeof`、`alignof` 与每个 `*_BASE_SIZE`；
-- amd64/arm64 各自的 golden layout，两个目标的语义字段顺序/宽度必须一致；
-- enum width strategy；
-- pointer/null behavior；
-- canary tail 不被越界写；
-- concrete C++ Factory 满足 `std::is_nothrow_default_constructible_v<Factory>` 与 `std::is_nothrow_destructible_v<Factory>`，Instance/Factory destructor 满足 noexcept 契约。
+通用 Plugin Framework 不提供 Acquisition/Storage 等业务分类元数据。业务 UI 需要分类时，由 RoDAQ Application 的业务配置或对应 Interface 设计提供。
 
-C compiler test 负责证明头文件不偷偷依赖 C++。
+## 6.5 内部版本选择
 
-**Role Wrapper。**
+Resolver 仍可以作为内部模块存在，但不进入 Public API。
 
-Core C++ 不应在业务代码到处直接调用 function pointer。
+`load(plugin_id)`：
 
-分别提供内部 wrapper：
+1. exact plugin_id；
+2. platform/arch compatible；
+3. Plugin ABI compatible；
+4. 排除所有 SemVer prerelease candidate；
+5. 在剩余 Stable Release 中按 SemVer precedence 选择最高 Plugin Version；
+6. 如果最高 precedence 上存在多个不同完整 Version Identity（例如 `1.2.3+build.7` 与 `1.2.3+build.8`），返回 Conflict，不按搜索路径、字典序或发现顺序任意选择；
+7. 如果 Plugin ID 存在但只有 prerelease candidate，则返回 Unavailable，并要求调用方使用 exact-version overload 显式选择。
 
-```text
-AcquisitionHandle
-StorageHandle
+`load(plugin_id, plugin_version)`：
+
+1. exact plugin_id；
+2. 对完整 SemVer identity 做 exact string match；
+3. platform/arch compatible；
+4. Plugin ABI compatible。
+
+同一个 Plugin ID + 完整 Version Identity 出现多个不同 Artifact 时返回 Conflict。Artifact digest 不参与 SemVer precedence，只用于安装内容验证、去重和审计。
+
+Public 加载接口只保留 `load(plugin_id)` 与 `load(plugin_id, plugin_version)` 两条路径；Catalog entry 和 Resolver selection 都是 Framework 内部实现。正式生产 Task 已要求 exact Plugin Version，因此 prerelease 只通过 exact-version overload 显式启用，不影响可复现性。
+
+## 6.6 Task 可复现性与 Artifact 审计
+
+正式 Task 配置只需要固定：
+
+```
+plugin_id
+plugin_version
+plugin_config
 ```
 
-`Handle` 表示 Core 持有的、已经通过 Catalog/Factory 创建并绑定到一个 C ABI instance 的调用句柄，不表示插件实现类本身。wrapper 负责：
+其中 `plugin_version` 必须是 exact Plugin Version。
 
-- C ABI → `Status/Result` 的白名单映射，unknown result/enum 变成 Contract Violation；
-- struct-size/version 初始化与校验；
-- caller-owned error buffer；
-- `work_id/instance/generation` owner token；
-- deadline + RoDAQ watchdog + late-return instrumentation；
-- same-instance serialization guard；
-- call latency、late-return 与 contract metrics；
-- quiesce/destroy 前 owner proof。
+Artifact SHA-256 属于部署验证和运行审计信息，不要求普通 Task 配置复制一份。
 
-Pipeline 只依赖这些项目 wrapper 的窄接口，而不是原始 C table。
+正式数据采集任务的运行记录 / Session metadata 必须自动记录实际使用的 Plugin Artifact：
 
-**Test Seam。**
-
-Plugin framework 测试必须生成/安装真实 package 与 DSO fixture，而不只是进程内手工 function table。Fixture 至少包括：unsupported bootstrap major、repeated bootstrap probe、malformed bootstrap response、old ABI minor、short/long struct、outer-size/header-size mismatch、descriptor/table version mismatch、NULL required service/function、wrong service/Common version、wrong role/protocol、duplicate id、manifest/artifact/schema mismatch、重复 schema version、entry symbol 位于 dependency、wrong architecture、bad RUNPATH/dependency、exception implementation、prepare/start fail、pre-instance validate/create watchdog late return、instance operation late return、permanent block、多 instance race、callback after failed create/quiesce/destroy、payload release after Acquisition destroy、unknown result/enum。Role evolution fixture 还必须验证 old/new minor tail 双向兼容。Storage fixture覆盖完整 BatchResult 合法/非法矩阵、seal output capacity 在副作用前不足、backend 违反 Core 下发 file/path limit；Volume 越权、跨 mount、fsync/rename 故障属于 Core Volume/Commit 测试，不放进 Storage Plugin conformance。破坏进程内存的 hostile fixture 单独用 subprocess 测试。
-
-ABI Freeze gate 不是“Markdown 审查通过”即结束：必须先把 `bootstrap.h/types.h/config.h/services.h/plugin.h/acquisition.h/storage.h` 按本文生成真实 header，逐个作为 translation unit 第一个项目头在 C11/C17/C++17 `-Werror` 编译；再生成 amd64/arm64 layout snapshot（`sizeof/alignof/offsetof/BASE_SIZE`）纳入版本控制。随后用一份直接 C 插件和一份 C++ Factory/Instance 插件执行同一 conformance vector，证明 status/output/ownership/minor-tail/late-return 语义等价后，才允许标记 ABI Frozen。
-
-**代码组织约束。**
-
-推荐逻辑文件组：
-
-```text
-include/rodaq/plugin/
-  abi/
-    bootstrap.h
-    types.h
-    config.h
-    services.h
-    plugin.h
-    ros2.h
-    acquisition.h
-    storage.h
-  config.hpp
-  services.hpp
-  ros2.hpp
-  acquisition.hpp
-  storage.hpp
-  export.hpp
-
-src/plugin/
-  manifest.*
-  package.*
-  catalog.*
-  shared_library.*
-  contract_validator.*
-  compatibility.*
-  instance_factory.*
-  acquisition_handle.*
-  storage_handle.*
-
-cmake/
-  RoDAQPlugin.cmake
+```
+plugin_id
+plugin_version
+artifact_sha256
 ```
 
-目录已经表达 `plugin` 领域，因此内部文件不再重复 `plugin_` 前缀。`manifest/package/catalog/contract_validator/compatibility` 都只承担一种明确职责；`shared_library` 保留完整词组，因为它表示 DSO handle RAII，而不是泛化的 `library`；`instance_factory` 明确表示“准入后创建 role instance”，避免宽泛的 `factory`；`acquisition_handle/storage_handle` 是 Core 侧已加载 C ABI instance 的窄包装，不与插件作者实现类混淆。
+Application/Task 作者不手工填写 digest。Core 只能通过公开只读接口取得实际 Artifact 身份：
 
-C ABI headers、C++ authoring headers 与 Core-side wrapper 分层，但都归属于语义明确的 `plugin` 模块，不使用 `sdk/`、`host/`、`common/`、`detail/` 这类宽泛目录。公共 plugin 目录不得引入 ROS 2/rclcpp/RMW、MQTT client、MCAP/SQLite3 等第三方 backend 头；`abi/ros2.h` 只是 RoDAQ 自己冻结的 Canonical interoperability value types，不依赖 ROS 2 第三方头。`RoDAQPlugin.cmake` 是插件作者的统一构建入口，C/C++ 示例和源码树外 consumer test 都必须使用它。
+```cpp
+const PluginArtifactInfo& PluginLibrary::artifact() const noexcept;
+```
 
-**实现顺序。** 为避免先写 Loader 后反复改接口，开发顺序固定为：① 冻结 `abi/` 下 C headers、常量、命名规则和 layout fixture；② 落地 `include/rodaq/plugin/` 下 C++ authoring API，并用 fake Factory 验证 C++→C adapter；③ 实现 `manifest.schema.json`、Manifest/Package 与 package limits；④ 实现 SharedLibrary、ContractValidator、Compatibility、Catalog 和真实 DSO fixtures；⑤ 实现 Config/Plugin Services、AcquisitionHandle/StorageHandle、InstanceFactory 和 timeout/quiesce owner model；⑥ 完成 `rodaq_add_plugin()`、源码树外 C/C++ examples、ABI/export/package gates；⑦ 接入 ROS 2 Acquisition + MCAP Storage 首个闭环；⑧ 接入 MQTT Acquisition 和 rosbag2 SQLite3 Storage 作为 V1 backend replacement qualification，并用同一 conformance harness 验证。Fast DDS/direct DDS 后移。前一阶段的 ABI/package gate 未通过时不得提前把后端业务代码作为“事实标准”反向修改公共契约。
+或者由持有该 `PluginLibrary` backing 的 Framework 集成层把同一 `PluginArtifactInfo` 传入 Session metadata writer。Core 不得访问内部 `PluginLibraryState`。
 
-### 5.6 Credential / Secret 的 V1 边界
+该信息用于长期数据审计、故障复现以及确认“同一 Plugin ID/Version 实际运行的是哪个主 Plugin Artifact”。
 
-V1 **不在 Common Plugin ABI required prefix 中定义 SecretBundle、credential bytes 或 secret service**。ROS 2 以及 V1 MQTT required qualification baseline 都不要求 secret handoff；MQTT baseline 明确使用无需用户名密码/证书 secret 的 Broker 配置。因此无需为了 MQTT 的可选认证能力扩大 Common ABI 1.0。
+这样区分：
 
-Task/Deployment 仍可以保存不敏感的 credential reference/version，用于配置身份、审计和未来扩展，但 secret material 不进入 Plugin Common ABI、Task export、Recovery Record、Segment Manifest 或普通日志。插件也不得根据 Task 参数自行打开任意 secret file path 绕过 Deployment 边界。
+- **Task 配置**：声明希望运行哪个 Plugin 版本；
+- **部署/Loader**：证明主 Plugin Artifact 未被替换，并依赖 immutable release directory 保护 package-local dependency；
+- **Session metadata**：记录实际运行的 Plugin ID / Version / 主 Artifact SHA-256。
 
-如果某个 V1 发布画像要宣称 MQTT TLS/用户名密码/证书认证，则**必须在该画像进入支持矩阵前**另行冻结 threat model、rotation/reconnect lifetime、zeroization 和 bounded-size 规则，并采用命名明确的 typed credential mechanism；否则这些认证模式不属于 V1 required capability。该机制不得回填到 Common ABI 1.0 required prefix，也不得使用通用 `void*`/key-value secret bag。
+## 6.7 Loader Pipeline 与符号来源验证
 
-## 6. 不变量与完成条件
+```
+internal CatalogEntry
+→ canonicalize Package / Artifact path
+→ reject path/symlink escape
+→ validate main Artifact SHA-256
+→ capture pre-load file identity
+→ internal single-flight
+→ loaded_plugins lookup
+   ├── existing same artifact
+   │    → reuse PluginLibraryState
+   └── absent
+        → reserve max_loaded_plugins
+        → supervised dlopen(RTLD_NOW | RTLD_LOCAL)
+        → resolve rodaq_plugin_abi_version
+        → resolve rodaq_plugin_get_entry
+        → validate symbol provenance
+        → validate ABI / Entry / Descriptor
+        → Manifest / Descriptor cross-check
+        → verify loaded-object identity
+        → atomically publish PluginLibraryState only while Manager == Running
+```
 
-### 6.1 核心不变量
+Bootstrap symbol provenance 是 V1 Loader contract 的一部分。对：
 
-1. Stable bootstrap 始终使用固定 `rodaq_plugin_get_descriptor`；Bootstrap Foundation 不依赖 Common ABI 类型，Common ABI major 通过纯、可重复的 bootstrap probe 协商，已发布 bootstrap required prefix 永不改变。
-2. Common ABI、Role Protocol、Config Schema、Plugin SemVer 各有独立版本域，不能互相替代；V1 不冻结通用 Extension version domain。
-3. 未通过 manifest/path/permission/digest/target/allow-list 校验的 artifact 不得进入 `dlopen()`。
-4. Runtime descriptor 必须与 package manifest 身份一致；bootstrap symbol 必须由候选主 DSO 自身定义。
-5. 稳定 ABI 不暴露 STL、JSON library、RTTI、exception 或 backend C++ 类型；所有 C 头可独立编译。
-6. Role major/minor、required prefix 和 `struct_size` 共同决定字段/operation 可用性；后端内部差异不能由 Core 猜测。
-7. Plugin 不拥有 Resource Plan、Volume 或 Admission authority；Task/Core 生成 Effective Limits，插件只能遵守与 Role 行为直接相关的限制。
-8. 无法由 Core 精确控制的 middleware/writer 内部资源不进入 Plugin ABI，通过受支持配置、进程级限制与生产资格验证。
-9. 一旦 create 成功，任何后续成功/失败路径都必须经过幂等 quiesce 后才能 destroy；create 失败不发布半实例。
-10. RoDAQ watchdog timeout 不等于 ABI call 返回，更不等于 quiescence；late-return 前相关 owner/resource 不提前释放。
-11. 同一 DSO 的不同 instance 默认可并发；插件不能依赖未声明的 DSO-wide serialization 或隐藏 process-global mutable state。
-12. 所有跨 ABI owner/lifetime/release、逐函数 threading/reentrancy/deadline/late-return 语义显式。
-13. library handle 长于所有 descriptor/table/function pointer、instance 与 callback；已注册插件 V1 不热卸载。
-14. Plugin log text 与 ErrorBuffer message 不作为程序逻辑；unknown result/enum/contradictory output fail-closed 为 Contract Violation。
-15. 同进程模型不承诺隔离非法指针、wild write、UB 或 process-global crash；此类故障只能通过测试子进程和外部 supervisor 恢复。
-16. 未经 joint dependency qualification 的插件组合不能因 C ABI 稳定而自动视为可共存。
+```
+rodaq_plugin_abi_version
+rodaq_plugin_get_entry
+```
 
-### 6.2 V1 完成条件
+解析出的地址必须使用平台可用的 ELF provenance 能力（例如 `dladdr()` 或等价机制）确认其 defining object 就是已经验证的主 Plugin Artifact，而不是 dependency 中的同名 symbol。无法证明 provenance 时 fail closed。
 
-Plugin 公共框架只有在以下条件全部满足后才能进入 ABI Freeze/完整后端开发：
+加载后的 loaded-object canonical identity / file identity 必须与 pre-load 验证的 Artifact 一致。V1 不声称单靠 path-based `dlopen()` 在 hostile writable directory 中消除所有 TOCTOU；其安全前提是 §6.8 的 immutable release directory。
 
-- `abi/bootstrap.h / abi/types.h / abi/config.h / abi/services.h / abi/plugin.h / abi/acquisition.h / abi/storage.h` 在 C11/C17 与 C++17、amd64/arm64 上独立编译，ABI baseline、数值和 required-prefix fixture 已入库；C ABI 公开 typedef 全部使用 `rodaq_*_t`，struct tag 不使用 `_t`，文件/导出符号/函数/类型均不编码发布版本；
-- `config.hpp / services.hpp / acquisition.hpp / storage.hpp / export.hpp` 在源码树外以 C++17 独立消费；最小 Acquisition/Storage C++ 插件只实现 Factory/Instance 和 `RODAQ_EXPORT_PLUGIN`，不手写 C function table；
-- 同一行为分别通过直接 C ABI fixture 与 C++ adapter fixture 执行，Result、生命周期、所有权、timeout/late-return 和输出结构语义一致；
-- `rodaq_add_plugin()` 能在源码树外构建最小 C 与 C++ Acquisition/Storage package，并自动完成 manifest/schema/digest、visibility/export 和 RUNPATH gate；
-- pre-dlopen package admission、duplicate-id fail-closed、artifact/schema digest、wrong target、path/symlink/permission 拒绝全部通过；
-- Bootstrap Foundation 独立编译、unsupported/multi-major probe、old/new Common minor以及 Role Protocol minor-tail 的双向兼容测试通过；
-- symbol provenance、export allow-list 与首发依赖组合的真实 `dlopen/dlsym` 测试通过；
-- 多 schema version、Draft 7 bounded validation、unsupported old schema 与禁止 remote/file `$ref` 测试通过；
-- create/prepare/start/open 任意失败、repeated quiesce、RoDAQ-watchdog late return、永久阻塞和 Quiescent destroy 的 owner 证明通过；
-- 多 Task/多 instance 并发、callback/quiesce race、禁止重入和 callback-after-quiesce 的 contract tests 通过；
-- unknown result/enum、malformed **value**、short/tail struct、ErrorBuffer truncation 和 plugin C++ exception 均 fail-closed；故意 invalid pointer/segfault/wild-write fixture 在子进程验证为 process-fatal，不宣称 RoDAQ 同进程隔离；
-- ROS 2/MQTT Acquisition 与 MCAP/SQLite3 等发布支持组合按实际发布矩阵做联合依赖资格；未支持组合在 Deployment/loader admission 前拒绝；
-- ASan/UBSan、关键并发 TSan，以及多实例长时 create→prepare→operate→quiesce→destroy 循环中 RSS/thread/FD/TLS/内部 registry 无未解释增长。
+失败回滚：
+
+| 阶段 | 处理 |
+| --- | --- |
+| pre-dlopen | 释放内部 load reservation |
+| dlopen failure | 返回 loader error |
+| provenance / symbol failure | close transient unpublished handle |
+| ABI mismatch | close transient unpublished handle |
+| Descriptor mismatch | close transient unpublished handle |
+| Manager 已进入 ShuttingDown/Degraded | 不发布新 Library；安全释放 transient unpublished handle |
+
+Publish race lost：复用 winner，并释放 loser 的 transient native handle/reference。
+
+成功 publish 后：
+
+- Native DSO 不再由 Framework 主动 `dlclose()`；
+- Public `PluginLibrary` 析构不改变 DSO 常驻状态；
+- 不存在 UnloadRequested / Unloading / Mapping Generation；
+- 不支持 in-place hot replacement。
+
+## 6.8 部署、不可变目录与依赖边界
+
+V1 生产部署要求：
+
+- Plugin search path 显式配置；
+- Package release directory 在整个进程运行期间对普通运行用户不可写并保持内容不可变；
+- 已验证主 Artifact 与其 package-local dependency 不允许原地替换；
+- 升级使用新的 Plugin Version / Release Directory，并通过进程重启生效；
+- 主 Artifact SHA-256 用于内容完整性检查，不表示发布者授权；
+- Package-local private dependency 的完整性由 immutable release directory / 外部包管理保证，而不是由 Framework Manifest 逐文件签名；
+- Publisher trust 由部署/包管理流程保证；
+- 不可信 DSO 的进程内沙箱不属于 V1。
+
+Loader 的 path/digest/file-identity 模型明确依赖这一前提。Qualification 必须包含“验证后、dlopen 前尝试替换主 Artifact / dependency”的误操作与攻击模拟：可写 release directory 必须被部署检查拒绝，或 Loader 必须 fail closed；不得把 writable production directory 当作受支持部署模式。
+
+`RTLD_LOCAL` 限制新符号进入全局作用域，但不是独立 dynamic-link namespace。ROS 2、MQTT、MCAP、SQLite3 等插件仍必须执行同进程依赖兼容资格验证。
+
+DSO static initializer/destructor：
+
+- 不得启动长期线程、callback source、网络连接；
+- 不得依赖 Application Service / Plugin config；
+- 不得把可观察业务初始化放入 static initializer；
+- 长期资源只能在受管 Plugin Instance `configure()` 之后创建。
+
+这样 Loader 验证失败或未发布 handle 回滚时，不需要执行 Plugin Instance lifecycle cleanup。
+
+## 6.9 Catalog / Loader 阻塞与健康监督
+
+`PluginManager::load()` 是 control-plane API，不得从 realtime/data-plane thread 调用。
+
+V1 不强制取消卡死在 dynamic loader / DSO static constructor 内的 native `dlopen()`。但是 `load()` 必须纳入 §5.10 的 Lifecycle Supervision，而不能只记录 duration：
+
+- load work 使用有界 lifecycle execution capacity；
+- 独立 health monitor 在 worker 卡死时仍能推进；
+- operational threshold 耗尽后，等待方返回 `DeadlineExceeded`，Manager → Degraded，`restart_required = true`；
+- hung load 不阻止 Manager 同时关闭其他已经 Open 的健康 Instance；
+- native load 如果以后迟返，只执行安全的 validation/rollback，不在 Degraded/ShuttingDown Manager 中发布新的 Library；
+- 不因此新增 Public LoadTicket/LoadFuture，也不为 `load()` 增加每次调用的 Public Deadline 参数。
+
+`PluginManager::refresh()` 同样是 control-plane API，并受 §5.4 的 Catalog refresh 生命周期监督：
+
+- 文件系统扫描、Manifest 读取/解析或 Catalog build 卡死时，等待方最终得到 `DeadlineExceeded`；
+- Manager 进入 Degraded/restart_required，且不阻塞其他健康 Instance 关闭；
+- 迟返 refresh 只能执行验证、清理和丢弃操作，不得在 Manager 非 Running 时替换 Catalog；
+- 并发 refresh 共享同一个 single-flight 流程，不能通过重复调用创建并行无界扫描。
+
+## 6.10 CMake 与安装
+
+Backend：
+
+```
+find_package(RoDAQ REQUIRED)
+
+add_library(my_plugin SHARED
+    src/my_plugin.cpp
+)
+
+target_link_libraries(my_plugin
+    PRIVATE
+        my_private_dependencies
+)
+
+rodaq_register_plugin(my_plugin
+    PLUGIN_ID com.example.my_plugin
+    PLUGIN_NAME "Example Plugin"
+)
+```
+
+`rodaq_register_plugin()` 的第一个参数必须是已经存在的 CMake target。它不创建 target、不接受 `SOURCES`，只负责把现有 shared-library target 注册为 RoDAQ Plugin，并附加 Plugin authoring、Descriptor/Manifest、visibility、package 与 install 规则。
+
+Plugin Version 解析规则：
+
+```
+if PLUGIN_VERSION is specified
+    validate and use full SemVer string
+else if PROJECT_VERSION is available
+    use PROJECT_VERSION
+else
+    CMake configuration error
+```
+
+需要 prerelease/build metadata 时显式声明：
+
+```
+rodaq_register_plugin(my_plugin
+    PLUGIN_ID com.example.my_plugin
+    PLUGIN_NAME "Example Plugin"
+    PLUGIN_VERSION "1.2.3-rc.1"
+)
+```
+
+`PLUGIN_VERSION` 与 `PROJECT_VERSION` 不形成两个独立版本域；Tooling 只产生一个最终 Plugin Version，并同时写入 Descriptor 与 Manifest。
+
+Plugin 私有配置不通过 `rodaq_register_plugin()` 声明结构或校验规则。插件如果希望随包提供示例 JSON、说明文档或 UI 资源，可以作为普通 private/package resource 安装，但 Plugin Framework 不解释这些文件。
+
+Tooling 自动生成：
+
+- Descriptor metadata；
+- Plugin ABI Major/Minor；
+- Manifest；
+- artifact SHA-256；
+- platform / architecture；
+- install layout。
+
+安装后必须支持：
+
+```
+find_package(RoDAQ REQUIRED)
+target_link_libraries(app PRIVATE rodaq::plugin)
+```
+
+以及独立 Plugin 工程使用 `rodaq_register_plugin()`，不依赖源码树中的 private target。
+
+# 7. 生命周期与并发安全
+
+本章是 Plugin Instance 生命周期安全的权威说明。V1 生命周期只使用 Initializing、Open、Closing、Closed、Unresolved 五个状态。
+
+## 7.1 Plugin Instance 状态机
+
+```
+Initializing
+    │ configure success
+    ▼
+   Open
+    │ close / destructor / manager shutdown
+    ▼
+ Closing
+   ├── shutdown + drain + destroy success → Closed
+   └── shutdown cannot be proven safe      → Unresolved
+```
+
+规则：
+
+- `Initializing` 只存在于 Framework 内部，不发布给 Application；
+- `Open` 是唯一允许新的 Query / Operation 调用进入的状态；
+- `Closing` 拒绝新的 Query / Operation；
+- `Closed` 表示 raw Plugin Instance 已 destroy，Instance-owned ServiceRegistry/backing 已释放；
+- `Unresolved` 表示 Plugin `shutdown()` 已经真实返回 non-OK，或 Framework 已获得等价的终态证据表明该 Instance 不能安全 destroy；必须保留到进程退出并要求受控重启；
+- Native `shutdown()` 仍在执行时，即使已经超过 policy deadline，Instance 仍保持 `Closing`；此时 Manager 可以先进入 Degraded/restart_required，但不得把尚在执行的 shutdown 伪装成 terminal Unresolved。
+
+## 7.2 初始化与 Manager shutdown
+
+`create_instance()` 只在 PluginManagerState == Running 时进入。
+
+Manager shutdown 与 create 的线性化：
+
+```
+create_instance()
+→ under PluginManagerState lock:
+     require Running
+     active_create_count++
+
+refresh()
+→ under PluginManagerState lock:
+     require Running
+     enter/join internal refresh single-flight
+     only the single-flight creator increments active_refresh_count
+
+PluginManager::shutdown()
+→ under same lock:
+     Running → ShuttingDown
+     reject later refresh/load/create
+
+→ immediately request closure of existing Open Instances
+→ concurrently supervise active refresh / load / create / configure
+→ late refresh must not publish Catalog
+→ late initialization must not publish Open Instance
+```
+
+因此 refresh/load/create 与 Manager shutdown 的准入完全由 PluginManagerState 统一线性化。
+
+如果 create 已经进入 Plugin ABI，Manager shutdown 监督它真实返回；Framework 不使用线程取消，也不会因此延迟关闭其他健康 Instance。
+
+进入 Plugin ABI create 前，Framework 必须已经完成 Instance capacity、`PluginInstanceState` 和无丢失关闭提交所需控制资源的预留，并把该 State 纳入 Manager 生命周期域。
+
+如果 configure 失败：
+
+```
+preserve original configure Status
+→ phase = Closing
+→ publish Manager-owned Pending Close Work
+→ only then return original Status to Application
+```
+
+因此失败返回不会让部分初始化 Instance 在 cleanup 接管前失去 owner。
+
+如果 create/configure 最终成功但在 Open Commit Point 重新检查时 Manager 已进入 ShuttingDown，则不得发布 Open Instance：
+
+```
+configure success
+→ Open Commit Point observes manager != Running
+→ phase = Closing
+→ publish Pending Close Work
+→ active_create_count--
+→ create_instance() returns InvalidState
+```
+
+Manager shutdown 等待该 Instance 完成真实关闭或进入明确的 Degraded 路径。
+
+## 7.3 Plugin shutdown 规则
+
+`PluginBase::shutdown()` / Foundation `shutdown()` 只回答：
+
+> Plugin Instance 是否已经停止所有依赖该 Instance 的后台活动，并进入可以安全 destroy 的状态。
+>
+
+它必须：
+
+- 对部分初始化 Instance 安全；
+- 对尚未创建的资源允许 no-op；
+- 停止新的 Instance-dependent background work；
+- 唤醒并停止已有 thread、executor、timer、callback/source；
+- 等待这些工作结束，或在返回 Ok 前完成与 Instance 无关的 ownership handoff；
+- 不销毁仍可能被已准入 Operation 使用的 backing；
+- 返回 Ok 后，即使关闭前已经准入的 Operation 继续执行，也不得再次创建新的 Instance-dependent background work。
+
+Plugin 可以使用 atomic flag、mutex/state、stop token、executor state 等任意方式实现，不要求存在统一名为“Async Work Admission”的对象。
+
+ROS 2 Executor、MQTT callback/reconnect worker、MCAP/SQLite background writer 等都属于 Plugin shutdown 需要收敛的资源。
+
+### 业务 Stop / Finalize 与 Plugin shutdown 分离
+
+Plugin shutdown 是生命周期操作，不承诺业务完成成功。
+
+例如：
+
+```
+StorageInterface::finalize()
+→ DiskFull / DataLoss
+
+PluginBase::shutdown()
+→ stop writer worker
+→ release callback/backing
+→ Ok
+```
+
+两者可以同时成立。
+
+因此：
+
+- Acquisition Stop 属于 Acquisition Interface；
+- Storage Finalize / Persistence Completion 属于 Storage Interface；
+- Plugin shutdown 只负责实例可安全 destroy。
+
+## 7.4 统一调用保护
+
+所有 Plugin Instance-dependent ABI 调用使用统一：
+
+```
+phase == Open
+active_call_count
+CallGuard
+```
+
+Query 与 Operation 使用同一个 `active_call_count`。
+
+Query 返回 Operation Handle 时，完整 Managed Handle 必须在当前 CallGuard 释放之前构造完成：
+
+```
+acquire CallGuard
+→ query()
+→ validate InterfaceReference
+→ attach strong PluginInstanceState
+→ construct complete OperationHandle
+→ release CallGuard
+```
+
+CallGuard 释放后，Handle 构造逻辑不得再访问可能随 close 被销毁的 Provider metadata、vtable backing 或其他 Instance-dependent backing。
+
+准入必须满足：
+
+```
+lock instance state
+if phase != Open:
+    reject InvalidState
+active_call_count++
+unlock
+```
+
+返回时：
+
+```
+active_call_count--
+notify close waiter if reaches zero
+```
+
+关闭线程必须先把 state 从 Open 切换到 Closing，再等待 active_call_count 清零。
+
+这保证：
+
+- 已经准入的调用可以安全返回；
+- Closing 之后不会有新调用进入；
+- destroy 不会与 Query/Operation 并发；
+- Query 构造 Handle 的过程中不会因为并发 close 提前释放依赖 backing。
+
+如果 ManagerState 与 InstanceState 必须嵌套持锁，统一顺序为 `PluginManagerState → PluginInstanceState`。Plugin ABI、Application/Plugin callback、Provider destructor、custom deleter、外部 I/O 或任何可能重入 Framework 的代码都不得在这些控制锁内执行。需要释放对象时先在锁内 detach ownership/commit state，再在锁外析构。
+
+## 7.5 同步与异步关闭
+
+### async_close()
+
+首次：
+
+```
+Open
+→ atomically Closing
+→ atomically publish Pending Close Work
+→ signal AsyncCloseExecutor
+→ return CloseFuture(shared PluginInstanceState)
+```
+
+`Closing` 必须始终能够从 Manager 的 Pending Close Work Set 中被重新发现。一次 queue insertion 失败不得丢失关闭责任；worker 完成、queue capacity 恢复和 Manager shutdown 都必须能够重新推进 pending close。同一 Instance 同时最多一个真实 close task 运行。
+
+重复调用：
+
+- Closing → 返回同一个 State 的 CloseFuture；
+- Closed → 返回已经 ready 的 CloseFuture；
+- Unresolved → 返回已经 terminal-failure 的 CloseFuture。
+
+### close()
+
+同步 `close(observer_deadline)` 使用 `CloseFuture`：
+
+```
+future = async_close()
+wait = future.wait(observer_deadline)
+
+TimedOut  → return DeadlineExceeded
+Completed → return future.result()
+```
+
+`close().ok()` 表示 Instance 已进入 Closed。
+
+`CloseFuture::wait()` 只报告 Observer Wait 是否完成；真实关闭终态由 `CloseFuture::result()` 返回。因此 Application 能无歧义地区分：
+
+- Observer Timeout；
+- Native shutdown terminal failure（包括真实 `DeadlineExceeded`）；
+- Close success。
+
+### callback/Operation 中关闭当前 Instance
+
+当前 Instance 的 Operation/callback 内允许：
+
+```cpp
+instance.async_close();
+return;
+```
+
+不允许形成：
+
+```
+Operation holds active_call_count
+→ same thread calls close() and waits
+→ close waits active_call_count == 0
+```
+
+的自等待。
+
+Debug/qualification 实现可以通过 thread-local marker 检测直接 self-wait 并返回 InvalidState；该 marker 是实现辅助，不是架构对象。
+
+同一规则扩展到 `PluginManager::shutdown()`：如果当前 managed Plugin invocation 的返回是 Manager shutdown 完成条件的一部分，则该调用链不得同步等待 Manager shutdown。Operation/callback 应只发出非阻塞控制请求并返回，由独立 Application control thread 执行真正的同步 shutdown。
+
+## 7.6 实际关闭流程
+
+```
+phase = Closing
+→ Framework 根据 PluginManagerOptions::shutdown_timeout
+   计算 native shutdown absolute deadline
+→ call Plugin shutdown(native_deadline)
+→ wait actual shutdown return
+→ if shutdown != Ok
+     phase = Unresolved
+     manager = Degraded
+     restart_required = true
+     stop
+→ wait active_call_count == 0
+→ destroy exactly once
+→ detach Instance-owned ServiceRegistry / backing under control lock
+→ release detached backing outside control locks
+→ commit Manager instance removal / accounting
+→ release max_instances capacity
+→ close_result = Ok
+→ phase = Closed
+→ notify CloseFuture observers
+```
+
+destroy gate：
+
+```
+SafeToDestroy =
+    shutdown actually returned Ok
+    AND active_call_count == 0
+```
+
+`SafeToDestroy` 是关闭流程中的瞬时判定条件，不形成额外生命周期状态。
+
+`Closed` / terminal Close Ok 是强成功边界，只能在 Instance-owned backing 已完成安全释放、Manager active ownership 已移除且 `max_instances` 容量已经归还之后发布。资源析构如果可能重入 Framework，则采用“锁内 detach + accounting commit、锁外 destructor/deleter、最终 publish terminal result”的两阶段流程；不得为了避免锁外析构而提前向 Application 发布关闭成功。
+
+## 7.7 AsyncCloseExecutor
+
+异步关闭执行器只负责避免：
+
+- `PluginInstance` destructor 阻塞；
+- Application 为每个 close 建线程；
+- 一个普通同步调用线程直接卡在 Plugin shutdown。
+
+要求：
+
+- worker 数有界；
+- pending close 总量受 `max_instances` 自然限制；
+- Closing Instance 同时属于 Manager 可发现的 Pending Close Work Set；
+- queue 满或一次调度失败不得丢失 close work；
+- Pending Work 具有有界公平性，并在 worker 完成/容量恢复/Manager shutdown 时自动重试；
+- 同一 Instance 最多一个真实 close task；
+- `async_close() noexcept` 的提交路径不得因为临时 heap allocation failure 丢失关闭责任；
+- 不无界扩线程；
+- 不使用 pthread cancellation / forced thread termination；
+- Manager 持有 Closing/Unresolved Instance，所以 Public wrapper 释放不会产生无主对象。
+
+Framework 必须使用不依赖被阻塞 worker 的内部 health monitor 监督整个关闭链路，而不只监督 Native Shutdown。至少覆盖：
+
+```
+Pending Scheduling
+→ Native Shutdown
+→ Call Drain
+→ Destroy
+→ Backing Release
+→ Terminal Publication
+```
+
+如果 Native Shutdown、Call Drain、Destroy、Backing Release 或 Pending Scheduling 任一阶段超过对应 operational threshold：
+
+```
+PluginManagerPhase = Degraded
+restart_required = true
+emit critical diagnostic(stage, duration)
+```
+
+不得强制取消 worker，也不得因为 watchdog 超时跳过真实资源状态。若阻塞调用迟返，继续按真实阶段向后推进，并保持 shutdown/destroy/terminal publication 的 exactly-once 语义。
+
+如果所有 close worker 都无法继续提供有效关闭能力：
+
+```
+PluginManagerState.phase = Degraded
+restart_required = true
+reject new create_instance()
+emit critical diagnostic
+```
+
+具体 worker count、queue implementation、saturation timer 属于内部实现与 Metrics，不冻结为 Public API 或新的生命周期状态。
+
+## 7.8 所有权矩阵
+
+| 对象/资源 | Open | Closing | Closed | Unresolved |
+| --- | --- | --- | --- | --- |
+| PluginLibraryState / DSO | Manager 持有，Resident | Resident | Resident | Resident |
+| Raw Plugin Instance | InstanceState 持有 | InstanceState 持有 | 已 destroy / null | 保留，禁止 unsafe destroy |
+| ServiceRegistry backing | InstanceState 持有 | 保留 | 已释放 | 继续保留 |
+| PluginInstance wrapper | 可存在 | 可释放 | stale/closed | stale/unresolved |
+| Operation Handle | 可调用 | 新调用 InvalidState | InvalidState | InvalidState |
+| CloseFuture | 可创建 | 等待同一 State；native shutdown 在途时即使 Manager 已 Degraded 仍未 ready | ready success | ready terminal failure |
+| PluginManagerState ownership | 持有 active Instance | 必须持有 | 从 active set 移除 | 持有到进程退出 |
+
+成功加载 DSO 常驻不等于 Instance backing 可以常驻。Instance 业务资源仍必须尽可能通过 shutdown/destroy 释放。
+
+## 7.9 并发结果矩阵
+
+| 并发场景 | 确定结果 |
+| --- | --- |
+| create_instance × manager shutdown | Create 在 Open Commit Point 重新检查 Manager；Shutdown 已获胜时不发布 Open Instance，转入 Pending Close 并返回 InvalidState |
+| Query × close | Query 先取得 CallGuard 则完成；close 先切换 Closing 则 Query 返回 InvalidState |
+| Operation × close | 已准入 Operation 完成；新 Operation 被拒绝 |
+| Operation × Plugin shutdown | 已准入 Operation 可以继续，但 Plugin 不得在 shutdown 安全点之后创建新的 Instance-dependent background work |
+| async_close × async_close | 只有一次真实 shutdown/destroy；多个 Future 观察同一 InstanceState |
+| close wait timeout × later wait | later wait 继续观察同一真实关闭流程 |
+| PluginInstance destructor × Open | destructor 触发/复用 async_close，不同步等待 |
+| manager shutdown × async_close | 都复用同一 Instance Closing 状态 |
+| refresh × refresh | 后到调用加入/观察同一 single-flight；只有一个 Catalog generation build |
+| refresh × shutdown | Shutdown 立即关闭 Open Instance；late refresh 不发布 Catalog；hung refresh 可进入 Degraded |
+| close worker permanent block | 独立 health monitor 能检测；Manager 进入 Degraded；不强制取消、不 unsafe destroy |
+| Faulted Library × manager shutdown | restart_required 阻止 Stopped/Ok；Manager 保持 Degraded |
+| Manager shutdown × managed callback | 不允许同步自等待；由独立 control thread 执行 shutdown |
+
+## 7.10 失败处理
+
+| Failure | 处理 |
+| --- | --- |
+| Plugin constructor exception | 不发布 Instance；释放容量 |
+| create normal failure | 返回原始 Status |
+| create ABI violation | Library → Faulted；restart_required；禁止后续 create |
+| configure failure | 返回原始 Status；Framework 异步 shutdown 部分初始化状态 |
+| Plugin configuration invalid | Plugin `configure()` 返回 InvalidArgument；Framework 保留原始 Status 并按初始化失败路径安全清理 |
+| close observer timeout | DeadlineExceeded；真实 close 继续 |
+| Plugin shutdown non-OK | Instance → Unresolved；Manager → Degraded |
+| Plugin shutdown 永久不返回 | 保留 Instance；close worker 被占用；Manager 可能 Degraded |
+| Catalog refresh 永久不返回 | 保持 refresh backing；Manager → Degraded/restart_required；其他 Open Instance 仍完成关闭 |
+| destructor violates noexcept | 可能 std::terminate；通过编码/测试降低风险 |
+| max_instances exhausted | Plugin ABI create 前 ResourceExhausted |
+| max_loaded_plugins exhausted | 新 dlopen 前 ResourceExhausted |
+| loader validation failure | 回滚未发布 transient handle |
+| Service Provider code lifetime 非 process-resident | unsupported integration；资格验证必须发现 |
+
+## 7.11 Destroy 与析构
+
+Foundation `destroy()`：
+
+- 只在 `shutdown() == Ok` 且 `active_call_count == 0` 后调用；
+- 最多一次；
+- 不得与其他 Instance ABI call 并发；
+- Plugin destructor 必须 no-throw；
+- 返回后 raw context 不再可访问；
+- destroy 不返回 Status，不重试。
+
+## 7.12 延迟工作
+
+如果某项 deferred work 必须在 Instance destroy 后继续：
+
+```
+shutdown() == Ok
+⇒ deferred work no longer depends on PluginInstanceState
+∧ no borrowed Service Reference remains
+    unless the Service Interface defines explicit ownership handoff
+∧ callback Context/Backing have independent owners
+∧ executable code remains valid
+```
+
+因为 Plugin DSO Resident，Plugin code mapping 在进程退出前有效；但 context、buffer、Service Provider backing 仍必须单独保证生命周期。
+
+## 7.13 常驻 Plugin Library
+
+成功发布的 Plugin DSO：
+
+```
+Loaded
+→ Resident
+→ process exit
+```
+
+规则：
+
+- Public PluginLibrary 析构不触发 `dlclose()`；
+- 失败且尚未 publish 的 transient handle 可以正常回滚；
+- Plugin 升级通过新的 Plugin Version + 进程重启；
+- 不实现 hot reload / Mapping Generation；
+- `max_loaded_plugins` 限制 Framework 管理的常驻 Plugin 数量；
+- RSS、FD、native thread 和第三方库 cache 属于进程资源监督，不由 `max_loaded_plugins` 单独给出数学上界。
+
+# 8. 验证、交付与实施门禁
+
+本章不再定义新的架构，而是把前面各章的设计规则转换为可执行证据。阅读时可以把每个 PF-* 编号理解成一条“必须通过的验收用例”；正文负责说明设计，Qualification 负责证明实现确实遵守设计。
+
+## 8.1 验证层级
+
+| 层级 | 目标 |
+| --- | --- |
+| 单元测试 | Registry、Catalog、版本选择、状态转换、错误路径 |
+| ABI 验证 | C Header、struct size、required prefix、旧二进制兼容 |
+| SDK 验证 | PluginBase、PluginSetup、Provider、trampoline、异常转换 |
+| Runtime 验证 | load / create / query / close / shutdown |
+| 并发验证 | create/close/query/operation/shutdown 的线性化 |
+| 故障注入 | create ABI violation、shutdown hang、Loader failure、DiskFull |
+| 独立工程 | 安装后独立构建，不依赖源码树 private target |
+| 性能验证 | Operation hot path、资源上限、写入链路 |
+| 长期运行验证 | DSO 常驻、重复 create/close、异常恢复、资源稳定性 |
+
+每个关键测试至少说明：
+
+```
+Test ID
+Safety Property
+Precondition
+Action / Interleaving
+Expected Result
+Expected Resource State
+```
+
+Qualification 验证可观察行为，不要求某个内部 helper/class 必须存在。
+
+## 8.2 Runtime / Lifecycle 资格验证
+
+| ID | 场景 | 必须证明 |
+| --- | --- | --- |
+| PF-RT-001 | create success | Application 只得到 Open Instance |
+| PF-RT-002 | configure failure cleanup | 返回原始 configure Status 前，Manager 已取得 Closing/Pending cleanup ownership；业务资源最终安全收敛 |
+| PF-RT-003 | Query × close | Managed Handle 在 CallGuard 内完整构造；已准入 Query 完成；后续 Query InvalidState |
+| PF-RT-004 | Operation × close | 已准入 Operation 完成；新调用拒绝；destroy 等待 active call |
+| PF-RT-005 | repeated async_close | 只有一次真实 shutdown/destroy |
+| PF-RT-006 | close deadline source semantics | `async_close()` 的 wait/result 能无歧义区分 Observer Timeout 与真实 terminal DeadlineExceeded；同步 `close()` 返回 DeadlineExceeded 时允许两种来源，调用方不得仅凭 StatusCode 推断来源 |
+| PF-RT-007 | destructor × Open | destructor 不阻塞；触发/复用异步关闭 |
+| PF-RT-008 | same-instance blocking self-wait | callback/Operation 中同步 `close()` 或 `CloseFuture::wait()` 等待自身关闭时 fail-fast/不形成死锁 |
+| PF-RT-009 | manager shutdown self-wait | managed callback 中不得同步等待包含自身返回条件的 Manager shutdown |
+| PF-RT-010 | Plugin shutdown terminal failure | Plugin `shutdown()` 已真实返回 non-OK 时，Instance → Unresolved；Manager → Degraded；不 unsafe destroy |
+| PF-RT-011 | whole-close-pipeline supervision | 独立 health monitor 覆盖 Pending Scheduling / Native Shutdown / Call Drain / Destroy / Backing Release / Terminal Publication；任一阶段异常持续都可诊断并进入 Degraded/restart_required，且不强制取消/unsafe destroy |
+| PF-RT-012 | late native shutdown return | timeout 后迟返只继续完成 drain/destroy once，不重复 Destroy，也不自动撤销 restart_required |
+| PF-RT-013 | pending close queue pressure | queue full/临时调度失败不丢 close work；容量恢复后自动推进 |
+| PF-RT-014 | pending close fairness | 多 Closing Instance 最终都能被调度；同一 Instance 同时最多一个真实 close task |
+| PF-RT-015 | async_close noexcept takeover | 进入 Plugin ABI create 前已预留关闭控制资源；queue insert failure、临时 allocation failure、worker pressure 下仍不丢 Pending Close、不产生无主 Instance，并可自动重试推进 |
+| PF-RT-016 | manager shutdown × create | Open Commit Point 重新检查 Manager；Shutdown 获胜时不发布 Open Instance，转入 Pending Close 并返回 InvalidState |
+| PF-RT-017 | manager shutdown success | Success Predicate 全部满足后才进入 Stopped/Ok |
+| PF-RT-018 | Faulted Library × shutdown | Faulted + restart_required 时即使没有正常 Instance，也不得返回 Ok |
+| PF-RT-019 | manager observer timeout | 仅 Observer Deadline 到期且关闭仍正常推进时，返回 DeadlineExceeded、保持 ShuttingDown、不自动设置 restart_required |
+| PF-RT-020 | manager actual shutdown failure | Native Shutdown Policy Timeout、Faulted、Unresolved 或已确认 executor liveness failure → Degraded + restart_required |
+| PF-RT-021 | ManagerState / InstanceState lock order | 嵌套锁遵循统一顺序；Plugin ABI/callback/destructor/custom deleter 在控制锁外执行 |
+| PF-RT-022 | close success publication | CloseFuture 只能在 backing 释放、Manager ownership/accounting 提交和 max_instances 容量归还后观察到 Completed/Ok |
+| PF-RT-023 | CloseFuture result before ready | result() 在 terminal publication 前返回 InvalidState；ready/wait/result 观察同一发布点 |
+| PF-RT-024 | repeated create/close | live instance/resource count 回到基线；close().ok() 后紧随其后的 create 不因旧 Instance 占用 capacity 而失败 |
+| PF-RT-025 | max_instances | 在进入 Plugin create 前确定 ResourceExhausted |
+| PF-RT-026 | configure failure capacity | configure failure 返回原始错误时 cleanup 可以仍在 Closing；capacity 在安全 cleanup 完成前不归还，立即重试允许暂时 ResourceExhausted |
+| PF-RT-027 | PluginManager lifecycle | Manager move/destructor/repeated shutdown/Stopped/Degraded 行为与 process-lifetime single authority 规则一致；析构不阻塞、不伪装 shutdown success |
+| PF-RT-028 | hung create | Native create 超过 operational threshold 后等待方得到 DeadlineExceeded；Manager → Degraded/restart_required；不取消 native call、不丢失 backing |
+| PF-RT-029 | hung configure | configure 卡死不发布 Open Instance；Manager → Degraded；其他健康 Open Instance 仍可完成关闭 |
+| PF-RT-030 | manager shutdown × hung create/configure | shutdown 立即关闭已有 Open Instance，同时监督 in-flight initialization；不得先串行等待 active_create_count 归零 |
+| PF-RT-031 | late initialization return | Manager 已 ShuttingDown/Degraded 时，迟返初始化不得 publish Open Instance；valid Instance 进入 exactly-once cleanup |
+| PF-RT-032 | refresh × load × shutdown | refresh 原子发布 Catalog generation；load 观察完整 generation；shutdown 后无新 Library/Instance publish |
+| PF-RT-033 | public handle threading | 独立 Handle 上的只读/close/query 并发满足 §5.1 矩阵；同一 wrapper 的 move/destroy 与成员访问不得 data race |
+| PF-RT-034 | refresh × refresh | 并发 refresh 共享同一 single-flight；只有一个 Catalog build/publication，后到调用观察同一结果 |
+| PF-RT-035 | refresh × shutdown | Shutdown 立即关闭 Open Instance；late refresh 不替换 Catalog；hung refresh 进入 Degraded 且不阻塞健康实例关闭 |
+
+这些测试只验证生命周期行为，不冻结具体 queue、watchdog、TLS marker 或同步原语的类名和实现形式。
+
+## 8.3 ABI 资格验证
+
+| ID | 场景 | 必须证明 |
+| --- | --- | --- |
+| PF-ABI-001 | C11 header compile | Public Header 可由纯 C11 编译器独立编译 |
+| PF-ABI-002 | C++17 header compile | 同一 ABI Header 可安全被 C++17 include |
+| PF-ABI-003 | struct size / required prefix | append-only struct/vtable 可被旧 consumer 安全读取 |
+| PF-ABI-004 | Interface version negotiation | Major 精确匹配，Minor 选择双方最高交集 |
+| PF-ABI-005 | invalid output state | non-OK 后 output 保持 default-invalid |
+| PF-ABI-006 | Error Buffer | 截断、空 buffer、UTF-8 boundary 和 size 语义正确 |
+| PF-ABI-007 | Plugin ABI mismatch | 不解释不兼容高层结构，直接拒绝加载 |
+| PF-ABI-008 | create normal failure | default-invalid output；不发布 Instance |
+| PF-ABI-009 | create malformed success | 不调用未验证 function pointer；Library → Faulted；restart_required |
+| PF-ABI-010 | create non-OK + non-default output | 按 ABI violation 处理 |
+| PF-ABI-011 | shutdown-before-destroy | destroy 只在 shutdown Ok + active_call_count == 0 后执行 |
+| PF-ABI-012 | old binary compatibility | 使用保留旧 Header + 旧 DSO/consumer binary 验证新 Runtime |
+| PF-ABI-013 | vtable byte-range validation | 先验证 context/vtable 非空且 `vtable_size >= sizeof(rodaq_struct_header_t)`，再读取 header.struct_size；之后按 required prefix 与 `offsetof + sizeof(slot)` 对 readable byte range 做机器检查 |
+| PF-ABI-014 | Foundation nullability/default-invalid | configure/query/shutdown/destroy 的 nullable/non-null 参数与 PluginInstance/InterfaceReference 唯一 default-invalid 表示可由 Header test 验证 |
+| PF-ABI-015 | numeric boundary | `max_config_size &lt;= UINT32_MAX`、config length 边界、deadline conversion overflow/expired/infinite 行为可重复验证 |
+| PF-ABI-016 | unknown plugin status | 未发布状态码在 create/configure 中触发 Faulted；在 query/operation 中返回 Internal 且不发布 partial output；在 shutdown 中进入 Unresolved 收敛 |
+| PF-ABI-017 | malformed Error Buffer | null pointer/capacity/size 不一致、invalid UTF-8 和 OK + non-empty error 均被识别；合法 non-OK 主状态不被 diagnostic buffer 覆盖 |
+
+同一 Plugin ABI Major 下，不只 layout 要兼容，既有函数的错误、线程、生命周期和 shutdown 语义也必须兼容。
+
+## 8.4 Loader / Package 资格验证
+
+| ID | 场景 | 必须证明 |
+| --- | --- | --- |
+| PF-LD-001 | discovery | 从配置 search path 发现合法 Manifest |
+| PF-LD-002 | invalid package | 单个坏 Package 产生诊断，不污染其他 entry |
+| PF-LD-003 | exact version load | `load(id, version)` 只选择 exact version |
+| PF-LD-004 | default load | `load(id)` 只在 compatible Stable Release 中选择最高版本；只有 prerelease 时返回 Unavailable，prerelease 必须通过 exact-version overload 显式加载 |
+| PF-LD-005 | duplicate ID/version different artifact | Conflict |
+| PF-LD-006 | concurrent same artifact load | single-flight；只发布一个 PluginLibraryState |
+| PF-LD-007 | artifact digest mismatch | fail closed |
+| PF-LD-008 | transient dlopen validation failure | 未 publish handle 正常回滚 |
+| PF-LD-009 | Resident DSO | Public PluginLibrary 释放不触发 runtime dlclose |
+| PF-LD-010 | static initializer restriction | validation failure rollback 不需要 Plugin lifecycle cleanup |
+| PF-LD-011 | Plugin ABI metadata | Manifest ABI Major/Minor 可用于 prefilter；加载后必须与 `rodaq_plugin_abi_version()` 完全一致 |
+| PF-LD-012 | session artifact audit | 正式采集 Session metadata 自动记录实际 plugin_id/version/artifact_sha256 |
+| PF-LD-013 | ROS2 + MQTT + MCAP + SQLite3 same process | 关键依赖/SONAME 组合可同时加载 |
+| PF-LD-014 | max_loaded_plugins | 新 dlopen 前确定 ResourceExhausted |
+| PF-LD-015 | SemVer build metadata tie | exact load 对完整 SemVer identity 做字符串匹配；default load 遇到相同最高 precedence、不同 build metadata identity 时返回 Conflict，不依赖发现顺序 |
+| PF-LD-016 | hung dlopen/static initializer | load 进入 Lifecycle Supervision；threshold 后 Manager → Degraded/restart_required，其他 Open Instance shutdown 不被阻塞 |
+| PF-LD-017 | bootstrap symbol provenance | ABI version / Entry symbol 的 defining ELF object 必须是已验证主 Artifact；dependency 同名 symbol 必须 fail closed |
+| PF-LD-018 | immutable release directory | production writable release directory 被部署检查拒绝或 Loader fail closed；验证后替换主 Artifact 的测试不能加载未验证内容 |
+| PF-LD-019 | package-local dependency replacement | 明确验证 V1 完整性边界：Framework SHA 只覆盖主 Artifact；private dependency 依赖 immutable release directory/包管理保护 |
+| PF-LD-020 | Catalog resource extremes | plugin roots、package entries、manifest/file/scan/path/diagnostic 上界达到时无无界分配，旧 Catalog generation 保持可用 |
+| PF-LD-021 | artifact audit public path | Core 通过 PluginLibrary::artifact() 或等价公开集成通路取得实际 SHA；不得访问 PluginLibraryState 私有实现 |
+| PF-LD-022 | Manifest ingress | strict JSON、format version、未知/缺失字段、类型、共享 metadata、platform、path 和 digest 非法输入均 fail closed |
+| PF-LD-023 | hung Catalog refresh | filesystem scan/Manifest parse/build 卡死进入 Lifecycle Supervision；threshold 后 Degraded，late completion 不发布 Catalog |
+
+## 8.5 SDK 资格验证
+
+| ID | 场景 | 必须证明 |
+| --- | --- | --- |
+| PF-SDK-001 | Minimal Plugin | 只实现 configure + shutdown 即可构建 |
+| PF-SDK-002 | provide Operation | Backend 不写 Adapter/vtable/trampoline |
+| PF-SDK-003 | Service Reference | `service&lt;T&gt;()` 返回 typed borrowed Reference |
+| PF-SDK-004 | missing Service | NotFound 由 Plugin 自行决定 required/optional 策略 |
+| PF-SDK-005 | configure failure | 不发布部分 Operation Registry |
+| PF-SDK-006 | partial initialization shutdown | configure 中途失败后 shutdown 能安全清理已建立资源 |
+| PF-SDK-007 | exception barrier | Plugin C++ exception 不越过 C ABI |
+| PF-SDK-008 | Provider lifetime misuse | configure-local temporary Provider 通过 ASan/qualification 暴露 |
+| PF-SDK-009 | Service Reference lifetime | shutdown Ok 后默认不再使用 borrowed Reference |
+| PF-SDK-010 | install-prefix build | 独立 Plugin 工程只依赖安装后的 RoDAQ Package |
+| PF-SDK-011 | full SemVer tooling | PROJECT_VERSION 默认路径与显式 PLUGIN_VERSION prerelease/build metadata 路径均生成唯一一致的 Descriptor/Manifest Plugin Version |
+| PF-SDK-012 | Plugin configuration ownership | Framework 原样传递有界 UTF-8 JSON；Plugin `configure()` 自己解析/校验并对无效配置返回 InvalidArgument；不依赖 Framework Schema/validator |
+| PF-SDK-013 | CloseFuture shared observer | CloseFuture copy/move 不创建第二次 close；多个 Future 观察同一个 terminal publication；moved-from Future 的 `operator bool()==false`，只能析构或重新赋值后再使用 |
+| PF-SDK-014 | ServiceRegistry backing | move-only Registry wrapper 析构后，已创建 Instance 继续通过强 backing 安全使用 Service Reference；`add_shared()` Provider deleter 在控制锁外执行 |
+| PF-SDK-015 | PluginManager RAII contract | Manager 为 move-only；析构 noexcept/non-blocking；正常退出必须显式 shutdown；同进程第二次 create 始终 Conflict |
+| PF-SDK-016 | CMake registration contract | `rodaq_register_plugin()` 只接受已有 shared-library target，不接受 SOURCES；target 创建/依赖配置由标准 CMake 命令完成 |
+| PF-SDK-017 | Application lifecycle cleanup | refresh/load/create/query/business 任一阶段提前失败后，都显式完成 Instance close（若已创建）与 Manager shutdown；最早 root cause 不被后续 cleanup failure 覆盖 |
+| PF-SDK-018 | Plugin type construction contract | Concrete Plugin 必须 default-constructible；构造函数不执行长期 I/O/worker 启动；authoring support 对可检查条件 static_assert |
+| PF-SDK-019 | trampoline exception mapping | create/configure/query/provider/shutdown 对 bad_alloc 与其他异常按 §4.8 统一映射；异常不越过 C ABI |
+| PF-SDK-020 | Descriptor ingress validation | plugin_id/name/version 的长度、UTF-8/ASCII、canonical ID 与 strict SemVer 规则均在 publish 前验证 |
+| PF-SDK-021 | PluginInstance move contract | move construction 后源 Handle 为空；move-assignment 在 API 层删除；析构 Open Handle 只触发非阻塞 async close |
+
+## 8.6 独立工程资格验证
+
+### Counter 四工程
+
+必须提供四个相互独立的安装后工程：
+
+```
+counter_interface_sdk/
+atomic_counter_plugin/
+shared_memory_counter_plugin/
+example_application/
+```
+
+必须证明：
+
+- 两个 Backend 共用同一 Counter Interface SDK；
+- Backend 不写 Adapter/vtable/trampoline；
+- Backend 只使用 `PluginBase`、`PluginSetup`、Interface SDK、`RODAQ_DEFINE_PLUGIN`；
+- Application 只通过安装后的 `rodaq::plugin` 和 Counter Interface SDK；
+- `PluginLibrary::create_instance()` 直接返回 Open Instance；
+- `close()` / `async_close()` 都可验证；
+- generated Manifest/Descriptor 正确；
+- 重复 load 同一 Artifact 不增加 loaded plugin 数；
+- 示例只使用本章定义的当前 Public API，不依赖 Framework 私有生命周期或版本选择对象。
+
+### ROS 2 → MCAP Vertical Slice
+
+Counter 通过后立即进入真实链路：
+
+```
+ROS 2 Acquisition Plugin
+→ Core data path
+→ MCAP Storage Plugin
+```
+
+必须覆盖：
+
+- ROS 2 callback / executor shutdown；
+- Core backpressure wakeup；
+- Payload ownership；
+- MCAP finalize；
+- DiskFull / DataLoss；
+- close during in-flight callback；
+- Humble / Jazzy 读取；
+- PlotJuggler / Foxglove 回放。
+
+随后补充 MQTT Acquisition 与 rosbag2 SQLite3 Storage。
+
+## 8.7 性能与长期运行门禁
+
+### Operation Hot Path
+
+至少比较：
+
+```
+native direct call
+raw C ABI call
+managed Operation Handle call
+```
+
+覆盖 single-thread / multi-thread、amd64 / arm64、P50/P95/P99。
+
+硬性要求：
+
+- Framework mandatory heap allocation = 0 / call；
+- mandatory cross-thread scheduling = 0 / call；
+- PluginManagerState / PluginCatalog global lock = 0 / call；
+- CallGuard acquire/release = O(1)。
+
+### 长期运行
+
+至少执行：
+
+- 24h / 72h 持续运行；
+- 高频 create/close；
+- 多 Plugin 并存；
+- repeated load same Artifact；
+- shutdown failure / close worker block；
+- ROS 2 + MQTT + MCAP + SQLite3 同进程；
+- RSS / FD / native thread / queue/backlog 监控。
+
+必须满足：
+
+- loaded Plugin 数受 `max_loaded_plugins` 限制；
+- active Instance 数受 `max_instances` 限制；
+- repeated create/close 后 Instance 和业务资源回到基线；
+- Faulted Library / Unresolved Instance 会触发明确 critical diagnostic 与 restart_required；
+- Pending Close 在 queue pressure / worker recovery 后能够继续推进，不出现永久遗失的 Closing Instance；
+- 整条 Close Pipeline 的 Pending Scheduling / Native Shutdown / Call Drain / Destroy / Backing Release / Terminal Publication 均有独立阶段时长监督；迟返不会重复 shutdown/destroy/terminal publication；
+- Manager/Instance 锁顺序与锁外析构在 TSAN/故障注入下不产生死锁或 UAF；
+- 正式采集 Session metadata 始终包含实际 plugin_id / plugin_version / artifact_sha256；
+- 没有明确原因的 thread/fd/heap/backing 持续增长视为 leak。
+
+Framework 只严格保证 Plugin/Instance 数量上限；RSS/FD/thread/第三方 cache 属于进程级监督资源。
+
+## 8.8 开发体验资格验证
+
+标准插件开发者路径必须保持：
+
+```cpp
+class MyPlugin final : public PluginBase {
+public:
+    Result<void> configure(PluginSetup& setup) override {
+        auto service = setup.service<MyService>();
+        if (!service &&
+            service.status().code() != StatusCode::NotFound) {
+            return service.status();
+        }
+
+        RODAQ_RETURN_IF_ERROR(
+            backend_.configure(setup.config()));
+
+        return setup.provide<MyInterface>(backend_);
+    }
+
+    Result<void> shutdown(Deadline deadline) override {
+        return backend_.shutdown(deadline);
+    }
+
+private:
+    MyBackend backend_;
+};
+
+RODAQ_DEFINE_PLUGIN(MyPlugin)
+```
+
+Application Golden Path 必须展示完整 cleanup，而不是依赖 `PluginManager` 的 non-blocking destructor：
+
+```cpp
+auto manager_result = PluginManager::create(options);
+if (!manager_result) {
+    return manager_result.status();
+}
+auto manager = std::move(manager_result.value());
+
+auto refresh_result = manager.refresh();
+if (!refresh_result) {
+    auto primary = refresh_result.status();
+    auto shutdown_result = manager.shutdown(deadline);
+    if (!shutdown_result) {
+        // 记录 cleanup failure；返回 primary root cause。
+    }
+    return primary;
+}
+
+auto library_result =
+    manager.load("com.rodaq.acquisition.ros2", "1.2.0");
+if (!library_result) {
+    auto primary = library_result.status();
+    auto shutdown_result = manager.shutdown(deadline);
+    if (!shutdown_result) {
+        // 记录 cleanup failure；返回 primary root cause。
+    }
+    return primary;
+}
+auto library = std::move(library_result.value());
+
+auto instance_result =
+    library.create_instance(services, config);
+if (!instance_result) {
+    auto primary = instance_result.status();
+
+    // create/configure failure 可能仍有 Framework-owned async cleanup。
+    // Manager shutdown 必须观察/收敛同一 cleanup 流程。
+    auto shutdown_result = manager.shutdown(deadline);
+    if (!shutdown_result) {
+        // 记录 cleanup failure；返回 primary root cause。
+    }
+    return primary;
+}
+auto instance = std::move(instance_result.value());
+
+auto acquisition_result =
+    instance.query<AcquisitionInterface>();
+if (!acquisition_result) {
+    auto primary = acquisition_result.status();
+
+    auto close_result = instance.close(deadline);
+    if (!close_result) {
+        // 记录 Instance cleanup failure；不覆盖 primary。
+    }
+
+    auto shutdown_result = manager.shutdown(deadline);
+    if (!shutdown_result) {
+        // 记录 Manager cleanup failure；不覆盖 primary。
+    }
+    return primary;
+}
+
+auto acquisition = std::move(acquisition_result.value());
+
+// 业务阶段：Acquisition Stop / Storage Finalize 等业务结果
+// 与 Plugin lifecycle cleanup 结果分别保存。
+auto business_result = run_business(acquisition);
+
+// 无论业务成功还是失败，都执行生命周期 cleanup。
+auto close_result = instance.close(deadline);
+auto shutdown_result = manager.shutdown(deadline);
+
+if (!business_result) {
+    if (!close_result || !shutdown_result) {
+        // 记录后续 cleanup failure。
+    }
+    return business_result.status();
+}
+
+if (!close_result) {
+    if (!shutdown_result) {
+        // 同时记录 Manager cleanup failure。
+    }
+    return close_result.status();
+}
+
+return shutdown_result;
+```
+
+错误优先级固定为：
+
+```
+最早的业务/初始化根因
+    > 后续 PluginInstance close failure
+    > 后续 PluginManager shutdown failure
+```
+
+如果存在更早的 root-cause error，后续 cleanup failure 只记录到 Logging/Diagnostics，不覆盖根因；如果此前没有错误，则 cleanup failure 可以成为最终返回错误。
+
+实际 Application 可以使用 application-local RAII/scope guard 或 Task 生命周期协调器减少重复 cleanup 代码，但这不是 Plugin Framework 新增的 Public Session/Task 对象。`PluginManager` 的 noexcept/non-blocking destructor 只承担异常路径 best-effort 防线，不能替代正常退出所需的显式 `shutdown()`。
+
+规范性示例必须显式检查每一个 `Result&lt;T&gt;`，不得在失败状态下直接访问 `value()` 或通过 `operator-&gt;` 使用对象。
+
+普通开发路径只允许使用当前公开的 Manager / Library / Instance、ServiceRegistry、PluginBase / PluginSetup 和业务 Interface SDK；Framework 内部加载选择、关闭调度、状态对象和 ABI bridge 不得泄漏到插件或应用代码。
+
+如果标准 Plugin 仍需要理解 Entry、Descriptor、Plugin ABI、OperationRegistry、raw ServiceRegistry binding、CallGuard、Manifest format 或 Framework 内部 CMake target，则开发体验验证失败。
+
+## 8.9 跨模块集成门禁
+
+以下验证不改变 Plugin Foundation，但在 Acquisition/Storage Interface Freeze 前必须与 Core/Task 一起完成。
+
+| ID | 场景 | 必须证明 |
+| --- | --- | --- |
+| PF-INT-001 | Task Stop ordering | 先关闭业务 admission，再停止采集/唤醒阻塞，再 drain/finalize，最后关闭 Plugin |
+| PF-INT-002 | Backpressure × Acquisition callback | Task Stop 能唤醒等待 Core capacity 的提交 |
+| PF-INT-003 | Acquisition Stop × Plugin shutdown | 业务停止与生命周期 shutdown 语义分离 |
+| PF-INT-004 | Payload Release | destroy 前完成仍依赖 Plugin native context 的 Payload Release，或完成独立 ownership handoff |
+| PF-INT-005 | Async Storage completion | Submission/Handoff、Payload Release、Persistence Completion 独立建模 |
+| PF-INT-006 | Storage Finalize failure | DiskFull/DataLoss 独立传播；Plugin shutdown 仍可安全成功 |
+| PF-INT-007 | blocking call wakeup | Stop 路径不存在 Acquisition/Drain/Finalize/Plugin shutdown 循环等待 |
+
+推荐顺序：
+
+```
+1. close Task business admission
+2. wake/cancel Task-bound blocking submission
+3. Acquisition business stop
+4. drain accepted records / Payload Release
+5. Storage finalize / Persistence Completion
+6. PluginInstance close
+7. PluginManager shutdown（Application 退出时）
+```
+
+## 8.10 ABI/API Freeze 门禁
+
+进入 0.3.0 / ABI/API Freeze 前必须满足：
+
+- 第 3 章可以直接生成真实 C11 Public Header；
+- Foundation 只包含 `configure / query / shutdown / destroy`；
+- `rodaq_struct_header_t` 只包含 `struct_size`；
+- Public Descriptor 只使用 `plugin_id / plugin_name / plugin_version`，不重复保存 Plugin ABI minimum runtime minor；
+- 第 4 章可以直接实现 `PluginBase / PluginSetup / Provider Template`；
+- Service C++ API 使用完整命名 `Reference`，并保留单一 `service&lt;T&gt;()`；
+- 第 5 章只需要 `PluginManagerState / PluginLibraryState / PluginInstanceState` 三个主要共享状态对象；`State` 只表示共享对象，生命周期枚举统一使用 `PluginManagerPhase / PluginLibraryPhase / PluginInstancePhase`；
+- Public close API 只有 `close()` / `async_close()`；异步 API 使用 `async_*` 前缀；同步 `close()` 的 DeadlineExceeded 允许来自 Observer Timeout 或真实 terminal failure，需要区分来源时使用 `async_close()+wait()+result()`；
+- `PluginManager` 为 move-only Public Handle，析构 `noexcept`/non-blocking；`shutdown()` 是幂等观察接口，Stopped 再调用返回 Ok，Degraded 返回已记录终态失败；process-lifetime single authority 规则已经冻结；
+- `PluginLibrary` Public 声明只有 §5.1 一个来源，包含 move-only 特殊成员、`info()` 和 `artifact()`；
+- `PluginCatalog / Resolver / LoadKey` 都是 internal；
+- Plugin Configuration 由 Plugin `configure()` 解析与校验；PluginManager / PluginLibrary 不提供通用配置 Schema/validator API 或结构化配置错误类型；
+- Faulted Library / restart_required 阻止 Normal Shutdown Success；
+- Pending Close Work 在 queue pressure 下不可丢失；
+- Configure failure 在返回原始错误前完成 Manager cleanup ownership adoption；
+- Catalog refresh 使用 single-flight；ShuttingDown 后不发布新 generation，Normal Shutdown Success Predicate 包含 active refresh；
+- Native Shutdown Deadline 与 Observer Deadline 分离；独立 health supervision 覆盖 Catalog refresh、初始化、Pending Scheduling、Native Shutdown、Call Drain、Destroy、Backing Release 和 Terminal Publication；
+- Managed OperationHandle 在 CallGuard 释放前完整构造；
+- ManagerState/InstanceState 锁顺序与锁外 third-party execution 已冻结；
+- `CloseFuture` 固定为可复制/可移动的 shared-state observer；复制不创建第二次 close；moved-from Future 的 `operator bool()==false` 且只能析构/重新赋值后再使用；`ready()/wait()/result()` 观察同一个 terminal publication，`result()` 在未 ready 时返回 InvalidState；
+- `create_instance()` 具备明确 Open Commit Point，Manager Shutdown 获胜时不发布 Open Instance；
+- Close Success Publication Point 晚于 backing release、Manager accounting commit 与 `max_instances` 容量归还；
+- 同步 `close()` / `CloseFuture::wait()` / `PluginManager::shutdown()` 的 self-wait 限制已验证；
+- Framework 只执行 Plugin configuration size 与 Public String contract 检查；JSON syntax 和业务配置校验由 Plugin 负责；`max_config_size &lt;= UINT32_MAX`，deadline conversion 不允许 signed overflow；Public 数值参数/字段的单位通过 Doxygen 定义，不编码进名称；
+- Manifest ingress 固定为 strict JSON，`format_version == 1`，未知/缺失字段、类型、path、digest 或 Descriptor cross-check 非法时 fail closed；
+- Plugin 返回的未知 StatusCode、非法 Error Buffer 和 malformed output 按 §3.2 契约违反规则 fail closed；
+- `rodaq_register_plugin()` 只注册已有 shared-library CMake target，不接受 SOURCES；支持可选完整 SemVer `PLUGIN_VERSION`，并保证 Descriptor/Manifest 使用唯一最终版本值；默认 `load(plugin_id)` 只选择 Stable Release，prerelease 必须通过 exact-version overload 显式加载；Resolver 区分完整 Version Identity 与 SemVer precedence，相同最高 precedence 的不同 build metadata identity 必须 Conflict；
+- Foundation ABI 已冻结 `vtable_size` byte-range 规则：必须先验证 context/vtable 非空和 `vtable_size >= sizeof(rodaq_struct_header_t)`，再读取 header；之后执行 required-prefix/slot 的机器可检查访问；参数 nullability 以及 PluginInstance/InterfaceReference 的唯一 default-invalid 表示也已冻结；
+- `ServiceRegistry` 固定为 move-only wrapper + immutable shared backing；`add_shared()` 表示 Registry backing 共享持有 Provider，Instance 强持有 backing，Provider deleter 在控制锁外执行；
+- configure failure 返回只表示初始化结果已确定，不表示 cleanup/capacity 已完成；安全 cleanup 完成前立即重试允许暂时 ResourceExhausted；
+- 规范性 Application Golden Path 对全部 `Result&lt;T&gt;` 正确检查，并说明 RAII/scope-guard cleanup；
+- 正式采集 Session metadata 自动记录实际 Artifact SHA-256；
+- Counter 四工程通过；
+- 旧 Header / 旧 DSO binary compatibility 测试通过；
+- 当前尚未 Freeze 的草案之间如果存在 Foundation 方法集、struct layout 等 ABI 不兼容变化，必须明确作为新的 ABI baseline 处理；真实二进制发布后，同一 ABI Major 不得再进行此类不兼容修改；
+- 安装后独立构建通过。
+
+## 8.11 实施里程碑
+
+| Milestone | 通过条件 |
+| --- | --- |
+| V1 Architecture Simplification | 本轮简化后的 Public API、Foundation 生命周期、Runtime State、Package 与 Configuration ownership 全部同步 |
+| ABI/API Freeze Candidate | C11 Header + C++17 SDK + Counter + old-binary tests 通过 |
+| Acquisition/Storage Interface Freeze | PF-INT-001～007 + ROS 2→MCAP stop/completion 流程通过 |
+| Implementation Qualification | ROS 2/MQTT/MCAP/SQLite3、Humble/Jazzy replay、故障注入、long-run、performance 通过 |
+
+<aside>
+✅
+
+**当前基线**
+
+Document Version 0.2.3 继续保持为 Implementation-Ready Detailed Design Candidate；本次是 Plugin Framework Closure Fix，不等同于 production qualification 或 ABI/API Freeze。
+
+在 V1 API / Runtime Simplification、F0 Safety Closure、Final API Closure 与 Freeze Contract Closure 基础上，本轮完成 **Plugin Framework Closure Fix**。仍保留四个 Foundation 方法、三个主要内部 State 对象、process-lifetime Single Manager、Resident DSO 和 Interface-first 总体架构。
+
+本轮新增闭合：
+
+- CMake helper 固定为 `rodaq_register_plugin(existing_target)`；target 创建和自身编译/依赖配置由标准 `add_library()/target_*` 完成，注册 helper 不接受 `SOURCES`；
+- 内部长期对象统一使用 `State`：`PluginManagerState / PluginLibraryState / PluginInstanceState`；生命周期枚举统一使用 `PluginManagerPhase / PluginLibraryPhase / PluginInstancePhase`；`Status` 只表示操作结果；
+- `PluginInstance::phase()` 与 `PluginDiagnostics::phase` 使用 Phase 语义，不再把共享 State object 与枚举混为一谈；
+- `ServiceRegistry::add_shared()` 明确表达 immutable Registry backing 对 Provider 的 shared ownership；
+- 同步 `close()` 的 `DeadlineExceeded` 明确可能来自 Observer Timeout 或真实 terminal failure；需要区分来源时必须使用 `async_close() + wait() + result()`；
+- Lifecycle health supervision 现在覆盖 Catalog refresh、Load Scheduling / Native Load、Create Scheduling / Native Create、Configure、Pending Close、Native Shutdown、Call Drain、Destroy、Backing Release、Terminal Publication；hung refresh/load/create/configure 会进入 Degraded/restart_required，但不会阻塞其他健康 Instance 的关闭；
+- Manager Shutdown 改为关闭现有 Open Instance 与监督 in-flight refresh/initialization 并行推进，禁止“先等待 active refresh/load/create 全部返回，再开始关闭”的串行顺序；
+- Catalog refresh 纳入 Lifecycle Supervision 和 Normal Shutdown Success Predicate；并发 refresh 使用 single-flight，ShuttingDown 后 late completion 不得替换 Catalog；
+- Public Handle 已补齐 copy/move/destructor 契约：PluginLibrary 为完整 move-only handle；PluginInstance 删除 move-assignment，析构只触发非阻塞异步关闭；并新增 Public API threading matrix；
+- `PluginLibrary` Public 声明收敛到 §5.1 单一来源，并包含 `artifact()`；
+- Session Artifact audit 通过公开只读 PluginArtifactInfo / PluginLibrary::artifact() 获取，不再允许 Core 访问内部 PluginLibraryState；
+- Catalog/Manifest/Package 扫描与 diagnostics 增加明确的 Framework qualification hard limits；主 Artifact SHA 与 package-local dependency 的完整性责任边界被显式区分；
+- Loader 增加 Bootstrap symbol provenance 与 loaded-object identity 校验，并明确 path-based loading 依赖 immutable release directory 的部署前提；
+- Manifest 增加 strict JSON、format version、字段集合、metadata、platform、path 和 digest ingress validation；
+- 未知 Plugin StatusCode、非法 Error Buffer 和 OK + malformed output 已定义 fail-closed 映射；
+- Typed VTable 验证顺序已冻结：先证明 context/vtable 非空及 `vtable_size >= sizeof(rodaq_struct_header_t)`，再读取 Header，之后才执行 readable-size / required-prefix / slot byte-range 检查；
+- Application Golden Path 已展示完整的 Manager/Instance cleanup 和 root-cause preservation；Manager 的 non-blocking destructor 明确不能替代正常显式 shutdown；
+- `CloseFuture` 的 moved-from 行为已冻结，并提供 `operator bool()` 判断空 handle；
+- 默认 `load(plugin_id)` 只选择 compatible Stable Release；prerelease 必须通过 exact-version overload 显式选择；相同 precedence 的不同 build metadata identity 仍返回 Conflict；
+- Loader 的 publish-race rollback 表述和 CMake 示例格式已经修复；
+- PF-RT / PF-ABI / PF-LD / PF-SDK Qualification 已同步覆盖 Catalog refresh 并发/关闭、unknown status、malformed Error Buffer、Manifest ingress、whole-close supervision、无丢失 async-close takeover、VTable header precheck、stable-only default load、moved-from CloseFuture、CMake registration contract 和完整 Application lifecycle cleanup。
+- Interface Minor negotiation 使用 Provider `[0, provider_minor]` 与 Consumer `[min_minor, max_minor]` 的交集；不存在 ID、Major 不匹配和 Minor 不兼容分别映射为 NotFound、Unavailable 和 Unavailable；
+- create non-OK 仅在 PluginInstance exact default-invalid 时视为普通失败；任何非默认 output 都作为 ABI violation 进入 Faulted Library / Unresolved Instance；
+- 成功 Manager shutdown 在内部 lifecycle、close 和健康监督 worker 全部 join 后才发布 Stopped；process-lifetime authority 不要求 worker process-lifetime；
+- Public SDK 不再公开 Managed Operation Access、Managed Interface Reference、OperationBuilder、Registry backing 或 sdk namespace；Service callback 通过 size-checked registry call scope 参与 self-wait 防护；
+- Lifecycle Policy 与 Plugin Native `shutdown_timeout` 分离，refresh/load/create/configure 使用独立内部阶段监督；
+- ROS Reference Plugin 使用 plugin-owned Context、rosbag2 QoS adaptation、system-clock timestamp 和显式 schema configuration；
+- MCAP Reference Plugin 映射 complete WriterOptions 子集并对未注册 channel fail closed；F6 harness 使用容量 64、drop-newest、可观测 counters 的 test-only handoff；
+- Catalog 的 roots/packages/entries/files/scan/path/diagnostic limits 与 Plugin DSO 两 symbol visibility closure 已纳入实现和资格测试。
+
+此前已经冻结并继续保持的关键规则包括：Plugin Configuration ownership 属于 Plugin；Open Commit Point；Close Success Publication Point；统一 CallGuard；shutdown-before-destroy；Faulted Library / Unresolved Instance；Observer/Native Deadline 分离；ServiceRegistry immutable shared backing；完整 SemVer identity/precedence；Stable C ABI nullability/default-invalid；Resident DSO；跨模块 Business Stop / Payload / Persistence Completion 分离。
+
+当前仍不升级到 0.3.0。正式 ABI/API Freeze 仍必须等待 install-prefix Counter 四工程、旧二进制兼容、完整 sanitizer/stress、长期运行和 deployment qualification。后续不再扩大 Plugin Framework Foundation；只有真实 Header/Skeleton 或 Reference Plugin 暴露通用机制缺陷时才回改设计。
