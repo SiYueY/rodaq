@@ -52,18 +52,9 @@ rodaq_status_code_t exception_boundary(rodaq_error_t* error, Function&& function
 }
 
 template <typename Interface, typename Implementation>
-Result<void> add_interface(std::vector<InterfaceEntry>& entries, Implementation& implementation) {
+Result<InterfaceEntry> bind_interface(Implementation& implementation) {
     if (!abi::valid_identifier(Interface::kInterfaceId)) {
         return Status(StatusCode::InvalidArgument, "Invalid Interface ID");
-    }
-    for (const auto& entry : entries) {
-        if (entry.id == Interface::kInterfaceId &&
-            entry.reference.negotiated_version.major == Interface::kMajor) {
-            return Status(StatusCode::Conflict, "Duplicate Interface ID/major");
-        }
-    }
-    if (entries.size() >= kMaxInterfaces) {
-        return Status(StatusCode::ResourceExhausted, "Interface table full");
     }
     using Provider = typename Interface::template Provider<Implementation>;
     const auto* table = Provider::vtable();
@@ -76,7 +67,25 @@ Result<void> add_interface(std::vector<InterfaceEntry>& entries, Implementation&
     if (!abi::copy_vtable<Interface>(reference, checked)) {
         return Status(StatusCode::InvalidArgument, "Invalid Provider vtable");
     }
-    entries.push_back({std::string(Interface::kInterfaceId), reference});
+    return InterfaceEntry{std::string(Interface::kInterfaceId), reference};
+}
+
+template <typename Interface, typename Implementation>
+Result<void> add_interface(std::vector<InterfaceEntry>& entries, Implementation& implementation) {
+    for (const auto& entry : entries) {
+        if (entry.id == Interface::kInterfaceId &&
+            entry.reference.negotiated_version.major == Interface::kMajor) {
+            return Status(StatusCode::Conflict, "Duplicate Interface ID/major");
+        }
+    }
+    if (entries.size() >= kMaxInterfaces) {
+        return Status(StatusCode::ResourceExhausted, "Interface table full");
+    }
+    auto binding = bind_interface<Interface>(implementation);
+    if (!binding.ok()) {
+        return binding.status();
+    }
+    entries.push_back(std::move(binding).value());
     return {};
 }
 

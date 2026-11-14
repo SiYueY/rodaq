@@ -1,4 +1,5 @@
-FROM arm64v8/ubuntu:22.04
+ARG BASE_IMAGE=arm64v8/ubuntu:22.04
+FROM ${BASE_IMAGE}
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     gcc-11 g++-11 clang-14 clang-tidy-14 cmake make python3 git libgtest-dev binutils \
     nlohmann-json3-dev libssl-dev \

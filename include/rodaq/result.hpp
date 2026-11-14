@@ -53,7 +53,7 @@ public:
             return expected_.error();
         }
 
-        static const Status ok_status = Status::Ok();
+        static const Status ok_status = Status{};
         return ok_status;
     }
 
@@ -62,7 +62,7 @@ public:
             return std::move(expected_).error();
         }
 
-        return Status::Ok();
+        return Status{};
     }
 
     T& value() & noexcept {
@@ -148,7 +148,7 @@ public:
             return expected_.error();
         }
 
-        static const Status ok_status = Status::Ok();
+        static const Status ok_status = Status{};
         return ok_status;
     }
 
@@ -157,7 +157,7 @@ public:
             return std::move(expected_).error();
         }
 
-        return Status::Ok();
+        return Status{};
     }
 
     void value() const noexcept {

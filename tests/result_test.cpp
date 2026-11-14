@@ -127,7 +127,7 @@ void verify_status() {
     assert(default_status.code() == StatusCode::Ok);
     assert(default_status.message().empty());
 
-    assert(Status::Ok().ok());
+    assert(Status{}.ok());
 
     Status error(StatusCode::InvalidArgument, "bad argument");
     assert(!error.ok());
@@ -173,12 +173,12 @@ void verify_contract_violations() {
     });
 
     expect_abort([] {
-        Result<int> invalid(Status::Ok());
+        Result<int> invalid(Status{});
         (void)invalid;
     });
 
     expect_abort([] {
-        Result<void> invalid(Status::Ok());
+        Result<void> invalid(Status{});
         (void)invalid;
     });
 }

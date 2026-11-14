@@ -122,23 +122,30 @@ inline bool default_invalid(const rodaq_interface_reference_t& reference) noexce
 
 /** Non-OK primary status survives invalid diagnostics. Unknown/invalid OK fail closed. */
 inline Status status_from_abi(
-    rodaq_status_code_t code, const rodaq_error_t& error, BufferSnapshot expected) {
-    if (!known_status(code)) {
-        return Status(StatusCode::Internal, "Unknown ABI status");
-    }
-    if (!valid_error(code, error, expected)) {
+    rodaq_status_code_t code, const rodaq_error_t& error, BufferSnapshot expected) noexcept {
+    try {
+        if (!known_status(code)) {
+            return Status(StatusCode::Internal, "Unknown ABI status");
+        }
+        if (!valid_error(code, error, expected)) {
+            return Status(
+                code == RODAQ_STATUS_OK ? StatusCode::Internal : static_cast<StatusCode>(code),
+                "Invalid ABI diagnostic buffer");
+        }
+        if (code == RODAQ_STATUS_OK) {
+            return Status{};
+        }
+        std::string message;
+        if (error.message.size != 0) {
+            message.assign(reinterpret_cast<const char*>(expected.data), error.message.size);
+        }
+        return Status(static_cast<StatusCode>(code), std::move(message));
+    } catch (...) {
         return Status(
-            code == RODAQ_STATUS_OK ? StatusCode::Internal : static_cast<StatusCode>(code),
-            "Invalid ABI diagnostic buffer");
+            known_status(code) && code != RODAQ_STATUS_OK ? static_cast<StatusCode>(code)
+                                                          : StatusCode::Internal,
+            {});
     }
-    if (code == RODAQ_STATUS_OK) {
-        return Status::Ok();
-    }
-    std::string message;
-    if (error.message.size != 0) {
-        message.assign(reinterpret_cast<const char*>(expected.data), error.message.size);
-    }
-    return Status(static_cast<StatusCode>(code), std::move(message));
 }
 
 /** Preserve caller data/capacity; truncate only at complete UTF-8 code points. */

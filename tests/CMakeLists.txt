@@ -55,6 +55,18 @@ target_include_directories(rodaq_plugin_catalog_test PRIVATE ${PROJECT_SOURCE_DI
 target_link_libraries(rodaq_plugin_catalog_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_plugin_catalog_test)
 gtest_discover_tests(rodaq_plugin_catalog_test)
+add_executable(rodaq_plugin_registry_test plugin/registry_test.cpp)
+target_include_directories(rodaq_plugin_registry_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+target_link_libraries(rodaq_plugin_registry_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_plugin_registry_test)
+gtest_discover_tests(rodaq_plugin_registry_test PROPERTIES TIMEOUT 30)
+add_executable(rodaq_plugin_runtime_test plugin/runtime_test.cpp)
+target_link_libraries(rodaq_plugin_runtime_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
+target_compile_definitions(rodaq_plugin_runtime_test PRIVATE
+    RODAQ_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0"
+    RODAQ_COUNTER_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0")
+rodaq_enable_project_warnings(rodaq_plugin_runtime_test)
+gtest_discover_tests(rodaq_plugin_runtime_test PROPERTIES TIMEOUT 40 FIXTURES_REQUIRED counter_sdk)
 
 # Compile every C ABI header alone in both supported language modes.
 file(GLOB_RECURSE abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*/c/*.h)
@@ -72,13 +84,15 @@ endforeach()
 
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
+add_custom_target(rodaq_generate_abi_probe
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/generate_abi_probe.py
         --root ${PROJECT_SOURCE_DIR} --output ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
         "--flags=${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${rodaq_build_type}} $<JOIN:$<TARGET_PROPERTY:rodaq_abi_probe,COMPILE_OPTIONS>, > -std=c11; position_independent=${CMAKE_POSITION_INDEPENDENT_CODE}"
     DEPENDS ${abi_headers} ${PROJECT_SOURCE_DIR}/tools/generate_abi_probe.py
     VERBATIM)
 add_executable(rodaq_abi_probe ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c)
+add_dependencies(rodaq_abi_probe rodaq_generate_abi_probe)
 target_include_directories(rodaq_abi_probe PRIVATE ${PROJECT_SOURCE_DIR}/include)
 rodaq_enable_project_warnings(rodaq_abi_probe)
 add_library(rodaq_abi_signatures OBJECT abi_signatures.c)
@@ -95,7 +109,9 @@ add_test(NAME rodaq_plugin_metadata
 add_test(NAME rodaq_counter_binary_matrix
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_counter_matrix.py
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
-        --compiler ${CMAKE_C_COMPILER} --cxx-compiler ${CMAKE_CXX_COMPILER})
+        --compiler ${CMAKE_C_COMPILER} --cxx-compiler ${CMAKE_CXX_COMPILER}
+        --sanitizer ${RODAQ_SANITIZER})
+set_tests_properties(rodaq_counter_binary_matrix PROPERTIES FIXTURES_SETUP counter_sdk)
 
 add_test(NAME rodaq_package_contract
     COMMAND ${CMAKE_COMMAND}

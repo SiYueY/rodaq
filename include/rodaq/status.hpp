@@ -32,8 +32,6 @@ public:
         }
     }
 
-    [[nodiscard]] static Status Ok() noexcept { return {}; }
-
     Status(const Status&) = default;
     Status(Status&&) noexcept = default;
 
