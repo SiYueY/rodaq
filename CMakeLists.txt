@@ -14,6 +14,7 @@ include(CTest)
 include(GNUInstallDirs)
 include(cmake/RoDAQWarnings.cmake)
 include(cmake/RoDAQQuality.cmake)
+include(cmake/RoDAQPlugin.cmake)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
@@ -77,6 +78,8 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.
 install(EXPORT RoDAQTargets NAMESPACE rodaq:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
+install(FILES cmake/RoDAQPlugin.cmake cmake/plugin_metadata.py cmake/plugin.exports
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
 
 if(BUILD_TESTING)

@@ -25,12 +25,15 @@ foreach(target IN LISTS test_targets)
     rodaq_enable_project_warnings(${target})
 endforeach()
 
-foreach(header status result logging)
-    set(source ${CMAKE_CURRENT_BINARY_DIR}/header_${header}.cpp)
-    file(WRITE ${source} "#include <rodaq/${header}.hpp>\n")
-    add_library(rodaq_header_${header} OBJECT ${source})
-    target_link_libraries(rodaq_header_${header} PRIVATE rodaq::plugin)
-    rodaq_enable_project_warnings(rodaq_header_${header})
+file(GLOB_RECURSE public_cpp_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*.hpp)
+foreach(header IN LISTS public_cpp_headers)
+    file(RELATIVE_PATH include_path ${PROJECT_SOURCE_DIR}/include ${header})
+    string(MAKE_C_IDENTIFIER "${include_path}" header_id)
+    set(source ${CMAKE_CURRENT_BINARY_DIR}/${header_id}.cpp)
+    file(WRITE ${source} "#include <${include_path}>\n")
+    add_library(${header_id} OBJECT ${source})
+    target_link_libraries(${header_id} PRIVATE rodaq::plugin)
+    rodaq_enable_project_warnings(${header_id})
 endforeach()
 
 find_package(GTest 1.11 REQUIRED)
@@ -39,6 +42,52 @@ target_link_libraries(rodaq_build_contract_test PRIVATE rodaq::daq GTest::gtest_
 rodaq_enable_project_warnings(rodaq_build_contract_test)
 include(GoogleTest)
 gtest_discover_tests(rodaq_build_contract_test)
+add_executable(rodaq_abi_boundary_test plugin/abi_boundary_test.cpp)
+target_link_libraries(rodaq_abi_boundary_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_abi_boundary_test)
+gtest_discover_tests(rodaq_abi_boundary_test)
+
+# Compile every C ABI header alone in both supported language modes.
+file(GLOB_RECURSE abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*/c/*.h)
+foreach(header IN LISTS abi_headers)
+    file(RELATIVE_PATH include_path ${PROJECT_SOURCE_DIR}/include ${header})
+    string(MAKE_C_IDENTIFIER "${include_path}" header_id)
+    foreach(language c cpp)
+        set(source ${CMAKE_CURRENT_BINARY_DIR}/${header_id}.${language})
+        file(WRITE ${source} "#include <${include_path}>\n")
+        add_library(${header_id}_${language} OBJECT ${source})
+        target_include_directories(${header_id}_${language} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        rodaq_enable_project_warnings(${header_id}_${language})
+    endforeach()
+endforeach()
+
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/generate_abi_probe.py
+        --root ${PROJECT_SOURCE_DIR} --output ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
+        "--flags=${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${rodaq_build_type}} $<JOIN:$<TARGET_PROPERTY:rodaq_abi_probe,COMPILE_OPTIONS>, > -std=c11; position_independent=${CMAKE_POSITION_INDEPENDENT_CODE}"
+    DEPENDS ${abi_headers} ${PROJECT_SOURCE_DIR}/tools/generate_abi_probe.py
+    VERBATIM)
+add_executable(rodaq_abi_probe ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c)
+target_include_directories(rodaq_abi_probe PRIVATE ${PROJECT_SOURCE_DIR}/include)
+rodaq_enable_project_warnings(rodaq_abi_probe)
+add_library(rodaq_abi_signatures OBJECT abi_signatures.c)
+target_include_directories(rodaq_abi_signatures PRIVATE ${PROJECT_SOURCE_DIR}/include)
+rodaq_enable_project_warnings(rodaq_abi_signatures)
+configure_file(abi_signatures.c ${CMAKE_CURRENT_BINARY_DIR}/abi_signatures.cpp COPYONLY)
+add_library(rodaq_abi_signatures_cpp OBJECT ${CMAKE_CURRENT_BINARY_DIR}/abi_signatures.cpp)
+target_include_directories(rodaq_abi_signatures_cpp PRIVATE ${PROJECT_SOURCE_DIR}/include)
+rodaq_enable_project_warnings(rodaq_abi_signatures_cpp)
+add_test(NAME rodaq_abi_manifest_comparator
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/abi_manifest_test.py)
+add_test(NAME rodaq_plugin_metadata
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin_metadata_test.py)
+add_test(NAME rodaq_counter_binary_matrix
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_counter_matrix.py
+        --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
+        --compiler ${CMAKE_C_COMPILER})
+
 add_test(NAME rodaq_package_contract
     COMMAND ${CMAKE_COMMAND}
         -DRODAQ_BUILD_DIR=${PROJECT_BINARY_DIR}
