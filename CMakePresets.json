@@ -23,7 +23,12 @@
       "name": "tsan",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/tsan",
-      "cacheVariables": {"RODAQ_SANITIZER": "thread"}
+      "cacheVariables": {
+        "RODAQ_SANITIZER": "thread",
+        "CMAKE_C_COMPILER": "clang-14",
+        "CMAKE_CXX_COMPILER": "clang++-14",
+        "CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE": "PRE_TEST"
+      }
     }
   ],
   "buildPresets": [
