@@ -1,0 +1,53 @@
+{
+  "baseline": "S0-20261115-01",
+  "dependencies": [
+    {
+      "name": "fmt",
+      "version": "11.2.0",
+      "commit": "40626af88bd7df9a5fb80be7b25ac85b122d6c21",
+      "license": "MIT",
+      "source": "pinned Git submodule",
+      "purpose": "Public SDK formatting",
+      "verification": "build + related CTest + installed SDK consumer"
+    },
+    {
+      "name": "spdlog",
+      "version": "1.17.0",
+      "commit": "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+      "license": "MIT",
+      "source": "pinned Git submodule",
+      "purpose": "Private logging backend",
+      "verification": "build + related CTest + installed SDK consumer"
+    },
+    {
+      "name": "tl_expected",
+      "version": "1.3.1",
+      "commit": "1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4",
+      "license": "CC0-1.0",
+      "source": "pinned Git submodule",
+      "purpose": "Result storage",
+      "verification": "build + related CTest + installed SDK consumer"
+    }
+  ],
+  "test_only": [
+    {
+      "name": "GoogleTest",
+      "version": "1.11.0",
+      "license": "BSD-3-Clause",
+      "source": "Ubuntu 22.04 libgtest-dev 1.11.0-3",
+      "verification": "find_package + GoogleTest CTest discovery"
+    }
+  ],
+  "required_platforms": [
+    {
+      "os": "Ubuntu 22.04",
+      "ros": "Humble",
+      "state": "baseline host only; backend qualification pending"
+    },
+    {
+      "os": "Ubuntu 24.04",
+      "ros": "Jazzy",
+      "state": "pending"
+    }
+  ]
+}

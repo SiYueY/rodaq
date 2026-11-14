@@ -1,0 +1,35 @@
+{
+  "id": "S0-20261115-01",
+  "stage": "S0",
+  "captured_at": "2026-11-14T17:04:28Z",
+  "branch": "next",
+  "entry_commit": "042da3d602ad3716977c12bb2851bb57892cace9",
+  "sources": [
+    {
+      "page_id": "417da2b2a80f81c68d97cffe766805b3",
+      "last_edited_at": "2026-11-14T16:49:17.340Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81c68d97cffe766805b3?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f8141a08ae0cc08a73962",
+      "last_edited_at": "2026-11-14T16:57:54.189Z",
+      "url": "https://app.notion.com/p/418da2b2a80f8141a08ae0cc08a73962?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f817db957fa6f017c64bf",
+      "last_edited_at": "2026-11-14T16:47:16.580Z",
+      "url": "https://app.notion.com/p/418da2b2a80f817db957fa6f017c64bf?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f816592c1e898187cb69c",
+      "last_edited_at": "2026-11-14T16:18:06.710Z",
+      "url": "https://app.notion.com/p/417da2b2a80f816592c1e898187cb69c?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81e28c92ea07f46405f9",
+      "last_edited_at": "2026-11-14T15:58:27.402Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81e28c92ea07f46405f9?pvs=204"
+    }
+  ],
+  "note": "Identity only. Notion is authority. No design body mirrored."
+}

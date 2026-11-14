@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc-11",
+        "CMAKE_CXX_COMPILER": "g++-11",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "RODAQ_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "asan-ubsan",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/asan-ubsan",
+      "cacheVariables": {"RODAQ_SANITIZER": "address-undefined"}
+    },
+    {
+      "name": "tsan",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": {"RODAQ_SANITIZER": "thread"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "dev", "configurePreset": "dev", "jobs": 4},
+    {"name": "asan-ubsan", "configurePreset": "asan-ubsan", "jobs": 4},
+    {"name": "tsan", "configurePreset": "tsan", "jobs": 4}
+  ],
+  "testPresets": [
+    {"name": "dev", "configurePreset": "dev", "output": {"outputOnFailure": true}},
+    {"name": "asan-ubsan", "configurePreset": "asan-ubsan", "output": {"outputOnFailure": true}},
+    {"name": "tsan", "configurePreset": "tsan", "output": {"outputOnFailure": true}}
+  ]
+}

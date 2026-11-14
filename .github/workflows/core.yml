@@ -1,0 +1,32 @@
+name: Core baseline
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  core:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [dev, asan-ubsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -y gcc-11 g++-11 clang-format-14 clang-tidy-14 libgtest-dev
+      - run: python3 tools/check_format.py
+      - run: cmake --preset ${{ matrix.preset }} -DRODAQ_ENABLE_CLANG_TIDY=ON
+      - run: cmake --build --preset ${{ matrix.preset }} 2>&1 | tee build/${{ matrix.preset }}/build.log
+        shell: bash
+      - run: ctest --preset ${{ matrix.preset }} --output-junit "$GITHUB_WORKSPACE/build/${{ matrix.preset }}/ctest.xml"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/build.log
+            build/${{ matrix.preset }}/ctest.xml
+            build/${{ matrix.preset }}/Testing/Temporary/
+            build/${{ matrix.preset }}/CMakeCache.txt
+          retention-days: 30

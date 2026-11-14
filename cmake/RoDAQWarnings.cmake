@@ -1,4 +1,7 @@
 function(rodaq_enable_project_warnings target)
+    if(RODAQ_ENABLE_CLANG_TIDY)
+        set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${RODAQ_CLANG_TIDY}")
+    endif()
     target_compile_options(
         ${target}
         PRIVATE

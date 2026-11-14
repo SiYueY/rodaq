@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(rodaq LANGUAGES C CXX)
+project(RoDAQ VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -11,28 +11,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RODAQ_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
 include(CTest)
+include(GNUInstallDirs)
 include(cmake/RoDAQWarnings.cmake)
-
-add_library(rodaq_core INTERFACE)
-add_library(rodaq::core ALIAS rodaq_core)
-target_compile_features(rodaq_core INTERFACE cxx_std_17)
-target_include_directories(
-    rodaq_core
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>)
-target_include_directories(
-    rodaq_core
-    SYSTEM INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include>)
+include(cmake/RoDAQQuality.cmake)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
 set(FMT_TEST OFF CACHE BOOL "" FORCE)
 set(FMT_FUZZ OFF CACHE BOOL "" FORCE)
 set(FMT_CUDA_TEST OFF CACHE BOOL "" FORCE)
 set(FMT_OS ON CACHE BOOL "" FORCE)
-set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/fmt EXCLUDE_FROM_ALL)
+set(FMT_INSTALL ON CACHE BOOL "" FORCE)
+add_subdirectory(third_party/fmt)
 
 set(SPDLOG_BUILD_ALL OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -52,21 +42,42 @@ set(SPDLOG_NO_ATOMIC_LEVELS OFF CACHE BOOL "" FORCE)
 set(SPDLOG_NO_TZ_OFFSET OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
 
-add_library(rodaq_logging STATIC src/logging.cpp)
-add_library(rodaq::logging ALIAS rodaq_logging)
-target_compile_features(rodaq_logging PUBLIC cxx_std_17)
-target_include_directories(
-    rodaq_logging
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>)
-target_link_libraries(
-    rodaq_logging
-    PUBLIC
-        rodaq_core
-        fmt::fmt
-    PRIVATE
-        spdlog::spdlog)
+# S0 establishes package boundaries; Task/System/Artifact services arrive in S2.
+add_library(rodaq_plugin SHARED src/logging.cpp)
+add_library(rodaq::plugin ALIAS rodaq_plugin)
+set_target_properties(rodaq_plugin PROPERTIES EXPORT_NAME plugin)
+target_compile_features(rodaq_plugin PUBLIC cxx_std_17)
+target_include_directories(rodaq_plugin PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_include_directories(rodaq_plugin SYSTEM PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include>)
+target_link_libraries(rodaq_plugin PUBLIC fmt::fmt PRIVATE spdlog::spdlog)
+rodaq_enable_project_warnings(rodaq_plugin)
+
+add_library(rodaq_daq INTERFACE)
+add_library(rodaq::daq ALIAS rodaq_daq)
+set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
+target_link_libraries(rodaq_daq INTERFACE rodaq::plugin)
+
+include(CMakePackageConfigHelpers)
+install(TARGETS rodaq_plugin rodaq_daq EXPORT RoDAQTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY include/rodaq DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY third_party/tl_expected/include/tl DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES third_party/tl_expected/COPYING
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME tl_expected-LICENSE)
+install(FILES third_party/spdlog/LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME spdlog-LICENSE)
+configure_package_config_file(cmake/RoDAQConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.cmake
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
+install(EXPORT RoDAQTargets NAMESPACE rodaq:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

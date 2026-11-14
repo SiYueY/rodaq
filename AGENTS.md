@@ -4,7 +4,7 @@
 
 - 检查当前分支和 `git status`，保留已有工作。
 - 开发前以 [RoDAQ 当前 Notion 设计文档](https://verbose-vulture-f51.notion.site/RoDAQ-417da2b2a80f81c68d97cffe766805b3) 为基线；Git 历史中的旧实现和旧设计仅作参考，不能直接视为当前规范。
-- 修改 C++ 前阅读 [C++17 代码规范](docs/coding_guidelines/cpp_coding_guidelines.md)。
+- 修改 C++ 前直接读取 Notion [C++17 编码规范与代码质量基线](https://app.notion.com/p/418da2b2a80f817db957fa6f017c64bf)，并阅读仓库编码规范；Notion 是正式规范。记录阶段设计页面 identity/captured_at，不在仓库保存设计正文。
 - 旧插件实现及测试已重置；后续按完成审查的设计逐步重新实现，并为每阶段补齐独立验证。
 
 ## 工程约定
@@ -20,4 +20,5 @@
 
 - 运行与修改直接相关的构建、测试或工具检查，并记录验证范围。
 - 用 `git diff` 和 `git status` 审查交付内容。
-- 正式设计决策维护在 Notion 中；区分草案、验证通过和生产资格，待设计冻结后再同步至仓库。
+- 正式设计决策维护在 Notion 中；日常进度、测试和风险只更新 [00](https://app.notion.com/p/418da2b2a80f8141a08ae0cc08a73962)。仅在证实必要合同缺陷时最小修订其他设计页；当前不向仓库同步设计。
+- 阶段退出需单独的静态代码审查环节，覆盖 API、职责、Ownership、错误、生命周期、并发和资源边界；不能只凭功能测通宣布 Passed。
