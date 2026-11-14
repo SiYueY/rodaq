@@ -4,4 +4,4 @@
 
 生产包将 [Web 前端](../web/README.md) 的静态资源与服务端一起部署。页面和 `/api/v1/` 由同一本机回环地址提供，Web 和本机自动化共用 API。服务通过 `rodaq` 模块执行录制操作并统一管理任务配置。
 
-模块契约见[系统设计说明书](../docs/design/architecture.md)和[技术选型说明书](../docs/design/technology_selection.md)。
+当前模块契约以 [Notion 上的 RoDAQ 设计文档](https://verbose-vulture-f51.notion.site/RoDAQ-417da2b2a80f81c68d97cffe766805b3) 为准；现有描述属于目标范围，不代表已完成实现。

@@ -1,8 +1,0 @@
-{
-    global:
-        rodaq_plugin_abi_version;
-        rodaq_plugin_get_entry;
-        rodaq_test_*;
-    local:
-        *;
-};
