@@ -4,7 +4,8 @@ The authoritative design and stage status live in [Notion 00](https://app.notion
 Baseline files contain source identities only; this directory is not a design mirror.
 
 Prepare the pinned submodules (`git submodule update --init --recursive`), GCC 11,
-CMake 3.22+, clang-format/clang-tidy 14, and GoogleTest 1.11 (test-only).
+CMake 3.22+, clang-format/clang-tidy 14, nlohmann/json 3.10.5,
+OpenSSL 3.x development packages and GoogleTest 1.11 (test-only).
 The SDK builds without ROS 2, Drogon, Web or Node.js:
 
 ```sh

@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(CounterCppProvider VERSION 1.0.0 LANGUAGES CXX)
+find_package(RoDAQ REQUIRED CONFIG)
+add_library(counter_cpp SHARED provider.cpp)
+target_compile_options(counter_cpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
+rodaq_register_plugin(counter_cpp PLUGIN_ID com.example.counter PLUGIN_NAME "C++ Counter")

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include <rodaq/plugin/c/plugin.h>
@@ -69,11 +70,16 @@ struct BufferSnapshot {
     std::uint32_t capacity;
 };
 
+inline bool valid_error_input(const rodaq_error_t* error) noexcept {
+    return error == nullptr || ((error->message.data == nullptr) == (error->message.capacity == 0));
+}
+
 inline bool valid_error(
     rodaq_status_code_t status, const rodaq_error_t& error, BufferSnapshot expected) noexcept {
     const auto& message = error.message;
     // Identity/capacity comparisons MUST precede every access to message data.
-    if (message.data != expected.data || message.capacity != expected.capacity ||
+    if (!valid_error_input(&error) || message.data != expected.data ||
+        message.capacity != expected.capacity ||
         (message.capacity != 0 && message.data == nullptr) || message.size > message.capacity ||
         (status == RODAQ_STATUS_OK && message.size != 0)) {
         return false;
@@ -87,6 +93,31 @@ inline bool valid_error(
 
 inline bool known_status(rodaq_status_code_t status) noexcept {
     return status <= RODAQ_STATUS_INTERNAL;
+}
+
+inline bool valid_identifier(std::string_view value) noexcept {
+    if (value.empty() || value.size() > 255) {
+        return false;
+    }
+    for (const char byte : value) {
+        if (!((byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '.' ||
+              byte == '_' || byte == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool valid_query(const rodaq_interface_query_t& query) noexcept {
+    return query.interface_id.data != nullptr && query.interface_id.size <= 255 &&
+           valid_identifier({query.interface_id.data, query.interface_id.size}) &&
+           query.min_minor <= query.max_minor;
+}
+
+inline bool default_invalid(const rodaq_interface_reference_t& reference) noexcept {
+    return reference.context == nullptr && reference.vtable == nullptr &&
+           reference.vtable_size == 0 && reference.negotiated_version.major == 0 &&
+           reference.negotiated_version.minor == 0;
 }
 
 /** Non-OK primary status survives invalid diagnostics. Unknown/invalid OK fail closed. */
@@ -146,6 +177,24 @@ std::size_t readable_vtable_size(const rodaq_interface_reference_t& reference) n
 
 inline bool readable_slot(std::size_t readable, std::size_t offset, std::size_t size) noexcept {
     return offset <= readable && size <= readable - offset;
+}
+
+template <typename Interface>
+bool copy_vtable(
+    const rodaq_interface_reference_t& reference, typename Interface::Vtable& table) noexcept {
+    static_assert(std::is_trivially_copyable_v<typename Interface::Vtable>);
+    static_assert(Interface::minimum_required_prefix_size() >= sizeof(rodaq_struct_header_t));
+    static_assert(Interface::minimum_required_prefix_size() <= sizeof(typename Interface::Vtable));
+    static_assert(noexcept(Interface::valid_vtable(table, std::uint16_t{})));
+    const auto readable = readable_vtable_size<typename Interface::Vtable>(reference);
+    if (reference.negotiated_version.major != Interface::kMajor ||
+        reference.negotiated_version.minor > Interface::kMinor ||
+        readable < Interface::minimum_required_prefix_size()) {
+        return false;
+    }
+    table = {};
+    std::memcpy(&table, reference.vtable, readable);
+    return Interface::valid_vtable(table, reference.negotiated_version.minor);
 }
 
 }  // namespace rodaq::plugin::abi

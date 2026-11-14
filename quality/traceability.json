@@ -1,7 +1,7 @@
 {
   "authority": "https://app.notion.com/p/417da2b2a80f816592c1e898187cb69c",
   "baseline": "S0-20261115-01",
-  "note": "Test labels are planned coverage groups, not executable test IDs or passing evidence. Bind implemented_tests as stages deliver them.",
+  "note": "Coverage inventory only. Test labels in planned_tests are coverage groups, not executable IDs. Test results and stage status live only in Notion 00.",
   "requirements": [
     {
       "requirement": "FUNC-01",
@@ -13,8 +13,7 @@
       "planned_tests": [
         "deployment_e2e"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-02",
@@ -28,8 +27,7 @@
       "planned_tests": [
         "task_configuration_contract"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-03",
@@ -41,8 +39,7 @@
       "planned_tests": [
         "multi_task_isolation"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-04",
@@ -55,8 +52,7 @@
       "planned_tests": [
         "task_control_contract"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-05",
@@ -68,8 +64,7 @@
       "planned_tests": [
         "recording_rotation_retention"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-06",
@@ -81,8 +76,7 @@
       "planned_tests": [
         "ros2_readiness_schema_qos"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-07",
@@ -95,8 +89,7 @@
       "planned_tests": [
         "data_impact_settlement"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-08",
@@ -108,8 +101,7 @@
       "planned_tests": [
         "artifact_query_read_download"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-09",
@@ -121,8 +113,7 @@
       "planned_tests": [
         "ros2_mcap_interoperability"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-10",
@@ -135,8 +126,7 @@
       "planned_tests": [
         "resource_bounds_faults"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-11",
@@ -148,8 +138,7 @@
       "planned_tests": [
         "crash_recovery"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-12",
@@ -161,8 +150,7 @@
       "planned_tests": [
         "reset_retire_contract"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-13",
@@ -175,8 +163,7 @@
       "planned_tests": [
         "application_observability_e2e"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-14",
@@ -188,8 +175,7 @@
       "planned_tests": [
         "security_isolation_endurance"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": []
     },
     {
       "requirement": "FUNC-15",
@@ -201,8 +187,18 @@
       "planned_tests": [
         "plugin_out_of_tree_sdk"
       ],
-      "implemented_tests": [],
-      "status": "pending"
+      "implemented_tests": [
+        "rodaq_counter_binary_matrix",
+        "rodaq_abi_manifest_comparator",
+        "rodaq_plugin_metadata",
+        "AbiErrorBuffer.*",
+        "AbiVtable.*",
+        "AuthoringTest.*",
+        "PluginAuthoring.*",
+        "PluginCatalogTest.*",
+        "PluginResolver.*",
+        "PluginSemVer.*"
+      ]
     }
   ]
 }

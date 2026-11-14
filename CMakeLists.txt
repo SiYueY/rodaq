@@ -44,7 +44,9 @@ set(SPDLOG_NO_TZ_OFFSET OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
 
 # S0 establishes package boundaries; Task/System/Artifact services arrive in S2.
-add_library(rodaq_plugin SHARED src/logging.cpp)
+find_package(nlohmann_json 3.10.5 EXACT REQUIRED CONFIG)
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+add_library(rodaq_plugin SHARED src/logging.cpp src/plugin/catalog.cpp)
 add_library(rodaq::plugin ALIAS rodaq_plugin)
 set_target_properties(rodaq_plugin PROPERTIES EXPORT_NAME plugin)
 target_compile_features(rodaq_plugin PUBLIC cxx_std_17)
@@ -53,7 +55,8 @@ target_include_directories(rodaq_plugin PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_include_directories(rodaq_plugin SYSTEM PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include>)
-target_link_libraries(rodaq_plugin PUBLIC fmt::fmt PRIVATE spdlog::spdlog)
+target_link_libraries(rodaq_plugin PUBLIC fmt::fmt
+    PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json OpenSSL::Crypto)
 rodaq_enable_project_warnings(rodaq_plugin)
 
 add_library(rodaq_daq INTERFACE)

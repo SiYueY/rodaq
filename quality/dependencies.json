@@ -27,6 +27,24 @@
       "source": "pinned Git submodule",
       "purpose": "Result storage",
       "verification": "build + related CTest + installed SDK consumer"
+    },
+    {
+      "name": "nlohmann/json",
+      "version": "3.10.5",
+      "package": "nlohmann-json3-dev 3.10.5-2",
+      "license": "MIT",
+      "source": "Ubuntu 22.04 system package",
+      "purpose": "Private strict Plugin Manifest JSON parsing; no public JSON types",
+      "verification": "strict ingress/duplicate key/malformed schema/SDK isolation tests"
+    },
+    {
+      "name": "OpenSSL libcrypto",
+      "version": "3.0.2",
+      "package": "libssl-dev 3.0.2-0ubuntu1.30",
+      "license": "Apache-2.0",
+      "source": "Ubuntu 22.04 system package",
+      "purpose": "Private EVP SHA-256 artifact verification; no public OpenSSL types",
+      "verification": "artifact digest/identity replacement and SDK load tests"
     }
   ],
   "test_only": [

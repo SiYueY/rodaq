@@ -62,5 +62,16 @@ function(rodaq_register_plugin target)
             --output "${package}/manifest.json" VERBATIM)
     set(destination "lib/rodaq/plugins/${package_id}/${plugin_PLUGIN_VERSION}")
     install(TARGETS ${target} LIBRARY DESTINATION "${destination}/lib")
-    install(FILES "${package}/manifest.json" DESTINATION "${destination}")
+    # install may edit RPATH or strip the ELF. Hash the final installed bytes,
+    # never copy a build-tree digest over a different installed artifact.
+    install(CODE "
+        execute_process(COMMAND \"${Python3_EXECUTABLE}\" \"${tool}\" manifest
+            --metadata \"${generated}/metadata.json\"
+            --artifact \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${destination}/lib/$<TARGET_FILE_NAME:${target}>\"
+            --output \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${destination}/manifest.json\"
+            RESULT_VARIABLE manifest_result)
+        if(NOT manifest_result EQUAL 0)
+            message(FATAL_ERROR \"Cannot generate installed Plugin manifest\")
+        endif()
+    ")
 endfunction()

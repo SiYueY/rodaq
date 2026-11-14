@@ -10,6 +10,8 @@
 
 namespace rodaq::plugin {
 
+using DeadlineDuration = std::chrono::nanoseconds;
+
 /** Absolute Linux CLOCK_MONOTONIC deadline; expiration never cancels native work. */
 class Deadline {
 public:

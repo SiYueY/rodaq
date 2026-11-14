@@ -30,7 +30,7 @@ foreach(header IN LISTS public_cpp_headers)
     file(RELATIVE_PATH include_path ${PROJECT_SOURCE_DIR}/include ${header})
     string(MAKE_C_IDENTIFIER "${include_path}" header_id)
     set(source ${CMAKE_CURRENT_BINARY_DIR}/${header_id}.cpp)
-    file(WRITE ${source} "#include <${include_path}>\n")
+    file(GENERATE OUTPUT ${source} CONTENT "#include <${include_path}>\n")
     add_library(${header_id} OBJECT ${source})
     target_link_libraries(${header_id} PRIVATE rodaq::plugin)
     rodaq_enable_project_warnings(${header_id})
@@ -46,6 +46,15 @@ add_executable(rodaq_abi_boundary_test plugin/abi_boundary_test.cpp)
 target_link_libraries(rodaq_abi_boundary_test PRIVATE rodaq::plugin GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_abi_boundary_test)
 gtest_discover_tests(rodaq_abi_boundary_test)
+add_executable(rodaq_plugin_authoring_test plugin/authoring_test.cpp)
+target_link_libraries(rodaq_plugin_authoring_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_plugin_authoring_test)
+gtest_discover_tests(rodaq_plugin_authoring_test)
+add_executable(rodaq_plugin_catalog_test plugin/catalog_test.cpp)
+target_include_directories(rodaq_plugin_catalog_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+target_link_libraries(rodaq_plugin_catalog_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
+rodaq_enable_project_warnings(rodaq_plugin_catalog_test)
+gtest_discover_tests(rodaq_plugin_catalog_test)
 
 # Compile every C ABI header alone in both supported language modes.
 file(GLOB_RECURSE abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*/c/*.h)
@@ -54,7 +63,7 @@ foreach(header IN LISTS abi_headers)
     string(MAKE_C_IDENTIFIER "${include_path}" header_id)
     foreach(language c cpp)
         set(source ${CMAKE_CURRENT_BINARY_DIR}/${header_id}.${language})
-        file(WRITE ${source} "#include <${include_path}>\n")
+        file(GENERATE OUTPUT ${source} CONTENT "#include <${include_path}>\n")
         add_library(${header_id}_${language} OBJECT ${source})
         target_include_directories(${header_id}_${language} PRIVATE ${PROJECT_SOURCE_DIR}/include)
         rodaq_enable_project_warnings(${header_id}_${language})
@@ -86,7 +95,7 @@ add_test(NAME rodaq_plugin_metadata
 add_test(NAME rodaq_counter_binary_matrix
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_counter_matrix.py
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
-        --compiler ${CMAKE_C_COMPILER})
+        --compiler ${CMAKE_C_COMPILER} --cxx-compiler ${CMAKE_CXX_COMPILER})
 
 add_test(NAME rodaq_package_contract
     COMMAND ${CMAKE_COMMAND}
