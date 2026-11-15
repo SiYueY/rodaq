@@ -2,6 +2,10 @@
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
 #include <rodaq/plugin/registry.hpp>
+#include <rodaq/storage/interface.hpp>
+#include <rodaq/acquisition/interface.hpp>
+#include <rodaq/acquisition/service.hpp>
+#include <atomic>
 
 #include "abi/counter.hpp"
 #include "abi/probe.hpp"
@@ -14,6 +18,7 @@
 #include <future>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 
 #include <gtest/gtest.h>
 
@@ -65,6 +70,8 @@ protected:
         root_ = path;
         fs::copy(RODAQ_COUNTER_PACKAGE, root_ / "counter", fs::copy_options::recursive);
         fs::copy(RODAQ_LIFECYCLE_PACKAGE, root_ / "lifecycle", fs::copy_options::recursive);
+        fs::copy(RODAQ_STORAGE_PACKAGE, root_ / "storage", fs::copy_options::recursive);
+        fs::copy(RODAQ_ACQUISITION_PACKAGE, root_ / "acquisition", fs::copy_options::recursive);
         control_ = root_.string() + "-control";
         fs::create_directory(control_);
         for (const auto& entry : fs::recursive_directory_iterator(root_)) {
@@ -421,6 +428,283 @@ TEST_F(PluginRuntimeTest, BackgroundServicePermitPreventsSelfWait) {
     EXPECT_EQ(callback_done.get_future().wait_for(2s), std::future_status::ready);
     ASSERT_TRUE(instance.close(soon()).ok());
     EXPECT_EQ(events(), "configure\nshutdown\ndestroy\n");
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+namespace storage = rodaq::storage;
+
+class StorageRuntimeTest : public PluginRuntimeTest {
+protected:
+    void SetUp() override {
+        PluginRuntimeTest::SetUp();
+        ASSERT_FALSE(HasFatalFailure());
+        auto policy = options();
+        policy.search_paths = {root_};
+        auto created = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(created.ok());
+        manager_.emplace(std::move(created).value());
+        auto loaded = manager_->load("com.example.storage.probe");
+        ASSERT_TRUE(loaded.ok()) << loaded.status().message();
+        library_.emplace(std::move(loaded).value());
+        ASSERT_TRUE(services_.freeze().ok());
+    }
+
+    void TearDown() override {
+        if (manager_) {
+            EXPECT_TRUE(manager_->shutdown(soon()).ok());
+        }
+        PluginRuntimeTest::TearDown();
+    }
+
+    rodaq::Result<plugin::PluginInstance> create(std::string mode) {
+        return library_->create_instance(
+            services_, nlohmann::json{{"mode", std::move(mode)}}.dump());
+    }
+
+    static storage::PrepareConfig envelope() {
+        return {{sizeof(storage::PrepareConfig)}, 4, 8, 2, 2, 100, 1024, 4096, 2, 64, 1, 1, 1};
+    }
+
+    static std::array<storage::Record, 2> records() {
+        std::array<storage::Record, 2> result{};
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            auto& record = result[i];
+            record.header.struct_size = sizeof(record);
+            record.stream_id = 1;
+            record.descriptor_id = 1;
+            record.acceptance_sequence = i + 1;
+            record.system_boot_id = 1;
+            record.clock_epoch_id = 1;
+            record.receive_monotonic = 1;
+        }
+        return result;
+    }
+
+    std::optional<plugin::PluginManager> manager_;
+    std::optional<plugin::PluginLibrary> library_;
+    plugin::ServiceRegistry services_;
+};
+
+TEST_F(StorageRuntimeTest, CapacityModelAndSinglePassOwnedSealResult) {
+    auto initialized = create("normal");
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto queried = instance.query<storage::Interface>();
+    ASSERT_TRUE(queried.ok());
+    auto handle = std::move(queried).value();
+    const auto prepared = handle.prepare(envelope(), soon());
+    ASSERT_TRUE(prepared.ok());
+    EXPECT_EQ(prepared.value().payload_expansion_denominator, 1);
+    const storage::SegmentSpec segment{{sizeof(segment)}, 1, {"/tmp", 4}};
+    EXPECT_TRUE(handle.open_segment(segment, soon()).ok());
+    EXPECT_EQ(handle.segment_usage().value().file_count, 1);
+    auto sealed = handle.seal_segment(soon());
+    ASSERT_TRUE(sealed.ok()) << sealed.status().message();
+    ASSERT_EQ(sealed.value().files.size(), 1);
+    EXPECT_EQ(sealed.value().files[0].relative_path, "probe.bin");
+    EXPECT_EQ(sealed.value().files[0].physical_size, 1);
+    EXPECT_EQ(sealed.value().total_physical_bytes, 1);
+    EXPECT_TRUE(handle.quiesce(soon()).ok());
+    EXPECT_TRUE(instance.close(soon()).ok());
+    EXPECT_EQ(sealed.value().files[0].relative_path, "probe.bin");
+}
+
+TEST_F(StorageRuntimeTest, NonOkPreservesBothConfirmedPrefixAndTailChannels) {
+    for (const auto* mode : {"partial_unwritten", "partial_unknown", "full_failed", "bad_error"}) {
+        SCOPED_TRACE(mode);
+        auto initialized = create(mode);
+        ASSERT_TRUE(initialized.ok());
+        auto instance = std::move(initialized).value();
+        auto queried = instance.query<storage::Interface>();
+        ASSERT_TRUE(queried.ok());
+        auto handle = std::move(queried).value();
+        ASSERT_TRUE(handle.prepare(envelope(), soon()).ok());
+        const auto batch = records();
+        auto outcome = handle.write_batch({batch.data(), batch.size()}, soon());
+        EXPECT_EQ(outcome.status.code(), rodaq::StatusCode::Unavailable);
+        const bool full = std::string_view(mode) == "full_failed";
+        EXPECT_EQ(outcome.batch_result.confirmed_prefix, full ? 2 : 1);
+        const auto expected_tail = full ? RODAQ_STORAGE_TAIL_NONE
+                                        : (std::string_view(mode) == "partial_unwritten"
+                                               ? RODAQ_STORAGE_TAIL_DEFINITELY_UNWRITTEN
+                                               : RODAQ_STORAGE_TAIL_UNKNOWN);
+        EXPECT_EQ(outcome.batch_result.tail_state, expected_tail);
+        EXPECT_TRUE(instance.close(soon()).ok());
+    }
+}
+
+TEST_F(StorageRuntimeTest, MalformedResultsAndForeignExceptionsBecomeUnknown) {
+    for (const auto* mode : {"bad_batch", "unknown_status", "throw_write"}) {
+        SCOPED_TRACE(mode);
+        auto initialized = create(mode);
+        ASSERT_TRUE(initialized.ok());
+        auto instance = std::move(initialized).value();
+        auto queried = instance.query<storage::Interface>();
+        ASSERT_TRUE(queried.ok());
+        auto handle = std::move(queried).value();
+        ASSERT_TRUE(handle.prepare(envelope(), soon()).ok());
+        const auto batch = records();
+        auto outcome = handle.write_batch({batch.data(), batch.size()}, soon());
+        EXPECT_EQ(outcome.status.code(), rodaq::StatusCode::Internal);
+        EXPECT_EQ(outcome.batch_result.confirmed_prefix, 0);
+        EXPECT_EQ(outcome.batch_result.tail_state, RODAQ_STORAGE_TAIL_UNKNOWN);
+        EXPECT_TRUE(instance.close(soon()).ok());
+    }
+}
+
+TEST_F(StorageRuntimeTest, AllNestedIdentitiesIncludingUnusedSlotsPrecedeDereference) {
+    for (const auto* mode :
+         {"bad_files_pointer", "bad_used_pointer", "bad_unused_pointer", "bad_unused_capacity",
+          "bad_unused_bytes", "bad_seal_total", "bad_seal_count"}) {
+        SCOPED_TRACE(mode);
+        auto initialized = create(mode);
+        ASSERT_TRUE(initialized.ok());
+        auto instance = std::move(initialized).value();
+        auto queried = instance.query<storage::Interface>();
+        ASSERT_TRUE(queried.ok());
+        auto handle = std::move(queried).value();
+        ASSERT_TRUE(handle.prepare(envelope(), soon()).ok());
+        EXPECT_EQ(handle.seal_segment(soon()).status().code(), rodaq::StatusCode::Internal);
+        EXPECT_TRUE(instance.close(soon()).ok());
+    }
+}
+
+TEST_F(StorageRuntimeTest, ClosedAdmissionProvesUndispatchedBatchUnwritten) {
+    auto initialized = create("normal");
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto queried = instance.query<storage::Interface>();
+    ASSERT_TRUE(queried.ok());
+    auto handle = std::move(queried).value();
+    ASSERT_TRUE(handle.prepare(envelope(), soon()).ok());
+    ASSERT_TRUE(instance.close(soon()).ok());
+    const auto batch = records();
+    auto outcome = handle.write_batch({batch.data(), batch.size()}, soon());
+    EXPECT_EQ(outcome.status.code(), rodaq::StatusCode::InvalidState);
+    EXPECT_EQ(outcome.batch_result.confirmed_prefix, 0);
+    EXPECT_EQ(outcome.batch_result.tail_state, RODAQ_STORAGE_TAIL_DEFINITELY_UNWRITTEN);
+}
+
+namespace acquisition = rodaq::acquisition;
+
+struct AcquisitionHost {
+    rodaq::Result<acquisition::SubmitResult> submit_record(
+        const acquisition::RecordAttempt& record) {
+        const auto slot = received.fetch_add(1);
+        if (slot >= copies.size() || record.payload.logical_size != copies[slot].size()) {
+            return rodaq::Status(rodaq::StatusCode::ResourceExhausted, "Probe Host capacity");
+        }
+        std::copy_n(record.payload.data, copies[slot].size(), copies[slot].data());
+        threads[slot] = std::this_thread::get_id();
+        tokens[slot] = record.descriptor_token;
+        return acquisition::SubmitResult{
+            {sizeof(acquisition::SubmitResult)}, RODAQ_SUBMIT_ACCEPTED, 0};
+    }
+
+    rodaq::Result<acquisition::DescriptorToken> propose_descriptor(
+        const acquisition::DescriptorProposal& proposal, plugin::Deadline) {
+        if (proposal.stream_id != 42 || proposal.data_profile != RODAQ_DATA_PROFILE_GENERIC) {
+            return rodaq::Status(
+                rodaq::StatusCode::InvalidArgument, "Unexpected descriptor identity");
+        }
+        ++descriptors;
+        return acquisition::DescriptorToken{7, 9};
+    }
+
+    rodaq::Result<void> report_source_event(const acquisition::SourceEvent&) { return {}; }
+
+    rodaq::Result<void> report_acquisition_event(const acquisition::AcquisitionEvent& event) {
+        if (event.kind == RODAQ_ACQUISITION_EVENT_STREAM_READY && event.stream_id == 42) {
+            ready.store(true);
+        }
+        return {};
+    }
+
+    std::atomic<std::uint32_t> received{0};
+    std::atomic<std::uint32_t> descriptors{0};
+    std::atomic<bool> ready{false};
+    std::array<std::array<std::uint8_t, 4>, 4> copies{};
+    std::array<std::thread::id, 4> threads{};
+    std::array<acquisition::DescriptorToken, 4> tokens{};
+};
+
+TEST_F(PluginRuntimeTest, AcquisitionTypedOperationAndConcurrentManagedServiceCopyConverge) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.acquisition.probe");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    std::optional<plugin::PluginInstance> instance;
+    std::weak_ptr<AcquisitionHost> weak;
+    {
+        auto host = std::make_shared<AcquisitionHost>();
+        weak = host;
+        plugin::ServiceRegistry services;
+        ASSERT_TRUE(services.add_shared<acquisition::Service>(host).ok());
+        ASSERT_TRUE(services.freeze().ok());
+        auto initialized = library.create_instance(services, {});
+        ASSERT_TRUE(initialized.ok());
+        instance.emplace(std::move(initialized).value());
+    }
+    ASSERT_FALSE(weak.expired());
+    auto queried = instance->query<acquisition::Interface>();
+    ASSERT_TRUE(queried.ok());
+    auto handle = std::move(queried).value();
+    const acquisition::StreamBinding stream{{sizeof(stream)}, 42, {"sample", 6}, 4};
+    const acquisition::PrepareConfig prepare{{sizeof(prepare)}, &stream, 1, 2};
+    ASSERT_TRUE(handle.prepare(prepare, soon()).ok());
+    ASSERT_TRUE(handle.start(soon()).ok());
+    ASSERT_TRUE(handle.quiesce(soon()).ok());
+    ASSERT_TRUE(handle.quiesce(soon()).ok());
+    auto host = weak.lock();
+    ASSERT_NE(host, nullptr);
+    EXPECT_EQ(host->received.load(), 2);
+    EXPECT_EQ(host->descriptors.load(), 1);
+    EXPECT_TRUE(host->ready.load());
+    EXPECT_NE(host->threads[0], host->threads[1]);
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(host->copies[i][0], 1);
+        EXPECT_EQ(host->copies[i][1], 2);
+        EXPECT_EQ(host->copies[i][2], 3);
+        EXPECT_LT(host->copies[i][3], 2);
+        EXPECT_EQ(host->tokens[i].value, 7);
+        EXPECT_EQ(host->tokens[i].generation, 9);
+    }
+    host.reset();
+    ASSERT_TRUE(instance->close(soon()).ok());
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(handle.start(soon()).status().code(), rodaq::StatusCode::InvalidState);
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, AcquisitionBindingMustExactlyMatchConfiguredStreamKey) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.acquisition.probe");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    auto host = std::make_shared<AcquisitionHost>();
+    ASSERT_TRUE(services.add_shared<acquisition::Service>(host).ok());
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, {});
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto queried = instance.query<acquisition::Interface>();
+    ASSERT_TRUE(queried.ok());
+    auto handle = std::move(queried).value();
+    const acquisition::StreamBinding stream{{sizeof(stream)}, 42, {"other", 5}, 4};
+    const acquisition::PrepareConfig prepare{{sizeof(prepare)}, &stream, 1, 2};
+    EXPECT_EQ(handle.prepare(prepare, soon()).status().code(), rodaq::StatusCode::InvalidArgument);
+    EXPECT_EQ(host->descriptors.load(), 0);
+    EXPECT_EQ(host->received.load(), 0);
+    EXPECT_TRUE(instance.close(soon()).ok());
     EXPECT_TRUE(manager.shutdown(soon()).ok());
 }
 

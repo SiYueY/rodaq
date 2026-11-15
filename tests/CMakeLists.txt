@@ -63,10 +63,22 @@ gtest_discover_tests(rodaq_plugin_registry_test PROPERTIES TIMEOUT 30)
 add_executable(rodaq_plugin_runtime_test plugin/runtime_test.cpp)
 target_link_libraries(rodaq_plugin_runtime_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
 target_compile_definitions(rodaq_plugin_runtime_test PRIVATE
+    RODAQ_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/acquisition_provider-0-installed/lib/rodaq/plugins/com.example.acquisition.probe/1.0.0"
+    RODAQ_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/storage_provider-0-installed/lib/rodaq/plugins/com.example.storage.probe/1.0.0"
     RODAQ_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0"
     RODAQ_COUNTER_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0")
 rodaq_enable_project_warnings(rodaq_plugin_runtime_test)
 gtest_discover_tests(rodaq_plugin_runtime_test PROPERTIES TIMEOUT 40 FIXTURES_REQUIRED counter_sdk)
+
+add_executable(rodaq_acquisition_sdk_test acquisition/sdk_test.cpp)
+target_link_libraries(rodaq_acquisition_sdk_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_acquisition_sdk_test)
+gtest_discover_tests(rodaq_acquisition_sdk_test PROPERTIES TIMEOUT 30)
+
+add_executable(rodaq_storage_sdk_test storage/sdk_test.cpp)
+target_link_libraries(rodaq_storage_sdk_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_storage_sdk_test)
+gtest_discover_tests(rodaq_storage_sdk_test PROPERTIES TIMEOUT 30)
 
 # Compile every C ABI header alone in both supported language modes.
 file(GLOB_RECURSE abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*/c/*.h)

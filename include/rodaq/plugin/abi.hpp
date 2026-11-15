@@ -64,6 +64,17 @@ inline bool valid_string(rodaq_string_t text) noexcept {
     return utf8_prefix({text.data, text.size}, text.size) == text.size;
 }
 
+/** Check the published prefix before touching any business field. */
+template <typename T>
+bool readable(const T* value, std::size_t required_size = sizeof(T)) noexcept {
+    if (value == nullptr || reinterpret_cast<std::uintptr_t>(value) % alignof(T) != 0) {
+        return false;
+    }
+    rodaq_struct_header_t header{};
+    std::memcpy(&header, value, sizeof(header));
+    return header.struct_size >= required_size;
+}
+
 /** Captured from caller-owned storage, never from provider-modified descriptors. */
 struct BufferSnapshot {
     std::uint8_t* data;

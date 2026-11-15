@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -35,12 +36,19 @@ Result<CallGuard> acquire(const std::shared_ptr<InstanceState>& state);
 Result<rodaq_interface_reference_t> query_native(
     const std::shared_ptr<InstanceState>& state, const rodaq_interface_query_t& query);
 
+void report_abi_violation(
+    const std::shared_ptr<InstanceState>& state, std::string_view message) noexcept;
+
 }  // namespace invocation
 
 /** Typed function-table snapshot plus managed owner; every actual call reenters admission. */
 template <typename Interface>
 class OperationHandle {
 public:
+    void report_abi_violation(std::string_view message) const noexcept {
+        invocation::report_abi_violation(state_, message);
+    }
+
     template <typename Function>
     auto invoke(Function&& function) const {
         using Return = std::invoke_result_t<

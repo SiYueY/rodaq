@@ -259,6 +259,14 @@ Result<rodaq_interface_reference_t> query_native(
     return reference;
 }
 
+void report_abi_violation(
+    const std::shared_ptr<InstanceState>& state, std::string_view message) noexcept {
+    if (state) {
+        enqueue_diagnostic(
+            state->manager.lock(), message, &state->library->info, state->id, "operation");
+    }
+}
+
 }  // namespace invocation
 
 PluginInstance::PluginInstance(std::shared_ptr<InstanceState> state) noexcept

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+project(StorageAbiProbe VERSION 1.0.0 LANGUAGES CXX)
+find_package(RoDAQ REQUIRED CONFIG)
+find_package(nlohmann_json 3.10.5 EXACT REQUIRED CONFIG)
+add_library(storage_probe SHARED provider.cpp)
+target_link_libraries(storage_probe PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(storage_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+rodaq_register_plugin(storage_probe PLUGIN_ID com.example.storage.probe PLUGIN_NAME "Storage ABI probe")

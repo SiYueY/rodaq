@@ -56,7 +56,9 @@ add_library(rodaq_plugin SHARED
     src/plugin/lifecycle.cpp
     src/plugin/initialize.cpp
     src/plugin/close.cpp
-    src/plugin/manager.cpp)
+    src/plugin/manager.cpp
+    src/acquisition/interface.cpp
+    src/storage/interface.cpp)
 add_library(rodaq::plugin ALIAS rodaq_plugin)
 set_target_properties(rodaq_plugin PROPERTIES EXPORT_NAME plugin)
 target_compile_features(rodaq_plugin PUBLIC cxx_std_17)

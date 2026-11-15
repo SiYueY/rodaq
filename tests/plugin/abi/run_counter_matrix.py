@@ -30,8 +30,8 @@ def main(args):
     sanitize = {"none": "", "address-undefined": "-fsanitize=address,undefined -fno-omit-frame-pointer",
                 "thread": "-fsanitize=thread -fno-omit-frame-pointer"}[args.sanitizer]
     instrumentation = [f"-DCMAKE_C_FLAGS={sanitize}", f"-DCMAKE_CXX_FLAGS={sanitize}"]
-    for kind in ("provider", "cpp_provider", "lifecycle_provider", "consumer"):
-        for minor in ((0,) if kind in ("cpp_provider", "lifecycle_provider") else (0, 1)):
+    for kind in ("provider", "cpp_provider", "lifecycle_provider", "storage_provider", "acquisition_provider", "consumer"):
+        for minor in ((0,) if kind in ("cpp_provider", "lifecycle_provider", "storage_provider", "acquisition_provider") else (0, 1)):
             identity = f"{kind}-{minor}"
             source = root / (identity + "-source")
             build = root / (identity + "-build")
@@ -39,15 +39,17 @@ def main(args):
             for header in ("counter.h", "counter_fixture.h", "counter.hpp", "probe.hpp"):
                 shutil.copyfile(fixtures / header, source / header)
             compiler_flags = ([f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}"]
-                              if kind in ("cpp_provider", "lifecycle_provider") else
+                              if kind in ("cpp_provider", "lifecycle_provider", "storage_provider", "acquisition_provider") else
                               [f"-DCMAKE_C_COMPILER={args.compiler}", f"-DFIXTURE_MINOR={minor}"])
             run(["cmake", "-S", source, "-B", build,
                  f"-DCMAKE_PREFIX_PATH={prefix}", *compiler_flags, *instrumentation], log)
             run(["cmake", "--build", build, "-j2"], log)
-            if kind in ("provider", "cpp_provider", "lifecycle_provider"):
+            if kind in ("provider", "cpp_provider", "lifecycle_provider", "storage_provider", "acquisition_provider"):
                 installed = root / (identity + "-installed")
                 run(["cmake", "--install", build, "--prefix", installed], log)
-                plugin_id = "com.example.lifecycle" if kind == "lifecycle_provider" else "com.example.counter"
+                plugin_id = {"lifecycle_provider": "com.example.lifecycle",
+                             "storage_provider": "com.example.storage.probe",
+                             "acquisition_provider": "com.example.acquisition.probe"}.get(kind, "com.example.counter")
                 manifest = installed / f"lib/rodaq/plugins/{plugin_id}/1.0.0/manifest.json"
                 data = json.loads(manifest.read_text())
                 artifact = manifest.parent / data["artifact"]["path"]
@@ -66,7 +68,7 @@ def main(args):
     inventory = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in programs.values()}
     (root / "binary-sha256.json").write_text(json.dumps(inventory, indent=2) + "\n")
-    print("Counter matrix: 6/6 binary directions and 4/4 production symbol policies passed")
+    print("Counter matrix: 6/6 binary directions and 6/6 production symbol policies passed")
 
 
 if __name__ == "__main__":

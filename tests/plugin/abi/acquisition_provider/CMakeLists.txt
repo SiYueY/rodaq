@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(AcquisitionAbiProbe VERSION 1.0.0 LANGUAGES CXX)
+find_package(RoDAQ REQUIRED CONFIG)
+add_library(acquisition_probe SHARED provider.cpp)
+target_compile_options(acquisition_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+rodaq_register_plugin(acquisition_probe PLUGIN_ID com.example.acquisition.probe PLUGIN_NAME "Acquisition ABI probe")
