@@ -99,7 +99,8 @@ target_sources(rodaq_daq PRIVATE
     src/pipeline/segment_metadata.cpp
     src/pipeline/recording_segment.cpp
     src/pipeline/admission.cpp
-    src/pipeline/pipeline_writer.cpp)
+    src/pipeline/pipeline_writer.cpp
+    src/pipeline/stream_table.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin

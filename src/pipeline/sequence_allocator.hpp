@@ -36,6 +36,8 @@ public:
 
     // Admission Commit calls this only after every ordinary resource, COPY,
     // Gate/descriptor fence and queue capacity token has already succeeded.
+    // A separate Descriptor-ID allocator may consume on proposal: a failed
+    // prepare burns that interpretation ID, never an AcceptanceSequence.
     Result<std::uint64_t> allocate();
     SequenceAllocationSnapshot snapshot() const noexcept;
 

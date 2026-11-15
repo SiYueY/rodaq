@@ -23,6 +23,9 @@ struct StreamAdmission {
     DescriptorRef active_descriptor;
     std::shared_ptr<RecordingSegment> segment;
     SequenceAllocator sequences;
+    // Separate durable Stream-scoped identity range; a failed Descriptor
+    // prepare may burn an ID but can never reuse an interpretation identity.
+    SequenceAllocator descriptor_ids;
 
     StreamAdmission(StreamId identity, std::uint64_t max_bytes) noexcept
     : stream_id(identity), max_record_bytes(max_bytes) {}

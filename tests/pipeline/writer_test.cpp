@@ -1,6 +1,7 @@
 #include "pipeline/pipeline_writer.hpp"
 #include "pipeline/admission.hpp"
 #include "pipeline/descriptor_registry.hpp"
+#include "pipeline/stream_table.hpp"
 #include "artifact/segment_committer.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
@@ -79,6 +80,12 @@ protected:
         ASSERT_TRUE(capacity_->finish_space_sample(probe.value(), 32000000, 100).ok());
         id_ = pipeline::parse_instance_id("21234567-89ab-4cde-8fab-0123456789ab").value();
         gate_.emplace(id_, 7);
+        auto streams = pipeline::StreamTable::create(
+            {{1, "/first", 8, {1, 1001}, {1, 1001}}, {2, "/second", 8, {1, 1001}, {1, 1001}}});
+        ASSERT_TRUE(streams.ok());
+        streams_.emplace(std::move(streams.value()));
+        first_ = streams_->find(1);
+        second_ = streams_->find(2);
         auto registry = pipeline::DescriptorRegistry::create({1, 2});
         ASSERT_TRUE(registry.ok());
         registry_.emplace(std::move(registry.value()));
@@ -104,8 +111,12 @@ protected:
             (void)manager_->shutdown(soon());
         }
         manager_.reset();
-        first_.segment.reset();
-        second_.segment.reset();
+        if (first_) {
+            first_->segment.reset();
+        }
+        if (second_) {
+            second_->segment.reset();
+        }
         segment_.reset();
         ledger_.reset();
         volume_.reset();
@@ -160,7 +171,21 @@ protected:
         proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         proposal.channel_name = {"/fake", 5};
         proposal.message_encoding = {"json", 4};
-        auto result = registry_->capture(proposal, identity);
+        auto* state = streams_->find(stream);
+        if (!state) {
+            ADD_FAILURE() << "Unconfigured Stream";
+            return nullptr;
+        }
+        rodaq::Result<std::uint64_t> reserved = [&] {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            return state->descriptor_ids.allocate();
+        }();
+        if (!reserved.ok()) {
+            ADD_FAILURE() << "Descriptor range exhausted";
+            return nullptr;
+        }
+        EXPECT_EQ(reserved.value(), identity);
+        auto result = registry_->capture(proposal, reserved.value());
         EXPECT_TRUE(result.ok());
         return result.ok() ? std::move(result.value()) : nullptr;
     }
@@ -180,21 +205,17 @@ protected:
         auto segment = new_segment(7);
         ASSERT_TRUE(segment.ok());
         segment_ = std::move(segment.value());
-        first_.active_descriptor = descriptor(1);
-        second_.active_descriptor = descriptor(2);  // descriptor_id is Stream-scoped.
-        first_.segment = segment_;
-        second_.segment = segment_;
+        first_->active_descriptor = descriptor(1);
+        second_->active_descriptor = descriptor(2);  // descriptor_id is Stream-scoped.
+        first_->segment = segment_;
+        second_->segment = segment_;
         if (!initial_descriptors) {
             return;
         }
         ASSERT_TRUE(
-            writer_->prepare_descriptor(segment_, first_.active_descriptor, 100, soon()).ok());
+            writer_->prepare_descriptor(segment_, first_->active_descriptor, 100, soon()).ok());
         ASSERT_TRUE(
-            writer_->prepare_descriptor(segment_, second_.active_descriptor, 100, soon()).ok());
-        for (auto* stream : {&first_, &second_}) {
-            ASSERT_TRUE(stream->sequences.begin_refill(1).ok());
-            ASSERT_TRUE(stream->sequences.finish_refill(1, {1, 1001}).ok());
-        }
+            writer_->prepare_descriptor(segment_, second_->active_descriptor, 100, soon()).ok());
         ASSERT_EQ(gate_->open_admission(id_, 7), pipeline::GateOpenResult::Opened);
     }
 
@@ -257,8 +278,9 @@ protected:
     std::optional<pipeline::RecordBudget> budget_;
     std::optional<pipeline::PayloadPool> pool_;
     std::optional<pipeline::AdmissionDomain> domain_;
-    pipeline::StreamAdmission first_{1, 8};
-    pipeline::StreamAdmission second_{2, 8};
+    std::optional<pipeline::StreamTable> streams_;
+    pipeline::StreamAdmission* first_{nullptr};
+    pipeline::StreamAdmission* second_{nullptr};
     std::shared_ptr<pipeline::RecordingSegment> segment_;
     std::unique_ptr<pipeline::PipelineWriter> writer_;
 };
@@ -267,9 +289,9 @@ TEST_F(PipelineWriterTest, AcceptedCopiesReachActualSdkStorageAndDurableLedgerCo
     prepare();
     ASSERT_TRUE(writer_);
     EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7.tmp"));
-    submit(first_);
-    submit(second_);
-    submit(first_);
+    submit(*first_);
+    submit(*second_);
+    submit(*first_);
     auto step = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(step.ok());
     EXPECT_EQ(step.value().written, 3);
@@ -298,8 +320,8 @@ TEST_F(PipelineWriterTest, AcceptedCopiesReachActualSdkStorageAndDurableLedgerCo
 TEST_F(PipelineWriterTest, BatchByteLimitKeepsRemainingAcceptedRecordInItsOriginalQueuePosition) {
     prepare();
     ASSERT_TRUE(writer_);
-    submit(first_, 8);
-    submit(first_, 8);
+    submit(*first_, 8);
+    submit(*first_, 8);
     auto first = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(first.ok());
     EXPECT_EQ(first.value().written, 1);
@@ -321,7 +343,7 @@ TEST_F(
     prepare(R"({"mode":"prefix_unwritten","prefix":1})");
     ASSERT_TRUE(writer_);
     for (int i = 0; i < 5; ++i) {
-        submit(first_);
+        submit(*first_);
     }
     auto first = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(first.ok());
@@ -347,7 +369,7 @@ TEST_F(PipelineWriterTest, UnknownSuffixContaminatesOnlyDispatchedRecordsAndPrev
     prepare(R"({"mode":"prefix_unknown","prefix":1})");
     ASSERT_TRUE(writer_);
     for (int i = 0; i < 5; ++i) {
-        submit(first_);
+        submit(*first_);
     }
     auto first = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(first.ok());
@@ -370,7 +392,7 @@ TEST_F(PipelineWriterTest, UnknownSuffixContaminatesOnlyDispatchedRecordsAndPrev
 TEST_F(PipelineWriterTest, FailedLazyOpenNeverClassifiesAnUnenteredWriteAsUnknown) {
     prepare(R"({"mode":"fail_open"})");
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     auto step = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(step.ok());
     EXPECT_EQ(step.value().known_failed, 1);
@@ -385,8 +407,8 @@ TEST_F(PipelineWriterTest, FailedLazyOpenNeverClassifiesAnUnenteredWriteAsUnknow
 TEST_F(PipelineWriterTest, InvalidNativeBatchOutputFencesAndMakesTheEntireDispatchedBatchUnknown) {
     prepare(R"({"mode":"invalid_output"})");
     ASSERT_TRUE(writer_);
-    submit(first_);
-    submit(second_);
+    submit(*first_);
+    submit(*second_);
     auto step = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(step.ok());
     EXPECT_EQ(step.value().failure, StatusCode::Internal);
@@ -401,8 +423,8 @@ TEST_F(PipelineWriterTest, InvalidNativeBatchOutputFencesAndMakesTheEntireDispat
 TEST_F(PipelineWriterTest, FullConfirmedPrefixOnNonOkRemainsWrittenAndCanBeSealed) {
     prepare(R"({"mode":"full_failed"})");
     ASSERT_TRUE(writer_);
-    submit(first_);
-    submit(first_);
+    submit(*first_);
+    submit(*first_);
     auto step = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(step.ok());
     EXPECT_EQ(step.value().written, 2);
@@ -416,7 +438,7 @@ TEST_F(PipelineWriterTest, FullConfirmedPrefixOnNonOkRemainsWrittenAndCanBeSeale
 TEST_F(PipelineWriterTest, LateNativeReturnKeepsPayloadAndCapacityAfterControlClosesGate) {
     prepare(R"({"mode":"late_write","delay_ms":100})");
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     auto work = std::async(std::launch::async, [&] {
         return writer_->write_available(*queue_, segment_, plugin::Deadline::after(1ms).value());
     });
@@ -442,25 +464,25 @@ TEST_F(PipelineWriterTest, LateNativeReturnKeepsPayloadAndCapacityAfterControlCl
 TEST_F(PipelineWriterTest, SegmentCutKeepsOldAndNewAcceptedRecordsBoundToTheirOwnReservations) {
     prepare();
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     ASSERT_TRUE(writer_->write_available(*queue_, segment_, soon()).ok());
     auto next = new_segment(8);
     ASSERT_TRUE(next.ok());
     ASSERT_TRUE(
-        writer_->prepare_descriptor(next.value(), first_.active_descriptor, 200, soon()).ok());
+        writer_->prepare_descriptor(next.value(), first_->active_descriptor, 200, soon()).ok());
     ASSERT_TRUE(
-        writer_->prepare_descriptor(next.value(), second_.active_descriptor, 200, soon()).ok());
-    submit(first_);
+        writer_->prepare_descriptor(next.value(), second_->active_descriptor, 200, soon()).ok());
+    submit(*first_);
     {
         auto cut = gate_->enter_segment_cut(id_, 7);
         ASSERT_TRUE(cut.ok());
         segment_->close_admission();
-        std::lock_guard<std::mutex> first(first_.mutex);
-        std::lock_guard<std::mutex> second(second_.mutex);
-        first_.segment = next.value();
-        second_.segment = next.value();
+        std::lock_guard<std::mutex> first(first_->mutex);
+        std::lock_guard<std::mutex> second(second_->mutex);
+        first_->segment = next.value();
+        second_->segment = next.value();
     }
-    submit(first_);
+    submit(*first_);
     auto old = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(old.ok());
     EXPECT_EQ(old.value().written, 1);
@@ -484,7 +506,8 @@ TEST_F(PipelineWriterTest, SegmentCutKeepsOldAndNewAcceptedRecordsBoundToTheirOw
 TEST_F(PipelineWriterTest, InitialDescriptorFailureCannotDeclareReadyOrOpenAdmission) {
     prepare(R"({"mode":"fail_descriptor"})", false);
     ASSERT_TRUE(writer_);
-    EXPECT_FALSE(writer_->prepare_descriptor(segment_, first_.active_descriptor, 100, soon()).ok());
+    EXPECT_FALSE(
+        writer_->prepare_descriptor(segment_, first_->active_descriptor, 100, soon()).ok());
     EXPECT_TRUE(gate_->admission_fenced());
     EXPECT_FALSE(gate_->snapshot().open);
     EXPECT_EQ(segment_->metadata.snapshot().pending_descriptors, 0);
@@ -496,7 +519,7 @@ TEST_F(PipelineWriterTest, InitialDescriptorFailureCannotDeclareReadyOrOpenAdmis
 TEST_F(PipelineWriterTest, SealFailureKeepsWrittenEvidenceAndAllCommitCapacityWithoutRetry) {
     prepare(R"({"mode":"fail_seal"})");
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     ASSERT_TRUE(writer_->write_available(*queue_, segment_, soon()).ok());
     close();
     EXPECT_FALSE(writer_->seal(segment_, soon()).ok());
@@ -520,7 +543,7 @@ TEST_F(
     EXPECT_FALSE(gate_->admission_fenced());
     EXPECT_EQ(capacity_->snapshot().future_bytes, before);
     EXPECT_EQ(segment_->metadata.snapshot().descriptors, 2);
-    submit(first_);
+    submit(*first_);
     auto step = writer_->write_available(*queue_, segment_, soon());
     ASSERT_TRUE(step.ok());
     EXPECT_EQ(step.value().written, 1);
@@ -531,7 +554,7 @@ TEST_F(
 TEST_F(PipelineWriterTest, ControlFenceRejectsLaterDescriptorWorkWhileAcceptedRecordsStillDrain) {
     prepare();
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     ASSERT_TRUE(gate_->establish_control_fence(id_).ok());
     auto proposed = descriptor(1, 2);
     EXPECT_EQ(
@@ -550,9 +573,9 @@ TEST_F(PipelineWriterTest, ControlFenceRejectsLaterDescriptorWorkWhileAcceptedRe
 TEST_F(PipelineWriterTest, KnownVolumeIdentityFailureStopsNewNativeWritesWithoutInventingUnknown) {
     prepare();
     ASSERT_TRUE(writer_);
-    submit(first_);
+    submit(*first_);
     ASSERT_TRUE(writer_->write_available(*queue_, segment_, soon()).ok());
-    submit(first_);
+    submit(*first_);
     const auto path = volume_->artifacts_directory() / "7.tmp" / "records.fake";
     const auto before = fs::file_size(path);
     std::ofstream(volume_->root() / ".rodaq" / "volume.json", std::ios::trunc) << "{}";
