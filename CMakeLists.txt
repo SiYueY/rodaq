@@ -84,7 +84,8 @@ target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/t
     src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp src/task/config_identity.cpp)
 target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp
     src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
-    src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp)
+    src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp
+    src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
