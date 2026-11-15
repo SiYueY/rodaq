@@ -344,3 +344,14 @@ target_include_directories(rodaq_segment_capacity_test PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(rodaq_segment_capacity_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_segment_capacity_test)
 gtest_discover_tests(rodaq_segment_capacity_test PROPERTIES TIMEOUT 30)
+
+add_executable(rodaq_admission_test pipeline/admission_test.cpp)
+target_include_directories(rodaq_admission_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_admission_test PRIVATE rodaq::daq GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_admission_test)
+gtest_discover_tests(rodaq_admission_test PROPERTIES TIMEOUT 30)
+
+if(NOT RODAQ_SANITIZER STREQUAL "thread")
+    target_sources(rodaq_admission_test PRIVATE pipeline/admission_allocation.cpp)
+    target_compile_definitions(rodaq_admission_test PRIVATE RODAQ_TEST_ADMISSION_ALLOCATION=1)
+endif()
