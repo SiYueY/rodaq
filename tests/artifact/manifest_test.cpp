@@ -16,19 +16,20 @@ using rodaq::StatusCode;
 
 artifact::SegmentManifest manifest() {
     artifact::SegmentManifest result;
-    result.segment_id = 7;
-    result.task_id = rodaq::parse_task_id("01234567-89ab-4cde-8fab-0123456789ab").value();
-    result.pipeline_id = 3;
-    result.instance_id = "21234567-89ab-4cde-8fab-0123456789ab";
-    result.segment_sequence = 1;
-    result.config_version = "sha256:" + std::string(64, 'c');
-    result.effective_config_id = "sha256:" + std::string(64, 'd');
-    result.control_generation = 7;
-    result.reset_generation_at_commit = 2;
-    result.volume_id = artifact::parse_volume_id("11234567-89ab-4cde-8fab-0123456789ab").value();
-    result.acquisition = {"rodaq.fake.acquisition", "1.0.0", std::string(64, 'e')};
-    result.storage = {"rodaq.fake.storage", "1.0.0", std::string(64, 'f')};
-    result.qualified_runtime_profile_id = "behavioral-fake.v1";
+    result.identity.segment_id = 7;
+    result.identity.task_id = rodaq::parse_task_id("01234567-89ab-4cde-8fab-0123456789ab").value();
+    result.identity.pipeline_id = 3;
+    result.identity.instance_id = "21234567-89ab-4cde-8fab-0123456789ab";
+    result.identity.segment_sequence = 1;
+    result.identity.config_version = "sha256:" + std::string(64, 'c');
+    result.identity.effective_config_id = "sha256:" + std::string(64, 'd');
+    result.identity.control_generation = 7;
+    result.identity.reset_generation_at_commit = 2;
+    result.identity.volume_id =
+        artifact::parse_volume_id("11234567-89ab-4cde-8fab-0123456789ab").value();
+    result.identity.acquisition = {"rodaq.fake.acquisition", "1.0.0", std::string(64, 'e')};
+    result.identity.storage = {"rodaq.fake.storage", "1.0.0", std::string(64, 'f')};
+    result.identity.qualified_runtime_profile_id = "behavioral-fake.v1";
     result.files = {
         {"data.bin", 3, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}};
     artifact::ManifestDescriptor descriptor;
@@ -42,7 +43,7 @@ artifact::SegmentManifest manifest() {
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     result.descriptors.push_back(std::move(descriptor));
     result.coverage = {{1, 2, 1, 1, 0, 10, 11}};
-    result.playback_anchor = {42, 10, 1000};
+    result.identity.playback_anchor = {42, 10, 1000};
     result.epochs = {{1, rodaq::time::ClockEpochOrigin::Boot, {}, 2, 100, 200, 1}};
     result.first_receive_monotonic = 100;
     result.last_receive_monotonic = 200;
@@ -67,17 +68,17 @@ TEST(SegmentManifest, IndependentGoldenBindsIdentityFilesDescriptorsCoverageAndP
     auto document = persistence::parse_json(encoded.value());
     ASSERT_TRUE(document.ok());
     EXPECT_EQ(document.value().at("content_digest"), digest.value());
-    EXPECT_EQ(decoded.value().acquisition.sha256, value.acquisition.sha256);
+    EXPECT_EQ(decoded.value().identity.acquisition.sha256, value.identity.acquisition.sha256);
     EXPECT_EQ(decoded.value().coverage[0].known_failed, 1);
-    EXPECT_EQ(decoded.value().playback_anchor.realtime_ns, 1000);
+    EXPECT_EQ(decoded.value().identity.playback_anchor.realtime_ns, 1000);
     EXPECT_EQ(decoded.value().descriptors[0].schema_digest, value.descriptors[0].schema_digest);
 }
 
 TEST(SegmentManifest, FullWidthNumbersAndClockDiscontinuityFactsRemainExact) {
     auto value = manifest();
-    value.segment_id = std::numeric_limits<std::uint64_t>::max();
+    value.identity.segment_id = std::numeric_limits<std::uint64_t>::max();
     value.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
-    value.playback_anchor.realtime_ns = std::numeric_limits<std::int64_t>::min();
+    value.identity.playback_anchor.realtime_ns = std::numeric_limits<std::int64_t>::min();
     value.min_receive_realtime = std::numeric_limits<std::int64_t>::min();
     value.max_receive_realtime = std::numeric_limits<std::int64_t>::max();
     value.epochs[0].accepted_records = 1;
@@ -89,9 +90,11 @@ TEST(SegmentManifest, FullWidthNumbersAndClockDiscontinuityFactsRemainExact) {
     ASSERT_TRUE(encoded.ok());
     auto decoded = artifact::decode_manifest(encoded.value(), {});
     ASSERT_TRUE(decoded.ok());
-    EXPECT_EQ(decoded.value().segment_id, value.segment_id);
+    EXPECT_EQ(decoded.value().identity.segment_id, value.identity.segment_id);
     EXPECT_EQ(decoded.value().recording_end_ns, value.recording_end_ns);
-    EXPECT_EQ(decoded.value().playback_anchor.realtime_ns, value.playback_anchor.realtime_ns);
+    EXPECT_EQ(
+        decoded.value().identity.playback_anchor.realtime_ns,
+        value.identity.playback_anchor.realtime_ns);
     EXPECT_EQ(decoded.value().max_receive_realtime, value.max_receive_realtime);
     EXPECT_EQ(decoded.value().epochs[1].jump->delta_ns, -500);
 }

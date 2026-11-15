@@ -54,7 +54,7 @@ struct ManifestEpoch {
     std::uint64_t max_sample_error_bound_ns{0};
 };
 
-struct SegmentManifest {
+struct ManifestIdentity {
     std::uint64_t segment_id{0};
     TaskId task_id;
     PipelineId pipeline_id{0};
@@ -68,10 +68,14 @@ struct SegmentManifest {
     plugin::PluginBinaryInfo acquisition;
     plugin::PluginBinaryInfo storage;
     std::string qualified_runtime_profile_id;
+    time::PlaybackAnchor playback_anchor;
+};
+
+struct SegmentManifest {
+    ManifestIdentity identity;
     std::vector<FileEvidence> files;
     std::vector<ManifestDescriptor> descriptors;
     std::vector<StreamCoverage> coverage;
-    time::PlaybackAnchor playback_anchor;
     std::vector<ManifestEpoch> epochs;
     std::uint64_t first_receive_monotonic{0};
     std::uint64_t last_receive_monotonic{0};
@@ -93,7 +97,22 @@ struct ManifestLimits {
 Result<ManifestDescriptor> capture_manifest_descriptor(
     const storage::StreamDescriptor& descriptor, std::uint64_t accepted_records,
     std::uint32_t max_schema_bytes = 1024 * 1024, std::uint32_t max_qos_profiles = 256);
+Result<void> validate_manifest_identity(const ManifestIdentity& identity);
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits);
+
+// Conservative sizing of the frozen header / one prepared Descriptor. These
+// never publish placeholder facts. Stream/Epoch/file bounds cover field names,
+// punctuation, worst-case numeric widths and JSON string escaping.
+Result<std::size_t> manifest_base_size_bound(
+    const ManifestIdentity& identity, const ManifestLimits& limits);
+Result<std::size_t> manifest_descriptor_size_bound(
+    const ManifestDescriptor& descriptor, const ManifestLimits& limits);
+inline constexpr std::uint64_t kManifestStreamSizeBound = 512;
+inline constexpr std::uint64_t kManifestEpochSizeBound = 512;
+inline constexpr std::uint64_t manifest_file_size_bound(std::uint32_t path_bytes) noexcept {
+    return static_cast<std::uint64_t>(path_bytes) * 6 + 256;
+}
+
 Result<std::string> encode_manifest(const SegmentManifest& manifest, const ManifestLimits& limits);
 Result<SegmentManifest> decode_manifest(std::string_view encoded, const ManifestLimits& limits);
 Result<std::string> manifest_digest(const SegmentManifest& manifest, const ManifestLimits& limits);

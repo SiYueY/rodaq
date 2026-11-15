@@ -10,6 +10,7 @@
 #include "instance_id.hpp"
 #include "payload_pool.hpp"
 #include "record_budget.hpp"
+#include "segment_metadata.hpp"
 #include "../time/clock.hpp"
 
 namespace rodaq::pipeline {
@@ -19,6 +20,7 @@ namespace rodaq::pipeline {
 struct Record {
     // Declared first so the charge is released after all payload/descriptor use.
     RecordCharge charge;
+    RecordSettlement settlement;
     Payload payload;
     DescriptorRef descriptor;
     TaskId task_id;

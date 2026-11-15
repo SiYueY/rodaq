@@ -1,5 +1,6 @@
 #include "pipeline/admission.hpp"
 #include "pipeline/descriptor_registry.hpp"
+#include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -10,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <optional>
 #include <new>
 #include <thread>
@@ -47,13 +49,28 @@ protected:
         auto probe = volume_->begin_space_sample(100);
         ASSERT_TRUE(probe.ok());
         ASSERT_TRUE(volume_->finish_space_sample(probe.value(), 1000000, 100).ok());
+        instance_.value[15] = 1;
+        auto identity = rodaq::test::manifest_identity();
+        identity.pipeline_id = 1;
+        identity.instance_id = pipeline::to_string(instance_);
+        identity.control_generation = 1;
+        identity.reset_generation_at_commit = 0;
+        identity.playback_anchor = {1, 0, 1000};
         rodaq::storage::PrepareConfig limits{};
+        limits.header.struct_size = sizeof(limits);
+        limits.max_batch_bytes = 64;
+        limits.max_batch_records = 8;
+        limits.max_segment_file_count = 2;
+        limits.max_relative_path_bytes = 64;
+        limits.system_boot_id = 1;
+        limits.playback_anchor_realtime = 1000;
         limits.max_record_bytes = 8;
         limits.max_segment_records = 1000;
         limits.max_segment_input_bytes = 8000;
         limits.max_segment_physical_bytes = 100000;
         limits.max_descriptors_per_segment = 8;
         rodaq::storage::CapacityModel model{};
+        model.header.struct_size = sizeof(model);
         model.payload_expansion_numerator = 1;
         model.payload_expansion_denominator = 1;
         model.per_record_overhead_bytes = 10;
@@ -63,15 +80,32 @@ protected:
         model.seal_reserve_bytes = 50;
         auto registration = ledger_->reserve_registration(7);
         ASSERT_TRUE(registration.ok());
-        auto segment = pipeline::SegmentCapacity::create(
-            7, limits, model, 100, *volume_, std::move(registration.value()), 100);
+        artifact::ManifestLimits manifest_limits;
+        manifest_limits.max_bytes = 8192;
+        manifest_limits.max_files = 2;
+        manifest_limits.max_descriptors = 8;
+        manifest_limits.max_streams = 1;
+        manifest_limits.max_epochs = 2;
+        auto segment = pipeline::RecordingSegment::prepare(
+            std::move(identity), {1}, limits, model, manifest_limits, *volume_,
+            std::move(registration.value()), 100);
         ASSERT_TRUE(segment.ok());
-        stream_.segment = std::make_shared<pipeline::SegmentCapacity>(std::move(segment.value()));
+        stream_.segment = std::move(segment.value());
         auto registry = pipeline::DescriptorRegistry::create({1});
         ASSERT_TRUE(registry.ok());
         registry_.emplace(std::move(registry.value()));
         stream_.active_descriptor = descriptor(1);
         ASSERT_TRUE(stream_.active_descriptor);
+        auto facts = artifact::capture_manifest_descriptor(stream_.active_descriptor->view(), 0);
+        ASSERT_TRUE(facts.ok());
+        auto descriptor_metadata =
+            stream_.segment->metadata.reserve_descriptor(std::move(facts.value()));
+        auto descriptor_physical = stream_.segment->capacity.reserve_descriptor(9, 100);
+        ASSERT_TRUE(descriptor_metadata.ok());
+        ASSERT_TRUE(descriptor_physical.ok());
+        ASSERT_TRUE(descriptor_physical.value().transfer().ok());
+        descriptor_metadata.value().transfer();
+        ASSERT_TRUE(descriptor_metadata.value().mark_prepared().ok());
         ASSERT_TRUE(stream_.sequences.begin_refill(1).ok());
         ASSERT_TRUE(stream_.sequences.finish_refill(1, {1, 1001}).ok());
         budget_.emplace(std::move(pipeline::RecordBudget::create(16, 128).value()));
@@ -81,8 +115,8 @@ protected:
         gate_.emplace(instance_, 1);
         ASSERT_EQ(gate_->open_admission(instance_, 1), pipeline::GateOpenResult::Opened);
         const auto task = rodaq::parse_task_id("01234567-89ab-4cde-8fab-0123456789ab").value();
-        domain_.emplace(
-            pipeline::AdmissionDomain{task, 1, instance_, 1, *gate_, *budget_, *pool_, *queue_});
+        domain_.emplace(pipeline::AdmissionDomain{
+            task, 1, instance_, 1, *gate_, *budget_, *pool_, *queue_, 0, 100});
         received_.boot_id = 1;
         received_.epoch_id = 1;
         received_.sample = {100, 1000, 1};
@@ -120,10 +154,13 @@ protected:
         EXPECT_EQ(pool_->snapshot().live_buffers, 0);
         EXPECT_EQ(queue_->snapshot().reserved_slots, 0);
         EXPECT_EQ(queue_->snapshot().queued_records, 0);
-        EXPECT_EQ(stream_.segment->snapshot().records, 0);
-        EXPECT_EQ(stream_.segment->snapshot().candidates, 0);
+        EXPECT_EQ(stream_.segment->capacity.snapshot().records, 0);
+        EXPECT_EQ(stream_.segment->capacity.snapshot().candidates, 0);
         EXPECT_EQ(stream_.sequences.snapshot().active_remaining, 1000);
-        EXPECT_EQ(volume_->snapshot().future_bytes, 200);
+        EXPECT_EQ(volume_->snapshot().future_bytes, 8301);
+        EXPECT_EQ(stream_.segment->metadata.snapshot().pending_records, 0);
+        EXPECT_EQ(stream_.segment->metadata.snapshot().accepted, 0);
+        EXPECT_EQ(stream_.segment->metadata.snapshot().epochs, 0);
         EXPECT_EQ(gate_->snapshot().accepted_records, 0);
     }
 
@@ -165,12 +202,13 @@ TEST_F(AdmissionTest, AcceptedRecordOwnsCopyAndRetainsSettlementAfterQueuePop) {
     EXPECT_TRUE(rodaq::storage::abi::valid_record(view));
     EXPECT_EQ(view.payload.data[0], 1);
     EXPECT_EQ(budget_->snapshot().records, 1);
-    EXPECT_EQ(volume_->snapshot().future_bytes, 214);
+    EXPECT_EQ(volume_->snapshot().future_bytes, 8315);
     EXPECT_EQ(gate_->snapshot().accepted_records, 1);
+    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
     record.reset();
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
-    EXPECT_EQ(stream_.segment->snapshot().records, 1);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().records, 1);
 }
 
 TEST_F(AdmissionTest, InvalidStaleOversizeAndClosedGateNeverConsumeSequenceOrCapacity) {
@@ -217,8 +255,8 @@ TEST_F(AdmissionTest, QueueCapacityAndExhaustedSequenceRejectWithFullRollback) {
         RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
-    EXPECT_EQ(stream_.segment->snapshot().records, 0);
-    EXPECT_EQ(volume_->snapshot().future_bytes, 200);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().records, 0);
+    EXPECT_EQ(volume_->snapshot().future_bytes, 8301);
 }
 
 TEST_F(AdmissionTest, FenceDuringCandidatePreparationRejectsBeforeSequenceAndPublication) {
@@ -274,6 +312,9 @@ TEST_F(AdmissionTest, ConcurrentProducersPublishContinuousSameStreamSequencesAnd
             if (record->acceptance_sequence != expected++) {
                 failed = true;
             }
+            if (!record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok()) {
+                failed = true;
+            }
         }
         if (expected != 401) {
             failed = true;
@@ -306,13 +347,16 @@ TEST_F(AdmissionTest, ConcurrentProducersPublishContinuousSameStreamSequencesAnd
     consumer.get();
     EXPECT_FALSE(failed);
     EXPECT_EQ(gate_->snapshot().accepted_records, 400);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().accepted, 400);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().known_failed, 400);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().unresolved_owners, 0);
     EXPECT_EQ(stream_.sequences.snapshot().active_remaining, 600);
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
     EXPECT_EQ(queue_->snapshot().reserved_slots, 0);
-    EXPECT_EQ(stream_.segment->snapshot().candidates, 0);
-    EXPECT_EQ(stream_.segment->snapshot().records, 400);
-    EXPECT_EQ(volume_->snapshot().future_bytes, 5800);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().candidates, 0);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().records, 400);
+    EXPECT_EQ(volume_->snapshot().future_bytes, 13901);
 }
 
 #ifdef RODAQ_TEST_ADMISSION_ALLOCATION
@@ -333,6 +377,7 @@ TEST_F(AdmissionTest, PreparedCopyAndCommitAndFenceRollbackWorkWithAllocationDis
     EXPECT_EQ(result.value().disposition, RODAQ_SUBMIT_ACCEPTED);
     auto record = queue_->pop();
     ASSERT_TRUE(record);
+    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
     record.reset();
     ASSERT_TRUE(gate_->establish_control_fence(instance_).ok());
     admission_allocation::reject = true;
@@ -348,10 +393,76 @@ TEST_F(AdmissionTest, PreparedCopyAndCommitAndFenceRollbackWorkWithAllocationDis
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
     EXPECT_EQ(queue_->snapshot().reserved_slots, 0);
-    EXPECT_EQ(stream_.segment->snapshot().records, 1);
-    EXPECT_EQ(volume_->snapshot().future_bytes, 214);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().records, 1);
+    EXPECT_EQ(volume_->snapshot().future_bytes, 8315);
     EXPECT_EQ(stream_.sequences.snapshot().active_remaining, 999);
 }
 #endif
+
+TEST_F(AdmissionTest, EpochMetadataPressureRejectsBeforeSequenceAndKeepsTheExactAcceptedEvidence) {
+    auto first = pipeline::submit_record(*domain_, stream_, attempt(), received_);
+    ASSERT_TRUE(first.ok());
+    ASSERT_EQ(first.value().disposition, RODAQ_SUBMIT_ACCEPTED);
+    auto first_record = queue_->pop();
+    ASSERT_TRUE(first_record);
+    ASSERT_TRUE(first_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    first_record.reset();
+    auto changed = received_;
+    changed.epoch_id = 2;
+    changed.sample = {200, 2100, 2};
+    changed.origin = rodaq::time::ClockEpochOrigin::RealtimeJump;
+    changed.jump = rodaq::time::ClockJump{1, 1000, 150};
+    auto second = pipeline::submit_record(*domain_, stream_, attempt(), changed);
+    ASSERT_TRUE(second.ok());
+    ASSERT_EQ(second.value().disposition, RODAQ_SUBMIT_ACCEPTED);
+    auto second_record = queue_->pop();
+    ASSERT_TRUE(second_record);
+    ASSERT_TRUE(second_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    second_record.reset();
+    changed.epoch_id = 3;
+    changed.sample = {300, 2000, 2};
+    changed.jump = rodaq::time::ClockJump{2, -200, 250};
+    EXPECT_EQ(
+        pipeline::submit_record(*domain_, stream_, attempt(), changed).value().disposition,
+        RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
+    EXPECT_EQ(gate_->snapshot().accepted_records, 2);
+    EXPECT_EQ(stream_.sequences.snapshot().active_remaining, 998);
+    EXPECT_EQ(budget_->snapshot().records, 0);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 0);
+    EXPECT_EQ(stream_.segment->capacity.snapshot().records, 2);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().accepted, 2);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().pending_records, 0);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().epochs, 2);
+    ASSERT_TRUE(gate_->close_and_capture(instance_).ok());
+    stream_.segment->close_admission();
+    auto proof = stream_.segment->metadata.capture_manifest(
+        {{"data.bin", 3,
+          "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}});
+    ASSERT_TRUE(proof.ok());
+    EXPECT_EQ(proof.value().coverage[0].accepted, 2);
+    EXPECT_EQ(proof.value().epochs.size(), 2);
+    EXPECT_EQ(proof.value().recording_begin_ns, 0);
+    EXPECT_EQ(proof.value().recording_end_ns, 100);
+}
+
+TEST_F(AdmissionTest, RecordingTimelineOverflowIsRejectedBeforeOrdinaryResourcesAndNeverWraps) {
+    pipeline::AdmissionDomain overflow{
+        domain_->task_id,
+        domain_->pipeline_id,
+        domain_->instance_id,
+        domain_->generation,
+        *gate_,
+        *budget_,
+        *pool_,
+        *queue_,
+        std::numeric_limits<std::uint64_t>::max(),
+        100};
+    auto later = received_;
+    ++later.sample.monotonic_ns;
+    EXPECT_EQ(
+        pipeline::submit_record(overflow, stream_, attempt(), later).status().code(),
+        rodaq::StatusCode::ResourceExhausted);
+    expect_rolled_back();
+}
 
 }  // namespace

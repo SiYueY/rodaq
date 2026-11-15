@@ -118,8 +118,7 @@ void validate_plugin(const plugin::PluginBinaryInfo& identity) {
 void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
     require(
         descriptor.stream_id != 0 && descriptor.descriptor_id != 0 &&
-        descriptor.accepted_records != 0 && valid_text(descriptor.channel_name, 1024) &&
-        valid_text(descriptor.message_encoding, 64) &&
+        valid_text(descriptor.channel_name, 1024) && valid_text(descriptor.message_encoding, 64) &&
         valid_text(descriptor.schema_name, 1024, true) &&
         valid_text(descriptor.schema_encoding, 64, true) &&
         persistence::valid_digest(descriptor.schema_digest) &&
@@ -175,18 +174,23 @@ time::ClockEpochOrigin parse_origin(std::string_view value) {
     throw InvalidManifest{Status(StatusCode::InvalidArgument, {})};
 }
 
+void validate_identity(const ManifestIdentity& identity) {
+    require(
+        identity.segment_id != 0 && uuid::nonzero(identity.task_id.value) &&
+        identity.pipeline_id != 0 && identity.segment_sequence != 0 &&
+        identity.control_generation != 0 && uuid::nonzero(identity.volume_id.value) &&
+        persistence::valid_digest(identity.config_version) &&
+        persistence::valid_digest(identity.effective_config_id) &&
+        valid_text(identity.qualified_runtime_profile_id, 256));
+    take(uuid::parse(identity.instance_id));
+    validate_plugin(identity.acquisition);
+    validate_plugin(identity.storage);
+    require(identity.playback_anchor.boot_id != 0);
+}
+
 void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
     valid_limits(limits);
-    require(
-        manifest.segment_id != 0 && uuid::nonzero(manifest.task_id.value) &&
-        manifest.pipeline_id != 0 && manifest.segment_sequence != 0 &&
-        manifest.control_generation != 0 && uuid::nonzero(manifest.volume_id.value) &&
-        persistence::valid_digest(manifest.config_version) &&
-        persistence::valid_digest(manifest.effective_config_id) &&
-        valid_text(manifest.qualified_runtime_profile_id, 256));
-    take(uuid::parse(manifest.instance_id));
-    validate_plugin(manifest.acquisition);
-    validate_plugin(manifest.storage);
+    validate_identity(manifest.identity);
     require(
         !manifest.files.empty() && manifest.files.size() <= limits.max_files &&
         !manifest.descriptors.empty() && manifest.descriptors.size() <= limits.max_descriptors &&
@@ -205,8 +209,8 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
         }
     }
     require(
-        manifest.playback_anchor.boot_id != 0 &&
-        manifest.first_receive_monotonic >= manifest.playback_anchor.monotonic_ns &&
+        manifest.identity.playback_anchor.boot_id != 0 &&
+        manifest.first_receive_monotonic >= manifest.identity.playback_anchor.monotonic_ns &&
         manifest.first_receive_monotonic <= manifest.last_receive_monotonic &&
         manifest.min_receive_realtime <= manifest.max_receive_realtime &&
         manifest.recording_begin_ns <= manifest.recording_end_ns);
@@ -235,6 +239,7 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
     for (std::size_t index = 0; index < manifest.descriptors.size(); ++index) {
         const auto& descriptor = manifest.descriptors[index];
         validate_descriptor(descriptor, limits);
+        require(descriptor.accepted_records != 0);
         require(std::any_of(
             manifest.coverage.begin(), manifest.coverage.end(),
             [&](const auto& coverage) { return coverage.stream_id == descriptor.stream_id; }));
@@ -414,25 +419,27 @@ Json document(const SegmentManifest& manifest) {
     }
     return {
         {"format_version", "1.0"},
-        {"segment_id", std::to_string(manifest.segment_id)},
-        {"task_id", to_string(manifest.task_id)},
-        {"pipeline_id", std::to_string(manifest.pipeline_id)},
-        {"instance_id", manifest.instance_id},
-        {"segment_sequence", std::to_string(manifest.segment_sequence)},
-        {"config_version", manifest.config_version},
-        {"effective_config_id", manifest.effective_config_id},
-        {"control_generation", std::to_string(manifest.control_generation)},
-        {"reset_generation_at_commit", std::to_string(manifest.reset_generation_at_commit)},
-        {"volume_id", to_string(manifest.volume_id)},
-        {"acquisition", plugin_document(manifest.acquisition)},
-        {"storage", plugin_document(manifest.storage)},
-        {"qualified_runtime_profile_id", manifest.qualified_runtime_profile_id},
+        {"segment_id", std::to_string(manifest.identity.segment_id)},
+        {"task_id", to_string(manifest.identity.task_id)},
+        {"pipeline_id", std::to_string(manifest.identity.pipeline_id)},
+        {"instance_id", manifest.identity.instance_id},
+        {"segment_sequence", std::to_string(manifest.identity.segment_sequence)},
+        {"config_version", manifest.identity.config_version},
+        {"effective_config_id", manifest.identity.effective_config_id},
+        {"control_generation", std::to_string(manifest.identity.control_generation)},
+        {"reset_generation_at_commit",
+         std::to_string(manifest.identity.reset_generation_at_commit)},
+        {"volume_id", to_string(manifest.identity.volume_id)},
+        {"acquisition", plugin_document(manifest.identity.acquisition)},
+        {"storage", plugin_document(manifest.identity.storage)},
+        {"qualified_runtime_profile_id", manifest.identity.qualified_runtime_profile_id},
         {"files", std::move(files)},
         {"descriptors", std::move(descriptors)},
         {"coverage", std::move(coverage)},
-        {"system_boot_id", std::to_string(manifest.playback_anchor.boot_id)},
-        {"playback_anchor_monotonic", std::to_string(manifest.playback_anchor.monotonic_ns)},
-        {"playback_anchor_realtime", std::to_string(manifest.playback_anchor.realtime_ns)},
+        {"system_boot_id", std::to_string(manifest.identity.playback_anchor.boot_id)},
+        {"playback_anchor_monotonic",
+         std::to_string(manifest.identity.playback_anchor.monotonic_ns)},
+        {"playback_anchor_realtime", std::to_string(manifest.identity.playback_anchor.realtime_ns)},
         {"clock_epochs", std::move(epochs)},
         {"first_receive_monotonic", std::to_string(manifest.first_receive_monotonic)},
         {"last_receive_monotonic", std::to_string(manifest.last_receive_monotonic)},
@@ -490,6 +497,67 @@ Result<ManifestDescriptor> capture_manifest_descriptor(
                 result.offered_qos.end());
         }
         return result;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> validate_manifest_identity(const ManifestIdentity& identity) {
+    try {
+        validate_identity(identity);
+        return {};
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::size_t> manifest_base_size_bound(
+    const ManifestIdentity& identity, const ManifestLimits& limits) {
+    try {
+        valid_limits(limits);
+        validate_identity(identity);
+        SegmentManifest sizing;
+        sizing.identity = identity;
+        sizing.first_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
+        sizing.last_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
+        sizing.min_receive_realtime = std::numeric_limits<std::int64_t>::min();
+        sizing.max_receive_realtime = std::numeric_limits<std::int64_t>::min();
+        sizing.recording_begin_ns = std::numeric_limits<std::uint64_t>::max();
+        sizing.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
+        auto shape = document(sizing);
+        shape["content_digest"] = "sha256:" + std::string(64, '0');
+        auto sizing_limits = json_limits(limits);
+        sizing_limits.max_bytes = 64 * 1024 * 1024;
+        auto encoded = persistence::canonical_json(shape, sizing_limits);
+        if (!encoded.ok()) {
+            return encoded.status();
+        }
+        return encoded.value().size();
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::size_t> manifest_descriptor_size_bound(
+    const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
+    try {
+        valid_limits(limits);
+        validate_descriptor(descriptor, limits);
+        auto sizing = descriptor;
+        sizing.accepted_records = std::numeric_limits<std::uint64_t>::max();
+        auto sizing_limits = json_limits(limits);
+        sizing_limits.max_bytes = 64 * 1024 * 1024;
+        auto encoded = persistence::canonical_json(descriptor_document(sizing), sizing_limits);
+        if (!encoded.ok()) {
+            return encoded.status();
+        }
+        return encoded.value().size();
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -565,19 +633,20 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
             return Status(StatusCode::Unavailable, {});
         }
         SegmentManifest manifest;
-        manifest.segment_id = number(value, "segment_id");
-        manifest.task_id = take(parse_task_id(text(value, "task_id")));
-        manifest.pipeline_id = number(value, "pipeline_id");
-        manifest.instance_id = text(value, "instance_id");
-        manifest.segment_sequence = number(value, "segment_sequence");
-        manifest.config_version = text(value, "config_version");
-        manifest.effective_config_id = text(value, "effective_config_id");
-        manifest.control_generation = number(value, "control_generation");
-        manifest.reset_generation_at_commit = number(value, "reset_generation_at_commit");
-        manifest.volume_id = take(parse_volume_id(text(value, "volume_id")));
-        manifest.acquisition = read_plugin(value.at("acquisition"));
-        manifest.storage = read_plugin(value.at("storage"));
-        manifest.qualified_runtime_profile_id = text(value, "qualified_runtime_profile_id");
+        manifest.identity.segment_id = number(value, "segment_id");
+        manifest.identity.task_id = take(parse_task_id(text(value, "task_id")));
+        manifest.identity.pipeline_id = number(value, "pipeline_id");
+        manifest.identity.instance_id = text(value, "instance_id");
+        manifest.identity.segment_sequence = number(value, "segment_sequence");
+        manifest.identity.config_version = text(value, "config_version");
+        manifest.identity.effective_config_id = text(value, "effective_config_id");
+        manifest.identity.control_generation = number(value, "control_generation");
+        manifest.identity.reset_generation_at_commit = number(value, "reset_generation_at_commit");
+        manifest.identity.volume_id = take(parse_volume_id(text(value, "volume_id")));
+        manifest.identity.acquisition = read_plugin(value.at("acquisition"));
+        manifest.identity.storage = read_plugin(value.at("storage"));
+        manifest.identity.qualified_runtime_profile_id =
+            text(value, "qualified_runtime_profile_id");
         for (const auto* list : {"files", "descriptors", "coverage", "clock_epochs"}) {
             require(value.at(list).is_array());
         }
@@ -604,7 +673,7 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
                  number(coverage, "unknown"), number(coverage, "first_sequence"),
                  number(coverage, "last_sequence")});
         }
-        manifest.playback_anchor = {
+        manifest.identity.playback_anchor = {
             number(value, "system_boot_id"), number(value, "playback_anchor_monotonic"),
             signed_number(value, "playback_anchor_realtime")};
         for (const auto& epoch : value.at("clock_epochs")) {

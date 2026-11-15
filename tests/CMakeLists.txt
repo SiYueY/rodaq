@@ -385,3 +385,9 @@ target_include_directories(rodaq_manifest_test PRIVATE ${PROJECT_SOURCE_DIR}/src
 target_link_libraries(rodaq_manifest_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_manifest_test)
 gtest_discover_tests(rodaq_manifest_test PROPERTIES TIMEOUT 30)
+
+add_executable(rodaq_segment_metadata_test pipeline/segment_metadata_test.cpp)
+target_include_directories(rodaq_segment_metadata_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_segment_metadata_test PRIVATE rodaq::daq GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_segment_metadata_test)
+gtest_discover_tests(rodaq_segment_metadata_test PROPERTIES TIMEOUT 30)

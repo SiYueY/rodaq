@@ -1,6 +1,7 @@
 #include "admission.hpp"
 
 #include <cassert>
+#include <limits>
 #include <utility>
 
 #include <rodaq/acquisition/validation.hpp>
@@ -28,8 +29,19 @@ Result<acquisition::SubmitResult> submit_record(
     if (attempt.payload.logical_size > stream.max_record_bytes) {
         return disposition(RODAQ_SUBMIT_RECORD_TOO_LARGE);
     }
+    if (domain.gate.admission_fenced()) {
+        return disposition(RODAQ_SUBMIT_GATE_CLOSED);
+    }
+    if (received.sample.monotonic_ns < domain.opened_monotonic_ns) {
+        return disposition(RODAQ_SUBMIT_INVALID_RECORD);
+    }
+    const auto elapsed = received.sample.monotonic_ns - domain.opened_monotonic_ns;
+    if (elapsed > std::numeric_limits<std::uint64_t>::max() - domain.recording_base_ns) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    const auto recording_ns = domain.recording_base_ns + elapsed;
     DescriptorRef descriptor;
-    std::shared_ptr<SegmentCapacity> segment;
+    std::shared_ptr<RecordingSegment> segment;
     {
         std::lock_guard<std::mutex> lock(stream.mutex);
         if (!stream.active_descriptor || !stream.segment) {
@@ -49,9 +61,14 @@ Result<acquisition::SubmitResult> submit_record(
     if (!queue_slot.ok()) {
         return disposition(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
     }
-    auto candidate =
-        segment->reserve_record(attempt.payload.logical_size, received.sample.monotonic_ns);
+    auto candidate = segment->capacity.reserve_record(
+        attempt.payload.logical_size, received.sample.monotonic_ns);
     if (!candidate.ok()) {
+        return disposition(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
+    }
+    auto metadata = segment->metadata.reserve_record(
+        stream.stream_id, descriptor->descriptor_id, received, recording_ns);
+    if (!metadata.ok()) {
         return disposition(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
     }
     auto payload = domain.payloads.reserve(attempt.payload.logical_size);
@@ -69,7 +86,7 @@ Result<acquisition::SubmitResult> submit_record(
     record.task_id = domain.task_id;
     record.pipeline_id = domain.pipeline_id;
     record.instance_id = domain.instance_id;
-    record.segment_id = segment->snapshot().segment_id;
+    record.segment_id = segment->capacity.snapshot().segment_id;
     record.stream_id = stream.stream_id;
     record.received = received;
     record.source_id = attempt.source_id;
@@ -109,6 +126,7 @@ Result<acquisition::SubmitResult> submit_record(
     auto allocated = stream.sequences.allocate();
     assert(allocated.ok());
     record.acceptance_sequence = allocated.value();
+    record.settlement = metadata.value().accept(allocated.value());
     domain.queue.publish(std::move(queue_slot.value()), std::move(record));
     const auto counted = gate.value().mark_committed();
     assert(counted);

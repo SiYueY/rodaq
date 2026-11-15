@@ -1,4 +1,5 @@
 #include "atomic_file.hpp"
+#include "file_descriptor.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,25 +18,6 @@
 
 namespace rodaq::persistence {
 namespace {
-
-class FileDescriptor {
-public:
-    explicit FileDescriptor(int file) noexcept : file_(file) {}
-
-    FileDescriptor(const FileDescriptor&) = delete;
-    FileDescriptor& operator=(const FileDescriptor&) = delete;
-
-    ~FileDescriptor() noexcept {
-        if (file_ >= 0) {
-            close(file_);
-        }
-    }
-
-    int get() const noexcept { return file_; }
-
-private:
-    int file_;
-};
 
 bool valid_name(std::string_view name) noexcept {
     return !name.empty() && name.size() <= 255 && name != "." && name != ".." &&

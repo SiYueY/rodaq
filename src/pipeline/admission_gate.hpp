@@ -72,6 +72,9 @@ public:
     // Captures the frozen accepted set after existing short Core guards exit.
     Result<GateSnapshot> close_and_capture(InstanceId instance_id);
     GateSnapshot snapshot() const;
+    bool admission_fenced() const noexcept {
+        return !valid_ || control_fence_.load(std::memory_order_acquire);
+    }
 
 private:
     friend class AdmissionCommit;

@@ -8,7 +8,7 @@
 #include "admission_gate.hpp"
 #include "record_budget.hpp"
 #include "record_queue.hpp"
-#include "segment_capacity.hpp"
+#include "recording_segment.hpp"
 #include "sequence_allocator.hpp"
 
 namespace rodaq::pipeline {
@@ -21,7 +21,7 @@ struct StreamAdmission {
     const StreamId stream_id;
     const std::uint64_t max_record_bytes;
     DescriptorRef active_descriptor;
-    std::shared_ptr<SegmentCapacity> segment;
+    std::shared_ptr<RecordingSegment> segment;
     SequenceAllocator sequences;
 
     StreamAdmission(StreamId identity, std::uint64_t max_bytes) noexcept
@@ -31,14 +31,18 @@ struct StreamAdmission {
 // All references are instance-scoped backing retained until actual callbacks
 // return. Control generation is immutable for this actual instance.
 struct AdmissionDomain {
-    TaskId task_id;
-    PipelineId pipeline_id;
-    InstanceId instance_id;
-    ControlGeneration generation;
+    const TaskId task_id;
+    const PipelineId pipeline_id;
+    const InstanceId instance_id;
+    const ControlGeneration generation;
     AdmissionGate& gate;
     RecordBudget& records;
     PayloadPool& payloads;
     RecordQueue& queue;
+    // Frozen instance recording timeline: receive monotonic delta from Open
+    // plus the Task's durable accumulated active recording time.
+    const std::uint64_t recording_base_ns{0};
+    const std::uint64_t opened_monotonic_ns{0};
 };
 
 // Core captures a fresh receive sample/Epoch before calling this function.
