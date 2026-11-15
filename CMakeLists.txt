@@ -72,6 +72,7 @@ target_link_libraries(rodaq_plugin PUBLIC fmt::fmt
 rodaq_enable_project_warnings(rodaq_plugin)
 
 add_library(rodaq_daq SHARED
+    src/uuid.cpp
     src/persistence/atomic_file.cpp
     src/persistence/strict_json.cpp
     src/persistence/canonical_json.cpp
@@ -82,7 +83,7 @@ target_sources(rodaq_daq PRIVATE
 target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp
     src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp src/task/config_identity.cpp)
 target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp
-    src/pipeline/sequence_allocator.cpp)
+    src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
