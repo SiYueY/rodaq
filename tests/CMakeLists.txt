@@ -397,3 +397,17 @@ target_include_directories(rodaq_segment_committer_test PRIVATE ${PROJECT_SOURCE
 target_link_libraries(rodaq_segment_committer_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_segment_committer_test)
 gtest_discover_tests(rodaq_segment_committer_test PROPERTIES TIMEOUT 30)
+
+if(RODAQ_BUILD_BEHAVIORAL_FAKES)
+    add_executable(rodaq_fake_storage_hang_probe fakes/storage_hang_probe.cpp)
+    target_link_libraries(rodaq_fake_storage_hang_probe PRIVATE rodaq::plugin)
+    rodaq_enable_project_warnings(rodaq_fake_storage_hang_probe)
+    add_executable(rodaq_fake_storage_test fakes/storage_test.cpp)
+    target_link_libraries(rodaq_fake_storage_test PRIVATE rodaq::plugin GTest::gtest_main Threads::Threads)
+    target_compile_definitions(rodaq_fake_storage_test PRIVATE
+        RODAQ_FAKE_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_FAKE_STORAGE_HANG_PROBE="$<TARGET_FILE:rodaq_fake_storage_hang_probe>")
+    add_dependencies(rodaq_fake_storage_test rodaq_fake_storage rodaq_fake_storage_hang_probe)
+    rodaq_enable_project_warnings(rodaq_fake_storage_test)
+    gtest_discover_tests(rodaq_fake_storage_test PROPERTIES TIMEOUT 30)
+endif()

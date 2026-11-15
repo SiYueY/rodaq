@@ -105,6 +105,11 @@ target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
     PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
 rodaq_enable_project_warnings(rodaq_daq)
 
+option(RODAQ_BUILD_BEHAVIORAL_FAKES "Build qualification-only fault-injection backends" OFF)
+if(RODAQ_BUILD_BEHAVIORAL_FAKES)
+    add_subdirectory(plugins/fake_storage)
+endif()
+
 include(CMakePackageConfigHelpers)
 install(TARGETS rodaq_plugin rodaq_daq EXPORT RoDAQTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})

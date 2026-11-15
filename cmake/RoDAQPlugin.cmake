@@ -55,8 +55,11 @@ function(rodaq_register_plugin target)
         "LINKER:--version-script=${CMAKE_CURRENT_FUNCTION_LIST_DIR}/plugin.exports")
     # Clang sanitizer instrumentation intentionally resolves its DSO imports from
     # the instrumented executable. Normal production builds remain fully linked.
+    get_target_property(plugin_link_options ${target} LINK_OPTIONS)
+    string(JOIN " " plugin_link_flags ${plugin_link_options})
     if(NOT ((CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        AND (CMAKE_C_FLAGS MATCHES "-fsanitize=" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize=")))
+        AND (CMAKE_C_FLAGS MATCHES "-fsanitize=" OR CMAKE_CXX_FLAGS MATCHES "-fsanitize="
+            OR plugin_link_flags MATCHES "-fsanitize=")))
         target_link_options(${target} PRIVATE "LINKER:--no-undefined")
     endif()
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
