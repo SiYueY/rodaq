@@ -373,3 +373,9 @@ target_include_directories(rodaq_sealed_files_test PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(rodaq_sealed_files_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_sealed_files_test)
 gtest_discover_tests(rodaq_sealed_files_test PROPERTIES TIMEOUT 30)
+
+add_executable(rodaq_ledger_test artifact/ledger_test.cpp)
+target_include_directories(rodaq_ledger_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_ledger_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
+rodaq_enable_project_warnings(rodaq_ledger_test)
+gtest_discover_tests(rodaq_ledger_test PROPERTIES TIMEOUT 30)
