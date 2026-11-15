@@ -31,6 +31,22 @@ def freeze(args):
         (destination / "layout.json").write_text(json.dumps(layout, indent=2) + "\n")
         for family in ("counter", "domain"):
             matrix = build / (family + "-matrix")
+            # Preserve the actual copied fixture sources and their build flags,
+            # which can predate the Runtime's layout-probe source commit.
+            for source in matrix.glob("*-source"):
+                shutil.copytree(source, destination / "qualification-source" / family / source.name)
+            for fixture in matrix.glob("*-build"):
+                provenance = destination / "qualification-build" / family / fixture.name
+                provenance.mkdir(parents=True)
+                shutil.copyfile(fixture / "CMakeCache.txt", provenance / "CMakeCache.txt")
+                for flag in fixture.glob("CMakeFiles/*.dir/*.txt"):
+                    target = provenance / flag.parent.name / flag.name
+                    target.parent.mkdir(exist_ok=True)
+                    shutil.copyfile(flag, target)
+                for flag in fixture.glob("CMakeFiles/*.dir/flags.make"):
+                    target = provenance / flag.parent.name / flag.name
+                    target.parent.mkdir(exist_ok=True)
+                    shutil.copyfile(flag, target)
             inventory = json.loads((matrix / "binary-sha256.json").read_text())
             for relative, expected in inventory.items():
                 source = matrix / relative
