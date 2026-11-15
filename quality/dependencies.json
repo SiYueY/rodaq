@@ -7,8 +7,8 @@
       "commit": "40626af88bd7df9a5fb80be7b25ac85b122d6c21",
       "license": "MIT",
       "source": "pinned Git submodule",
-      "purpose": "Public SDK formatting",
-      "verification": "build + related CTest + installed SDK consumer"
+      "purpose": "Public SDK formatting; private JCS shortest binary64 digits using existing Dragonbox",
+      "verification": "build, installed SDK consumer, RFC 8785 Appendix B and ECMAScript differential vectors"
     },
     {
       "name": "spdlog",
@@ -34,8 +34,8 @@
       "package": "nlohmann-json3-dev 3.10.5-2",
       "license": "MIT",
       "source": "Ubuntu 22.04 system package",
-      "purpose": "Private strict Plugin Manifest JSON parsing; no public JSON types",
-      "verification": "strict ingress/duplicate key/malformed schema/SDK isolation tests"
+      "purpose": "Private bounded strict SAX JSON and Plugin Manifest parsing; no public JSON types",
+      "verification": "strict ingress, decoded duplicate keys, Unicode, depth/cardinality and typed schema tests"
     },
     {
       "name": "OpenSSL libcrypto",
@@ -43,8 +43,8 @@
       "package": "libssl-dev 3.0.2-0ubuntu1.30",
       "license": "Apache-2.0",
       "source": "Ubuntu 22.04 system package",
-      "purpose": "Private EVP SHA-256 artifact verification; no public OpenSSL types",
-      "verification": "artifact digest/identity replacement and SDK load tests"
+      "purpose": "Private EVP artifact SHA-256 and domain-separated semantic integrity; no public OpenSSL types",
+      "verification": "artifact identity/replacement tests; canonical-byte and domain-separated digest golden fixtures"
     }
   ],
   "test_only": [

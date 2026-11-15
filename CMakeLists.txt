@@ -43,7 +43,7 @@ set(SPDLOG_NO_ATOMIC_LEVELS OFF CACHE BOOL "" FORCE)
 set(SPDLOG_NO_TZ_OFFSET OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
 
-# S0 establishes package boundaries; Task/System/Artifact services arrive in S2.
+# Plugin SDK dependencies stay independent of DAQ domain implementation.
 find_package(nlohmann_json 3.10.5 EXACT REQUIRED CONFIG)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(Threads REQUIRED)
@@ -71,10 +71,16 @@ target_link_libraries(rodaq_plugin PUBLIC fmt::fmt
     PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads ${CMAKE_DL_LIBS})
 rodaq_enable_project_warnings(rodaq_plugin)
 
-add_library(rodaq_daq INTERFACE)
+add_library(rodaq_daq SHARED
+    src/persistence/atomic_file.cpp
+    src/persistence/strict_json.cpp
+    src/persistence/canonical_json.cpp
+    src/persistence/digest.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
-target_link_libraries(rodaq_daq INTERFACE rodaq::plugin)
+target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
+    PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+rodaq_enable_project_warnings(rodaq_daq)
 
 include(CMakePackageConfigHelpers)
 install(TARGETS rodaq_plugin rodaq_daq EXPORT RoDAQTargets
