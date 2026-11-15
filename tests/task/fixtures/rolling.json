@@ -1,0 +1,54 @@
+{
+  "format_version": "1.0",
+  "recording_mode": "rolling",
+  "start_policy": {
+    "mode": "best_effort"
+  },
+  "recovery_policy": {
+    "mode": "resume"
+  },
+  "segment_policy": {
+    "max_duration": {
+      "value": "60",
+      "unit": "s"
+    },
+    "max_physical_bytes": null
+  },
+  "retention_policy": {
+    "mode": "rolling",
+    "max_duration": {
+      "value": "3600",
+      "unit": "s"
+    },
+    "max_physical_bytes": "1073741824"
+  },
+  "pipelines": [
+    {
+      "pipeline_id": "10",
+      "required": true,
+      "resource_profile": "basic",
+      "output_root": "local",
+      "acquisition": {
+        "plugin_id": "com.example.acquisition.fake",
+        "plugin_version": "1.0.0",
+        "config": {
+          "keys": [
+            "sample"
+          ]
+        }
+      },
+      "storage": {
+        "plugin_id": "com.example.storage.fake",
+        "plugin_version": "1.0.0",
+        "config": {}
+      },
+      "streams": [
+        {
+          "stream_id": "20",
+          "stream_key": "sample",
+          "readiness_policy": "entry_ready"
+        }
+      ]
+    }
+  ]
+}

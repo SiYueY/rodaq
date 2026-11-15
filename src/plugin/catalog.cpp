@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <memory>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -16,6 +17,7 @@
 
 #include <rodaq/logging.hpp>
 #include <rodaq/plugin/abi.hpp>
+#include <rodaq/plugin/version.hpp>
 
 namespace rodaq::plugin {
 namespace {
@@ -391,6 +393,18 @@ Result<PluginVersion> parse_version(std::string_view value) {
         }
     }
     return version;
+}
+
+Result<void> validate_plugin_version(std::string_view version) {
+    try {
+        auto parsed = parse_version(version);
+        if (!parsed.ok()) {
+            return std::move(parsed).status();
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
 }
 
 int compare_version(const PluginVersion& left, const PluginVersion& right) noexcept {

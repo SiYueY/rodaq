@@ -270,7 +270,7 @@ private:
 }  // namespace
 
 Result<std::string> canonical_json(const Json& value, const JsonLimits& limits) {
-    if (limits.max_depth == 0 || limits.max_depth > 64 || limits.max_nodes == 0) {
+    if (limits.max_depth == 0 || limits.max_depth > 256 || limits.max_nodes == 0) {
         return Status(StatusCode::InvalidArgument, "Invalid canonical JSON limits");
     }
     try {

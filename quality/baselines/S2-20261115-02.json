@@ -1,0 +1,80 @@
+{
+  "id": "S2-20261115-02",
+  "stage": "S2",
+  "role": "superseding",
+  "supersedes": "S2-20261115-01",
+  "captured_at": "2026-11-15 04:45:28 UTC",
+  "branch": "next",
+  "code_commit": "91851e3",
+  "affected_gates": [
+    "TaskConfig Stream identity validation/allocation and StreamIdentityStore"
+  ],
+  "reason": "Repair Task field-table scope to match Architecture 3.1.1 and Task-scoped Stream Identity authority; no ABI change",
+  "sources": [
+    {
+      "page_id": "417da2b2a80f81c68d97cffe766805b3",
+      "last_edited_at": "2026-11-14T16:49:17.340Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81c68d97cffe766805b3?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f8141a08ae0cc08a73962",
+      "last_edited_at": "2026-11-15T03:36:30.982Z",
+      "url": "https://app.notion.com/p/418da2b2a80f8141a08ae0cc08a73962?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f817db957fa6f017c64bf",
+      "last_edited_at": "2026-11-14T16:47:16.580Z",
+      "url": "https://app.notion.com/p/418da2b2a80f817db957fa6f017c64bf?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f816592c1e898187cb69c",
+      "last_edited_at": "2026-11-14T16:18:06.710Z",
+      "url": "https://app.notion.com/p/417da2b2a80f816592c1e898187cb69c?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81e28c92ea07f46405f9",
+      "last_edited_at": "2026-11-14T15:58:27.402Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81e28c92ea07f46405f9?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81ad9e94f3323b427938",
+      "last_edited_at": "2026-11-15T04:45:25.538Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81ad9e94f3323b427938?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81a18e52f384d285eb3d",
+      "last_edited_at": "2026-11-14T16:15:23.804Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81a18e52f384d285eb3d?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f8146a414d58c351a23ca",
+      "last_edited_at": "2026-11-14T16:15:25.693Z",
+      "url": "https://app.notion.com/p/418da2b2a80f8146a414d58c351a23ca?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81699a6eed6616aee423",
+      "last_edited_at": "2026-11-14T16:15:30.041Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81699a6eed6616aee423?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f8178bf1ef9b2facb8578",
+      "last_edited_at": "2026-11-14T16:18:02.903Z",
+      "url": "https://app.notion.com/p/417da2b2a80f8178bf1ef9b2facb8578?pvs=204"
+    },
+    {
+      "page_id": "417da2b2a80f81f095abf1773d763b66",
+      "last_edited_at": "2026-11-14T19:49:50.961Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81f095abf1773d763b66?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f81f2bb81e080bc7cee5d",
+      "last_edited_at": "2026-11-14T16:49:19.090Z",
+      "url": "https://app.notion.com/p/418da2b2a80f81f2bb81e080bc7cee5d?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f81d191cadda6f11488bd",
+      "last_edited_at": "2026-11-14T16:18:46.459Z",
+      "url": "https://app.notion.com/p/418da2b2a80f81d191cadda6f11488bd?pvs=204"
+    }
+  ]
+}

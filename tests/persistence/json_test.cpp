@@ -149,4 +149,18 @@ TEST(PersistentIntegrity, ExcludesOnlyTopLevelDigestAndSeparatesDomainsIncluding
     EXPECT_FALSE(persistence::semantic_digest(semantic, std::string_view("domain\0", 7)).ok());
 }
 
+TEST(StrictJson, DeclaredDepthPolicySupportsDeepPrivateObjectsWithinSafeRecursionBound) {
+    persistence::JsonLimits limits;
+    limits.max_depth = 128;
+    const std::string input = std::string(128, '[') + "0" + std::string(128, ']');
+    auto parsed = persistence::parse_json(input, limits);
+    ASSERT_TRUE(parsed.ok());
+    auto encoded = persistence::canonical_json(parsed.value(), limits);
+    ASSERT_TRUE(encoded.ok());
+    EXPECT_EQ(encoded.value(), input);
+    limits.max_depth = 127;
+    EXPECT_FALSE(persistence::parse_json(input, limits).ok());
+    EXPECT_FALSE(persistence::canonical_json(parsed.value(), limits).ok());
+}
+
 }  // namespace

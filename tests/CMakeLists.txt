@@ -41,6 +41,15 @@ add_executable(rodaq_build_contract_test build_contract_test.cpp)
 target_link_libraries(rodaq_build_contract_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_build_contract_test)
 include(GoogleTest)
+add_executable(rodaq_task_config_test task/config_test.cpp)
+target_include_directories(rodaq_task_config_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_definitions(rodaq_task_config_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
+target_link_libraries(rodaq_task_config_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
+rodaq_enable_project_warnings(rodaq_task_config_test)
+gtest_discover_tests(rodaq_task_config_test PROPERTIES TIMEOUT 30)
+add_executable(rodaq_task_config_probe task/config_probe.cpp)
+target_link_libraries(rodaq_task_config_probe PRIVATE rodaq::daq)
+rodaq_enable_project_warnings(rodaq_task_config_probe)
 add_executable(rodaq_persistent_json_test persistence/json_test.cpp)
 target_include_directories(rodaq_persistent_json_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_persistent_json_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
@@ -167,6 +176,15 @@ foreach(header IN LISTS abi_headers)
 endforeach()
 
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+set(RODAQ_SCHEMA_PYTHON_EXECUTABLE "" CACHE FILEPATH "Prepared jsonschema 4.25.1 qualification interpreter")
+if(RODAQ_SCHEMA_PYTHON_EXECUTABLE)
+    add_test(NAME rodaq_task_schema_conformance
+        COMMAND ${RODAQ_SCHEMA_PYTHON_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/task/schema_test.py
+            --schema ${PROJECT_SOURCE_DIR}/schemas/task_config.schema.json
+            --fixtures ${PROJECT_SOURCE_DIR}/tests/task/fixtures
+            --probe $<TARGET_FILE:rodaq_task_config_probe>)
+    set_tests_properties(rodaq_task_schema_conformance PROPERTIES TIMEOUT 60)
+endif()
 add_test(NAME rodaq_catalog_supervision
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/catalog_supervision_test.py
         --interposer $<TARGET_FILE:rodaq_catalog_block_interposer>

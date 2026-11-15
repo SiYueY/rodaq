@@ -134,7 +134,7 @@ private:
 
 Result<Json> parse_json(std::string_view input, const JsonLimits& limits) {
     if (input.empty() || input.size() > limits.max_bytes || limits.max_depth == 0 ||
-        limits.max_depth > 64 || limits.max_nodes == 0) {
+        limits.max_depth > 256 || limits.max_nodes == 0) {
         return Status(StatusCode::InvalidArgument, "JSON input/limit invalid");
     }
     try {

@@ -78,6 +78,7 @@ add_library(rodaq_daq SHARED
     src/persistence/digest.cpp)
 target_sources(rodaq_daq PRIVATE
     src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp)
+target_sources(rodaq_daq PRIVATE src/task/config.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
@@ -88,6 +89,7 @@ include(CMakePackageConfigHelpers)
 install(TARGETS rodaq_plugin rodaq_daq EXPORT RoDAQTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/rodaq DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES schemas/task_config.schema.json DESTINATION ${CMAKE_INSTALL_DATADIR}/rodaq/schemas)
 install(DIRECTORY third_party/tl_expected/include/tl DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES third_party/tl_expected/COPYING
     DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME tl_expected-LICENSE)

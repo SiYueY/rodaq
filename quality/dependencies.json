@@ -54,6 +54,37 @@
       "license": "BSD-3-Clause",
       "source": "Ubuntu 22.04 libgtest-dev 1.11.0-3",
       "verification": "find_package + GoogleTest CTest discovery"
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.25.1",
+      "license": "MIT",
+      "source": "Prepared isolated Python 3.10 qualification venv; requirements pinned with hashes",
+      "purpose": "Draft 2020-12 Task schema/actual C++ codec conformance; never a Core runtime dependency",
+      "verification": "metaschema + shape/range golden vectors + Task-owned supplemental constraints",
+      "transitive": {
+        "attrs": {
+          "version": "26.1.0",
+          "license": "MIT"
+        },
+        "jsonschema-specifications": {
+          "version": "2025.9.1",
+          "license": "MIT"
+        },
+        "referencing": {
+          "version": "0.37.0",
+          "license": "MIT"
+        },
+        "rpds-py": {
+          "version": "0.30.0",
+          "license": "MIT"
+        },
+        "typing-extensions": {
+          "version": "4.16.0",
+          "license": "PSF-2.0"
+        }
+      },
+      "lock": "tests/schema-requirements.txt"
     }
   ],
   "required_platforms": [
