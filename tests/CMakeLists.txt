@@ -438,3 +438,15 @@ target_include_directories(rodaq_stream_table_test PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(rodaq_stream_table_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
 rodaq_enable_project_warnings(rodaq_stream_table_test)
 gtest_discover_tests(rodaq_stream_table_test PROPERTIES TIMEOUT 30)
+
+if(RODAQ_BUILD_BEHAVIORAL_FAKES)
+    add_executable(rodaq_recording_instance_test pipeline/recording_instance_test.cpp)
+    target_include_directories(rodaq_recording_instance_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(rodaq_recording_instance_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
+    target_compile_definitions(rodaq_recording_instance_test PRIVATE
+        RODAQ_INSTANCE_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_INSTANCE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_recording_instance_test rodaq_fake_storage rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_recording_instance_test)
+    gtest_discover_tests(rodaq_recording_instance_test PROPERTIES TIMEOUT 30)
+endif()

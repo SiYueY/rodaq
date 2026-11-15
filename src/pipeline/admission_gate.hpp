@@ -64,6 +64,10 @@ public:
     // before Seal, queue drain, Native calls or I/O; does not fence the instance.
     Result<std::unique_lock<std::mutex>> enter_segment_cut(
         InstanceId instance_id, ControlGeneration generation);
+    // Initial Descriptor preparation precedes Open; runtime cuts use this same
+    // Gate→Stream order. This guard never opens Admission or counts a Record.
+    Result<std::unique_lock<std::mutex>> enter_descriptor_cut(
+        InstanceId instance_id, ControlGeneration generation);
 
     // This atomic fence precedes the durable Pause/Stop/cleanup intent. It does
     // not wait for a Native call, filesystem operation, or current Core commit.

@@ -115,6 +115,19 @@ Result<void> AdmissionGate::establish_control_fence(InstanceId instance_id) noex
     return {};
 }
 
+Result<std::unique_lock<std::mutex>> AdmissionGate::enter_descriptor_cut(
+    InstanceId instance_id, ControlGeneration generation) {
+    if (!valid_ || !(instance_id == instance_id_) ||
+        control_fence_.load(std::memory_order_acquire)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (generation != authority_generation_ || control_fence_.load(std::memory_order_acquire)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    return lock;
+}
+
 Result<void> AdmissionGate::advance_authority(
     InstanceId instance_id, ControlGeneration generation) {
     if (!valid_ || !(instance_id == instance_id_)) {

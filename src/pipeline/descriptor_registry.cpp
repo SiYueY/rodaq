@@ -289,6 +289,32 @@ Result<DescriptorRef> DescriptorRegistry::lookup(
     return Status(StatusCode::NotFound, {});
 }
 
+Result<bool> DescriptorRegistry::equivalent(
+    const Descriptor& descriptor, const acquisition::DescriptorProposal& proposal) const {
+    if (!state_ || !plugin::abi::readable(&proposal) ||
+        proposal.schema.size > state_->options.max_schema_bytes ||
+        proposal.ros2_offered_qos_profile_count > state_->options.max_offered_qos_profiles ||
+        !acquisition::abi::valid_descriptor(&proposal)) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    auto bounded = input_bytes(proposal, state_->options.max_owned_data_bytes);
+    if (!bounded.ok()) {
+        return bounded.status();
+    }
+    if (descriptor.stream_id != proposal.stream_id) {
+        return false;
+    }
+    try {
+        auto facts = copy_facts(proposal);
+        if (!facts.ok()) {
+            return facts.status();
+        }
+        return facts.value().fingerprint == descriptor.facts.fingerprint;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 DescriptorRegistrySnapshot DescriptorRegistry::snapshot() const {
     if (!state_) {
         return {};

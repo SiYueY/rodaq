@@ -26,6 +26,7 @@ struct StreamAdmission {
     // Separate durable Stream-scoped identity range; a failed Descriptor
     // prepare may burn an ID but can never reuse an interpretation identity.
     SequenceAllocator descriptor_ids;
+    bool descriptor_proposal_inflight{false};
 
     StreamAdmission(StreamId identity, std::uint64_t max_bytes) noexcept
     : stream_id(identity), max_record_bytes(max_bytes) {}

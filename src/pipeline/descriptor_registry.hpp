@@ -43,6 +43,8 @@ public:
         const acquisition::DescriptorProposal& proposal,
         rodaq_descriptor_id_t durable_descriptor_id);
     Result<DescriptorRef> lookup(rodaq_stream_id_t stream, rodaq_descriptor_id_t descriptor) const;
+    Result<bool> equivalent(
+        const Descriptor& descriptor, const acquisition::DescriptorProposal& proposal) const;
     DescriptorRegistrySnapshot snapshot() const;
 
 private:
