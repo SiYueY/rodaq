@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(CounterApplication VERSION 1.0.0 LANGUAGES CXX)
+find_package(CounterInterface REQUIRED CONFIG)
+add_executable(counter_application main.cpp)
+target_link_libraries(counter_application PRIVATE Counter::interface)
+target_compile_options(counter_application PRIVATE -Wall -Wextra -Wpedantic -Werror)

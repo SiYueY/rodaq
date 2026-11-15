@@ -6,6 +6,13 @@ orders their fixture dependencies. Domain minor 1 is a **synthetic append-only
 qualification version**, not a published RoDAQ Interface version. These probes
 do not qualify ROS 2, MCAP, filesystem commit or production workloads.
 
+`rodaq_counter_independent_projects` builds and installs a separate Counter
+Interface SDK, then two independent C++ Backend projects and an Application.
+The Backends use atomics and an anonymous POSIX shared mapping respectively;
+the mapping is released after Call Drain. The Application checks overflow,
+repeated load, synchronous/asynchronous close and cleanup after a missing Plugin.
+All four projects use installed packages, without repository-private headers.
+
 After building both compiler profiles for the same architecture, freeze their
 already-tested binaries into a new, unique directory:
 

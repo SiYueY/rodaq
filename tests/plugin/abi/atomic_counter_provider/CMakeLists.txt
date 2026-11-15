@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22)
+project(AtomicCounter VERSION 1.0.0 LANGUAGES CXX)
+find_package(CounterInterface REQUIRED CONFIG)
+add_library(atomic_counter SHARED provider.cpp)
+target_link_libraries(atomic_counter PRIVATE Counter::interface)
+target_compile_options(atomic_counter PRIVATE -Wall -Wextra -Wpedantic -Werror)
+rodaq_register_plugin(atomic_counter PLUGIN_ID com.example.counter.atomic PLUGIN_NAME "Atomic Counter")

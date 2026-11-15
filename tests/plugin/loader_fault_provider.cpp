@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <new>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -12,6 +13,40 @@ namespace {
 bool mode(const char* expected) {
     const auto* value = std::getenv("RODAQ_LOADER_FAULT");
     return value != nullptr && std::strcmp(value, expected) == 0;
+}
+
+void marker(const char* variable) {
+    const auto* path = std::getenv(variable);
+    if (path != nullptr) {
+        const auto file = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+        if (file >= 0) {
+            close(file);
+        }
+    }
+}
+
+__attribute__((constructor)) void block_initializer() {
+    if (!mode("hang_load")) {
+        return;
+    }
+    marker("RODAQ_LOADER_ENTERED");
+    const auto* gate = std::getenv("RODAQ_LOADER_GATE");
+    const auto file = gate == nullptr ? -1 : open(gate, O_RDONLY | O_CLOEXEC);
+    if (file < 0) {
+        std::_Exit(63);
+    }
+    char byte = 0;
+    const auto count = read(file, &byte, 1);
+    close(file);
+    if (count != 1) {
+        std::_Exit(64);
+    }
+}
+
+__attribute__((destructor)) void record_rollback() {
+    if (mode("hang_load")) {
+        marker("RODAQ_LOADER_UNLOADED");
+    }
 }
 
 struct GuardedHeader {

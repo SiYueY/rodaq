@@ -92,6 +92,15 @@ endforeach()
 add_executable(rodaq_loader_fault_consumer plugin/loader_fault_consumer.cpp)
 target_link_libraries(rodaq_loader_fault_consumer PRIVATE rodaq::plugin)
 rodaq_enable_project_warnings(rodaq_loader_fault_consumer)
+add_executable(rodaq_loader_supervision_consumer plugin/loader_supervision_consumer.cpp)
+target_link_libraries(rodaq_loader_supervision_consumer PRIVATE rodaq::plugin)
+rodaq_enable_project_warnings(rodaq_loader_supervision_consumer)
+add_library(rodaq_catalog_block_interposer SHARED plugin/catalog_block_interposer.c)
+target_link_libraries(rodaq_catalog_block_interposer PRIVATE ${CMAKE_DL_LIBS})
+rodaq_enable_project_warnings(rodaq_catalog_block_interposer)
+add_executable(rodaq_catalog_supervision_consumer plugin/catalog_supervision_consumer.cpp)
+target_link_libraries(rodaq_catalog_supervision_consumer PRIVATE rodaq::plugin)
+rodaq_enable_project_warnings(rodaq_catalog_supervision_consumer)
 
 # Clang 14 TSan owns strong global new/delete symbols. Allocation-failure
 # injection uses replacements, so run this case in native and ASan/UBSan builds.
@@ -129,6 +138,11 @@ foreach(header IN LISTS abi_headers)
 endforeach()
 
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+add_test(NAME rodaq_catalog_supervision
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/catalog_supervision_test.py
+        --interposer $<TARGET_FILE:rodaq_catalog_block_interposer>
+        --consumer $<TARGET_FILE:rodaq_catalog_supervision_consumer>)
+set_tests_properties(rodaq_catalog_supervision PROPERTIES TIMEOUT 45)
 add_test(NAME rodaq_loader_bootstrap_rejection
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/loader_fault_test.py
         --provider $<TARGET_FILE:rodaq_loader_fault_provider>
@@ -136,6 +150,13 @@ add_test(NAME rodaq_loader_bootstrap_rejection
         --proxy $<TARGET_FILE:rodaq_loader_dependency_0> --proxy $<TARGET_FILE:rodaq_loader_dependency_1>
         --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json)
 set_tests_properties(rodaq_loader_bootstrap_rejection PROPERTIES TIMEOUT 120 FIXTURES_REQUIRED counter_sdk)
+add_test(NAME rodaq_loader_supervision
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/loader_supervision_test.py
+        --provider $<TARGET_FILE:rodaq_loader_fault_provider>
+        --consumer $<TARGET_FILE:rodaq_loader_supervision_consumer>
+        --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json
+        --healthy-package ${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0)
+set_tests_properties(rodaq_loader_supervision PROPERTIES TIMEOUT 45 FIXTURES_REQUIRED counter_sdk)
 string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
 add_custom_target(rodaq_generate_abi_probe
     BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
@@ -177,6 +198,10 @@ add_test(NAME rodaq_runtime_sdk_consumer
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
         --compiler ${CMAKE_CXX_COMPILER} --sanitizer ${RODAQ_SANITIZER})
 set_tests_properties(rodaq_runtime_sdk_consumer PROPERTIES FIXTURES_REQUIRED "counter_sdk;domain_sdk")
+add_test(NAME rodaq_counter_independent_projects
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_counter_projects.py
+        --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
+        --compiler ${CMAKE_CXX_COMPILER} --sanitizer ${RODAQ_SANITIZER})
 
 add_test(NAME rodaq_package_contract
     COMMAND ${CMAKE_COMMAND}

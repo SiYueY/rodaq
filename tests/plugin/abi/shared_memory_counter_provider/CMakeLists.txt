@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+project(SharedMemoryCounter VERSION 1.0.0 LANGUAGES CXX)
+find_package(CounterInterface REQUIRED CONFIG)
+find_package(Threads REQUIRED)
+add_library(shared_memory_counter SHARED provider.cpp)
+target_link_libraries(shared_memory_counter PRIVATE Counter::interface Threads::Threads)
+target_compile_options(shared_memory_counter PRIVATE -Wall -Wextra -Wpedantic -Werror)
+rodaq_register_plugin(shared_memory_counter PLUGIN_ID com.example.counter.shared_memory PLUGIN_NAME "Shared Memory Counter")
