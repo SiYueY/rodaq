@@ -2,13 +2,13 @@
 
 #include "../persistence/digest.hpp"
 #include "../persistence/json.hpp"
+#include "../ros2_qos.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <mutex>
 #include <new>
-#include <tuple>
 #include <utility>
 
 #include <rodaq/acquisition/validation.hpp>
@@ -17,14 +17,6 @@ namespace rodaq::pipeline {
 namespace {
 
 using persistence::Json;
-
-// Native padding/reserved bytes are never used for ordering, equality or hash.
-auto qos_key(const rodaq_ros2_qos_profile_t& qos) noexcept {
-    return std::make_tuple(
-        qos.history, qos.reliability, qos.durability, qos.liveliness, qos.depth, qos.deadline.sec,
-        qos.deadline.nsec, qos.lifespan.sec, qos.lifespan.nsec, qos.liveliness_lease_duration.sec,
-        qos.liveliness_lease_duration.nsec, qos.avoid_ros_namespace_conventions);
-}
 
 std::string copy_text(rodaq_string_t text) {
     return text.size == 0 ? std::string{} : std::string(text.data, text.size);
@@ -47,12 +39,14 @@ Result<DescriptorFacts> copy_facts(const acquisition::DescriptorProposal& propos
             proposal.ros2_offered_qos_profiles + proposal.ros2_offered_qos_profile_count);
         std::sort(
             facts.offered_qos.begin(), facts.offered_qos.end(),
-            [](const auto& left, const auto& right) { return qos_key(left) < qos_key(right); });
+            [](const auto& left, const auto& right) {
+                return canonical::qos_key(left) < canonical::qos_key(right);
+            });
         facts.offered_qos.erase(
             std::unique(
                 facts.offered_qos.begin(), facts.offered_qos.end(),
                 [](const auto& left, const auto& right) {
-                    return qos_key(left) == qos_key(right);
+                    return canonical::qos_key(left) == canonical::qos_key(right);
                 }),
             facts.offered_qos.end());
     }
