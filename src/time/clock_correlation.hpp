@@ -29,6 +29,10 @@ public:
 
     PlaybackAnchor anchor() const noexcept;
     Result<ClockSnapshot> snapshot() const;
+    // Core passes a freshly paired receive sample, never Plugin source time.
+    // A jump not yet assigned a durable-reserved Epoch is rejected before
+    // Admission; this hot-path method never observes/refills or performs I/O.
+    Result<ClockSnapshot> capture_receive(const ClockSample& sample) const;
     Result<void> observe(const ClockSample& sample);
 
 private:
@@ -45,6 +49,7 @@ private:
     std::mutex observation_;
     mutable std::mutex snapshot_mutex_;
     ClockSnapshot snapshot_;
+    std::uint64_t epoch_started_monotonic_{0};
     StatusCode failure_{StatusCode::Ok};
 };
 

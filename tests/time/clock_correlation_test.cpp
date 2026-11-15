@@ -128,4 +128,84 @@ TEST_F(TimeAuthority, UncertainEpochReservationProtectsFutureSnapshotsAndCannotB
     EXPECT_EQ(restarted.value()->anchor().realtime_ns, 1000);
 }
 
+TEST_F(TimeAuthority, ReceiveCaptureUsesFreshPairedTimeAndRejectsUnobservedClockJumpWithoutIo) {
+    unsigned publications = 0;
+    auto created = create([&](persistence::FileStep step) {
+        if (step == persistence::FileStep::Publish) {
+            ++publications;
+        }
+        return 0;
+    });
+    ASSERT_TRUE(created.ok());
+    auto& clock = *created.value();
+    const auto before = publications;
+    auto received = clock.capture_receive({150, 1050, 1});
+    ASSERT_TRUE(received.ok());
+    EXPECT_EQ(received.value().sample.monotonic_ns, 150);
+    EXPECT_EQ(received.value().sample.realtime_ns, 1050);
+    EXPECT_EQ(received.value().epoch_id, 1);
+    EXPECT_EQ(clock.snapshot().value().sample.monotonic_ns, 100);
+    EXPECT_EQ(
+        clock.capture_receive({200, 1500, 1}).status().code(), rodaq::StatusCode::Unavailable);
+    EXPECT_EQ(publications, before);
+    EXPECT_EQ(clock.snapshot().value().epoch_id, 1);
+    ASSERT_TRUE(clock.observe({200, 1500, 1}).ok());
+    auto after = clock.capture_receive({250, 1550, 1});
+    ASSERT_TRUE(after.ok());
+    EXPECT_EQ(after.value().epoch_id, 2);
+    EXPECT_EQ(after.value().sample.monotonic_ns, 250);
+    ASSERT_TRUE(after.value().jump);
+    EXPECT_EQ(after.value().jump->detected_monotonic_ns, 200);
+    EXPECT_EQ(received.value().epoch_id, 1);
+    EXPECT_EQ(received.value().sample.realtime_ns, 1050);
+    EXPECT_EQ(
+        clock.capture_receive({150, 1050, 1}).status().code(), rodaq::StatusCode::Unavailable);
+}
+
+TEST_F(TimeAuthority, ReceiveSampleMayPrecedeLatestSameEpochObservationWithoutBeingRelabeled) {
+    auto created = create();
+    ASSERT_TRUE(created.ok());
+    auto& clock = *created.value();
+    ASSERT_TRUE(clock.observe({200, 1100, 1}).ok());
+    auto concurrent_receive = clock.capture_receive({150, 1050, 1});
+    ASSERT_TRUE(concurrent_receive.ok());
+    EXPECT_EQ(concurrent_receive.value().epoch_id, 1);
+    EXPECT_EQ(concurrent_receive.value().sample.monotonic_ns, 150);
+    EXPECT_EQ(clock.capture_receive({99, 999, 1}).status().code(), rodaq::StatusCode::Unavailable);
+}
+
+TEST_F(
+    TimeAuthority, ReceiveCaptureDoesNotWaitForBlockedEpochFsyncOrAssignNewCorrelationToOldEpoch) {
+    bool armed = false;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto permission = release.get_future().share();
+    auto created = create([&](persistence::FileStep step) {
+        if (armed && step == persistence::FileStep::SyncDirectory) {
+            entered.set_value();
+            permission.wait();
+        }
+        return 0;
+    });
+    ASSERT_TRUE(created.ok());
+    auto& clock = *created.value();
+    armed = true;
+    auto observation = std::async(std::launch::async, [&] {
+        return clock.observe({200, 1500, 1});
+    });
+    const auto writing = entered.get_future().wait_for(2s);
+    auto capture = std::async(std::launch::async, [&] {
+        return clock.capture_receive({250, 1550, 1});
+    });
+    const auto immediate = capture.wait_for(100ms);
+    release.set_value();
+    EXPECT_EQ(writing, std::future_status::ready);
+    EXPECT_EQ(immediate, std::future_status::ready);
+    EXPECT_EQ(capture.get().status().code(), rodaq::StatusCode::Unavailable);
+    ASSERT_TRUE(observation.get().ok());
+    auto after = clock.capture_receive({250, 1550, 1});
+    ASSERT_TRUE(after.ok());
+    EXPECT_EQ(after.value().epoch_id, 2);
+}
+
 }  // namespace
