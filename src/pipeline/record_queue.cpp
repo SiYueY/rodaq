@@ -129,6 +129,42 @@ void RecordQueue::stop_reservations() {
     }
 }
 
+Result<std::optional<rodaq_segment_id_t>> RecordQueue::pop_batch(
+    rodaq_segment_id_t segment, std::size_t max_records, std::uint64_t max_bytes,
+    std::vector<Record>& destination) {
+    if (!state_ || segment == 0 || max_records == 0 || max_records > 65536 || max_bytes == 0 ||
+        !destination.empty() || destination.capacity() < max_records) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    auto& counters = state_->counters;
+    std::uint64_t bytes = 0;
+    while (counters.queued_records != 0 && destination.size() < max_records) {
+        auto& slot = state_->slots[state_->read_position];
+        assert(slot);
+        if (slot->segment_id != segment) {
+            break;
+        }
+        const auto size = slot->payload.size();
+        if (size > max_bytes - bytes) {
+            if (destination.empty()) {
+                return Status(StatusCode::DataLoss, {});
+            }
+            break;
+        }
+        destination.push_back(std::move(*slot));
+        slot.reset();
+        state_->read_position = (state_->read_position + 1) % counters.capacity;
+        --counters.queued_records;
+        counters.queued_logical_bytes -= size;
+        bytes += size;
+    }
+    if (counters.queued_records != 0) {
+        return std::optional<rodaq_segment_id_t>{state_->slots[state_->read_position]->segment_id};
+    }
+    return std::optional<rodaq_segment_id_t>{};
+}
+
 RecordQueueSnapshot RecordQueue::snapshot() const {
     if (!state_) {
         return {};

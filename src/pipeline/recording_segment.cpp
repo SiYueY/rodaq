@@ -7,8 +7,15 @@
 
 namespace rodaq::pipeline {
 
-RecordingSegment::RecordingSegment(SegmentCapacity physical, SegmentMetadata facts) noexcept
-: capacity(std::move(physical)), metadata(std::move(facts)) {}
+RecordingSegment::RecordingSegment(
+    SegmentCapacity physical, SegmentMetadata facts, InstanceId instance, artifact::VolumeId volume,
+    TaskId task, PipelineId pipeline) noexcept
+: capacity(std::move(physical)),
+  metadata(std::move(facts)),
+  task_id(task),
+  pipeline_id(pipeline),
+  instance_id(instance),
+  volume_id(volume) {}
 
 Result<std::shared_ptr<RecordingSegment>> RecordingSegment::prepare(
     artifact::ManifestIdentity identity, std::vector<StreamId> streams,
@@ -24,6 +31,13 @@ Result<std::shared_ptr<RecordingSegment>> RecordingSegment::prepare(
         return Status(StatusCode::InvalidArgument, {});
     }
     const auto segment_id = identity.segment_id;
+    auto instance = parse_instance_id(identity.instance_id);
+    if (!instance.ok()) {
+        return instance.status();
+    }
+    const auto volume_id = identity.volume_id;
+    const auto task_id = identity.task_id;
+    const auto pipeline_id = identity.pipeline_id;
     auto metadata =
         SegmentMetadata::create(std::move(identity), std::move(streams), envelope, manifest_limits);
     if (!metadata.ok()) {
@@ -36,8 +50,9 @@ Result<std::shared_ptr<RecordingSegment>> RecordingSegment::prepare(
         return capacity.status();
     }
     try {
-        return std::shared_ptr<RecordingSegment>(
-            new RecordingSegment(std::move(capacity.value()), std::move(metadata.value())));
+        return std::shared_ptr<RecordingSegment>(new RecordingSegment(
+            std::move(capacity.value()), std::move(metadata.value()), instance.value(), volume_id,
+            task_id, pipeline_id));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }

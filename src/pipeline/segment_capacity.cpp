@@ -242,6 +242,15 @@ Result<artifact::CommitReservation> SegmentCapacity::handoff_sealed(std::uint64_
     return reservation;
 }
 
+void SegmentCapacity::invalidate_usage() {
+    if (state_) {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        if (!state_->settled) {
+            (void)state_->fail_contract();
+        }
+    }
+}
+
 Result<void> SegmentCapacity::settle_aborted_after_cleanup() {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});

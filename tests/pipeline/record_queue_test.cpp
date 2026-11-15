@@ -266,4 +266,44 @@ TEST_F(RecordQueueTest, ConcurrentCapacityReservationAndStreamCommitPreserveSequ
     EXPECT_LE(queue_->snapshot().high_water_records, 8);
 }
 
+TEST_F(RecordQueueTest, BatchPopNeedsPreparedBackingAndNeverCrossesSegmentOrByteBoundaries) {
+    for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+        auto pending = record(sequence);
+        auto credit = queue_->reserve();
+        ASSERT_TRUE(pending.ok());
+        ASSERT_TRUE(credit.ok());
+        if (sequence == 3) {
+            pending.value().segment_id = 8;
+        }
+        queue_->publish(std::move(credit.value()), std::move(pending.value()));
+    }
+    std::vector<pipeline::Record> batch;
+    EXPECT_EQ(queue_->pop_batch(7, 2, 8, batch).status().code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(queue_->snapshot().queued_records, 3);
+    batch.reserve(2);
+    EXPECT_EQ(queue_->pop_batch(7, 2, 3, batch).status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(queue_->snapshot().queued_records, 3);
+    auto first = queue_->pop_batch(7, 2, 4, batch);
+    ASSERT_TRUE(first.ok());
+    ASSERT_EQ(batch.size(), 1);
+    EXPECT_EQ(batch[0].acceptance_sequence, 1);
+    EXPECT_EQ(first.value(), 7);
+    EXPECT_EQ(budget_->snapshot().records, 3);
+    batch.clear();
+    auto second = queue_->pop_batch(7, 2, 8, batch);
+    ASSERT_TRUE(second.ok());
+    ASSERT_EQ(batch.size(), 1);
+    EXPECT_EQ(batch[0].acceptance_sequence, 2);
+    EXPECT_EQ(second.value(), 8);
+    EXPECT_EQ(queue_->snapshot().queued_records, 1);
+    batch.clear();
+    auto third = queue_->pop_batch(8, 2, 8, batch);
+    ASSERT_TRUE(third.ok());
+    ASSERT_EQ(batch.size(), 1);
+    EXPECT_EQ(batch[0].acceptance_sequence, 3);
+    EXPECT_FALSE(third.value());
+    batch.clear();
+    EXPECT_EQ(budget_->snapshot().records, 0);
+}
+
 }  // namespace

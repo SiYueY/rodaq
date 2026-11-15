@@ -161,7 +161,7 @@ public:
         }
         frame_size();
         auto found = std::find_if(catalog_.begin(), catalog_.end(), [&](const auto& entry) {
-            return entry.id == descriptor.descriptor_id;
+            return entry.id == descriptor.descriptor_id && entry.stream == descriptor.stream_id;
         });
         if (found != catalog_.end()) {
             return found->encoded == buffer_ ? Result<void>{}

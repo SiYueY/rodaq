@@ -74,6 +74,9 @@ public:
     void close_admission();
     void mark_effects_possible();
     Result<void> observe_usage(storage::SegmentUsage usage);
+    // Actual usage cannot be established, or the backend violated its bound.
+    // Retains every reservation and protects Volume admission until recovery.
+    void invalidate_usage();
     // Requires actual Seal return and verified Storage bytes. Transfers all
     // Volume/Commit/Ledger ownership together, retaining the Manifest reserve.
     Result<artifact::CommitReservation> handoff_sealed(std::uint64_t storage_bytes);

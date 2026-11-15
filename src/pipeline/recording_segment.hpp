@@ -5,6 +5,7 @@
 
 #include "segment_capacity.hpp"
 #include "segment_metadata.hpp"
+#include "instance_id.hpp"
 
 namespace rodaq::pipeline {
 
@@ -25,9 +26,15 @@ public:
 
     SegmentCapacity capacity;
     SegmentMetadata metadata;
+    const TaskId task_id;
+    const PipelineId pipeline_id;
+    const InstanceId instance_id;
+    const artifact::VolumeId volume_id;
 
 private:
-    RecordingSegment(SegmentCapacity physical, SegmentMetadata facts) noexcept;
+    RecordingSegment(
+        SegmentCapacity physical, SegmentMetadata facts, InstanceId instance,
+        artifact::VolumeId volume, TaskId task, PipelineId pipeline) noexcept;
 };
 
 }  // namespace rodaq::pipeline

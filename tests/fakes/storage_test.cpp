@@ -260,9 +260,9 @@ TEST_F(FakeStorageTest, MultiStreamFilesAreSelfDecodingAndPreparedDescriptorsSur
     create();
     ASSERT_TRUE(handle_);
     ASSERT_TRUE(handle_->prepare_descriptor(descriptor(), soon()).ok());
-    ASSERT_TRUE(handle_->prepare_descriptor(descriptor(2, 2), soon()).ok());
+    ASSERT_TRUE(handle_->prepare_descriptor(descriptor(2, 1), soon()).ok());
     open();
-    std::array<storage::Record, 3> records{record(), record(2, 2, 1), record(1, 1, 2)};
+    std::array<storage::Record, 3> records{record(), record(2, 1, 1), record(1, 1, 2)};
     auto written = handle_->write_batch({records.data(), records.size()}, soon());
     ASSERT_TRUE(written.status.ok());
     ASSERT_EQ(written.batch_result.confirmed_prefix, 3);
