@@ -79,7 +79,8 @@ add_library(rodaq_daq SHARED
 target_sources(rodaq_daq PRIVATE
     src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp
     src/time/wall_time.cpp)
-target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp)
+target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp
+    src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin

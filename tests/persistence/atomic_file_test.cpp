@@ -178,4 +178,28 @@ TEST_F(AtomicFile, ReadersKeepACompleteOldOrNewInodeDuringAtomicReplacement) {
     EXPECT_TRUE(reader.get());
 }
 
+TEST_F(AtomicFile, ReconciliationSyncsActualAuthorityAndRejectsSymlinkFifoOrInjectedFailure) {
+    ASSERT_TRUE(write("authority", FilePublishMode::Create).status.ok());
+    EXPECT_TRUE(persistence::sync_file(root_, "state.json").ok());
+    EXPECT_TRUE(persistence::sync_directory(root_).ok());
+    EXPECT_EQ(
+        persistence::sync_file(
+            root_, "state.json", [](FileStep step) { return step == FileStep::SyncFile ? EIO : 0; })
+            .status()
+            .code(),
+        rodaq::StatusCode::Unavailable);
+    EXPECT_EQ(
+        persistence::sync_directory(root_, [](FileStep) { return EROFS; }).status().code(),
+        rodaq::StatusCode::PermissionDenied);
+    EXPECT_EQ(
+        persistence::sync_file(root_, "../escape").status().code(),
+        rodaq::StatusCode::InvalidArgument);
+    fs::rename(root_ / "state.json", root_ / "backing");
+    fs::create_symlink(root_ / "backing", root_ / "state.json");
+    EXPECT_FALSE(persistence::sync_file(root_, "state.json").ok());
+    fs::remove(root_ / "state.json");
+    ASSERT_EQ(mkfifo((root_ / "state.json").c_str(), 0600), 0);
+    EXPECT_FALSE(persistence::sync_file(root_, "state.json").ok());
+}
+
 }  // namespace

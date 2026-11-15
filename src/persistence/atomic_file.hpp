@@ -42,6 +42,18 @@ FilePublication publish_file(
     const std::filesystem::path& directory, std::string_view name, std::string_view contents,
     FilePublishMode mode, std::size_t max_bytes, const FileFaultHook& faults = {});
 
+// Name syntax alone is not ownership proof; only an exclusive domain owner
+// may clean these names in its own namespace.
+bool is_temporary_file_name(std::string_view name) noexcept;
+
+// Reconciliation must sync actual authority, not treat a successful read as
+// durability proof. These reject symlinks/non-regular files like read_file.
+Result<void> sync_file(
+    const std::filesystem::path& directory, std::string_view name,
+    const FileFaultHook& faults = {});
+Result<void> sync_directory(
+    const std::filesystem::path& directory, const FileFaultHook& faults = {});
+
 Result<std::string> read_file(
     const std::filesystem::path& directory, std::string_view name, std::size_t max_bytes);
 

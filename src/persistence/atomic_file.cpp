@@ -281,6 +281,56 @@ FilePublication publish_file(
     }
 }
 
+bool is_temporary_file_name(std::string_view name) noexcept {
+    return name.size() == 43 && name.substr(0, 11) == ".rodaq-tmp-" &&
+           std::all_of(name.begin() + 11, name.end(), [](char byte) {
+               return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
+           });
+}
+
+Result<void> sync_file(
+    const std::filesystem::path& directory, std::string_view name, const FileFaultHook& faults) {
+    if (!valid_name(name)) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        const std::string owned_name(name);
+        FileDescriptor parent(
+            open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return Status(error_code(errno), {});
+        }
+        FileDescriptor file(openat(
+            parent.get(), owned_name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+        struct stat attributes {};
+        if (file.get() < 0 || fstat(file.get(), &attributes) != 0) {
+            return Status(error_code(errno), {});
+        }
+        if (!S_ISREG(attributes.st_mode)) {
+            return Status(StatusCode::InvalidArgument, {});
+        }
+        auto error = injected(faults, FileStep::SyncFile);
+        if (error == 0) {
+            error = synchronize(file.get());
+        }
+        return error == 0 ? Result<void>{} : Result<void>{Status(error_code(error), {})};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> sync_directory(const std::filesystem::path& directory, const FileFaultHook& faults) {
+    FileDescriptor parent(open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (parent.get() < 0) {
+        return Status(error_code(errno), {});
+    }
+    auto error = injected(faults, FileStep::SyncDirectory);
+    if (error == 0) {
+        error = synchronize(parent.get());
+    }
+    return error == 0 ? Result<void>{} : Result<void>{Status(error_code(error), {})};
+}
+
 Result<std::string> read_file(
     const std::filesystem::path& directory, std::string_view name, std::size_t max_bytes) {
     if (!valid_name(name)) {
