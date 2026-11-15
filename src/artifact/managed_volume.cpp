@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "../persistence/json.hpp"
+#include "../persistence/file_descriptor.hpp"
 #include "../time/clock.hpp"
 #include "../time/wall_time.hpp"
 #include "../uuid.hpp"
@@ -26,23 +27,7 @@ namespace {
 constexpr auto kDomain = "rodaq.volume.v1";
 persistence::JsonLimits limits() { return {4096, 2, 128, 4, 0, 5}; }
 
-class FileDescriptor {
-public:
-    explicit FileDescriptor(int value = -1) noexcept : value_(value) {}
-    FileDescriptor(const FileDescriptor&) = delete;
-    FileDescriptor& operator=(const FileDescriptor&) = delete;
-
-    ~FileDescriptor() noexcept {
-        if (value_ >= 0) {
-            close(value_);
-        }
-    }
-
-    int get() const noexcept { return value_; }
-
-private:
-    int value_;
-};
+using persistence::FileDescriptor;
 
 Status filesystem_failure() {
     return Status(
