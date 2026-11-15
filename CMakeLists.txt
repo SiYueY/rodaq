@@ -91,6 +91,7 @@ target_sources(rodaq_daq PRIVATE
     src/artifact/segment_id_store.cpp
     src/artifact/managed_volume.cpp
     src/artifact/sealed_files.cpp
+    src/artifact/segment_committer.cpp
     src/artifact/manifest.cpp
     src/artifact/ledger_record.cpp
     src/artifact/ledger_store.cpp

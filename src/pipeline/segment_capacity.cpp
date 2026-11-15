@@ -184,7 +184,9 @@ void SegmentCapacity::close_admission() {
 void SegmentCapacity::mark_effects_possible() {
     if (state_) {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        state_->volume.mark_effects_possible();
+        if (!state_->settled) {
+            state_->volume.mark_effects_possible();
+        }
     }
 }
 
@@ -212,55 +214,32 @@ Result<void> SegmentCapacity::observe_usage(storage::SegmentUsage usage) {
     return {};
 }
 
-Result<void> SegmentCapacity::finish_seal(
-    std::uint64_t storage_bytes, std::uint64_t core_manifest_bytes) {
+Result<artifact::CommitReservation> SegmentCapacity::handoff_sealed(std::uint64_t storage_bytes) {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});
     }
     std::lock_guard<std::mutex> lock(state_->mutex);
     auto& facts = state_->facts;
-    if (facts.writable || facts.candidates != 0 || facts.sealed || state_->settled) {
+    if (facts.writable || facts.candidates != 0 || facts.sealed || state_->settled ||
+        !state_->registration) {
         return Status(StatusCode::InvalidState, {});
     }
-    if (facts.protection != StatusCode::Ok || core_manifest_bytes > state_->manifest_bound ||
+    if (facts.protection != StatusCode::Ok ||
         storage_bytes > facts.accepted_storage_bound + state_->model.seal_reserve_bytes) {
         return state_->fail_contract();
     }
-    auto updated = state_->volume.record_usage(storage_bytes + core_manifest_bytes, 0);
+    auto updated = state_->volume.record_usage(storage_bytes, state_->manifest_bound);
     if (!updated.ok()) {
         return state_->fail_contract();
     }
-    facts.actual_bytes = storage_bytes + core_manifest_bytes;
+    facts.actual_bytes = storage_bytes;
     facts.sealed = true;
-    return {};
-}
-
-Result<artifact::LedgerRegistration> SegmentCapacity::take_registration_for_commit() {
-    if (!state_) {
-        return Status(StatusCode::InvalidState, {});
-    }
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    if (!state_->facts.sealed || state_->settled || !state_->registration) {
-        return Status(StatusCode::InvalidState, {});
-    }
-    auto registration = std::move(*state_->registration);
+    state_->settled = true;
+    artifact::CommitReservation reservation{
+        std::move(state_->volume), std::move(*state_->registration), storage_bytes,
+        state_->manifest_bound};
     state_->registration.reset();
-    return registration;
-}
-
-Result<artifact::ArtifactCharge> SegmentCapacity::settle_retained() {
-    if (!state_) {
-        return Status(StatusCode::InvalidState, {});
-    }
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    if (!state_->facts.sealed || state_->settled || state_->registration) {
-        return Status(StatusCode::InvalidState, {});
-    }
-    auto retained = state_->volume.settle_retained();
-    if (retained.ok()) {
-        state_->settled = true;
-    }
-    return retained;
+    return reservation;
 }
 
 Result<void> SegmentCapacity::settle_aborted_after_cleanup() {

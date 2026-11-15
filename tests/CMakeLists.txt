@@ -391,3 +391,9 @@ target_include_directories(rodaq_segment_metadata_test PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(rodaq_segment_metadata_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_segment_metadata_test)
 gtest_discover_tests(rodaq_segment_metadata_test PROPERTIES TIMEOUT 30)
+
+add_executable(rodaq_segment_committer_test artifact/segment_committer_test.cpp)
+target_include_directories(rodaq_segment_committer_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_segment_committer_test PRIVATE rodaq::daq GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_segment_committer_test)
+gtest_discover_tests(rodaq_segment_committer_test PROPERTIES TIMEOUT 30)

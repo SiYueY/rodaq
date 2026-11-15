@@ -6,7 +6,7 @@
 #include <rodaq/storage/types.hpp>
 
 #include "../artifact/volume_capacity.hpp"
-#include "../artifact/ledger_store.hpp"
+#include "../artifact/commit_reservation.hpp"
 
 namespace rodaq::pipeline {
 
@@ -74,12 +74,9 @@ public:
     void close_admission();
     void mark_effects_possible();
     Result<void> observe_usage(storage::SegmentUsage usage);
-    // Requires actual Seal return and verified file sizes. Core Manifest bytes
-    // have their own pre-reserved bound, outside the Storage file envelope.
-    Result<void> finish_seal(std::uint64_t storage_bytes, std::uint64_t core_manifest_bytes);
-    // Move the prepared slot into the actual Commit work frame, once sealed.
-    Result<artifact::LedgerRegistration> take_registration_for_commit();
-    Result<artifact::ArtifactCharge> settle_retained();
+    // Requires actual Seal return and verified Storage bytes. Transfers all
+    // Volume/Commit/Ledger ownership together, retaining the Manifest reserve.
+    Result<artifact::CommitReservation> handoff_sealed(std::uint64_t storage_bytes);
     Result<void> settle_aborted_after_cleanup();
     SegmentCapacitySnapshot snapshot() const;
 

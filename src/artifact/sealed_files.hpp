@@ -19,6 +19,8 @@ struct FileEvidence {
     std::string digest;
 };
 
+class SegmentCommitter;
+
 // Single Commit-lane owner, retained through actual filesystem calls. Opens and
 // pins the exact sealed regular-file set and computes hashes of actual bytes.
 // No method calls Storage or establishes Ledger/Catalog committed authority.
@@ -43,8 +45,13 @@ public:
     // Rechecks pinned identities, exact flat entries and Volume identity.
     Result<void> verify() const;
     bool durable_tree() const noexcept;
+    std::uint64_t segment_id() const noexcept;
+    VolumeId volume_id() const noexcept;
 
 private:
+    friend class SegmentCommitter;
+    // Only the Commit owner may publish after durable Ledger committing.
+    Result<void> publish_directory();
     struct State;
     explicit SealedFiles(std::unique_ptr<State> state) noexcept;
     std::unique_ptr<State> state_;

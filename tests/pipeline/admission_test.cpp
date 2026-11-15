@@ -1,4 +1,6 @@
 #include "pipeline/admission.hpp"
+#include "artifact/segment_committer.hpp"
+#include "persistence/atomic_file.hpp"
 #include "pipeline/descriptor_registry.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -39,8 +42,14 @@ protected:
         const auto* prepared = mkdtemp(pattern.data());
         ASSERT_NE(prepared, nullptr);
         ledger_root_ = prepared;
-        auto ledger =
-            artifact::LedgerStore::open(ledger_root_, artifact::LedgerOpenMode::Initialize, 4);
+        std::filesystem::create_directory(ledger_root_ / "ledger");
+        std::filesystem::create_directory(ledger_root_ / "volume");
+        auto managed = artifact::ManagedVolume::open(
+            ledger_root_ / "volume", artifact::VolumeOpenMode::Initialize);
+        ASSERT_TRUE(managed.ok());
+        managed_volume_ = std::move(managed.value());
+        auto ledger = artifact::LedgerStore::open(
+            ledger_root_ / "ledger", artifact::LedgerOpenMode::Initialize, 4);
         ASSERT_TRUE(ledger.ok());
         ledger_ = std::move(ledger.value());
         auto volume = artifact::VolumeCapacity::create({1000000, 1000000, 100, 1000, 8, 8, 16});
@@ -51,6 +60,7 @@ protected:
         ASSERT_TRUE(volume_->finish_space_sample(probe.value(), 1000000, 100).ok());
         instance_.value[15] = 1;
         auto identity = rodaq::test::manifest_identity();
+        identity.volume_id = managed_volume_->identity();
         identity.pipeline_id = 1;
         identity.instance_id = pipeline::to_string(instance_);
         identity.control_generation = 1;
@@ -69,6 +79,7 @@ protected:
         limits.max_segment_input_bytes = 8000;
         limits.max_segment_physical_bytes = 100000;
         limits.max_descriptors_per_segment = 8;
+        storage_limits_ = limits;
         rodaq::storage::CapacityModel model{};
         model.header.struct_size = sizeof(model);
         model.payload_expansion_numerator = 1;
@@ -125,6 +136,7 @@ protected:
     void TearDown() override {
         stream_.segment.reset();
         ledger_.reset();
+        managed_volume_.reset();
         std::error_code ignored;
         std::filesystem::remove_all(ledger_root_, ignored);
     }
@@ -185,6 +197,8 @@ protected:
     std::array<std::uint8_t, 4> bytes_{1, 2, 3, 4};
     std::filesystem::path ledger_root_;
     std::unique_ptr<artifact::LedgerStore> ledger_;
+    std::shared_ptr<artifact::ManagedVolume> managed_volume_;
+    rodaq::storage::PrepareConfig storage_limits_{};
 };
 
 TEST_F(AdmissionTest, AcceptedRecordOwnsCopyAndRetainsSettlementAfterQueuePop) {
@@ -463,6 +477,61 @@ TEST_F(AdmissionTest, RecordingTimelineOverflowIsRejectedBeforeOrdinaryResources
         pipeline::submit_record(overflow, stream_, attempt(), later).status().code(),
         rodaq::StatusCode::ResourceExhausted);
     expect_rolled_back();
+}
+
+TEST_F(AdmissionTest, AcceptedCopyAndActualFileTransferAllOwnershipIntoDurableLedgerCommit) {
+    auto submitted = pipeline::submit_record(*domain_, stream_, attempt(), received_);
+    ASSERT_TRUE(submitted.ok());
+    ASSERT_EQ(submitted.value().disposition, RODAQ_SUBMIT_ACCEPTED);
+    bytes_.fill(9);
+    auto record = queue_->pop();
+    ASSERT_TRUE(record);
+    auto staging = managed_volume_->create_staging(7);
+    ASSERT_TRUE(staging.ok());
+    stream_.segment->capacity.mark_effects_possible();
+    ASSERT_TRUE(record->settlement.mark_native_entered().ok());
+    // A minimal real file sink exercises Core ownership here. Actual Plugin
+    // Writer/ABI conformance and format interoperability remain separate gates.
+    const auto view = record->view();
+    std::ofstream file(staging.value() / "data.bin", std::ios::binary);
+    file.write(reinterpret_cast<const char*>(view.payload.data), view.payload.size);
+    file.close();
+    ASSERT_TRUE(file);
+    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::Written).ok());
+    record.reset();
+    EXPECT_EQ(budget_->snapshot().records, 0);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 0);
+    ASSERT_TRUE(gate_->close_and_capture(instance_).ok());
+    stream_.segment->close_admission();
+    rodaq::storage::SegmentSealResult seal;
+    seal.files = {{"data.bin", 4}};
+    seal.total_physical_bytes = 4;
+    auto files = artifact::SealedFiles::open(managed_volume_, 7, seal, storage_limits_, 8192);
+    ASSERT_TRUE(files.ok());
+    auto manifest = stream_.segment->metadata.capture_manifest(files.value()->evidence());
+    ASSERT_TRUE(manifest.ok());
+    EXPECT_EQ(manifest.value().coverage[0].accepted, 1);
+    EXPECT_EQ(manifest.value().coverage[0].written, 1);
+    auto reservation = stream_.segment->capacity.handoff_sealed(files.value()->storage_bytes());
+    ASSERT_TRUE(reservation.ok());
+    auto commit = artifact::SegmentCommitter::create(
+        std::move(files.value()), std::move(manifest.value()), {}, std::move(reservation.value()));
+    ASSERT_TRUE(commit.ok());
+    stream_.segment.reset();
+    EXPECT_EQ(volume_->snapshot().orphaned_reservations, 0);
+    EXPECT_EQ(volume_->snapshot().commit_slots, 1);
+    ASSERT_TRUE(commit.value()->commit(*ledger_).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+    auto stored =
+        rodaq::persistence::read_file(managed_volume_->artifacts_directory() / "7", "data.bin", 8);
+    ASSERT_TRUE(stored.ok());
+    EXPECT_EQ(stored.value(), std::string("\x01\x02\x03\x04", 4));
+    EXPECT_EQ(volume_->snapshot().commit_slots, 1);
+    auto charge = commit.value()->take_committed_charge();
+    ASSERT_TRUE(charge.ok());
+    EXPECT_EQ(volume_->snapshot().commit_slots, 0);
+    EXPECT_EQ(volume_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(volume_->snapshot().actual_bytes, 4 + commit.value()->manifest_bytes());
 }
 
 }  // namespace

@@ -133,12 +133,14 @@ TEST_F(
     EXPECT_EQ(segment.reserve_descriptor(0, 100).status().code(), StatusCode::ResourceExhausted);
     EXPECT_EQ(segment.snapshot().candidates, 0);
     segment.close_admission();
-    ASSERT_TRUE(segment.finish_seal(400, 100).ok());
+    auto handoff = segment.handoff_sealed(400);
+    ASSERT_TRUE(handoff.ok());
+    EXPECT_EQ(volume.snapshot().actual_bytes, 400);
+    EXPECT_EQ(volume.snapshot().future_bytes, 200);
+    ASSERT_TRUE(handoff.value().volume.record_usage(500, 0).ok());
     EXPECT_EQ(volume.snapshot().actual_bytes, 500);
     EXPECT_EQ(volume.snapshot().future_bytes, 0);
-    auto registration = segment.take_registration_for_commit();
-    ASSERT_TRUE(registration.ok());
-    auto retained = segment.settle_retained();
+    auto retained = handoff.value().volume.settle_retained();
     ASSERT_TRUE(retained.ok());
     EXPECT_EQ(volume.snapshot().commit_bytes, 0);
     EXPECT_EQ(volume.snapshot().actual_bytes, 500);
@@ -156,12 +158,12 @@ TEST_F(SegmentCapacityTest, CutRejectsOldCandidatesAndSealWaitsForTheirRollback)
         ASSERT_TRUE(candidate.ok());
         segment.close_admission();
         EXPECT_EQ(candidate.value().transfer().status().code(), StatusCode::Conflict);
-        EXPECT_EQ(segment.finish_seal(50, 0).status().code(), StatusCode::InvalidState);
+        EXPECT_EQ(segment.handoff_sealed(50).status().code(), StatusCode::InvalidState);
     }
-    ASSERT_TRUE(segment.finish_seal(50, 0).ok());
-    auto registration = segment.take_registration_for_commit();
-    ASSERT_TRUE(registration.ok());
-    EXPECT_TRUE(segment.settle_retained().ok());
+    auto handoff = segment.handoff_sealed(50);
+    ASSERT_TRUE(handoff.ok());
+    ASSERT_TRUE(handoff.value().volume.record_usage(50, 0).ok());
+    EXPECT_TRUE(handoff.value().volume.settle_retained().ok());
 }
 
 TEST_F(SegmentCapacityTest, NativeUsageCannotConsumeUnacceptedCandidateOrFinalizationReserve) {
@@ -204,10 +206,12 @@ TEST_F(
     EXPECT_EQ(volume.snapshot().future_bytes, 390);
     EXPECT_EQ(volume.snapshot().consumed_since_sample, 150);
     segment.close_admission();
-    ASSERT_TRUE(segment.finish_seal(275, 180).ok());
+    auto handoff = segment.handoff_sealed(275);
+    ASSERT_TRUE(handoff.ok());
+    ASSERT_TRUE(handoff.value().volume.record_usage(455, 0).ok());
     EXPECT_EQ(volume.snapshot().actual_bytes, 455);
     EXPECT_EQ(volume.snapshot().future_bytes, 0);
-    ASSERT_TRUE(segment.settle_aborted_after_cleanup().ok());
+    ASSERT_TRUE(handoff.value().volume.settle_aborted_after_cleanup().ok());
     EXPECT_EQ(volume.snapshot().actual_bytes, 0);
 }
 
@@ -282,22 +286,27 @@ TEST_F(SegmentCapacityTest, RegistrationSlotMustMatchSegmentAndRollsBackWhenVolu
     EXPECT_TRUE(ledger_->reserve_registration(10).ok());
 }
 
-TEST_F(SegmentCapacityTest, RegistrationTransfersOnceOnlyAfterSealAndBeforeRetainedSettlement) {
+TEST_F(SegmentCapacityTest, AllCommitOwnershipTransfersOnceOnlyAfterSeal) {
     auto volume = make_volume();
     auto created = create_segment(11, limits(), model(), 200, volume, 100);
     ASSERT_TRUE(created.ok());
     auto& segment = created.value();
     EXPECT_EQ(ledger_->reserve_registration(11).status().code(), StatusCode::Conflict);
-    EXPECT_EQ(segment.take_registration_for_commit().status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(segment.handoff_sealed(50).status().code(), StatusCode::InvalidState);
     segment.close_admission();
-    ASSERT_TRUE(segment.finish_seal(50, 100).ok());
-    EXPECT_EQ(segment.settle_retained().status().code(), StatusCode::InvalidState);
-    auto registration = segment.take_registration_for_commit();
-    ASSERT_TRUE(registration.ok());
-    EXPECT_EQ(registration.value().segment_id(), 11);
-    EXPECT_EQ(segment.take_registration_for_commit().status().code(), StatusCode::InvalidState);
+    auto handoff = segment.handoff_sealed(50);
+    ASSERT_TRUE(handoff.ok());
+    EXPECT_EQ(handoff.value().registration.segment_id(), 11);
+    EXPECT_EQ(handoff.value().storage_bytes, 50);
+    EXPECT_EQ(handoff.value().manifest_bound, 200);
+    EXPECT_EQ(volume.snapshot().actual_bytes, 50);
+    EXPECT_EQ(volume.snapshot().future_bytes, 200);
+    EXPECT_EQ(segment.handoff_sealed(50).status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(segment.settle_aborted_after_cleanup().status().code(), StatusCode::InvalidState);
     EXPECT_EQ(ledger_->reserve_registration(11).status().code(), StatusCode::Conflict);
-    EXPECT_TRUE(segment.settle_retained().ok());
+    segment.mark_effects_possible();  // stale facade cannot touch the moved lease
+    ASSERT_TRUE(handoff.value().volume.record_usage(150, 0).ok());
+    EXPECT_TRUE(handoff.value().volume.settle_retained().ok());
 }
 
 }  // namespace

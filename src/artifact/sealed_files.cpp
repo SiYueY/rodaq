@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <new>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <utility>
 
@@ -60,6 +61,12 @@ struct SealedFiles::State {
     std::shared_ptr<ManagedVolume> volume;
     std::filesystem::path staging;
     FileDescriptor directory;
+    FileDescriptor parent;
+    std::filesystem::path current_directory;
+    std::string staging_name;
+    std::string final_name;
+    std::uint64_t segment_id{0};
+    bool publication_attempted{false};
     struct stat directory_identity {};
     std::vector<FileEvidence> evidence;
     std::vector<OpenedFile> files;
@@ -71,8 +78,13 @@ struct SealedFiles::State {
     bool manifest_attempted{false};
     bool synced{false};
 
-    State(std::shared_ptr<ManagedVolume> owner, std::filesystem::path path, FileDescriptor fd)
-    : volume(std::move(owner)), staging(std::move(path)), directory(std::move(fd)) {}
+    State(
+        std::shared_ptr<ManagedVolume> owner, std::filesystem::path path, FileDescriptor fd,
+        FileDescriptor parent_fd)
+    : volume(std::move(owner)),
+      staging(std::move(path)),
+      directory(std::move(fd)),
+      parent(std::move(parent_fd)) {}
 
     Result<void> verify_entries() const {
         // openat creates a new directory description: duplicated descriptions
@@ -144,8 +156,18 @@ Result<std::unique_ptr<SealedFiles>> SealedFiles::open(
         if (directory.get() < 0) {
             return Status(StatusCode::Unavailable, {});
         }
-        auto state =
-            std::make_unique<State>(std::move(volume), std::move(staging), std::move(directory));
+        FileDescriptor parent(::open(
+            volume->artifacts_directory().c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto state = std::make_unique<State>(
+            std::move(volume), std::move(staging), std::move(directory), std::move(parent));
+        state->current_directory = state->staging;
+        state->segment_id = segment_id;
+        state->final_name = std::to_string(segment_id);
+        state->staging_name = state->final_name + ".tmp";
         state->faults = std::move(faults);
         state->manifest_limit = manifest_byte_limit;
         state->storage_bytes = seal.total_physical_bytes;
@@ -203,7 +225,7 @@ Result<void> SealedFiles::verify() const {
         return valid.status();
     }
     struct stat current {};
-    if (lstat(state_->staging.c_str(), &current) != 0 || !S_ISDIR(current.st_mode) ||
+    if (lstat(state_->current_directory.c_str(), &current) != 0 || !S_ISDIR(current.st_mode) ||
         current.st_dev != state_->directory_identity.st_dev ||
         current.st_ino != state_->directory_identity.st_ino) {
         return Status(StatusCode::DataLoss, {});
@@ -297,5 +319,57 @@ Result<void> SealedFiles::sync_tree() {
 }
 
 bool SealedFiles::durable_tree() const noexcept { return state_->synced; }
+
+std::uint64_t SealedFiles::segment_id() const noexcept { return state_->segment_id; }
+
+VolumeId SealedFiles::volume_id() const noexcept { return state_->volume->identity(); }
+
+Result<void> SealedFiles::publish_directory() {
+    if (!state_->synced || state_->publication_attempted) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    state_->publication_attempted = true;
+    // Allocate the final spelling before any publication effect.
+    std::filesystem::path final;
+    try {
+        final = state_->volume->artifacts_directory() / state_->final_name;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    if (state_->faults) {
+        try {
+            if (state_->faults(persistence::FileStep::Publish) != 0) {
+                return Status(StatusCode::Unavailable, {});
+            }
+        } catch (...) {
+            return Status(StatusCode::Internal, {});
+        }
+    }
+    auto verified = verify();
+    if (!verified.ok()) {
+        return verified.status();
+    }
+    struct stat pinned {
+    }, named{};
+    if (fstat(state_->parent.get(), &pinned) != 0 ||
+        lstat(state_->volume->artifacts_directory().c_str(), &named) != 0 ||
+        !S_ISDIR(named.st_mode) || pinned.st_dev != named.st_dev || pinned.st_ino != named.st_ino) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    // Never emulate NOREPLACE with an existence check followed by rename.
+    const auto renamed = syscall(
+        SYS_renameat2, state_->parent.get(), state_->staging_name.c_str(), state_->parent.get(),
+        state_->final_name.c_str(), RENAME_NOREPLACE);
+    if (renamed != 0) {
+        return Status(errno == EEXIST ? StatusCode::Conflict : StatusCode::Unavailable, {});
+    }
+    state_->current_directory.swap(final);
+    auto synced =
+        synchronize(state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults);
+    if (!synced.ok()) {
+        return synced.status();
+    }
+    return verify();
+}
 
 }  // namespace rodaq::artifact
