@@ -30,6 +30,8 @@ Result<std::string> canonical_json(const Json& value, const JsonLimits& limits =
 Result<std::string> semantic_digest(
     const Json& value, std::string_view domain, const JsonLimits& limits = {});
 
+bool valid_digest(std::string_view value) noexcept;
+
 // The domain owner must validate its format/schema before integrity verification.
 // Exactly the top-level content_digest is excluded; nested fields are preserved.
 Result<void> verify_integrity(

@@ -11,7 +11,6 @@
 #include <openssl/evp.h>
 
 namespace rodaq::persistence {
-namespace {
 
 bool valid_digest(std::string_view value) noexcept {
     return value.size() == 71 && value.substr(0, 7) == "sha256:" &&
@@ -20,8 +19,6 @@ bool valid_digest(std::string_view value) noexcept {
                       (character >= 'a' && character <= 'f');
            });
 }
-
-}  // namespace
 
 Result<std::string> semantic_digest(
     const Json& value, std::string_view domain, const JsonLimits& limits) {

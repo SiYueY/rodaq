@@ -8,6 +8,8 @@
 
 namespace rodaq::task {
 
+persistence::JsonLimits config_json_limits(const TaskConfigLimits& limits);
+
 Result<TaskConfig> normalize_config(const TaskConfig& config, const TaskConfigLimits& limits);
 Result<persistence::Json> config_document(const TaskConfig& config, const TaskConfigLimits& limits);
 Result<std::string> config_version(

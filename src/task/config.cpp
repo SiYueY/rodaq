@@ -17,6 +17,13 @@
 #include <rodaq/plugin/version.hpp>
 
 namespace rodaq::task {
+
+persistence::JsonLimits config_json_limits(const TaskConfigLimits& limits) {
+    return {limits.max_config_bytes,        limits.max_json_depth,
+            limits.max_json_string_bytes,   limits.max_json_object_members,
+            limits.max_json_array_elements, limits.max_json_nodes};
+}
+
 namespace {
 
 using persistence::Json;
@@ -24,12 +31,6 @@ using persistence::Json;
 struct InvalidConfig {
     StatusCode code{StatusCode::InvalidArgument};
 };
-
-persistence::JsonLimits json_limits(const TaskConfigLimits& limits) {
-    return {limits.max_config_bytes,        limits.max_json_depth,
-            limits.max_json_string_bytes,   limits.max_json_object_members,
-            limits.max_json_array_elements, limits.max_json_nodes};
-}
 
 void require(bool predicate) {
     if (!predicate) {
@@ -107,7 +108,7 @@ std::optional<std::chrono::nanoseconds> duration_bound(const Json& value) {
 PluginConfig plugin_config(const Json& value, const TaskConfigLimits& limits) {
     fields(value, {"plugin_id", "plugin_version", "config"});
     require(value.at("config").is_object());
-    auto canonical = persistence::canonical_json(value.at("config"), json_limits(limits));
+    auto canonical = persistence::canonical_json(value.at("config"), config_json_limits(limits));
     if (!canonical.ok()) {
         throw InvalidConfig{canonical.status().code()};
     }
@@ -338,12 +339,13 @@ Result<TaskConfig> normalize_config(const TaskConfig& config, const TaskConfigLi
         TaskConfig normalized = config;
         for (auto& pipeline : normalized.pipelines) {
             for (auto* backend : {&pipeline.acquisition, &pipeline.storage}) {
-                auto parsed = persistence::parse_json(backend->json, json_limits(limits));
+                auto parsed = persistence::parse_json(backend->json, config_json_limits(limits));
                 if (!parsed.ok()) {
                     return std::move(parsed).status();
                 }
                 require(parsed.value().is_object());
-                auto canonical = persistence::canonical_json(parsed.value(), json_limits(limits));
+                auto canonical =
+                    persistence::canonical_json(parsed.value(), config_json_limits(limits));
                 if (!canonical.ok()) {
                     return std::move(canonical).status();
                 }
@@ -406,7 +408,7 @@ Result<Json> config_document(const TaskConfig& config, const TaskConfigLimits& l
                     {"plugin_id", named.second->plugin_id},
                     {"plugin_version", named.second->plugin_version}};
                 require(consume_nodes(backend, remaining_nodes));
-                auto bounded = json_limits(limits);
+                auto bounded = config_json_limits(limits);
                 bounded.max_nodes = remaining_nodes;
                 auto parsed = persistence::parse_json(named.second->json, bounded);
                 if (!parsed.ok()) {
@@ -457,7 +459,7 @@ Result<std::string> config_version(const TaskConfig& config, const TaskConfigLim
         return std::move(document).status();
     }
     return persistence::semantic_digest(
-        document.value(), "rodaq.task-config.v1", json_limits(limits));
+        document.value(), "rodaq.task-config.v1", config_json_limits(limits));
 }
 
 }  // namespace rodaq::task
@@ -465,7 +467,7 @@ Result<std::string> config_version(const TaskConfig& config, const TaskConfigLim
 namespace rodaq {
 
 Result<TaskConfig> parse_task_config(std::string_view input, const TaskConfigLimits& limits) {
-    auto parsed = persistence::parse_json(input, task::json_limits(limits));
+    auto parsed = persistence::parse_json(input, task::config_json_limits(limits));
     if (!parsed.ok()) {
         return std::move(parsed).status();
     }
@@ -486,7 +488,7 @@ Result<std::string> export_task_config(const TaskConfig& config, const TaskConfi
     if (!document.ok()) {
         return std::move(document).status();
     }
-    return persistence::canonical_json(document.value(), task::json_limits(limits));
+    return persistence::canonical_json(document.value(), task::config_json_limits(limits));
 }
 
 }  // namespace rodaq
