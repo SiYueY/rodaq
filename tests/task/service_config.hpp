@@ -23,11 +23,12 @@ inline Result<TaskConfig> service_config() {
 
 inline task::ServiceOptions service_options(
     std::filesystem::path root, std::shared_ptr<plugin::PluginManager> manager,
-    std::shared_ptr<ExecutionLane> create_lane) {
+    std::shared_ptr<ExecutionLane> create_lane, std::shared_ptr<ExecutionLane> control_lane) {
     task::ServiceOptions options;
     options.root = std::move(root);
     options.plugin_manager = std::move(manager);
     options.create_lane = std::move(create_lane);
+    options.control_lane = std::move(control_lane);
     options.resource_profiles = {"basic"};
     options.output_roots = {"local"};
     options.allowed_plugins = {

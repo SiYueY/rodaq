@@ -50,6 +50,10 @@ public:
     ~TaskService() noexcept;
 
     Result<TaskId> create_task(const TaskConfig& config, const RequestIdentity& request);
+    Result<OperationId> configure(
+        TaskId task_id, const TaskConfig& config, const RequestIdentity& request,
+        const ControlPrecondition& precondition);
+
     Result<TaskSnapshot> get_task(TaskId task_id) const;
     Result<TaskConfig> get_active_config(TaskId task_id) const;
     Result<TaskPage> list_tasks(const PageRequest& request) const;

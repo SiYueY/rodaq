@@ -1,0 +1,128 @@
+#pragma once
+
+#include "task_service.hpp"
+#include "task_controller.hpp"
+#include "create_store.hpp"
+#include "../pipeline/stream_identity_store.hpp"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+
+namespace rodaq::task {
+
+inline WallTime control_wall_now() {
+    return std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now());
+}
+
+template <typename T>
+struct Reply {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::optional<Result<T>> result;
+
+    void complete(Result<T> value) noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        // Merged callers observe one immutable result. A later terminal-status
+        // failure cannot retract an already durable Accepted response.
+        if (result) {
+            return;
+        }
+        result.emplace(std::move(value));
+        ready.notify_all();
+    }
+
+    Result<T> wait(std::chrono::nanoseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!ready.wait_for(lock, timeout, [&] { return result.has_value(); })) {
+            return Status(StatusCode::DeadlineExceeded, {});
+        }
+        return *result;
+    }
+};
+
+class RequestSlot {
+public:
+    explicit RequestSlot(std::atomic<std::size_t>& requests) noexcept : requests_(&requests) {}
+
+    ~RequestSlot() noexcept { requests_->fetch_sub(1, std::memory_order_release); }
+    RequestSlot(const RequestSlot&) = delete;
+    RequestSlot& operator=(const RequestSlot&) = delete;
+
+private:
+    std::atomic<std::size_t>* requests_;
+};
+
+struct PublishedTask {
+    TaskSnapshot snapshot;
+    std::shared_ptr<const task::TaskControlRecord> control;
+    std::shared_ptr<const TaskConfig> config;
+};
+
+struct TaskEntry {
+    TaskId id;
+    std::mutex control_mutex;
+    std::unique_ptr<task::TaskStore> store;
+    std::unique_ptr<pipeline::StreamIdentityStore> identities;
+    pipeline::StreamIdentityState identity;
+    std::unique_ptr<task::TaskController> controller;
+    std::shared_ptr<const PublishedTask> published;
+    bool quiescent{false};
+    bool persisting{false};
+    // Failed dispatch only; an actual ended result is replayed, never re-issued.
+    bool ready_to_submit{false};
+    std::shared_ptr<const task::ControlWork> control_work;
+    std::shared_ptr<Reply<OperationId>> operation_reply;
+    std::optional<task::ControlWorkResult> pending_result;
+};
+
+Result<std::shared_ptr<const PublishedTask>> make_task_publication(
+    const TaskEntry& entry, std::shared_ptr<const TaskConfig> config, std::uint64_t sequence,
+    std::shared_ptr<const TaskControlRecord> control = {});
+
+std::optional<OperationSnapshot> completed_configuration(const TaskControlRecord& control);
+
+}  // namespace rodaq::task
+
+namespace rodaq {
+
+struct TaskService::State {
+    std::shared_ptr<const task::ServiceOptions> options;
+    std::vector<plugin::PluginInfo> installed;
+    std::unique_ptr<task::TaskCreateStore> creates;
+    std::mutex catalog_mutex;
+    std::vector<std::shared_ptr<task::TaskEntry>> entries;
+    std::atomic<std::size_t> requests{0};
+    std::atomic<bool> accepting{true};
+    bool reconcile_creates{false};
+
+    persistence::FileFaultHook file_hook(task::ServiceFileDomain domain) const;
+    Result<void> step(task::MaterializationStep value) const;
+    Result<void> directory(const std::filesystem::path& path) const;
+    Result<void> validate_deployment(const TaskConfig& config) const;
+    std::shared_ptr<task::TaskEntry> find(TaskId id);
+    Result<void> insert(std::shared_ptr<task::TaskEntry> entry);
+    Result<std::shared_ptr<task::TaskEntry>> materialize(
+        TaskId id, const task::AssignedConfig* initial);
+    Result<TaskId> create(const TaskConfig& config, const RequestIdentity& request);
+
+    struct CreateWork final : Work {
+        std::shared_ptr<State> owner;
+        TaskConfig config;
+        RequestIdentity request;
+        std::shared_ptr<task::Reply<TaskId>> reply;
+        void run() noexcept override;
+    };
+
+    struct ConfigWork final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::Reply<OperationId>> reply;
+        std::shared_ptr<const task::ControlWork> frame;
+        bool replay{false};
+        void run() noexcept override;
+    };
+};
+
+}  // namespace rodaq

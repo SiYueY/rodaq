@@ -52,7 +52,10 @@ protected:
         auto lane = rodaq::ExecutionLane::create(1, 8);
         ASSERT_TRUE(lane.ok());
         lane_ = std::move(lane.value());
-        options_ = rodaq::test::service_options(root_ / "state", manager_, lane_);
+        auto control = rodaq::ExecutionLane::create(2, 8);
+        ASSERT_TRUE(control.ok());
+        control_lane_ = std::move(control.value());
+        options_ = rodaq::test::service_options(root_ / "state", manager_, lane_, control_lane_);
         auto config = rodaq::test::service_config();
         ASSERT_TRUE(config.ok());
         config_ = std::move(config.value());
@@ -61,6 +64,9 @@ protected:
     void TearDown() override {
         if (lane_) {
             EXPECT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+        }
+        if (control_lane_) {
+            EXPECT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
         }
         service_.reset();
         if (manager_) {
@@ -83,11 +89,75 @@ protected:
     void restart() {
         service_.reset();
         ASSERT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+        ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
         auto next = rodaq::ExecutionLane::create(1, 8);
         ASSERT_TRUE(next.ok());
         lane_ = std::move(next.value());
         options_.create_lane = lane_;
+        auto control = rodaq::ExecutionLane::create(2, 8);
+        ASSERT_TRUE(control.ok());
+        control_lane_ = std::move(control.value());
+        options_.control_lane = control_lane_;
         open();
+    }
+
+    bool crash_at(int stage_value, const char* mode = nullptr) {
+        struct Child {
+            pid_t pid{-1};
+            ~Child() {
+                if (pid > 0) {
+                    (void)kill(pid, SIGKILL);
+                    int status = 0;
+                    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+                    }
+                }
+            }
+        } child;
+        int pipe_fds[2];
+        const auto piped = pipe(pipe_fds);
+        EXPECT_EQ(piped, 0);
+        if (piped != 0) {
+            return false;
+        }
+        const std::string root = (root_ / "state").string();
+        const std::string packages = (root_ / "packages").string();
+        const auto stage = std::to_string(stage_value);
+        const auto fd = std::to_string(pipe_fds[1]);
+        const char* arguments[] = {
+            RODAQ_SERVICE_CRASH_PROBE,
+            root.c_str(),
+            packages.c_str(),
+            stage.c_str(),
+            fd.c_str(),
+            mode,
+            nullptr};
+        const auto spawned = posix_spawn(
+            &child.pid, RODAQ_SERVICE_CRASH_PROBE, nullptr, nullptr,
+            const_cast<char* const*>(arguments), environ);
+        close(pipe_fds[1]);
+        EXPECT_EQ(spawned, 0);
+        if (spawned != 0) {
+            close(pipe_fds[0]);
+            return false;
+        }
+        pollfd observed{pipe_fds[0], POLLIN, 0};
+        const auto ready = poll(&observed, 1, 5000);
+        char entered = 0;
+        const auto read_count = ready > 0 ? read(pipe_fds[0], &entered, 1) : -1;
+        close(pipe_fds[0]);
+        EXPECT_EQ(read_count, 1);
+        if (read_count != 1) {
+            return false;
+        }
+        EXPECT_EQ(entered, 'x');
+        EXPECT_EQ(kill(child.pid, 0), 0);
+        EXPECT_EQ(kill(child.pid, SIGKILL), 0);
+        int status = 0;
+        EXPECT_EQ(waitpid(child.pid, &status, 0), child.pid);
+        child.pid = -1;
+        EXPECT_TRUE(WIFSIGNALED(status));
+        EXPECT_EQ(WTERMSIG(status), SIGKILL);
+        return WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
     }
 
     std::size_t task_directories() {
@@ -98,6 +168,7 @@ protected:
     fs::path root_;
     std::shared_ptr<rodaq::plugin::PluginManager> manager_;
     std::shared_ptr<rodaq::ExecutionLane> lane_;
+    std::shared_ptr<rodaq::ExecutionLane> control_lane_;
     task::ServiceOptions options_;
     rodaq::TaskConfig config_;
     std::unique_ptr<rodaq::TaskService> service_;
@@ -288,52 +359,275 @@ TEST_F(TaskServiceTest, ObserverTimeoutAndFacadeReleaseRetainActualWorkUntilLane
     EXPECT_TRUE(service_->create_task(config_, {"create"}).ok());
 }
 
+TEST_F(
+    TaskServiceTest, ConfigureUsesFormalIdentityAndPreconditionAndPublishesTerminalThroughControl) {
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto changed = service_->get_active_config(id).value();
+    changed.name = "configured";
+    changed.pipelines[0].streams.push_back({0, "second", {}, rodaq::ReadinessPolicy::EntryReady});
+    changed.pipelines[0].acquisition.json = R"({"streams":["sample","second"]})";
+    auto operation = service_->configure(id, changed, {"configure"}, {true, 1});
+    ASSERT_TRUE(operation.ok());
+    auto retry = service_->configure(id, changed, {"configure"}, {true, 1});
+    ASSERT_TRUE(retry.ok());
+    EXPECT_EQ(retry.value(), operation.value());
+    auto wrong = changed;
+    wrong.name = "different";
+    EXPECT_EQ(
+        service_->configure(id, wrong, {"configure"}, {true, 1}).status().code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(
+        service_->configure(id, changed, {"fresh-stale"}, {true, 1}).status().code(),
+        StatusCode::Conflict);
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    auto selected = service_->get_active_config(id).value();
+    EXPECT_EQ(selected.name, "configured");
+    EXPECT_EQ(selected.pipelines[0].streams[0].stream_id, 1);
+    EXPECT_EQ(selected.pipelines[0].streams[1].stream_id, 2);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(
+        service_->get_operation(id, operation.value()).value().state,
+        rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 1);
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(
+        service_->configure(id, changed, {"configure"}, {true, 1}).value(), operation.value());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams[1].stream_id, 2);
+}
+
+TEST_F(
+    TaskServiceTest,
+    ConfigureRetriesMergeWhileActualPersistenceIsBlockedAndQueriesRemainNonblocking) {
+    std::atomic<bool> armed{false};
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool release = false;
+    options_.file_faults = [&](auto domain, auto step) {
+        if (domain == task::ServiceFileDomain::Task &&
+            step == rodaq::persistence::FileStep::SyncFile && armed.exchange(false)) {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            condition.notify_all();
+            condition.wait(lock, [&] { return release; });
+        }
+        return 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto changed = service_->get_active_config(id).value();
+    changed.name = "changed";
+    armed = true;
+    auto first = std::async(std::launch::async, [&] {
+        return service_->configure(id, changed, {"configure"}, {true, 1});
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(condition.wait_for(lock, 2s, [&] { return entered; }));
+    }
+    auto retry = std::async(std::launch::async, [&] {
+        return service_->configure(id, changed, {"configure"}, {true, 1});
+    });
+    EXPECT_EQ(first.wait_for(1ms), std::future_status::timeout);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 1);
+    EXPECT_TRUE(service_->get_active_config(id).value().name.empty());
+    EXPECT_EQ(
+        service_->configure(id, changed, {"wrong-generation"}, {true, 99}).status().code(),
+        StatusCode::Conflict);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    condition.notify_all();
+    auto accepted = first.get();
+    auto merged = retry.get();
+    ASSERT_TRUE(accepted.ok());
+    ASSERT_TRUE(merged.ok());
+    EXPECT_EQ(accepted.value(), merged.value());
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 1);
+}
+
+TEST_F(TaskServiceTest, FailedConfigureRestoresActualActiveBindingsWithoutReusingDurableHighWater) {
+    std::atomic<bool> arm{false};
+    std::atomic<bool> fail{false};
+    options_.file_faults = [&](auto domain, auto step) {
+        if (domain == task::ServiceFileDomain::StreamIdentity &&
+            step == rodaq::persistence::FileStep::SyncDirectory && arm.exchange(false)) {
+            fail = true;
+        }
+        return domain == task::ServiceFileDomain::Task &&
+                       step == rodaq::persistence::FileStep::Publish && fail
+                   ? EIO
+                   : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto original = service_->get_active_config(id).value();
+    auto changed = original;
+    changed.pipelines[0].streams.push_back({0, "failed", {}, rodaq::ReadinessPolicy::EntryReady});
+    arm = true;
+    EXPECT_FALSE(service_->configure(id, changed, {"failed"}, {true, 1}).ok());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 1);
+    EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams.size(), 1);
+    fail = false;
+    auto replacement = original;
+    replacement.pipelines[0].streams.push_back(
+        {0, "replacement", {}, rodaq::ReadinessPolicy::EntryReady});
+    auto accepted = service_->configure(id, replacement, {"replacement"}, {true, 1});
+    ASSERT_TRUE(accepted.ok());
+    EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams[1].stream_id, 3);
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(
+        service_->get_operation(id, accepted.value()).value().state,
+        rodaq::OperationState::Succeeded);
+}
+
+TEST_F(
+    TaskServiceTest,
+    UncertainConfigureRetriesReconcileOneOperationWithoutReallocationOrEarlyAccepted) {
+    std::atomic<bool> arm{false};
+    std::atomic<bool> fail{false};
+    options_.file_faults = [&](auto domain, auto step) {
+        if (domain == task::ServiceFileDomain::StreamIdentity &&
+            step == rodaq::persistence::FileStep::SyncDirectory && arm.exchange(false)) {
+            fail = true;
+        }
+        return domain == task::ServiceFileDomain::Task &&
+                       step == rodaq::persistence::FileStep::SyncDirectory && fail
+                   ? EIO
+                   : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto changed = service_->get_active_config(id).value();
+    changed.pipelines[0].streams.push_back({0, "second", {}, rodaq::ReadinessPolicy::EntryReady});
+    arm = true;
+    EXPECT_FALSE(service_->configure(id, changed, {"uncertain"}, {true, 1}).ok());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 1);
+    EXPECT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    fail = false;
+    auto accepted = service_->configure(id, changed, {"uncertain"}, {true, 1});
+    ASSERT_TRUE(accepted.ok());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams[1].stream_id, 2);
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 1);
+    EXPECT_EQ(
+        service_->get_operation(id, accepted.value()).value().state,
+        rodaq::OperationState::Succeeded);
+}
+
+TEST_F(
+    TaskServiceTest,
+    ConfigureObserverTimeoutDoesNotReleaseActualPersistenceOrAllocateASecondOperation) {
+    std::atomic<bool> arm{false};
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool release = false;
+    options_.request_wait = 1s;
+    options_.file_faults = [&](auto domain, auto step) {
+        if (domain == task::ServiceFileDomain::Task &&
+            step == rodaq::persistence::FileStep::SyncFile && arm.exchange(false)) {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            condition.notify_all();
+            condition.wait(lock, [&] { return release; });
+        }
+        return 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto changed = service_->get_active_config(id).value();
+    changed.name = "changed";
+    arm = true;
+    auto observed = service_->configure(id, changed, {"configure"}, {true, 1});
+    EXPECT_EQ(observed.status().code(), StatusCode::DeadlineExceeded);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(condition.wait_for(lock, 2s, [&] { return entered; }));
+    }
+    EXPECT_EQ(control_lane_->snapshot().running, 1);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 1);
+    auto retry = std::async(std::launch::async, [&] {
+        return service_->configure(id, changed, {"configure"}, {true, 1});
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    condition.notify_all();
+    auto accepted = retry.get();
+    ASSERT_TRUE(accepted.ok());
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 1);
+    EXPECT_EQ(
+        service_->get_operation(id, accepted.value()).value().state,
+        rodaq::OperationState::Succeeded);
+}
+
+TEST_F(
+    TaskServiceTest,
+    FailedTerminalPublicationKeepsAcceptedIdentityAndProtectedUntilStartupRecovery) {
+    std::atomic<bool> arm{false};
+    std::atomic<bool> identity_ready{false};
+    std::atomic<int> publications{0};
+    options_.file_faults = [&](auto domain, auto step) {
+        if (!arm) {
+            return 0;
+        }
+        if (domain == task::ServiceFileDomain::StreamIdentity &&
+            step == rodaq::persistence::FileStep::SyncDirectory) {
+            identity_ready = true;
+        }
+        if (identity_ready && domain == task::ServiceFileDomain::Task &&
+            step == rodaq::persistence::FileStep::Publish && ++publications == 2) {
+            return EIO;
+        }
+        return 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(config_, {"create"}).value();
+    auto changed = service_->get_active_config(id).value();
+    changed.name = "configured";
+    arm = true;
+    auto accepted = service_->configure(id, changed, {"configure"}, {true, 1});
+    ASSERT_TRUE(accepted.ok());
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(
+        service_->get_operation(id, accepted.value()).value().state,
+        rodaq::OperationState::Accepted);
+    EXPECT_EQ(service_->get_active_config(id).value().name, "configured");
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(
+        service_->get_operation(id, accepted.value()).value().state,
+        rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(service_->configure(id, changed, {"configure"}, {true, 1}).value(), accepted.value());
+}
+
 class ServiceCrashTest : public TaskServiceTest,
                          public testing::WithParamInterface<task::MaterializationStep> {};
 
 TEST_P(ServiceCrashTest, LiveProcessCrashAtEveryMaterializationBoundaryRetriesOneTaskIdentity) {
-    struct Child {
-        pid_t pid{-1};
-        ~Child() {
-            if (pid > 0) {
-                (void)kill(pid, SIGKILL);
-                int status = 0;
-                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-                }
-            }
-        }
-    } child;
-    int pipe_fds[2];
-    ASSERT_EQ(pipe(pipe_fds), 0);
-    const std::string root = (root_ / "state").string();
-    const std::string packages = (root_ / "packages").string();
-    const auto stage = std::to_string(static_cast<int>(GetParam()));
-    const auto fd = std::to_string(pipe_fds[1]);
-    const char* arguments[] = {RODAQ_SERVICE_CRASH_PROBE,
-                               root.c_str(),
-                               packages.c_str(),
-                               stage.c_str(),
-                               fd.c_str(),
-                               nullptr};
-    const auto spawned = posix_spawn(
-        &child.pid, RODAQ_SERVICE_CRASH_PROBE, nullptr, nullptr,
-        const_cast<char* const*>(arguments), environ);
-    close(pipe_fds[1]);
-    ASSERT_EQ(spawned, 0);
-    pollfd observed{pipe_fds[0], POLLIN, 0};
-    const auto ready = poll(&observed, 1, 5000);
-    char entered = 0;
-    const auto read_count = ready > 0 ? read(pipe_fds[0], &entered, 1) : -1;
-    close(pipe_fds[0]);
-    ASSERT_EQ(read_count, 1);
-    ASSERT_EQ(entered, 'x');
-    ASSERT_EQ(kill(child.pid, 0), 0);
-    ASSERT_EQ(kill(child.pid, SIGKILL), 0);
-    int status = 0;
-    ASSERT_EQ(waitpid(child.pid, &status, 0), child.pid);
-    child.pid = -1;
-    ASSERT_TRUE(WIFSIGNALED(status));
-    ASSERT_EQ(WTERMSIG(status), SIGKILL);
+    ASSERT_TRUE(crash_at(static_cast<int>(GetParam())));
     std::optional<rodaq::TaskId> original_id;
     for (const auto& file : fs::directory_iterator(root_ / "state/create")) {
         if (file.path().extension() == ".json") {
@@ -356,6 +650,50 @@ TEST_P(ServiceCrashTest, LiveProcessCrashAtEveryMaterializationBoundaryRetriesOn
     EXPECT_EQ(task_directories(), 1);
     EXPECT_EQ(service_->create_task(config_, {"crash-create"}).value(), retried.value());
 }
+
+class ConfigureCrashTest : public TaskServiceTest, public testing::WithParamInterface<int> {};
+
+TEST_P(ConfigureCrashTest, CrashSelectsActualControlAndPreservesBurntIdsOrAcceptedOperation) {
+    ASSERT_TRUE(crash_at(GetParam(), "configure"));
+    std::optional<task::TaskControlRecord> before;
+    for (const auto& file : fs::directory_iterator(root_ / "state/control")) {
+        if (file.path().extension() == ".json") {
+            auto bytes = rodaq::persistence::read_file(
+                file.path().parent_path(), file.path().filename().string(),
+                task::control_record_max_bytes(options_.store.history));
+            ASSERT_TRUE(bytes.ok());
+            auto decoded = task::decode_control_record(bytes.value(), options_.store.history);
+            ASSERT_TRUE(decoded.ok());
+            before = std::move(decoded.value());
+        }
+    }
+    ASSERT_TRUE(before);
+    EXPECT_EQ(before->control_generation, GetParam() == 0 ? 1U : 2U);
+    open();
+    ASSERT_TRUE(service_);
+    auto request = service_->get_active_config(before->task_id).value();
+    request.name = "crash-configured";
+    request.pipelines[0].streams.resize(1);
+    request.pipelines[0].streams.push_back({0, "second", {}, rodaq::ReadinessPolicy::EntryReady});
+    request.pipelines[0].acquisition.json = R"({"streams":["sample","second"]})";
+    auto retried = service_->configure(before->task_id, request, {"crash-configure"}, {true, 1});
+    ASSERT_TRUE(retried.ok());
+    if (GetParam() == 1) {
+        ASSERT_TRUE(before->current_operation_id);
+        EXPECT_EQ(retried.value(), *before->current_operation_id);
+    }
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service_->get_task(before->task_id).value().control_generation, 2);
+    EXPECT_EQ(
+        service_->get_active_config(before->task_id).value().pipelines[0].streams[1].stream_id,
+        GetParam() == 0 ? 3U : 2U);
+    EXPECT_EQ(
+        service_->get_operation(before->task_id, retried.value()).value().state,
+        rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service_->list_operations(before->task_id, {}).value().items.size(), 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(ConfigureCrashBoundaries, ConfigureCrashTest, testing::Values(0, 1));
 
 INSTANTIATE_TEST_SUITE_P(
     CreateCrashBoundaries, ServiceCrashTest,

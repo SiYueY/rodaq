@@ -1,6 +1,7 @@
 #include "task_controller.hpp"
 
 #include "identity.hpp"
+#include "config.hpp"
 #include "../work_id.hpp"
 
 #include <algorithm>
@@ -51,7 +52,9 @@ DesiredState target(OperationKind kind) noexcept {
     if (kind == OperationKind::Pause) {
         return DesiredState::Paused;
     }
-    return kind == OperationKind::Stop ? DesiredState::Stopped : DesiredState::Running;
+    return (kind == OperationKind::Stop || kind == OperationKind::Configure)
+               ? DesiredState::Stopped
+               : DesiredState::Running;
 }
 
 }  // namespace
@@ -89,7 +92,7 @@ const StoredOperation* TaskController::pending_request(std::string_view key) con
 
 Result<std::shared_ptr<const ControlWork>> TaskController::make_work(
     TaskControlRecord candidate, ControlPublicationKind publication,
-    std::uint64_t expected_revision) const {
+    std::uint64_t expected_revision, std::shared_ptr<const ConfigPublication> config) const {
     auto valid = validate_control_record(candidate, policy_);
     if (!valid.ok()) {
         return valid.status();
@@ -101,15 +104,16 @@ Result<std::shared_ptr<const ControlWork>> TaskController::make_work(
     try {
         auto record = std::make_shared<const TaskControlRecord>(std::move(candidate));
         return std::make_shared<const ControlWork>(ControlWork{
-            id.value(), ControlWorkKind::Publish, publication, expected_revision,
-            std::move(record)});
+            id.value(), ControlWorkKind::Publish, publication, expected_revision, std::move(record),
+            std::move(config)});
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
 }
 
 Result<std::shared_ptr<const ControlWork>> TaskController::make_intent(
-    const TaskControlRecord& base, StoredOperation operation) const {
+    const TaskControlRecord& base, StoredOperation operation,
+    std::shared_ptr<const ConfigPublication> config) const {
     if (base.control_generation == std::numeric_limits<std::uint64_t>::max() ||
         base.record_revision == std::numeric_limits<std::uint64_t>::max()) {
         return Status(StatusCode::ResourceExhausted, {});
@@ -138,8 +142,12 @@ Result<std::shared_ptr<const ControlWork>> TaskController::make_intent(
         candidate.operation_history = std::move(history.value());
         candidate.current_operation_id = operation.snapshot.operation_id;
         candidate.desired_state = target(operation.snapshot.kind);
+        if (config) {
+            candidate.active_config_version = config->projection.config_version;
+        }
         return make_work(
-            std::move(candidate), ControlPublicationKind::Intent, base.record_revision);
+            std::move(candidate), ControlPublicationKind::Intent, base.record_revision,
+            std::move(config));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -213,6 +221,88 @@ Result<ControlDecision> TaskController::request_lifecycle(
         actual_work_inflight_ = true;
         opening_fenced_ = opening_fenced_ || closing(kind);
         return ControlDecision{id.value(), false, closing(kind), flight_};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<ControlDecision> TaskController::request_configure(
+    const TaskConfig& config, const RequestIdentity& request,
+    const ControlPrecondition& precondition, WallTime now, const ConfigureFacts& facts,
+    const TaskConfigLimits& limits) {
+    auto digest = configure_request_digest(durable_->task_id, config, precondition, limits);
+    if (!digest.ok()) {
+        return digest.status();
+    }
+    auto known = find_request(durable_->operation_history, request, digest.value());
+    if (known.ok()) {
+        return ControlDecision{known.value(), true, false, {}};
+    }
+    if (known.status().code() != StatusCode::NotFound) {
+        return known.status();
+    }
+    const auto* pending = pending_request(request.request_key);
+    if (pending) {
+        if (pending->request_digest != digest.value()) {
+            return Status(StatusCode::Conflict, {});
+        }
+        return ControlDecision{pending->snapshot.operation_id, false, false, {}};
+    }
+    if (precondition.has_expected_control_generation &&
+        precondition.expected_control_generation != durable_->control_generation) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (protected_ || durable_->reset_intent || durable_->desired_state != DesiredState::Stopped ||
+        !facts.quiescent) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    if (flight_ || stop_) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (!facts.deployment_allowed) {
+        return Status(StatusCode::PermissionDenied, {});
+    }
+    auto version = config_version(facts.active_config, limits);
+    if (!version.ok()) {
+        return version.status();
+    }
+    if (version.value() != durable_->active_config_version ||
+        facts.identities.record_revision == 0 ||
+        facts.identities.observed_config_version != durable_->active_config_version ||
+        !(facts.identities.task_id == durable_->task_id)) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto assigned = assign_config_change(
+        facts.active_config, config, facts.identities.pipeline_id_high_water,
+        facts.identities.stream_id_high_water, limits);
+    if (!assigned.ok()) {
+        return assigned.status();
+    }
+    auto projection = identity_projection(assigned.value(), limits);
+    if (!projection.ok()) {
+        return projection.status();
+    }
+    try {
+        auto publication = std::make_shared<const ConfigPublication>(ConfigPublication{
+            std::move(assigned.value()), std::move(projection.value()),
+            facts.identities.record_revision});
+        auto id = new_operation_id();
+        if (!id.ok()) {
+            return id.status();
+        }
+        StoredOperation operation;
+        operation.request = request;
+        operation.request_digest = std::move(digest.value());
+        operation.snapshot.operation_id = id.value();
+        operation.snapshot.kind = OperationKind::Configure;
+        operation.snapshot.accepted_at = now;
+        auto work = make_intent(*durable_, std::move(operation), std::move(publication));
+        if (!work.ok()) {
+            return work.status();
+        }
+        flight_ = std::move(work.value());
+        actual_work_inflight_ = true;
+        return ControlDecision{id.value(), false, false, flight_};
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }

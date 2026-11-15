@@ -34,6 +34,9 @@ struct ServiceOptions {
     // Composition retains this scheduling domain through explicit shutdown;
     // Service destruction never joins threads or cancels accepted work.
     std::shared_ptr<ExecutionLane> create_lane;
+    // Separate actual Control publication capacity; queue >= max_tasks.
+    // Do not populate this domain with permanent Native Writer loops.
+    std::shared_ptr<ExecutionLane> control_lane;
     std::vector<AllowedPlugin> allowed_plugins;
     std::vector<std::string> resource_profiles;
     std::vector<std::string> output_roots;

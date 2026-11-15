@@ -398,6 +398,45 @@ TEST_F(TaskControllerTest, ProductionWorkMappingReconcilesRealFailureBeforeAndAf
     EXPECT_TRUE(controller_->run_is_current(start.operation_id, 2));
 }
 
+TEST_F(
+    TaskControllerTest,
+    ConfigureRequiresQuiescenceAndMatchingActiveIdentityFactsBeforeAllocatingWork) {
+    auto config = store_->load_config(initial_.active_config_version).value().config;
+    rodaq::pipeline::StreamIdentityState identities;
+    identities.task_id = id_;
+    identities.observed_config_version = initial_.active_config_version;
+    identities.pipeline_id_high_water = 10;
+    identities.stream_id_high_water = 20;
+    identities.streams.push_back({20, "sample", 1, 1, false, {}});
+    auto changed = config;
+    changed.name = "configured";
+    task::ConfigureFacts facts{config, identities, false, true};
+    EXPECT_EQ(
+        controller_
+            ->request_configure(changed, {"configure"}, {true, 1}, rodaq::WallTime{1s}, facts, {})
+            .status()
+            .code(),
+        StatusCode::InvalidState);
+    facts.quiescent = true;
+    facts.deployment_allowed = false;
+    EXPECT_EQ(
+        controller_
+            ->request_configure(changed, {"configure"}, {true, 1}, rodaq::WallTime{1s}, facts, {})
+            .status()
+            .code(),
+        StatusCode::PermissionDenied);
+    facts.deployment_allowed = true;
+    identities.observed_config_version = "sha256:" + std::string(64, 'f');
+    EXPECT_EQ(
+        controller_
+            ->request_configure(changed, {"configure"}, {true, 1}, rodaq::WallTime{1s}, facts, {})
+            .status()
+            .code(),
+        StatusCode::DataLoss);
+    EXPECT_EQ(controller_->durable_record()->control_generation, 1);
+    EXPECT_TRUE(controller_->durable_record()->operation_history.entries.empty());
+}
+
 TEST_F(TaskControllerTest, ExhaustedIdentityAndIllegalTransitionsDoNotPublishNewIntent) {
     EXPECT_EQ(request(OperationKind::Resume, "resume").status().code(), StatusCode::InvalidState);
     EXPECT_EQ(request(OperationKind::Stop, "stop").status().code(), StatusCode::InvalidState);
