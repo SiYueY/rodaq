@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+project(InstalledRuntimeConsumer LANGUAGES CXX)
+find_package(RoDAQ REQUIRED CONFIG)
+add_executable(runtime_consumer main.cpp)
+target_link_libraries(runtime_consumer PRIVATE rodaq::plugin)
+target_compile_options(runtime_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -UNDEBUG)

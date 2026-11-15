@@ -22,12 +22,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -62,6 +65,9 @@ TEST(PluginManagerBasic, InvalidOptionsAndExclusiveAuthority) {
 class PluginRuntimeTest : public testing::Test {
 protected:
     void SetUp() override {
+        // Each CTest case owns a process; faulted Manager quarantine deliberately
+        // survives that process. Fixture environment is fixed before any workers.
+        unsetenv("RODAQ_FIXTURE_CREATE_MODE");
         std::array<char, 40> pattern{};
         const std::string text = "/tmp/rodaq-runtime-XXXXXX";
         std::copy(text.begin(), text.end(), pattern.begin());
@@ -214,6 +220,12 @@ TEST_F(PluginRuntimeTest, ObserverTimeoutDoesNotCancelNativeShutdown) {
     EXPECT_TRUE(reached);
     EXPECT_EQ(future.wait(plugin::Deadline::after(0ns).value()), plugin::CloseWaitStatus::TimedOut);
     EXPECT_FALSE(future.ready());
+    EXPECT_EQ(future.result().status().code(), rodaq::StatusCode::InvalidState);
+    auto copied = future;
+    auto moved = std::move(copied);
+    EXPECT_FALSE(
+        static_cast<bool>(copied));  // NOLINT(bugprone-use-after-move): moved-from contract.
+    EXPECT_TRUE(static_cast<bool>(moved));
     EXPECT_EQ(events(), "configure\nshutdown\n");
     EXPECT_TRUE(release());
     ASSERT_EQ(future.wait(soon()), plugin::CloseWaitStatus::Completed);
@@ -707,5 +719,440 @@ TEST_F(PluginRuntimeTest, AcquisitionBindingMustExactlyMatchConfiguredStreamKey)
     EXPECT_TRUE(instance.close(soon()).ok());
     EXPECT_TRUE(manager.shutdown(soon()).ok());
 }
+
+class CreateOutputFault : public PluginRuntimeTest,
+                          public testing::WithParamInterface<const char*> {};
+
+TEST_P(CreateOutputFault, KeepsUnresolvedOwnershipWithoutCallingPoisonedCleanup) {
+    ASSERT_EQ(setenv("RODAQ_FIXTURE_CREATE_MODE", GetParam(), 1), 0);
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, config("normal"));
+    ASSERT_FALSE(initialized.ok());
+    EXPECT_EQ(initialized.status().code(), rodaq::StatusCode::Internal);
+    EXPECT_EQ(manager.phase(), plugin::PluginManagerPhase::Degraded);
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_TRUE(events().empty());
+    EXPECT_EQ(manager.shutdown(soon()).status().code(), rodaq::StatusCode::Internal);
+    EXPECT_EQ(
+        plugin::PluginManager::create(options()).status().code(), rodaq::StatusCode::Conflict);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AbiViolation, CreateOutputFault,
+    testing::Values("unknown", "nondefault_failure", "malformed_success", "bad_error_ok"));
+
+class CreateOrdinaryFailure : public PluginRuntimeTest,
+                              public testing::WithParamInterface<const char*> {};
+
+TEST_P(CreateOrdinaryFailure, PreservesPrimaryAndReleasesCapacityWithoutFault) {
+    ASSERT_EQ(setenv("RODAQ_FIXTURE_CREATE_MODE", GetParam(), 1), 0);
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        EXPECT_EQ(
+            library.create_instance(services, {}).status().code(), rodaq::StatusCode::Unavailable);
+    }
+    EXPECT_FALSE(manager.restart_required());
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AbiNormal, CreateOrdinaryFailure, testing::Values("normal_failure", "bad_error_failure"));
+
+TEST_F(PluginRuntimeTest, UnknownConfigureFaultsLibraryAndNeverPublishesOpen) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    EXPECT_EQ(
+        library.create_instance(services, config("unknown_configure")).status().code(),
+        rodaq::StatusCode::Internal);
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_EQ(manager.shutdown(soon()).status().code(), rodaq::StatusCode::Internal);
+}
+
+TEST_F(PluginRuntimeTest, UnknownQueryRejectsPartialOutputWithoutFaultingOtherCalls) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, config("unknown_query"));
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    EXPECT_EQ(instance.query<CounterInterface>().status().code(), rodaq::StatusCode::Internal);
+    EXPECT_FALSE(manager.restart_required());
+    EXPECT_TRUE(instance.close(soon()).ok());
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, UnknownShutdownCannotAuthorizeDestroy) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, config("unknown_shutdown"));
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto future = instance.async_close();
+    ASSERT_EQ(future.wait(soon()), plugin::CloseWaitStatus::Completed);
+    EXPECT_EQ(future.result().status().code(), rodaq::StatusCode::Internal);
+    EXPECT_EQ(instance.phase(), plugin::PluginInstancePhase::Unresolved);
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_EQ(events(), "configure\nshutdown\n");
+}
+
+TEST_F(PluginRuntimeTest, QueryMetadataRemainsOwnedThroughHandleConstructionDuringClose) {
+    ASSERT_EQ(mkfifo((control_ / "gate").c_str(), 0600), 0);
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, config("query_wait"));
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto pending =
+        std::async(std::launch::async, [&] { return instance.query<CounterInterface>(); });
+    EXPECT_TRUE(entered());
+    auto future = instance.async_close();
+    EXPECT_EQ(
+        future.wait(plugin::Deadline::after(10ms).value()), plugin::CloseWaitStatus::TimedOut);
+    EXPECT_EQ(events().find("destroy"), std::string::npos);
+    EXPECT_TRUE(release());
+    auto queried = pending.get();
+    ASSERT_TRUE(queried.ok());
+    ASSERT_EQ(future.wait(soon()), plugin::CloseWaitStatus::Completed);
+    EXPECT_EQ(queried.value().current().status().code(), rodaq::StatusCode::InvalidState);
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+    EXPECT_EQ(events(), "configure\nshutdown\ndestroy\n");
+}
+
+TEST_F(PluginRuntimeTest, FailedConfigureKeepsCapacityUntilActualCleanupCompletes) {
+    ASSERT_EQ(mkfifo((control_ / "gate").c_str(), 0600), 0);
+    auto policy = options();
+    policy.shutdown_timeout = 3s;
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    EXPECT_EQ(
+        library.create_instance(services, config("configure_fail_wait")).status().code(),
+        rodaq::StatusCode::Unavailable);
+    EXPECT_TRUE(entered());
+    EXPECT_EQ(
+        library.create_instance(services, {}).status().code(),
+        rodaq::StatusCode::ResourceExhausted);
+    EXPECT_TRUE(release());
+    std::optional<plugin::PluginInstance> replacement;
+    const auto limit = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < limit) {
+        auto initialized = library.create_instance(services, {});
+        if (initialized.ok()) {
+            replacement.emplace(std::move(initialized).value());
+            break;
+        }
+        EXPECT_EQ(initialized.status().code(), rodaq::StatusCode::ResourceExhausted);
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(replacement.has_value());
+    EXPECT_TRUE(replacement->close(soon()).ok());
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+TEST(PluginManagerBasic, ConfigurationCapacityHasExactUint32BoundaryWithoutPreallocation) {
+    auto policy = options();
+    policy.max_config_size = static_cast<std::size_t>(UINT32_MAX) + 1;
+    EXPECT_EQ(
+        plugin::PluginManager::create(policy).status().code(), rodaq::StatusCode::InvalidArgument);
+    policy.max_config_size = UINT32_MAX;
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    EXPECT_TRUE(created.value().shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, DestroyStageSupervisionKeepsOwnershipUntilActualReturn) {
+    ASSERT_EQ(mkfifo((control_ / "gate").c_str(), 0600), 0);
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto initialized = library.create_instance(services, config("destroy_wait"));
+    ASSERT_TRUE(initialized.ok());
+    auto instance = std::move(initialized).value();
+    auto future = instance.async_close();
+    EXPECT_TRUE(entered());
+    const auto limit = std::chrono::steady_clock::now() + 35s;
+    while (!manager.restart_required() && std::chrono::steady_clock::now() < limit) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_FALSE(future.ready());
+    EXPECT_EQ(future.result().status().code(), rodaq::StatusCode::InvalidState);
+    EXPECT_TRUE(release());
+    ASSERT_EQ(future.wait(soon()), plugin::CloseWaitStatus::Completed);
+    EXPECT_TRUE(future.result().ok());
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_EQ(events(), "configure\nshutdown\ndestroy\n");
+}
+
+TEST_F(PluginRuntimeTest, BackingReleaseSupervisionRunsWithoutStructuralLocks) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto loaded = manager.load("com.example.lifecycle");
+    ASSERT_TRUE(loaded.ok());
+    auto library = std::move(loaded).value();
+    struct Gate {
+        std::atomic<bool> armed{false};
+        std::promise<void> entered;
+        std::shared_future<void> resume;
+    };
+    auto gate = std::make_shared<Gate>();
+    std::promise<void> resume;
+    gate->resume = resume.get_future().share();
+    auto entered_deleter = gate->entered.get_future();
+    std::optional<plugin::PluginInstance> instance;
+    {
+        plugin::ServiceRegistry services;
+        auto host = std::shared_ptr<HostProbe>(new HostProbe, [gate](HostProbe* provider) {
+            if (gate->armed.load(std::memory_order_acquire)) {
+                // The independent monitor and ready() still need both structural
+                // locks while this deliberately slow custom deleter is blocked.
+                gate->entered.set_value();
+                gate->resume.wait();
+            }
+            delete provider;
+        });
+        ASSERT_TRUE(services.add_shared<LifecycleProbeService>(host).ok());
+        ASSERT_TRUE(services.freeze().ok());
+        auto initialized = library.create_instance(services, config("normal"));
+        ASSERT_TRUE(initialized.ok());
+        instance.emplace(std::move(initialized).value());
+    }
+    gate->armed.store(true, std::memory_order_release);
+    auto future = instance->async_close();
+    EXPECT_EQ(entered_deleter.wait_for(2s), std::future_status::ready);
+    const auto limit = std::chrono::steady_clock::now() + 35s;
+    while (!manager.restart_required() && std::chrono::steady_clock::now() < limit) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_FALSE(future.ready());
+    EXPECT_EQ(events(), "configure\nshutdown\ndestroy\n");
+    resume.set_value();
+    ASSERT_EQ(future.wait(soon()), plugin::CloseWaitStatus::Completed);
+    EXPECT_TRUE(future.result().ok());
+    EXPECT_TRUE(manager.restart_required());
+}
+
+TEST_F(PluginRuntimeTest, ConcurrentLoadSingleFlightSharesOnePublishedLibraryState) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    policy.max_loaded_plugins = 1;
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    std::vector<std::future<rodaq::Result<plugin::PluginLibrary>>> pending;
+    for (int i = 0; i < 8; ++i) {
+        pending.push_back(
+            std::async(std::launch::async, [&] { return manager.load("com.example.counter"); }));
+    }
+    const plugin::PluginInfo* identity = nullptr;
+    for (auto& item : pending) {
+        auto loaded = item.get();
+        ASSERT_TRUE(loaded.ok());
+        if (identity == nullptr) {
+            identity = &loaded.value().info();
+        }
+        EXPECT_EQ(&loaded.value().info(), identity);
+    }
+    EXPECT_EQ(
+        manager.load("com.example.lifecycle").status().code(),
+        rodaq::StatusCode::ResourceExhausted);
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, CleanBackingReleaseAllowsRecreationWhileMainDsoRemainsResident) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    {
+        auto created = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(created.ok());
+        auto manager = std::move(created).value();
+        auto loaded = manager.load("com.example.counter");
+        ASSERT_TRUE(loaded.ok());
+        EXPECT_TRUE(manager.shutdown(soon()).ok());
+    }
+    const auto artifact = root_ / "counter/lib/libcounter_cpp.so";
+    void* resident = dlopen(artifact.c_str(), RTLD_NOW | RTLD_NOLOAD);
+    ASSERT_NE(resident, nullptr);
+    EXPECT_NE(dlsym(resident, "rodaq_plugin_abi_version"), nullptr);
+    EXPECT_EQ(dlclose(resident), 0);  // Only the test's extra reference is released.
+    auto recreated = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(recreated.ok());
+    EXPECT_TRUE(recreated.value().load("com.example.counter").ok());
+    EXPECT_TRUE(recreated.value().shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, ReplacedMainArtifactIsRejectedBeforeNativeLoad) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    auto created = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    const auto artifact = root_ / "counter/lib/libcounter_cpp.so";
+    fs::permissions(artifact, fs::perms::owner_all);
+    {
+        std::ofstream stream(artifact, std::ios::binary | std::ios::app);
+        stream.put('x');
+    }
+    fs::permissions(artifact, fs::perms::owner_read | fs::perms::owner_exec);
+    EXPECT_EQ(manager.load("com.example.counter").status().code(), rodaq::StatusCode::DataLoss);
+    EXPECT_TRUE(manager.load("com.example.lifecycle").ok());
+    EXPECT_FALSE(manager.restart_required());
+    EXPECT_TRUE(manager.shutdown(soon()).ok());
+}
+
+TEST_F(PluginRuntimeTest, ResidentPathCannotBeHotReplacedAcrossCleanManagerRecreation) {
+    auto policy = options();
+    policy.search_paths = {root_};
+    {
+        auto created = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(created.ok());
+        auto manager = std::move(created).value();
+        auto loaded = manager.load("com.example.counter");
+        ASSERT_TRUE(loaded.ok());
+        EXPECT_TRUE(manager.shutdown(soon()).ok());
+    }
+    const auto artifact = root_ / "counter/lib/libcounter_cpp.so";
+    const auto replacement = control_ / "replacement.so";
+    fs::copy_file(artifact, replacement);
+    fs::permissions(artifact.parent_path(), fs::perms::owner_all);
+    fs::rename(replacement, artifact);
+    fs::permissions(artifact.parent_path(), fs::perms::owner_read | fs::perms::owner_exec);
+    auto recreated = plugin::PluginManager::create(policy);
+    ASSERT_TRUE(recreated.ok());
+    EXPECT_EQ(
+        recreated.value().load("com.example.counter").status().code(), rodaq::StatusCode::Conflict);
+    EXPECT_FALSE(recreated.value().restart_required());
+    EXPECT_TRUE(recreated.value().shutdown(soon()).ok());
+}
+
+}  // namespace
+
+namespace {
+
+class InitializationSupervision : public PluginRuntimeTest,
+                                  public testing::WithParamInterface<bool> {};
+
+TEST_P(
+    InitializationSupervision, HungNativeInitializationCannotBlockOtherInstanceCloseOrReopenLate) {
+    ASSERT_EQ(mkfifo((control_ / "gate").c_str(), 0600), 0);
+    const bool block_create = GetParam();
+    if (block_create) {
+        ASSERT_EQ(setenv("RODAQ_FIXTURE_CREATE_MODE", "wait", 1), 0);
+        ASSERT_EQ(setenv("RODAQ_FIXTURE_CREATE_GATE", (control_ / "gate").c_str(), 1), 0);
+        ASSERT_EQ(
+            setenv("RODAQ_FIXTURE_CREATE_ENTERED", (control_ / "gate.entered").c_str(), 1), 0);
+    }
+    auto policy = options();
+    policy.search_paths = {root_};
+    policy.max_instances = 2;
+    auto created = plugin::PluginManager::create(std::move(policy));
+    ASSERT_TRUE(created.ok());
+    auto manager = std::move(created).value();
+    auto healthy_library = manager.load("com.example.counter", "1.0.0");
+    ASSERT_TRUE(healthy_library.ok());
+    plugin::ServiceRegistry services;
+    ASSERT_TRUE(services.freeze().ok());
+    auto healthy_result = healthy_library.value().create_instance(services, {});
+    ASSERT_TRUE(healthy_result.ok());
+    auto healthy = std::move(healthy_result).value();
+    auto blocked_library = manager.load("com.example.lifecycle", "1.0.0");
+    ASSERT_TRUE(blocked_library.ok());
+    const auto configuration = config(block_create ? "normal" : "configure_wait");
+    auto initializing = std::async(std::launch::async, [&] {
+        return blocked_library.value().create_instance(services, configuration);
+    });
+    EXPECT_TRUE(entered());
+    const auto limit = std::chrono::steady_clock::now() + 35s;
+    while (!manager.restart_required() && std::chrono::steady_clock::now() < limit) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_EQ(manager.phase(), plugin::PluginManagerPhase::Degraded);
+    // Lifecycle workers may be blocked, but independent close workers still run.
+    EXPECT_TRUE(healthy.close(soon()).ok());
+    ASSERT_EQ(initializing.wait_for(2s), std::future_status::ready);
+    const auto result = initializing.get();
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), rodaq::StatusCode::DeadlineExceeded);
+    EXPECT_EQ(events(), block_create ? "" : "configure\n");
+    // The observer already returned, but actual native work remains owned.
+    EXPECT_TRUE(release());
+    const auto cleaned = std::chrono::steady_clock::now() + 2s;
+    while (events() != "configure\nshutdown\ndestroy\n" &&
+           std::chrono::steady_clock::now() < cleaned) {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(events(), "configure\nshutdown\ndestroy\n");
+    EXPECT_TRUE(manager.restart_required());
+    EXPECT_EQ(manager.shutdown(soon()).status().code(), rodaq::StatusCode::DeadlineExceeded);
+}
+
+INSTANTIATE_TEST_SUITE_P(NativeStages, InitializationSupervision, testing::Bool());
 
 }  // namespace

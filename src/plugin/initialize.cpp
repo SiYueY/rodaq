@@ -66,6 +66,14 @@ void fail_initialization(
         }
         if (owned_native) {
             request_close_locked(*instance);
+        } else if (contract_violation) {
+            // Retain even uninterpretable output in its reserved State. There is
+            // no validated cleanup authority, and dropping the opaque context
+            // would lose native backing before the required process restart.
+            std::lock_guard<std::mutex> state_lock(instance->mutex);
+            instance->phase = PluginInstancePhase::Unresolved;
+            instance->terminal = true;
+            instance->close_result = Status(StatusCode::Internal, {});
         } else {
             manager->instances[instance->slot].reset();
             manager->reserved_instances[instance->slot] = false;

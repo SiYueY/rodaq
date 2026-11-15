@@ -60,8 +60,14 @@ target_include_directories(rodaq_plugin_registry_test PRIVATE ${PROJECT_SOURCE_D
 target_link_libraries(rodaq_plugin_registry_test PRIVATE rodaq::plugin GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_plugin_registry_test)
 gtest_discover_tests(rodaq_plugin_registry_test PROPERTIES TIMEOUT 30)
+add_executable(rodaq_plugin_initialization_test plugin/initialization_test.cpp)
+target_include_directories(rodaq_plugin_initialization_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+target_link_libraries(rodaq_plugin_initialization_test PRIVATE rodaq::plugin GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_plugin_initialization_test)
+gtest_discover_tests(rodaq_plugin_initialization_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_plugin_runtime_test plugin/runtime_test.cpp)
-target_link_libraries(rodaq_plugin_runtime_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
+target_link_libraries(rodaq_plugin_runtime_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 target_compile_definitions(rodaq_plugin_runtime_test PRIVATE
     RODAQ_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/acquisition_provider-0-installed/lib/rodaq/plugins/com.example.acquisition.probe/1.0.0"
     RODAQ_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/storage_provider-0-installed/lib/rodaq/plugins/com.example.storage.probe/1.0.0"
@@ -69,6 +75,34 @@ target_compile_definitions(rodaq_plugin_runtime_test PRIVATE
     RODAQ_COUNTER_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0")
 rodaq_enable_project_warnings(rodaq_plugin_runtime_test)
 gtest_discover_tests(rodaq_plugin_runtime_test PROPERTIES TIMEOUT 40 FIXTURES_REQUIRED counter_sdk)
+
+# Invalid bootstrap fixtures exercise the Loader, never the production SDK registration path.
+add_library(rodaq_loader_fault_provider SHARED plugin/loader_fault_provider.cpp)
+target_include_directories(rodaq_loader_fault_provider PRIVATE ${PROJECT_SOURCE_DIR}/include)
+set_target_properties(rodaq_loader_fault_provider PROPERTIES CXX_VISIBILITY_PRESET hidden)
+rodaq_enable_project_warnings(rodaq_loader_fault_provider)
+foreach(own_version RANGE 0 1)
+    add_library(rodaq_loader_dependency_${own_version} SHARED plugin/loader_dependency_proxy.cpp)
+    target_include_directories(rodaq_loader_dependency_${own_version} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(rodaq_loader_dependency_${own_version} PRIVATE OWN_VERSION=${own_version})
+    target_link_libraries(rodaq_loader_dependency_${own_version} PRIVATE rodaq_loader_fault_provider)
+    set_target_properties(rodaq_loader_dependency_${own_version} PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
+    rodaq_enable_project_warnings(rodaq_loader_dependency_${own_version})
+endforeach()
+add_executable(rodaq_loader_fault_consumer plugin/loader_fault_consumer.cpp)
+target_link_libraries(rodaq_loader_fault_consumer PRIVATE rodaq::plugin)
+rodaq_enable_project_warnings(rodaq_loader_fault_consumer)
+
+# Clang 14 TSan owns strong global new/delete symbols. Allocation-failure
+# injection uses replacements, so run this case in native and ASan/UBSan builds.
+if(NOT RODAQ_SANITIZER STREQUAL "thread")
+    add_executable(rodaq_close_takeover_test plugin/close_takeover_test.cpp)
+    target_link_libraries(rodaq_close_takeover_test PRIVATE rodaq::plugin GTest::gtest_main)
+    target_compile_definitions(rodaq_close_takeover_test PRIVATE
+        RODAQ_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0")
+    rodaq_enable_project_warnings(rodaq_close_takeover_test)
+    gtest_discover_tests(rodaq_close_takeover_test PROPERTIES TIMEOUT 40 FIXTURES_REQUIRED counter_sdk)
+endif()
 
 add_executable(rodaq_acquisition_sdk_test acquisition/sdk_test.cpp)
 target_link_libraries(rodaq_acquisition_sdk_test PRIVATE rodaq::plugin GTest::gtest_main)
@@ -95,6 +129,13 @@ foreach(header IN LISTS abi_headers)
 endforeach()
 
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+add_test(NAME rodaq_loader_bootstrap_rejection
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/loader_fault_test.py
+        --provider $<TARGET_FILE:rodaq_loader_fault_provider>
+        --consumer $<TARGET_FILE:rodaq_loader_fault_consumer>
+        --proxy $<TARGET_FILE:rodaq_loader_dependency_0> --proxy $<TARGET_FILE:rodaq_loader_dependency_1>
+        --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json)
+set_tests_properties(rodaq_loader_bootstrap_rejection PROPERTIES TIMEOUT 120 FIXTURES_REQUIRED counter_sdk)
 string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
 add_custom_target(rodaq_generate_abi_probe
     BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
@@ -125,6 +166,18 @@ add_test(NAME rodaq_counter_binary_matrix
         --sanitizer ${RODAQ_SANITIZER})
 set_tests_properties(rodaq_counter_binary_matrix PROPERTIES FIXTURES_SETUP counter_sdk)
 
+add_test(NAME rodaq_domain_binary_matrix
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_domain_matrix.py
+        --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
+        --compiler ${CMAKE_C_COMPILER} --sanitizer ${RODAQ_SANITIZER})
+
+set_tests_properties(rodaq_domain_binary_matrix PROPERTIES FIXTURES_SETUP domain_sdk)
+add_test(NAME rodaq_runtime_sdk_consumer
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/build_runtime_consumer.py
+        --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
+        --compiler ${CMAKE_CXX_COMPILER} --sanitizer ${RODAQ_SANITIZER})
+set_tests_properties(rodaq_runtime_sdk_consumer PROPERTIES FIXTURES_REQUIRED "counter_sdk;domain_sdk")
+
 add_test(NAME rodaq_package_contract
     COMMAND ${CMAKE_COMMAND}
         -DRODAQ_BUILD_DIR=${PROJECT_BINARY_DIR}
@@ -132,3 +185,16 @@ add_test(NAME rodaq_package_contract
         -DRODAQ_CXX_COMPILER=${CMAKE_CXX_COMPILER}
         -DRODAQ_SANITIZER=${RODAQ_SANITIZER}
         -P ${PROJECT_SOURCE_DIR}/tests/package_contract.cmake)
+
+if(RODAQ_SANITIZER STREQUAL "address-undefined")
+    add_executable(rodaq_provider_lifetime_violation plugin/provider_lifetime_violation.cpp)
+    target_link_libraries(rodaq_provider_lifetime_violation PRIVATE rodaq::plugin)
+    target_compile_options(rodaq_provider_lifetime_violation PRIVATE -UNDEBUG)
+    rodaq_enable_project_warnings(rodaq_provider_lifetime_violation)
+    add_test(NAME rodaq_provider_lifetime_qualification
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/expected_sanitizer_failure.py
+            --binary $<TARGET_FILE:rodaq_provider_lifetime_violation>
+            --report ${PROJECT_BINARY_DIR}/provider-lifetime-report.log)
+    set_tests_properties(rodaq_provider_lifetime_qualification PROPERTIES
+        TIMEOUT 30 ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=1:halt_on_error=1")
+endif()
