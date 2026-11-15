@@ -1,0 +1,367 @@
+#include "service_config.hpp"
+#include "task/create_store.hpp"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <condition_variable>
+#include <csignal>
+#include <cstdlib>
+#include <future>
+#include <mutex>
+#include <poll.h>
+#include <spawn.h>
+#include <string>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
+
+namespace {
+namespace fs = std::filesystem;
+namespace task = rodaq::task;
+using rodaq::StatusCode;
+using namespace std::chrono_literals;
+
+class TaskServiceTest : public testing::Test {
+protected:
+    void SetUp() override {
+        std::array<char, 40> pattern{};
+        const std::string prefix = "/tmp/rodaq-service-XXXXXX";
+        std::copy(prefix.begin(), prefix.end(), pattern.begin());
+        const auto* created = mkdtemp(pattern.data());
+        ASSERT_NE(created, nullptr);
+        root_ = created;
+        ASSERT_TRUE(fs::create_directory(root_ / "state"));
+        ASSERT_TRUE(fs::create_directory(root_ / "packages"));
+        fs::copy(
+            RODAQ_SERVICE_ACQUISITION_PACKAGE, root_ / "packages/acquisition",
+            fs::copy_options::recursive);
+        fs::copy(
+            RODAQ_SERVICE_STORAGE_PACKAGE, root_ / "packages/storage", fs::copy_options::recursive);
+        for (const auto& entry : fs::recursive_directory_iterator(root_ / "packages")) {
+            fs::permissions(entry.path(), fs::perms::owner_read | fs::perms::owner_exec);
+        }
+        fs::permissions(root_ / "packages", fs::perms::owner_read | fs::perms::owner_exec);
+        auto manager = rodaq::test::service_plugins(root_ / "packages");
+        ASSERT_TRUE(manager.ok());
+        manager_ = std::move(manager.value());
+        auto lane = rodaq::ExecutionLane::create(1, 8);
+        ASSERT_TRUE(lane.ok());
+        lane_ = std::move(lane.value());
+        options_ = rodaq::test::service_options(root_ / "state", manager_, lane_);
+        auto config = rodaq::test::service_config();
+        ASSERT_TRUE(config.ok());
+        config_ = std::move(config.value());
+    }
+
+    void TearDown() override {
+        if (lane_) {
+            EXPECT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+        }
+        service_.reset();
+        if (manager_) {
+            EXPECT_TRUE(manager_->shutdown(rodaq::plugin::Deadline::after(2s).value()).ok());
+        }
+        manager_.reset();
+        std::error_code ignored;
+        for (const auto& entry : fs::recursive_directory_iterator(root_, ignored)) {
+            fs::permissions(entry.path(), fs::perms::owner_all, ignored);
+        }
+        fs::remove_all(root_, ignored);
+    }
+
+    void open() {
+        auto service = rodaq::TaskService::open(options_);
+        ASSERT_TRUE(service.ok()) << static_cast<int>(service.status().code());
+        service_ = std::move(service.value());
+    }
+
+    void restart() {
+        service_.reset();
+        ASSERT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+        auto next = rodaq::ExecutionLane::create(1, 8);
+        ASSERT_TRUE(next.ok());
+        lane_ = std::move(next.value());
+        options_.create_lane = lane_;
+        open();
+    }
+
+    std::size_t task_directories() {
+        return static_cast<std::size_t>(
+            std::distance(fs::directory_iterator(root_ / "state/tasks"), fs::directory_iterator{}));
+    }
+
+    fs::path root_;
+    std::shared_ptr<rodaq::plugin::PluginManager> manager_;
+    std::shared_ptr<rodaq::ExecutionLane> lane_;
+    task::ServiceOptions options_;
+    rodaq::TaskConfig config_;
+    std::unique_ptr<rodaq::TaskService> service_;
+};
+
+TEST_F(TaskServiceTest, FormalCreateAssignsStableIdsAndQueriesOnlyPublishedSnapshotsAcrossRestart) {
+    open();
+    ASSERT_TRUE(service_);
+    auto created = service_->create_task(config_, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    auto config = service_->get_active_config(id);
+    ASSERT_TRUE(config.ok());
+    EXPECT_EQ(config.value().pipelines[0].pipeline_id, 1);
+    EXPECT_EQ(config.value().pipelines[0].streams[0].stream_id, 1);
+    auto snapshot = service_->get_task(id);
+    ASSERT_TRUE(snapshot.ok());
+    EXPECT_EQ(snapshot.value().desired_state, rodaq::DesiredState::Stopped);
+    EXPECT_EQ(snapshot.value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(snapshot.value().control_generation, 1);
+    EXPECT_FALSE(snapshot.value().current_operation);
+    auto retry = service_->create_task(config_, {"create"});
+    ASSERT_TRUE(retry.ok());
+    EXPECT_EQ(retry.value(), id);
+    auto changed = config_;
+    changed.name = "changed";
+    EXPECT_EQ(service_->create_task(changed, {"create"}).status().code(), StatusCode::Conflict);
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(task_directories(), 1);
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->create_task(config_, {"create"}).value(), id);
+    EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams[0].stream_id, 1);
+    EXPECT_TRUE(service_->list_operations(id, {}).value().items.empty());
+}
+
+TEST_F(
+    TaskServiceTest, ExactInstalledAllowedPluginRoleAndDeploymentReferencesAreCheckedBeforeClaim) {
+    open();
+    ASSERT_TRUE(service_);
+    auto config = config_;
+    config.pipelines[0].acquisition.plugin_version = "2.0.0";
+    EXPECT_EQ(
+        service_->create_task(config, {"unknown-version"}).status().code(),
+        StatusCode::PermissionDenied);
+    config = config_;
+    std::swap(config.pipelines[0].acquisition, config.pipelines[0].storage);
+    EXPECT_EQ(
+        service_->create_task(config, {"wrong-role"}).status().code(),
+        StatusCode::PermissionDenied);
+    config = config_;
+    config.pipelines[0].output_root = "unmanaged";
+    EXPECT_EQ(
+        service_->create_task(config, {"unknown-volume"}).status().code(),
+        StatusCode::PermissionDenied);
+    EXPECT_EQ(service_->create_task(config_, {" "}).status().code(), StatusCode::InvalidArgument);
+    EXPECT_TRUE(service_->list_tasks({}).value().items.empty());
+    EXPECT_EQ(task_directories(), 0);
+}
+
+TEST_F(TaskServiceTest, ConcurrentSameKeyCreateReturnsOneTaskAndBoundedCapacityStillAllowsRetry) {
+    options_.max_tasks = 1;
+    open();
+    ASSERT_TRUE(service_);
+    auto first =
+        std::async(std::launch::async, [&] { return service_->create_task(config_, {"same"}); });
+    auto second = service_->create_task(config_, {"same"});
+    auto one = first.get();
+    ASSERT_TRUE(one.ok());
+    ASSERT_TRUE(second.ok());
+    EXPECT_EQ(one.value(), second.value());
+    EXPECT_EQ(
+        service_->create_task(config_, {"new-key"}).status().code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(service_->create_task(config_, {"same"}).value(), one.value());
+    EXPECT_EQ(task_directories(), 1);
+}
+
+TEST_F(TaskServiceTest, CompletedCreateRetryPrecedesChangedDeploymentAdmission) {
+    open();
+    ASSERT_TRUE(service_);
+    auto created = service_->create_task(config_, {"original"});
+    ASSERT_TRUE(created.ok());
+    options_.allowed_plugins[0].role = task::AdmissionRole::Storage;
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->create_task(config_, {"original"}).value(), created.value());
+    EXPECT_EQ(
+        service_->create_task(config_, {"new"}).status().code(), StatusCode::PermissionDenied);
+    EXPECT_EQ(task_directories(), 1);
+}
+
+TEST_F(TaskServiceTest, KeysetTaskPagesRemainScopedAndDoNotScanPersistentState) {
+    open();
+    ASSERT_TRUE(service_);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(service_->create_task(config_, {"key-" + std::to_string(i)}).ok());
+    }
+    auto first = service_->list_tasks({{}, 1});
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(first.value().has_more);
+    auto second = service_->list_tasks({first.value().next_cursor, 1});
+    ASSERT_TRUE(second.ok());
+    EXPECT_TRUE(first.value().items[0].task.task_id < second.value().items[0].task.task_id);
+    EXPECT_EQ(
+        service_->list_tasks({"operations:v1:bad", 1}).status().code(),
+        StatusCode::InvalidArgument);
+    // Rename authority directories after admission: queries use immutable memory
+    // projections, rather than trying to prove runtime status through scans.
+    fs::rename(root_ / "state/control", root_ / "state/control-away");
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 3);
+    EXPECT_TRUE(service_->get_task(first.value().items[0].task.task_id).ok());
+    fs::rename(root_ / "state/control-away", root_ / "state/control");
+}
+
+TEST_F(
+    TaskServiceTest,
+    UncertainCompletedReceiptStaysInvisibleUntilActualReconciliationThenRetriesSameTask) {
+    std::atomic<bool> fail{false};
+    options_.materialization_faults = [&](auto step) {
+        if (step == task::MaterializationStep::Control) {
+            fail = true;
+        }
+        return 0;
+    };
+    options_.file_faults = [&](auto domain, auto step) {
+        return fail && domain == task::ServiceFileDomain::CreateReceipts &&
+                       step == rodaq::persistence::FileStep::SyncDirectory
+                   ? EIO
+                   : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_FALSE(service_->create_task(config_, {"create"}).ok());
+    EXPECT_TRUE(service_->list_tasks({}).value().items.empty());
+    EXPECT_EQ(task_directories(), 1);
+    fail = false;
+    auto retried = service_->create_task(config_, {"create"});
+    ASSERT_TRUE(retried.ok());
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(task_directories(), 1);
+}
+
+TEST_F(TaskServiceTest, ObserverTimeoutAndFacadeReleaseRetainActualWorkUntilLaneShutdownCompletes) {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool release = false;
+    options_.request_wait = 5ms;
+    options_.materialization_faults = [&](auto step) {
+        if (step == task::MaterializationStep::Control) {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            condition.notify_all();
+            condition.wait(lock, [&] { return release; });
+        }
+        return 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    auto result = service_->create_task(config_, {"create"});
+    EXPECT_EQ(result.status().code(), StatusCode::DeadlineExceeded);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(condition.wait_for(lock, 2s, [&] { return entered; }));
+    }
+    EXPECT_TRUE(service_->list_tasks({}).value().items.empty());
+    service_.reset();
+    EXPECT_EQ(lane_->snapshot().running, 1);
+    auto duplicate = rodaq::TaskService::open(options_);
+    EXPECT_EQ(duplicate.status().code(), StatusCode::Conflict);
+    EXPECT_EQ(
+        lane_->shutdown(std::chrono::steady_clock::now() + 1ms).status().code(),
+        StatusCode::DeadlineExceeded);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    condition.notify_all();
+    ASSERT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    auto next_lane = rodaq::ExecutionLane::create(1, 8);
+    ASSERT_TRUE(next_lane.ok());
+    lane_ = std::move(next_lane.value());
+    options_.create_lane = lane_;
+    options_.materialization_faults = {};
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_TRUE(service_->create_task(config_, {"create"}).ok());
+}
+
+class ServiceCrashTest : public TaskServiceTest,
+                         public testing::WithParamInterface<task::MaterializationStep> {};
+
+TEST_P(ServiceCrashTest, LiveProcessCrashAtEveryMaterializationBoundaryRetriesOneTaskIdentity) {
+    struct Child {
+        pid_t pid{-1};
+        ~Child() {
+            if (pid > 0) {
+                (void)kill(pid, SIGKILL);
+                int status = 0;
+                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+                }
+            }
+        }
+    } child;
+    int pipe_fds[2];
+    ASSERT_EQ(pipe(pipe_fds), 0);
+    const std::string root = (root_ / "state").string();
+    const std::string packages = (root_ / "packages").string();
+    const auto stage = std::to_string(static_cast<int>(GetParam()));
+    const auto fd = std::to_string(pipe_fds[1]);
+    const char* arguments[] = {RODAQ_SERVICE_CRASH_PROBE,
+                               root.c_str(),
+                               packages.c_str(),
+                               stage.c_str(),
+                               fd.c_str(),
+                               nullptr};
+    const auto spawned = posix_spawn(
+        &child.pid, RODAQ_SERVICE_CRASH_PROBE, nullptr, nullptr,
+        const_cast<char* const*>(arguments), environ);
+    close(pipe_fds[1]);
+    ASSERT_EQ(spawned, 0);
+    pollfd observed{pipe_fds[0], POLLIN, 0};
+    const auto ready = poll(&observed, 1, 5000);
+    char entered = 0;
+    const auto read_count = ready > 0 ? read(pipe_fds[0], &entered, 1) : -1;
+    close(pipe_fds[0]);
+    ASSERT_EQ(read_count, 1);
+    ASSERT_EQ(entered, 'x');
+    ASSERT_EQ(kill(child.pid, 0), 0);
+    ASSERT_EQ(kill(child.pid, SIGKILL), 0);
+    int status = 0;
+    ASSERT_EQ(waitpid(child.pid, &status, 0), child.pid);
+    child.pid = -1;
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(WTERMSIG(status), SIGKILL);
+    std::optional<rodaq::TaskId> original_id;
+    for (const auto& file : fs::directory_iterator(root_ / "state/create")) {
+        if (file.path().extension() == ".json") {
+            std::ifstream input(file.path());
+            auto document = rodaq::persistence::Json::parse(input);
+            original_id =
+                rodaq::parse_task_id(document.at("assigned_task_id").get<std::string>()).value();
+        }
+    }
+    ASSERT_TRUE(original_id);
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(
+        service_->list_tasks({}).value().items.size(),
+        GetParam() == task::MaterializationStep::Completed ? 1U : 0U);
+    auto retried = service_->create_task(config_, {"crash-create"});
+    ASSERT_TRUE(retried.ok());
+    EXPECT_EQ(retried.value(), original_id.value());
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(task_directories(), 1);
+    EXPECT_EQ(service_->create_task(config_, {"crash-create"}).value(), retried.value());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CreateCrashBoundaries, ServiceCrashTest,
+    testing::Values(
+        task::MaterializationStep::Allocated, task::MaterializationStep::Materializing,
+        task::MaterializationStep::Config, task::MaterializationStep::Identity,
+        task::MaterializationStep::Control, task::MaterializationStep::Completed));
+
+}  // namespace

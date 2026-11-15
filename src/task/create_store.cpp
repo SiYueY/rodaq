@@ -457,4 +457,54 @@ Result<void> TaskCreateStore::reconcile() {
     }
 }
 
+Result<std::optional<CreateReceipt>> TaskCreateStore::lookup(
+    std::string_view key_hash, std::string_view digest) {
+    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
+    if (!execution.owns_lock()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (state_->protected_state) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    if (!persistence::valid_digest(key_hash) || !persistence::valid_digest(digest)) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        const auto found = state_->receipts.find(key_hash);
+        if (found == state_->receipts.end()) {
+            return std::optional<CreateReceipt>{};
+        }
+        if (found->second.receipt.request_digest != digest) {
+            return Status(StatusCode::Conflict, {});
+        }
+        auto actual = state_->check_actual(found->first, found->second);
+        if (!actual.ok()) {
+            return actual.status();
+        }
+        return std::optional<CreateReceipt>{found->second.receipt};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::vector<CreateReceipt>> TaskCreateStore::retained_receipts() {
+    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
+    if (!execution.owns_lock()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (state_->protected_state) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    try {
+        std::vector<CreateReceipt> receipts;
+        receipts.reserve(state_->receipts.size());
+        for (const auto& entry : state_->receipts) {
+            receipts.push_back(entry.second.receipt);
+        }
+        return receipts;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 }  // namespace rodaq::task

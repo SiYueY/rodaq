@@ -3,8 +3,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <rodaq/task/types.hpp>
 
@@ -46,10 +48,16 @@ public:
         std::string_view request_key_hash, std::string_view request_digest,
         TaskId candidate_task_id, WallTime created_at);
     Result<void> publish(const CreateReceipt& receipt);
+    Result<std::optional<CreateReceipt>> lookup(
+        std::string_view request_key_hash, std::string_view request_digest);
 
     // Required after any uncertain write. Validate and sync actual authority
     // before admitting more mutations; never infer durability from read alone.
     Result<void> reconcile();
+
+    // Bounded startup projection after actual reconciliation. Half-created
+    // receipts remain excluded from the ordinary Task catalog.
+    Result<std::vector<CreateReceipt>> retained_receipts();
 
 private:
     struct State;

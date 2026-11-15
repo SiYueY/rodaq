@@ -460,4 +460,20 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_recording_instance_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_recording_instance_test)
     gtest_discover_tests(rodaq_recording_instance_test PROPERTIES TIMEOUT 30)
+    add_executable(rodaq_task_service_crash_probe task/service_crash_probe.cpp)
+    target_include_directories(rodaq_task_service_crash_probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(rodaq_task_service_crash_probe PRIVATE rodaq::daq nlohmann_json::nlohmann_json)
+    target_compile_definitions(rodaq_task_service_crash_probe PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
+    rodaq_enable_project_warnings(rodaq_task_service_crash_probe)
+    add_executable(rodaq_task_service_test task/task_service_test.cpp)
+    target_include_directories(rodaq_task_service_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(rodaq_task_service_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json Threads::Threads)
+    target_compile_definitions(rodaq_task_service_test PRIVATE
+        RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json"
+        RODAQ_SERVICE_CRASH_PROBE="$<TARGET_FILE:rodaq_task_service_crash_probe>"
+        RODAQ_SERVICE_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_SERVICE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_task_service_test rodaq_task_service_crash_probe rodaq_fake_storage rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_task_service_test)
+    gtest_discover_tests(rodaq_task_service_test PROPERTIES TIMEOUT 30)
 endif()
