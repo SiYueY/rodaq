@@ -82,7 +82,7 @@ target_sources(rodaq_daq PRIVATE
     src/time/wall_time.cpp)
 target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp
     src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp src/task/config_identity.cpp
-    src/task/recovery_record.cpp src/task/recovery_store.cpp)
+    src/task/recovery_record.cpp src/task/recovery_store.cpp src/task/task_controller.cpp src/task/control_work.cpp)
 target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp
     src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
     src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp
