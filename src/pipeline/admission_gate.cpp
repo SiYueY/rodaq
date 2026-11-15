@@ -91,6 +91,22 @@ Result<AdmissionCommit> AdmissionGate::enter_commit(
     return AdmissionCommit(*this, std::move(lock));
 }
 
+Result<std::unique_lock<std::mutex>> AdmissionGate::enter_segment_cut(
+    InstanceId instance_id, ControlGeneration generation) {
+    if (!valid_ || !(instance_id == instance_id_) ||
+        control_fence_.load(std::memory_order_acquire)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (generation != authority_generation_ || control_fence_.load(std::memory_order_acquire)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (!open_) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    return lock;
+}
+
 Result<void> AdmissionGate::establish_control_fence(InstanceId instance_id) noexcept {
     if (!valid_ || !(instance_id == instance_id_)) {
         return Status(StatusCode::Conflict, {});

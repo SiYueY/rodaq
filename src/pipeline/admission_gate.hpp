@@ -59,6 +59,11 @@ public:
 
     GateOpenResult open_admission(InstanceId instance_id, ControlGeneration generation);
     Result<AdmissionCommit> enter_commit(InstanceId instance_id, ControlGeneration generation);
+    // Rotation takes this same short domain, closes the old Segment and swaps
+    // its writable cursor. No old commit can publish after the cut. Release
+    // before Seal, queue drain, Native calls or I/O; does not fence the instance.
+    Result<std::unique_lock<std::mutex>> enter_segment_cut(
+        InstanceId instance_id, ControlGeneration generation);
 
     // This atomic fence precedes the durable Pause/Stop/cleanup intent. It does
     // not wait for a Native call, filesystem operation, or current Core commit.

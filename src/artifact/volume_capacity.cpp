@@ -133,6 +133,20 @@ Result<void> VolumeReservation::grow(std::uint64_t bytes, std::uint64_t now_mono
     return {};
 }
 
+Result<void> VolumeReservation::release_future(std::uint64_t bytes) {
+    if (!state_) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (bytes > future_) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    future_ -= bytes;
+    state_->counters.future_bytes -= bytes;
+    state_->counters.commit_bytes -= bytes;
+    return {};
+}
+
 Result<void> VolumeReservation::record_usage(
     std::uint64_t actual_bytes, std::uint64_t remaining_future_bytes) {
     if (!state_) {
@@ -165,6 +179,15 @@ Result<void> VolumeReservation::record_usage(
 }
 
 void VolumeReservation::mark_effects_possible() noexcept { effects_possible_ = true; }
+
+void VolumeReservation::invalidate_usage() {
+    if (state_) {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->counters.actual_usage_complete = false;
+        state_->counters.protection = StatusCode::DataLoss;
+        effects_possible_ = true;
+    }
+}
 
 Result<ArtifactCharge> VolumeReservation::settle_retained() {
     if (!state_ || future_ != 0) {

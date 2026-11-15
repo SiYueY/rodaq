@@ -87,9 +87,14 @@ public:
     ~VolumeReservation() noexcept;
 
     Result<void> grow(std::uint64_t future_bytes, std::uint64_t now_monotonic_ns);
+    // Rolls back unused candidate exposure; never releases actual usage.
+    Result<void> release_future(std::uint64_t bytes);
     // Actual growth converts previously reserved exposure; total cannot grow.
     Result<void> record_usage(std::uint64_t actual_bytes, std::uint64_t remaining_future_bytes);
     void mark_effects_possible() noexcept;
+    // Backend exceeded its envelope: aggregate actual usage is no longer a
+    // complete disk fact. Retain all charges and stop further growth.
+    void invalidate_usage();
     // Requires sealed/verified actual bytes, no in-flight native access and no
     // remaining future exposure. Caller owns commit/quarantine business proof.
     Result<ArtifactCharge> settle_retained();

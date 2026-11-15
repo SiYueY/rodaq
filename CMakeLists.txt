@@ -86,7 +86,7 @@ target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/s
     src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
     src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp
     src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp)
-target_sources(rodaq_daq PRIVATE src/artifact/volume_capacity.cpp)
+target_sources(rodaq_daq PRIVATE src/artifact/volume_capacity.cpp src/pipeline/segment_capacity.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin

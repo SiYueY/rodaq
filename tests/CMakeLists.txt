@@ -338,3 +338,9 @@ if(RODAQ_SANITIZER STREQUAL "address-undefined")
     set_tests_properties(rodaq_provider_lifetime_qualification PROPERTIES
         TIMEOUT 30 ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=1:halt_on_error=1")
 endif()
+
+add_executable(rodaq_segment_capacity_test pipeline/segment_capacity_test.cpp)
+target_include_directories(rodaq_segment_capacity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_segment_capacity_test PRIVATE rodaq::daq GTest::gtest_main)
+rodaq_enable_project_warnings(rodaq_segment_capacity_test)
+gtest_discover_tests(rodaq_segment_capacity_test PROPERTIES TIMEOUT 30)
