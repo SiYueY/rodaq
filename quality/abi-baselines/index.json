@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "design_baseline": "S1-20261115-02",
+  "runtime_commit": "18f653b142c1c8e2a277321691553417b691bbdb",
+  "bundle_tool_commit": "a7e1d14",
+  "architecture_evidence": {
+    "amd64": "native Linux Ubuntu22.04 GCC11/Clang14",
+    "arm64": "QEMU user emulation Ubuntu22.04 GCC11/Clang14; no native performance qualification"
+  },
+  "compatibility_directions_per_architecture": 84,
+  "source_dirty_note": "Unrelated untracked .codex-analysis and .codex-automation directories preserved; tracked runtime code committed. Actual fixture source snapshots and compiler flags retained inside bundles.",
+  "archives": {
+    "S1-18f653b-amd64.tar.zst": {
+      "sha256": "745d3d99416de95c158a7e35f41a67c4003accbc8bcf1983a92e9034e25663c4",
+      "bytes": 5330013
+    },
+    "S1-18f653b-arm64.tar.zst": {
+      "sha256": "dbb86537d9e4bc97dc2cbb60807313e6bc61d6b8d042c6b47e018313f068c7ca",
+      "bytes": 8282660
+    }
+  }
+}
