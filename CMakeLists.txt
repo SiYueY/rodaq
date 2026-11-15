@@ -109,6 +109,7 @@ rodaq_enable_project_warnings(rodaq_daq)
 option(RODAQ_BUILD_BEHAVIORAL_FAKES "Build qualification-only fault-injection backends" OFF)
 if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_subdirectory(plugins/fake_storage)
+    add_subdirectory(plugins/fake_acquisition)
 endif()
 
 include(CMakePackageConfigHelpers)

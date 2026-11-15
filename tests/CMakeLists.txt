@@ -422,3 +422,13 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     rodaq_enable_project_warnings(rodaq_pipeline_writer_test)
     gtest_discover_tests(rodaq_pipeline_writer_test PROPERTIES TIMEOUT 30)
 endif()
+
+if(RODAQ_BUILD_BEHAVIORAL_FAKES)
+    add_executable(rodaq_fake_acquisition_test fakes/acquisition_test.cpp)
+    target_link_libraries(rodaq_fake_acquisition_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json Threads::Threads)
+    target_compile_definitions(rodaq_fake_acquisition_test PRIVATE
+        RODAQ_FAKE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_fake_acquisition_test rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_fake_acquisition_test)
+    gtest_discover_tests(rodaq_fake_acquisition_test PROPERTIES TIMEOUT 30)
+endif()
