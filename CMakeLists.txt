@@ -76,6 +76,8 @@ add_library(rodaq_daq SHARED
     src/persistence/strict_json.cpp
     src/persistence/canonical_json.cpp
     src/persistence/digest.cpp)
+target_sources(rodaq_daq PRIVATE
+    src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
