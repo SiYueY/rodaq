@@ -4,6 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -28,6 +31,16 @@ namespace artifact = rodaq::artifact;
 class AdmissionTest : public testing::Test {
 protected:
     void SetUp() override {
+        std::array<char, 48> pattern{};
+        const std::string prefix = "/tmp/rodaq-admission-ledger-XXXXXX";
+        std::copy(prefix.begin(), prefix.end(), pattern.begin());
+        const auto* prepared = mkdtemp(pattern.data());
+        ASSERT_NE(prepared, nullptr);
+        ledger_root_ = prepared;
+        auto ledger =
+            artifact::LedgerStore::open(ledger_root_, artifact::LedgerOpenMode::Initialize, 4);
+        ASSERT_TRUE(ledger.ok());
+        ledger_ = std::move(ledger.value());
         auto volume = artifact::VolumeCapacity::create({1000000, 1000000, 100, 1000, 8, 8, 16});
         ASSERT_TRUE(volume.ok());
         volume_.emplace(std::move(volume.value()));
@@ -48,7 +61,10 @@ protected:
         model.descriptor_expansion_denominator = 1;
         model.fixed_segment_overhead_bytes = 50;
         model.seal_reserve_bytes = 50;
-        auto segment = pipeline::SegmentCapacity::create(7, limits, model, 100, *volume_, 100);
+        auto registration = ledger_->reserve_registration(7);
+        ASSERT_TRUE(registration.ok());
+        auto segment = pipeline::SegmentCapacity::create(
+            7, limits, model, 100, *volume_, std::move(registration.value()), 100);
         ASSERT_TRUE(segment.ok());
         stream_.segment = std::make_shared<pipeline::SegmentCapacity>(std::move(segment.value()));
         auto registry = pipeline::DescriptorRegistry::create({1});
@@ -70,6 +86,13 @@ protected:
         received_.boot_id = 1;
         received_.epoch_id = 1;
         received_.sample = {100, 1000, 1};
+    }
+
+    void TearDown() override {
+        stream_.segment.reset();
+        ledger_.reset();
+        std::error_code ignored;
+        std::filesystem::remove_all(ledger_root_, ignored);
     }
 
     pipeline::DescriptorRef descriptor(std::uint64_t id) {
@@ -123,6 +146,8 @@ protected:
     std::optional<pipeline::AdmissionDomain> domain_;
     rodaq::time::ClockSnapshot received_;
     std::array<std::uint8_t, 4> bytes_{1, 2, 3, 4};
+    std::filesystem::path ledger_root_;
+    std::unique_ptr<artifact::LedgerStore> ledger_;
 };
 
 TEST_F(AdmissionTest, AcceptedRecordOwnsCopyAndRetainsSettlementAfterQueuePop) {

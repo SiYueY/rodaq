@@ -6,6 +6,7 @@
 #include <rodaq/storage/types.hpp>
 
 #include "../artifact/volume_capacity.hpp"
+#include "../artifact/ledger_store.hpp"
 
 namespace rodaq::pipeline {
 
@@ -60,7 +61,7 @@ public:
     static Result<SegmentCapacity> create(
         rodaq_segment_id_t segment_id, storage::PrepareConfig limits, storage::CapacityModel model,
         std::uint64_t core_manifest_bound, artifact::VolumeCapacity& volume,
-        std::uint64_t now_monotonic_ns);
+        artifact::LedgerRegistration registration, std::uint64_t now_monotonic_ns);
     SegmentCapacity(const SegmentCapacity&) = delete;
     SegmentCapacity& operator=(const SegmentCapacity&) = delete;
     SegmentCapacity(SegmentCapacity&&) noexcept = default;
@@ -76,6 +77,8 @@ public:
     // Requires actual Seal return and verified file sizes. Core Manifest bytes
     // have their own pre-reserved bound, outside the Storage file envelope.
     Result<void> finish_seal(std::uint64_t storage_bytes, std::uint64_t core_manifest_bytes);
+    // Move the prepared slot into the actual Commit work frame, once sealed.
+    Result<artifact::LedgerRegistration> take_registration_for_commit();
     Result<artifact::ArtifactCharge> settle_retained();
     Result<void> settle_aborted_after_cleanup();
     SegmentCapacitySnapshot snapshot() const;

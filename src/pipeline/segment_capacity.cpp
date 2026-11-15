@@ -4,6 +4,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <utility>
 
 #include <rodaq/storage/capacity.hpp>
@@ -16,13 +17,18 @@ struct SegmentCapacityState {
     storage::CapacityModel model;
     std::uint64_t manifest_bound;
     artifact::VolumeReservation volume;
+    std::optional<artifact::LedgerRegistration> registration;
     SegmentCapacitySnapshot facts;
     bool settled{false};
 
     SegmentCapacityState(
         storage::PrepareConfig envelope, storage::CapacityModel capacity, std::uint64_t manifest,
-        artifact::VolumeReservation reservation)
-    : limits(envelope), model(capacity), manifest_bound(manifest), volume(std::move(reservation)) {}
+        artifact::VolumeReservation reservation, artifact::LedgerRegistration registration_slot)
+    : limits(envelope),
+      model(capacity),
+      manifest_bound(manifest),
+      volume(std::move(reservation)),
+      registration(std::move(registration_slot)) {}
 
     Status fail_contract() {
         volume.invalidate_usage();
@@ -85,9 +91,10 @@ SegmentCapacity::SegmentCapacity(std::shared_ptr<SegmentCapacityState> state) no
 Result<SegmentCapacity> SegmentCapacity::create(
     rodaq_segment_id_t segment_id, storage::PrepareConfig limits, storage::CapacityModel model,
     std::uint64_t core_manifest_bound, artifact::VolumeCapacity& volume,
-    std::uint64_t now_monotonic_ns) {
+    artifact::LedgerRegistration registration, std::uint64_t now_monotonic_ns) {
     constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
-    if (segment_id == 0 || limits.max_record_bytes == 0 || limits.max_segment_records == 0 ||
+    if (segment_id == 0 || registration.segment_id() != segment_id ||
+        limits.max_record_bytes == 0 || limits.max_segment_records == 0 ||
         limits.max_segment_input_bytes == 0 || limits.max_descriptors_per_segment == 0 ||
         model.payload_expansion_denominator == 0 || model.descriptor_expansion_denominator == 0 ||
         model.fixed_segment_overhead_bytes > limits.max_segment_physical_bytes ||
@@ -105,7 +112,8 @@ Result<SegmentCapacity> SegmentCapacity::create(
     }
     try {
         auto state = std::make_shared<SegmentCapacityState>(
-            limits, model, core_manifest_bound, std::move(reserved.value()));
+            limits, model, core_manifest_bound, std::move(reserved.value()),
+            std::move(registration));
         state->facts.segment_id = segment_id;
         state->facts.storage_bound = model.fixed_segment_overhead_bytes;
         state->facts.accepted_storage_bound = model.fixed_segment_overhead_bytes;
@@ -227,12 +235,25 @@ Result<void> SegmentCapacity::finish_seal(
     return {};
 }
 
+Result<artifact::LedgerRegistration> SegmentCapacity::take_registration_for_commit() {
+    if (!state_) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->facts.sealed || state_->settled || !state_->registration) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    auto registration = std::move(*state_->registration);
+    state_->registration.reset();
+    return registration;
+}
+
 Result<artifact::ArtifactCharge> SegmentCapacity::settle_retained() {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});
     }
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (!state_->facts.sealed || state_->settled) {
+    if (!state_->facts.sealed || state_->settled || state_->registration) {
         return Status(StatusCode::InvalidState, {});
     }
     auto retained = state_->volume.settle_retained();
@@ -252,6 +273,7 @@ Result<void> SegmentCapacity::settle_aborted_after_cleanup() {
     }
     auto cleaned = state_->volume.settle_aborted_after_cleanup();
     if (cleaned.ok()) {
+        state_->registration.reset();
         state_->settled = true;
     }
     return cleaned;

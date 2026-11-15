@@ -139,11 +139,15 @@ struct LedgerStoreState {
 };
 
 LedgerRegistration::LedgerRegistration(
-    std::shared_ptr<LedgerStoreState> state, std::size_t slot, std::uint64_t generation) noexcept
-: state_(std::move(state)), slot_(slot), generation_(generation) {}
+    std::shared_ptr<LedgerStoreState> state, std::size_t slot, std::uint64_t generation,
+    std::uint64_t segment_id) noexcept
+: state_(std::move(state)), slot_(slot), generation_(generation), segment_id_(segment_id) {}
 
 LedgerRegistration::LedgerRegistration(LedgerRegistration&& other) noexcept
-: state_(std::move(other.state_)), slot_(other.slot_), generation_(other.generation_) {}
+: state_(std::move(other.state_)),
+  slot_(other.slot_),
+  generation_(other.generation_),
+  segment_id_(other.segment_id_) {}
 
 LedgerRegistration::~LedgerRegistration() noexcept {
     if (!state_) {
@@ -324,7 +328,7 @@ Result<LedgerRegistration> LedgerStore::reserve_registration(std::uint64_t segme
             slot.phase = SlotPhase::Reserved;
             slot.token_present = true;
             ++state_->slots_in_use;
-            return LedgerRegistration(state_, index, slot.generation);
+            return LedgerRegistration(state_, index, slot.generation, segment_id);
         }
     }
     return Status(StatusCode::ResourceExhausted, {});

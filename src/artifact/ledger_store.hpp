@@ -25,14 +25,17 @@ public:
     LedgerRegistration& operator=(LedgerRegistration&&) = delete;
     ~LedgerRegistration() noexcept;
 
+    std::uint64_t segment_id() const noexcept { return state_ ? segment_id_ : 0; }
+
 private:
     friend class LedgerStore;
     LedgerRegistration(
-        std::shared_ptr<LedgerStoreState> state, std::size_t slot,
-        std::uint64_t generation) noexcept;
+        std::shared_ptr<LedgerStoreState> state, std::size_t slot, std::uint64_t generation,
+        std::uint64_t segment_id) noexcept;
     std::shared_ptr<LedgerStoreState> state_;
     std::size_t slot_;
     std::uint64_t generation_;
+    std::uint64_t segment_id_;
 };
 
 enum class LedgerOpenMode { Initialize, Existing };
