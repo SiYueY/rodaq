@@ -240,6 +240,12 @@ struct PipelineController::State {
 PipelineController::PipelineController(std::shared_ptr<State> state) noexcept
 : state_(std::move(state)) {}
 
+bool PipelineController::matches_configuration(
+    std::string_view config_version, std::string_view effective_config_id) const noexcept {
+    return state_->options.manifest.config_version == config_version &&
+           state_->options.manifest.effective_config_id == effective_config_id;
+}
+
 PipelineController::~PipelineController() noexcept {
     // No destructor performs business quiesce or waits on unknown Native work.
     // Composition must retain failed/timed-out owners until actual settlement.

@@ -1,6 +1,8 @@
 #include "pipeline/pipeline_controller.hpp"
 #include "artifact/segment_committer.hpp"
 #include "task/recovery_store.hpp"
+#include "task/run_authorization.hpp"
+#include "task/task_controller.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -126,6 +128,18 @@ protected:
     }
 
     void TearDown() override {
+        if (second_) {
+            EXPECT_TRUE(second_->establish_control_fence().ok());
+            EXPECT_TRUE(second_->close_admission(8).ok());
+            auto drained = second_->drain(soon());
+            EXPECT_TRUE(drained.ok());
+            if (drained.ok() && drained.value()) {
+                commit(std::move(*drained.value()));
+            }
+            EXPECT_TRUE(second_->cleanup(soon()).ok());
+            EXPECT_TRUE(second_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+            second_.reset();
+        }
         if (controller_) {
             (void)controller_->establish_control_fence();
             (void)controller_->close_admission(8);
@@ -225,8 +239,9 @@ protected:
     }
 
     void commit(pipeline::SealedPipelineSegment sealed) {
+        const auto id = sealed.segment->metadata.segment_id();
         auto files = artifact::SealedFiles::open(
-            volume_, 7, sealed.files, sealed.envelope, sealed.manifest_limits.max_bytes);
+            volume_, id, sealed.files, sealed.envelope, sealed.manifest_limits.max_bytes);
         ASSERT_TRUE(files.ok());
         auto manifest = sealed.segment->metadata.capture_manifest(files.value()->evidence());
         ASSERT_TRUE(manifest.ok());
@@ -244,8 +259,61 @@ protected:
         auto charge = committer.value()->take_committed_charge();
         ASSERT_TRUE(charge.ok());
         charges_.push_back(std::move(charge.value()));
-        ASSERT_TRUE(controller_->acknowledge_artifact(sealed.work_id, 7).ok());
+        const auto& owner = id == 7 ? controller_ : second_;
+        ASSERT_TRUE(owner->acknowledge_artifact(sealed.work_id, id).ok());
         commits_.push_back(std::move(committer.value()));
+    }
+
+    rodaq::task::TaskControlRecord accepted_run() {
+        rodaq::task::TaskControlRecord initial;
+        initial.task_id = options_.identity.task_id;
+        initial.active_config_version = options_.manifest.config_version;
+        initial.control_generation = 6;
+        initial.record_revision = 6;
+        auto owner = rodaq::task::TaskController::create(initial).value();
+        auto decision =
+            owner->request_lifecycle(rodaq::OperationKind::Start, {"run"}, {}, rodaq::WallTime{1s})
+                .value();
+        // Controller-generated valid candidate at the Task Run work boundary.
+        // Formal TaskService durable acceptance is tested separately.
+        return *decision.work->candidate;
+    }
+
+    void second(bool fail_prepare) {
+        auto lane = rodaq::ExecutionLane::create(1, 8);
+        ASSERT_TRUE(lane.ok());
+        second_lane_ = std::move(lane.value());
+        auto options = options_;
+        options.writer_lane = second_lane_;
+        options.identity.pipeline_id = 4;
+        options.definition.pipeline_id = 4;
+        for (std::size_t i = 0; i < options.streams.size(); ++i) {
+            options.streams[i].stream_id += 2;
+            options.definition.streams[i].stream_id += 2;
+        }
+        options.identity.instance_id =
+            pipeline::parse_instance_id("31234567-89ab-4cde-8fab-0123456789ab").value();
+        options.manifest.pipeline_id = 4;
+        options.manifest.instance_id = pipeline::to_string(options.identity.instance_id);
+        options.manifest.segment_id = 8;
+        if (fail_prepare) {
+            options.definition.acquisition.json =
+                R"({"streams":["first","second"],"mode":"fail_prepare"})";
+        }
+        auto actual = pipeline::PipelineController::create(std::move(options));
+        ASSERT_TRUE(actual.ok());
+        second_ = std::move(actual.value());
+    }
+
+    auto recovery(rodaq::persistence::FileFaultHook faults = {}) {
+        return std::shared_ptr<rodaq::task::TaskRecoveryStore>(
+            std::move(rodaq::task::TaskRecoveryStore::open(
+                          root_ / "recovery", options_.identity.task_id, {}, std::move(faults))
+                          .value()));
+    }
+
+    auto boot() {
+        return rodaq::time::parse_boot_identity("11234567-89ab-4cde-8fab-0123456789ab").value();
     }
 
     fs::path root_;
@@ -257,6 +325,8 @@ protected:
     std::shared_ptr<artifact::VolumeCapacity> capacity_;
     std::shared_ptr<artifact::LedgerStore> ledger_;
     std::shared_ptr<pipeline::PipelineController> controller_;
+    std::shared_ptr<pipeline::PipelineController> second_;
+    std::shared_ptr<rodaq::ExecutionLane> second_lane_;
     std::vector<artifact::LedgerRecord> published_;
     std::vector<artifact::ArtifactCharge> charges_;
     std::vector<std::unique_ptr<artifact::SegmentCommitter>> commits_;
@@ -413,6 +483,166 @@ TEST_F(PipelineControllerTest, UnknownTailRetainsStableObligationUntilActualDele
     EXPECT_FALSE(repeated.value());
     EXPECT_TRUE(controller_->snapshot().value().quiescence.settled);
     EXPECT_EQ(capacity_->snapshot().segment_slots, 0);
+}
+
+TEST_F(PipelineControllerTest, TaskAllRequiredBarrierFailureNeverOpensAnyPreparedPipeline) {
+    create();
+    second(true);
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::AllRequired,
+                   {{controller_, options_.manifest.effective_config_id, true},
+                    {second_, options_.manifest.effective_config_id, true}},
+                   recovery(), boot(), &receive_clock)
+                   .value();
+    auto result = run->prepare(soon());
+    ASSERT_TRUE(result.ok());
+    EXPECT_FALSE(result.value().barrier_passed);
+    EXPECT_EQ(result.value().pipelines[0], StatusCode::Ok);
+    EXPECT_NE(result.value().pipelines[1], StatusCode::Ok);
+    EXPECT_FALSE(run->publish_authorization(0).ok());
+    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+    EXPECT_EQ(second_->snapshot().value().records.accepted, 0);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
+TEST_F(PipelineControllerTest, TaskBestEffortPublishesWholeEligibleSetBeforeOpeningReadyPipeline) {
+    create();
+    second(true);
+    auto store = recovery();
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::BestEffort,
+                   {{controller_, options_.manifest.effective_config_id, true},
+                    {second_, options_.manifest.effective_config_id, true}},
+                   store, boot(), &receive_clock)
+                   .value();
+    ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
+    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+    ASSERT_TRUE(run->publish_authorization(0).ok());
+    auto durable = store->load().value();
+    ASSERT_TRUE(durable.run_operation);
+    EXPECT_EQ(durable.run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
+    ASSERT_EQ(durable.run_operation->authorized_pipelines.size(), 1);
+    EXPECT_EQ(durable.run_operation->authorized_pipelines[0].pipeline_id, 3);
+    EXPECT_FALSE(durable.run_operation->authorized_pipelines[0].opened_observed);
+    ASSERT_TRUE(run->open(control).ok());
+    ASSERT_TRUE(wait_written(2));
+    EXPECT_FALSE(second_->snapshot().value().gate.open);
+    EXPECT_EQ(second_->snapshot().value().records.accepted, 0);
+    ASSERT_TRUE(run->fence().ok());
+    EXPECT_FALSE(run->open(control).ok());
+}
+
+TEST_F(PipelineControllerTest, TaskFullAuthorizationAtomicallyContainsBothReadyInstances) {
+    create();
+    second(false);
+    auto store = recovery();
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::AllRequired,
+                   {{controller_, options_.manifest.effective_config_id, true},
+                    {second_, options_.manifest.effective_config_id, true}},
+                   store, boot(), &receive_clock)
+                   .value();
+    ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+    EXPECT_EQ(second_->snapshot().value().records.accepted, 0);
+    ASSERT_TRUE(run->publish_authorization(0).ok());
+    const auto durable = store->load().value();
+    ASSERT_EQ(durable.run_operation->authorized_pipelines.size(), 2);
+    EXPECT_EQ(durable.run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
+    ASSERT_TRUE(run->open(control).ok());
+    EXPECT_TRUE(controller_->snapshot().value().gate.open);
+    EXPECT_TRUE(second_->snapshot().value().gate.open);
+    ASSERT_TRUE(wait_written(1));
+    ASSERT_TRUE(run->fence().ok());
+}
+
+TEST_F(PipelineControllerTest, TaskRunRejectsWrongOperationAndLateOpenAfterActualAuthorization) {
+    create();
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::AllRequired,
+                   {{controller_, options_.manifest.effective_config_id, true}}, recovery(), boot(),
+                   &receive_clock)
+                   .value();
+    ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
+    ASSERT_TRUE(run->publish_authorization(0).ok());
+    auto stale = control;
+    stale.current_operation_id->value[0] ^= 1;
+    EXPECT_FALSE(run->open(stale).ok());
+    EXPECT_FALSE(controller_->snapshot().value().gate.open);
+    ASSERT_TRUE(run->fence().ok());
+    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+}
+
+TEST_F(PipelineControllerTest, UncertainRecoveryAuthorizationCannotGrantGatePermission) {
+    create();
+    bool armed = false;
+    unsigned publications = 0;
+    auto store = recovery([&](auto step) {
+        return armed && step == rodaq::persistence::FileStep::SyncDirectory && ++publications == 2
+                   ? EIO
+                   : 0;
+    });
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::AllRequired,
+                   {{controller_, options_.manifest.effective_config_id, true}}, store, boot(),
+                   &receive_clock)
+                   .value();
+    ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
+    armed = true;
+    EXPECT_FALSE(run->publish_authorization(0).ok());
+    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+}
+
+TEST_F(PipelineControllerTest, FenceDuringActualAuthorizationPublishDefeatsLateSuccessfulReturn) {
+    create();
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool armed = false;
+    bool entered = false;
+    bool released = false;
+    unsigned publications = 0;
+    auto store = recovery([&](auto step) {
+        if (armed && step == rodaq::persistence::FileStep::SyncFile && ++publications == 2) {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            changed.notify_all();
+            changed.wait(lock, [&] { return released; });
+        }
+        return 0;
+    });
+    auto control = accepted_run();
+    auto run = rodaq::task::RunAuthorization::create(
+                   control, rodaq::StartPolicyMode::AllRequired,
+                   {{controller_, options_.manifest.effective_config_id, true}}, store, boot(),
+                   &receive_clock)
+                   .value();
+    ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
+    armed = true;
+    auto actual = std::async(std::launch::async, [&] { return run->publish_authorization(0); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(changed.wait_for(lock, 2s, [&] { return entered; }));
+    }
+    EXPECT_FALSE(controller_->snapshot().value().gate.open);
+    EXPECT_TRUE(run->fence().ok());
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        released = true;
+    }
+    changed.notify_all();
+    EXPECT_FALSE(actual.get().ok());
+    EXPECT_EQ(store->load().value().run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
+    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
 }
 
 }  // namespace

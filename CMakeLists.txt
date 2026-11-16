@@ -79,6 +79,7 @@ add_library(rodaq_daq SHARED
     src/persistence/canonical_json.cpp
     src/persistence/digest.cpp)
 target_sources(rodaq_daq PRIVATE
+    src/task/run_authorization.cpp
     src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp
     src/time/wall_time.cpp)
 target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp

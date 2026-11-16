@@ -121,6 +121,8 @@ public:
     Result<void> acknowledge_deleted(std::uint64_t work_id, std::uint64_t segment_id);
     Result<PipelineSnapshot> snapshot() const;
     Result<CallbackFacts> callback_facts() const;
+    bool matches_configuration(
+        std::string_view config_version, std::string_view effective_config_id) const noexcept;
 
 private:
     struct WriterDomain;
