@@ -3,6 +3,9 @@
 #include "task/recovery_store.hpp"
 #include "task/run_authorization.hpp"
 #include "task/task_controller.hpp"
+#include "task/task_service.hpp"
+#include "artifact/segment_id_store.hpp"
+#include "persistence/json.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -128,6 +131,9 @@ protected:
     }
 
     void TearDown() override {
+        for (const auto& lane : service_lanes_) {
+            EXPECT_TRUE(lane->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+        }
         if (second_) {
             EXPECT_TRUE(second_->establish_control_fence().ok());
             EXPECT_TRUE(second_->close_admission(8).ok());
@@ -171,6 +177,7 @@ protected:
         }
         EXPECT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
         controller_.reset();
+        service_.reset();
         EXPECT_TRUE(manager_->shutdown(soon()).ok());
         manager_.reset();
         std::error_code error;
@@ -238,30 +245,175 @@ protected:
         return false;
     }
 
-    void commit(pipeline::SealedPipelineSegment sealed) {
+    rodaq::Result<void> artifact_commit(const pipeline::SealedPipelineSegment& sealed) {
         const auto id = sealed.segment->metadata.segment_id();
         auto files = artifact::SealedFiles::open(
             volume_, id, sealed.files, sealed.envelope, sealed.manifest_limits.max_bytes);
-        ASSERT_TRUE(files.ok());
+        if (!files.ok()) {
+            return files.status();
+        }
         auto manifest = sealed.segment->metadata.capture_manifest(files.value()->evidence());
-        ASSERT_TRUE(manifest.ok());
+        if (!manifest.ok()) {
+            return manifest.status();
+        }
         auto reservation = sealed.segment->capacity.handoff_sealed(files.value()->storage_bytes());
-        ASSERT_TRUE(reservation.ok());
+        if (!reservation.ok()) {
+            return reservation.status();
+        }
         auto committer = artifact::SegmentCommitter::create(
             std::move(files.value()), std::move(manifest.value()), sealed.manifest_limits,
             std::move(reservation.value()));
-        ASSERT_TRUE(committer.ok());
-        ASSERT_TRUE(committer.value()->commit(*ledger_).ok());
+        if (!committer.ok()) {
+            return committer.status();
+        }
+        auto actual = committer.value()->commit(*ledger_);
+        if (!actual.ok()) {
+            commits_.push_back(std::move(committer.value()));
+            return actual.status();
+        }
         // Component Artifact sink: publish verified Ledger facts into the
         // test's bounded projection, then actually transfer the retained charge.
         // Production ArtifactService/query/lease integration remains separate.
         published_.push_back(committer.value()->ledger_record());
         auto charge = committer.value()->take_committed_charge();
-        ASSERT_TRUE(charge.ok());
+        if (!charge.ok()) {
+            commits_.push_back(std::move(committer.value()));
+            return charge.status();
+        }
         charges_.push_back(std::move(charge.value()));
-        const auto& owner = id == 7 ? controller_ : second_;
-        ASSERT_TRUE(owner->acknowledge_artifact(sealed.work_id, id).ok());
         commits_.push_back(std::move(committer.value()));
+        return {};
+    }
+
+    void commit(pipeline::SealedPipelineSegment sealed) {
+        ASSERT_TRUE(artifact_commit(sealed).ok());
+        const auto id = sealed.segment->metadata.segment_id();
+        const auto& owner = second_ && id == 8 ? second_ : controller_;
+        ASSERT_TRUE(owner->acknowledge_artifact(sealed.work_id, id).ok());
+    }
+
+    void open_service(
+        std::function<int(rodaq::task::ServiceFileDomain, rodaq::persistence::FileStep)> faults =
+            {},
+        std::chrono::nanoseconds request_wait = 30s) {
+        fs::create_directory(root_ / "service");
+        fs::create_directory(root_ / "segment-ids");
+        auto ids = artifact::SegmentIdStore::open(
+            root_ / "segment-ids", artifact::SegmentIdOpenMode::NewDeployment);
+        ASSERT_TRUE(ids.ok());
+        segment_ids_ = std::move(ids.value());
+        // Actual scheduling domains, independently drainable from the Writer.
+        for (unsigned i = 0; i < 4; ++i) {
+            auto lane = rodaq::ExecutionLane::create(1, 8);
+            ASSERT_TRUE(lane.ok());
+            service_lanes_.push_back(std::move(lane.value()));
+        }
+        rodaq::task::ServiceOptions options;
+        options.root = root_ / "service";
+        options.plugin_manager = manager_;
+        options.file_faults = std::move(faults);
+        options.request_wait = request_wait;
+        options.max_tasks = 1;
+        options.create_lane = service_lanes_[2];
+        options.control_lane = service_lanes_[3];
+        options.resource_profiles = {"basic"};
+        options.output_roots = {"local"};
+        options.allowed_plugins = {
+            {"rodaq.fake.acquisition", "1.0.0", rodaq::task::AdmissionRole::Acquisition},
+            {"rodaq.fake.storage", "1.0.0", rodaq::task::AdmissionRole::Storage}};
+        auto execution = std::make_shared<rodaq::task::RunExecutionOptions>();
+        execution->preparation_lane = service_lanes_[0];
+        execution->cleanup_lane = service_lanes_[1];
+        execution->resolve = [this](
+                                 const auto& control, const auto& config,
+                                 auto& identities) -> rodaq::Result<rodaq::task::RunInputs> {
+            auto selected = options_;
+            selected.definition = config.pipelines[0];
+            selected.identity = {
+                control.task_id, selected.definition.pipeline_id,
+                pipeline::new_instance_id().value(), control.control_generation};
+            selected.streams.clear();
+            for (const auto& stream : selected.definition.streams) {
+                auto records = identities.reserve(stream.stream_id, 1000);
+                if (!records.ok()) {
+                    return records.status();
+                }
+                auto descriptors = identities.reserve_descriptors(stream.stream_id, 1000);
+                if (!descriptors.ok()) {
+                    return descriptors.status();
+                }
+                selected.streams.push_back(
+                    {stream.stream_id, stream.stream_key, 8, records.value(), descriptors.value()});
+            }
+            auto segment = segment_ids_->reserve(1);
+            if (!segment.ok()) {
+                return segment.status();
+            }
+            selected.manifest.task_id = control.task_id;
+            selected.manifest.pipeline_id = selected.identity.pipeline_id;
+            selected.manifest.instance_id = pipeline::to_string(selected.identity.instance_id);
+            selected.manifest.control_generation = control.control_generation;
+            selected.manifest.reset_generation_at_commit = control.reset_generation;
+            selected.manifest.segment_id = segment.value().begin;
+            selected.manifest.config_version = control.active_config_version;
+            // This resolver is a component Deployment seam; production effective
+            // configuration resolution remains part of DAQ composition.
+            selected.manifest.effective_config_id =
+                rodaq::persistence::semantic_digest(
+                    {{"config_version", control.active_config_version},
+                     {"profile", "behavioral-fake.v1"},
+                     {"volume_id", artifact::to_string(volume_->identity())}},
+                    "rodaq.effective-config.v1")
+                    .value();
+            const auto effective = selected.manifest.effective_config_id;
+            auto controller = pipeline::PipelineController::create(std::move(selected));
+            if (!controller.ok()) {
+                return controller.status();
+            }
+            {
+                std::lock_guard<std::mutex> registered(resolved_mutex_);
+                controller_ = controller.value();
+                resolved_ = true;
+                resolved_changed_.notify_all();
+            }
+            return rodaq::task::RunInputs{
+                {{std::move(controller.value()), effective, config.pipelines[0].required}},
+                boot(),
+                &receive_clock,
+                0};
+        };
+        execution->commit = [this](const auto& sealed) { return artifact_commit(sealed); };
+        options.execution = std::move(execution);
+        auto service = rodaq::TaskService::open(std::move(options));
+        ASSERT_TRUE(service.ok());
+        service_ = std::move(service.value());
+    }
+
+    bool wait_operation(rodaq::TaskId task, rodaq::OperationId operation) {
+        const auto end = std::chrono::steady_clock::now() + 3s;
+        do {
+            auto actual = service_->get_operation(task, operation);
+            if (actual.ok() && rodaq::task::terminal(actual.value().state)) {
+                return actual.value().state == rodaq::OperationState::Succeeded;
+            }
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < end);
+        return false;
+    }
+
+    rodaq::TaskConfig formal_config() {
+        rodaq::TaskConfig config;
+        config.name = "formal-lifecycle";
+        config.segment_policy.max_duration = 60s;
+        auto definition = options_.definition;
+        definition.pipeline_id = 0;
+        definition.resource_profile = "basic";
+        definition.output_root = "local";
+        for (auto& stream : definition.streams) {
+            stream.stream_id = 0;
+        }
+        config.pipelines.push_back(std::move(definition));
+        return config;
     }
 
     rodaq::task::TaskControlRecord accepted_run() {
@@ -272,7 +424,9 @@ protected:
         initial.record_revision = 6;
         auto owner = rodaq::task::TaskController::create(initial).value();
         auto decision =
-            owner->request_lifecycle(rodaq::OperationKind::Start, {"run"}, {}, rodaq::WallTime{1s})
+            owner
+                ->request_lifecycle(
+                    rodaq::OperationKind::Start, {"run"}, {}, rodaq::WallTime{1s}, {true, true})
                 .value();
         // Controller-generated valid candidate at the Task Run work boundary.
         // Formal TaskService durable acceptance is tested separately.
@@ -312,7 +466,7 @@ protected:
                           .value()));
     }
 
-    auto boot() {
+    rodaq::time::BootIdentity boot() {
         return rodaq::time::parse_boot_identity("11234567-89ab-4cde-8fab-0123456789ab").value();
     }
 
@@ -330,6 +484,12 @@ protected:
     std::vector<artifact::LedgerRecord> published_;
     std::vector<artifact::ArtifactCharge> charges_;
     std::vector<std::unique_ptr<artifact::SegmentCommitter>> commits_;
+    std::unique_ptr<artifact::SegmentIdStore> segment_ids_;
+    std::vector<std::shared_ptr<rodaq::ExecutionLane>> service_lanes_;
+    std::unique_ptr<rodaq::TaskService> service_;
+    std::mutex resolved_mutex_;
+    std::condition_variable resolved_changed_;
+    bool resolved_{false};
 };
 
 TEST_F(
@@ -643,6 +803,245 @@ TEST_F(PipelineControllerTest, FenceDuringActualAuthorizationPublishDefeatsLateS
     EXPECT_EQ(store->load().value().run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
     EXPECT_FALSE(run->open(control).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+}
+
+TEST_F(
+    PipelineControllerTest, FormalTaskServiceStartPauseResumeStopUsesDurableControlAndRealFiles) {
+    open_service();
+    ASSERT_TRUE(service_);
+    auto config = formal_config();
+    auto created = service_->create_task(config, {"create"});
+    ASSERT_TRUE(created.ok()) << static_cast<int>(created.status().code());
+    auto id = created.value();
+    auto started = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(started.ok());
+    ASSERT_TRUE(wait_operation(id, started.value()));
+    EXPECT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Active);
+    ASSERT_TRUE(wait_written(4));
+    const auto first_instance = controller_->snapshot().value().identity.instance_id;
+    auto paused = service_->pause(id, {"pause"}, {true, 2});
+    ASSERT_TRUE(paused.ok());
+    ASSERT_TRUE(wait_operation(id, paused.value()));
+    EXPECT_EQ(service_->get_task(id).value().desired_state, rodaq::DesiredState::Paused);
+    EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    ASSERT_EQ(published_.size(), 1);
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "1/manifest.json"));
+    auto resumed = service_->resume(id, {"resume"}, {true, 3});
+    ASSERT_TRUE(resumed.ok());
+    ASSERT_TRUE(wait_operation(id, resumed.value()));
+    EXPECT_FALSE(controller_->snapshot().value().identity.instance_id == first_instance);
+    ASSERT_TRUE(wait_written(3));
+    auto stopped = service_->stop(id, {"stop"}, {true, 4});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_operation(id, stopped.value()));
+    EXPECT_EQ(service_->get_task(id).value().desired_state, rodaq::DesiredState::Stopped);
+    EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 5);
+    ASSERT_EQ(published_.size(), 2);
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "2/manifest.json"));
+    EXPECT_EQ(service_->start(id, {"start"}, {true, 1}).value(), started.value());
+    EXPECT_EQ(service_->stop(id, {"stop"}, {true, 4}).value(), stopped.value());
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 4);
+}
+
+TEST_F(PipelineControllerTest, FormalStopDuringPreparationPreventsOldRunFromOpeningAfterReturn) {
+    options_.definition.acquisition.json =
+        R"({"streams":["first","second"],"mode":"late_start","delay_ms":100})";
+    open_service();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto started = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(started.ok());
+    {
+        std::unique_lock<std::mutex> registered(resolved_mutex_);
+        ASSERT_TRUE(resolved_changed_.wait_for(registered, 2s, [&] { return resolved_; }));
+    }
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    while (controller_->snapshot().value().quiescence.control_inflight == 0 &&
+           std::chrono::steady_clock::now() < end) {
+        std::this_thread::yield();
+    }
+    ASSERT_GT(controller_->snapshot().value().quiescence.control_inflight, 0);
+    auto stopped = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_operation(id, stopped.value()));
+    EXPECT_EQ(
+        service_->get_operation(id, started.value()).value().state,
+        rodaq::OperationState::Superseded);
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+    EXPECT_TRUE(controller_->snapshot().value().quiescence.settled);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+    EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(service_->stop(id, {"stop"}, {true, 2}).value(), stopped.value());
+}
+
+TEST_F(PipelineControllerTest, FormalFailedPreparationCleansOwnersAndPreservesRunningIntent) {
+    options_.definition.acquisition.json =
+        R"({"streams":["first","second"],"mode":"fail_prepare"})";
+    open_service();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto started = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(started.ok());
+    EXPECT_FALSE(wait_operation(id, started.value()));
+    EXPECT_EQ(
+        service_->get_operation(id, started.value()).value().state, rodaq::OperationState::Failed);
+    EXPECT_EQ(service_->get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(
+        service_->get_operation(id, started.value()).value().data_impact,
+        rodaq::DataImpact::PreAdmissionOnly);
+    ASSERT_TRUE(controller_);
+    EXPECT_TRUE(controller_->snapshot().value().quiescence.settled);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+    auto stopped = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_operation(id, stopped.value()));
+    EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+}
+
+TEST_F(
+    PipelineControllerTest, FormalRunStatusRetryReusesActualInstanceAfterTerminalPublishFailure) {
+    auto armed = std::make_shared<std::atomic<bool>>(false);
+    auto writes = std::make_shared<std::atomic<unsigned>>(0);
+    auto failed = std::make_shared<std::atomic<bool>>(false);
+    open_service([armed, writes, failed](auto domain, auto step) {
+        if (*armed && domain == rodaq::task::ServiceFileDomain::Task &&
+            step == rodaq::persistence::FileStep::SyncFile && ++*writes == 2) {
+            *failed = true;
+            return EIO;
+        }
+        return 0;
+    });
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    *armed = true;
+    auto started = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(started.ok());
+    const auto end = std::chrono::steady_clock::now() + 3s;
+    while ((!*failed || service_->get_task(id).value().execution_condition !=
+                            rodaq::ExecutionCondition::Protected) &&
+           std::chrono::steady_clock::now() < end) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(*failed);
+    ASSERT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    const auto instance = controller_->snapshot().value().identity.instance_id;
+    EXPECT_EQ(service_->start(id, {"start"}, {true, 1}).value(), started.value());
+    ASSERT_TRUE(wait_operation(id, started.value()));
+    EXPECT_EQ(controller_->snapshot().value().identity.instance_id, instance);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    auto stopped = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_operation(id, stopped.value()));
+}
+
+TEST_F(PipelineControllerTest, FormalStopReconcilesUnknownStartAfterObserverTimeout) {
+    struct Publication {
+        std::atomic<bool> armed{false};
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered{false};
+        bool released{false};
+        std::atomic<bool> reject_directory{false};
+        std::atomic<bool> directory_failed{false};
+    };
+    auto publication = std::make_shared<Publication>();
+    open_service(
+        [publication](auto domain, auto step) {
+            if (domain == rodaq::task::ServiceFileDomain::Task &&
+                step == rodaq::persistence::FileStep::SyncFile &&
+                publication->armed.exchange(false)) {
+                std::unique_lock<std::mutex> lock(publication->mutex);
+                publication->entered = true;
+                publication->changed.notify_all();
+                publication->changed.wait(lock, [&] { return publication->released; });
+            }
+            if (domain == rodaq::task::ServiceFileDomain::Task &&
+                step == rodaq::persistence::FileStep::SyncDirectory &&
+                publication->reject_directory) {
+                publication->directory_failed = true;
+                return EIO;
+            }
+            return 0;
+        },
+        20ms);
+    ASSERT_TRUE(service_);
+    auto created = service_->create_task(formal_config(), {"create"});
+    const auto create_deadline = std::chrono::steady_clock::now() + 2s;
+    while (!created.ok() && std::chrono::steady_clock::now() < create_deadline &&
+           (created.status().code() == StatusCode::DeadlineExceeded ||
+            created.status().code() == StatusCode::ResourceExhausted)) {
+        created = service_->create_task(formal_config(), {"create"});
+    }
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    publication->armed = true;
+    publication->reject_directory = true;
+    auto starting = std::async(std::launch::async, [&] {
+        return service_->start(id, {"start"}, {true, 1});
+    });
+    {
+        std::unique_lock<std::mutex> lock(publication->mutex);
+        EXPECT_TRUE(publication->changed.wait_for(lock, 2s, [&] { return publication->entered; }));
+    }
+    // Returned timeout proves Stop reached its pending-reply path while the
+    // old actual publication was still blocked, without relying on a sleep.
+    auto observed = service_->stop(id, {"stop"}, {true, 1});
+    EXPECT_FALSE(observed.ok());
+    EXPECT_EQ(observed.status().code(), StatusCode::DeadlineExceeded);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 1);
+    EXPECT_FALSE(controller_);
+    {
+        std::lock_guard<std::mutex> lock(publication->mutex);
+        publication->released = true;
+    }
+    publication->changed.notify_all();
+    EXPECT_EQ(starting.get().status().code(), StatusCode::DeadlineExceeded);
+    const auto protected_deadline = std::chrono::steady_clock::now() + 3s;
+    while ((!publication->directory_failed || service_->get_task(id).value().execution_condition !=
+                                                  rodaq::ExecutionCondition::Protected) &&
+           std::chrono::steady_clock::now() < protected_deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(publication->directory_failed);
+    ASSERT_EQ(
+        service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    publication->reject_directory = false;
+    auto retried = service_->stop(id, {"stop"}, {true, 1});
+    const auto retry_deadline = std::chrono::steady_clock::now() + 3s;
+    while (!retried.ok() && retried.status().code() == StatusCode::DeadlineExceeded &&
+           std::chrono::steady_clock::now() < retry_deadline) {
+        retried = service_->stop(id, {"stop"}, {true, 1});
+    }
+    ASSERT_TRUE(retried.ok());
+    const auto end = std::chrono::steady_clock::now() + 3s;
+    auto snapshot = service_->get_task(id).value();
+    while ((!snapshot.current_operation ||
+            snapshot.current_operation->state != rodaq::OperationState::Succeeded) &&
+           std::chrono::steady_clock::now() < end) {
+        std::this_thread::yield();
+        snapshot = service_->get_task(id).value();
+    }
+    ASSERT_TRUE(snapshot.current_operation);
+    EXPECT_EQ(snapshot.current_operation->kind, rodaq::OperationKind::Stop);
+    EXPECT_EQ(snapshot.current_operation->state, rodaq::OperationState::Succeeded);
+    EXPECT_EQ(snapshot.control_generation, 3);
+    EXPECT_EQ(
+        service_->stop(id, {"stop"}, {true, 1}).value(), snapshot.current_operation->operation_id);
+    auto history = service_->list_operations(id, {}).value();
+    ASSERT_EQ(history.items.size(), 2);
+    const auto original = std::find_if(
+        history.items.begin(), history.items.end(),
+        [](const auto& op) { return op.kind == rodaq::OperationKind::Start; });
+    ASSERT_NE(original, history.items.end());
+    EXPECT_EQ(original->state, rodaq::OperationState::Superseded);
+    EXPECT_EQ(service_->start(id, {"start"}, {true, 1}).value(), original->operation_id);
+    EXPECT_FALSE(controller_);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
 }
 
 }  // namespace

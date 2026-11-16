@@ -53,6 +53,14 @@ public:
     Result<OperationId> configure(
         TaskId task_id, const TaskConfig& config, const RequestIdentity& request,
         const ControlPrecondition& precondition);
+    Result<OperationId> start(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
+    Result<OperationId> pause(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
+    Result<OperationId> resume(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
+    Result<OperationId> stop(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
 
     Result<TaskSnapshot> get_task(TaskId task_id) const;
     Result<TaskConfig> get_active_config(TaskId task_id) const;
@@ -63,6 +71,9 @@ public:
 private:
     struct State;
     explicit TaskService(std::shared_ptr<State> state) noexcept;
+    Result<OperationId> lifecycle(
+        TaskId task_id, OperationKind kind, const RequestIdentity& request,
+        const ControlPrecondition& precondition);
     std::shared_ptr<State> state_;
 };
 

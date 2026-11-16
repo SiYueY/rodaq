@@ -31,6 +31,11 @@ struct ConfigureFacts {
     bool deployment_allowed{false};
 };
 
+struct LifecycleFacts {
+    bool quiescent{false};
+    bool execution_available{false};
+};
+
 // Immutable frame retained by the persistence worker until actual return.
 // Observation timeout never calls persistence_completed or releases this frame.
 struct ControlWork {
@@ -100,7 +105,7 @@ public:
 
     Result<ControlDecision> request_lifecycle(
         OperationKind kind, const RequestIdentity& request, const ControlPrecondition& precondition,
-        WallTime now);
+        WallTime now, const LifecycleFacts& facts);
     Result<ControlDecision> request_configure(
         const TaskConfig& config, const RequestIdentity& request,
         const ControlPrecondition& precondition, WallTime now, const ConfigureFacts& facts,

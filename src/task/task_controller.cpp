@@ -155,7 +155,7 @@ Result<std::shared_ptr<const ControlWork>> TaskController::make_intent(
 
 Result<ControlDecision> TaskController::request_lifecycle(
     OperationKind kind, const RequestIdentity& request, const ControlPrecondition& precondition,
-    WallTime now) {
+    WallTime now, const LifecycleFacts& facts) {
     if (!lifecycle(kind)) {
         return Status(StatusCode::InvalidArgument, {});
     }
@@ -181,7 +181,9 @@ Result<ControlDecision> TaskController::request_lifecycle(
         precondition.expected_control_generation != durable_->control_generation) {
         return Status(StatusCode::Conflict, {});
     }
-    if (durable_->reset_intent || (protected_ && kind != OperationKind::Stop)) {
+    if (!facts.execution_available ||
+        ((kind == OperationKind::Start || kind == OperationKind::Resume) && !facts.quiescent) ||
+        durable_->reset_intent || (protected_ && kind != OperationKind::Stop)) {
         return Status(StatusCode::InvalidState, {});
     }
     if ((flight_ || stop_) && kind != OperationKind::Stop) {

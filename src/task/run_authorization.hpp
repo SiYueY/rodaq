@@ -33,6 +33,9 @@ public:
         time::BootIdentity boot, pipeline::ReceiveClock sample = &time::sample_clocks);
 
     Result<RunPrepareResult> prepare(plugin::Deadline deadline);
+    // Actual Recovery execution, before interpreting the Prepare Barrier.
+    // Also records successful preparations when a Required peer failed.
+    Result<void> checkpoint_prepared();
     // Exact full-set publication; an uncertain write never grants permission.
     Result<void> publish_authorization(std::uint64_t recording_base);
     // Caller supplies its actual current durable Control on the serial control
@@ -54,6 +57,7 @@ private:
     std::shared_ptr<TaskRecoveryStore> recovery_;
     time::BootIdentity boot_;
     pipeline::ReceiveClock sample_{nullptr};
+    std::optional<TaskRecoveryRecord> prepared_record_;
     std::mutex opening_;
     bool fenced_{false};
     bool prepare_attempted_{false};

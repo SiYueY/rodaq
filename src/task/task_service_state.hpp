@@ -60,6 +60,28 @@ struct PublishedTask {
     std::shared_ptr<const TaskConfig> config;
 };
 
+struct RunExecution {
+    std::mutex registration;
+    std::condition_variable returned;
+    bool fenced{false};
+    bool preparation_returned{false};
+    bool preparing{true};
+    bool draining{false};
+    bool result_ready{false};
+    bool result_partial{false};
+    DataImpact result_impact{DataImpact::None};
+    std::shared_ptr<RunAuthorization> authorization;
+    std::vector<RunPipeline> pipelines;
+    time::BootIdentity boot;
+    pipeline::ReceiveClock sample{&time::sample_clocks};
+    std::shared_ptr<const TaskControlRecord> control;
+    std::shared_ptr<const TaskConfig> config;
+    StatusCode failure{StatusCode::Ok};
+
+    void fence() noexcept;
+    ExecutionCondition condition(DesiredState desired);
+};
+
 struct TaskEntry {
     TaskId id;
     std::mutex control_mutex;
@@ -67,13 +89,21 @@ struct TaskEntry {
     std::unique_ptr<pipeline::StreamIdentityStore> identities;
     pipeline::StreamIdentityState identity;
     std::unique_ptr<task::TaskController> controller;
+    std::shared_ptr<TaskRecoveryStore> recovery;
+    // Serializes actual Recovery I/O only, never taken by Task control/Open.
+    std::mutex recovery_execution;
+    std::shared_ptr<RunExecution> execution;
     std::shared_ptr<const PublishedTask> published;
     bool quiescent{false};
     bool persisting{false};
     // Failed dispatch only; an actual ended result is replayed, never re-issued.
     bool ready_to_submit{false};
+    std::uint32_t closing{0};
+    std::optional<OperationId> closed_acceptance;
     std::shared_ptr<const task::ControlWork> control_work;
     std::shared_ptr<Reply<OperationId>> operation_reply;
+    std::optional<OperationId> stop_id;
+    std::shared_ptr<Reply<OperationId>> stop_reply;
     std::optional<task::ControlWorkResult> pending_result;
 };
 
@@ -87,7 +117,7 @@ std::optional<OperationSnapshot> completed_configuration(const TaskControlRecord
 
 namespace rodaq {
 
-struct TaskService::State {
+struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
     std::shared_ptr<const task::ServiceOptions> options;
     std::vector<plugin::PluginInfo> installed;
     std::unique_ptr<task::TaskCreateStore> creates;
@@ -106,6 +136,18 @@ struct TaskService::State {
     Result<std::shared_ptr<task::TaskEntry>> materialize(
         TaskId id, const task::AssignedConfig* initial);
     Result<TaskId> create(const TaskConfig& config, const RequestIdentity& request);
+    void start_execution(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
+    bool cleanup_failed_prepare(
+        const std::shared_ptr<task::TaskEntry>& entry,
+        const std::shared_ptr<task::RunExecution>& execution, StatusCode failure) noexcept;
+    void finish_execution(
+        const std::shared_ptr<task::TaskEntry>& entry, OperationId operation,
+        ControlGeneration generation, StatusCode failure, bool partial = false,
+        DataImpact impact = DataImpact::None) noexcept;
+    void close_execution(
+        const std::shared_ptr<task::TaskEntry>& entry,
+        std::shared_ptr<task::Reply<OperationId>> reply,
+        std::shared_ptr<const task::TaskControlRecord> accepted) noexcept;
 
     struct CreateWork final : Work {
         std::shared_ptr<State> owner;
@@ -115,12 +157,30 @@ struct TaskService::State {
         void run() noexcept override;
     };
 
-    struct ConfigWork final : Work {
+    struct ControlJob final : Work {
         std::shared_ptr<State> owner;
         std::shared_ptr<task::TaskEntry> entry;
         std::shared_ptr<task::Reply<OperationId>> reply;
         std::shared_ptr<const task::ControlWork> frame;
         bool replay{false};
+        void run() noexcept override;
+    };
+
+    struct PrepareJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::RunExecution> execution;
+        void run() noexcept override;
+    };
+
+    struct CloseJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::RunExecution> execution;
+        std::shared_ptr<const task::TaskControlRecord> control;
+        std::shared_ptr<task::Reply<OperationId>> reply;
+        bool internal_cleanup{false};
+        StatusCode preparation_failure{StatusCode::Ok};
         void run() noexcept override;
     };
 };

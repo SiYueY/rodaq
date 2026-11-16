@@ -129,13 +129,9 @@ Result<RunPrepareResult> RunAuthorization::prepare(plugin::Deadline deadline) {
     }
 }
 
-Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_base) {
-    {
-        std::lock_guard<std::mutex> lock(opening_);
-        if (fenced_ || !barrier_passed_ || publication_attempted_) {
-            return Status(StatusCode::InvalidState, {});
-        }
-        publication_attempted_ = true;
+Result<void> RunAuthorization::checkpoint_prepared() {
+    if (prepared_record_) {
+        return {};
     }
     try {
         auto previous = recovery_->load();
@@ -178,11 +174,40 @@ Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_bas
                      {}});
             }
         }
+        if (run.authorized_pipelines.empty()) {
+            return {};
+        }
         record.run_operation = std::move(run);
-        auto published = recovery_->publish(record, expected);
+        prepared_record_.emplace(std::move(record));
+        auto published = recovery_->publish(*prepared_record_, expected);
         if (!published.ok()) {
+            prepared_record_.reset();
             return published.status();
         }
+        return {};
+    } catch (const std::bad_alloc&) {
+        (void)fence();
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_base) {
+    {
+        std::lock_guard<std::mutex> lock(opening_);
+        if (fenced_ || !barrier_passed_ || publication_attempted_) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        publication_attempted_ = true;
+    }
+    try {
+        auto checkpoint = checkpoint_prepared();
+        if (!checkpoint.ok()) {
+            return checkpoint.status();
+        }
+        if (!prepared_record_) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        auto record = *prepared_record_;
         auto boundary = sample_();
         if (!boundary.ok()) {
             return boundary.status();
@@ -195,8 +220,8 @@ Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_bas
         record.run_operation->phase = RunPhase::OpenAuthorized;
         record.run_operation->authorization_boundary =
             RecoveryBoundary{boot_.kernel_uuid, boundary.value().monotonic_ns};
-        expected = record.record_revision++;
-        published = recovery_->publish(record, expected);
+        const auto expected = record.record_revision++;
+        auto published = recovery_->publish(record, expected);
         if (!published.ok()) {
             return published.status();
         }

@@ -86,7 +86,7 @@ protected:
     auto request(
         OperationKind kind, std::string key, rodaq::ControlPrecondition precondition = {}) {
         return controller_->request_lifecycle(
-            kind, {std::move(key)}, precondition, rodaq::WallTime{1s});
+            kind, {std::move(key)}, precondition, rodaq::WallTime{1s}, {true, true});
     }
 
     auto actual_publish(const std::shared_ptr<const task::ControlWork>& work) {
@@ -448,11 +448,41 @@ TEST_F(TaskControllerTest, ExhaustedIdentityAndIllegalTransitionsDoNotPublishNew
     ASSERT_TRUE(owner.ok());
     EXPECT_EQ(
         owner.value()
-            ->request_lifecycle(OperationKind::Start, {"start"}, {}, rodaq::WallTime{1s})
+            ->request_lifecycle(
+                OperationKind::Start, {"start"}, {}, rodaq::WallTime{1s}, {true, true})
             .status()
             .code(),
         StatusCode::ResourceExhausted);
     EXPECT_TRUE(owner.value()->durable_record()->operation_history.entries.empty());
+}
+
+TEST_F(TaskControllerTest, LifecycleAdmissionFactsFollowIdempotencyAndGenerationGuards) {
+    EXPECT_EQ(
+        controller_
+            ->request_lifecycle(
+                OperationKind::Start, {"stale"}, {true, 99}, rodaq::WallTime{1s}, {false, false})
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(
+        controller_
+            ->request_lifecycle(
+                OperationKind::Start, {"unsettled"}, {true, 1}, rodaq::WallTime{1s}, {false, true})
+            .status()
+            .code(),
+        StatusCode::InvalidState);
+    auto start = request(OperationKind::Start, "run", {true, 1}).value();
+    auto pending = controller_->request_lifecycle(
+        OperationKind::Start, {"run"}, {true, 1}, rodaq::WallTime{1s}, {false, false});
+    ASSERT_TRUE(pending.ok());
+    EXPECT_EQ(pending.value().operation_id, start.operation_id);
+    ASSERT_TRUE(accept(start.work));
+    auto accepted = controller_->request_lifecycle(
+        OperationKind::Start, {"run"}, {true, 1}, rodaq::WallTime{1s}, {false, false});
+    ASSERT_TRUE(accepted.ok());
+    EXPECT_TRUE(accepted.value().durably_accepted);
+    EXPECT_EQ(accepted.value().operation_id, start.operation_id);
+    EXPECT_EQ(controller_->durable_record()->control_generation, 2);
 }
 
 }  // namespace

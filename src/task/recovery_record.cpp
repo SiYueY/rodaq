@@ -134,12 +134,14 @@ void validate_pipeline(const AuthorizedPipeline& value) {
 bool same_pipeline(const AuthorizedPipeline& a, const AuthorizedPipeline& b) noexcept {
     return a.pipeline_id == b.pipeline_id && a.instance_id == b.instance_id &&
            a.effective_config_id == b.effective_config_id &&
-           same_boundary(a.prepared_boundary, b.prepared_boundary) &&
-           a.continuation_permission == b.continuation_permission;
+           same_boundary(a.prepared_boundary, b.prepared_boundary);
 }
 
-bool progresses(const AuthorizedPipeline& a, const AuthorizedPipeline& b) noexcept {
+bool progresses(
+    const AuthorizedPipeline& a, const AuthorizedPipeline& b, bool higher_control) noexcept {
     return same_pipeline(a, b) && (!a.opened_observed || b.opened_observed) &&
+           (a.continuation_permission == b.continuation_permission ||
+            (higher_control && a.continuation_permission && !b.continuation_permission)) &&
            (!a.ended_boundary || same_optional_boundary(a.ended_boundary, b.ended_boundary));
 }
 
@@ -428,6 +430,8 @@ Result<void> recovery_successor(
          next.active_config_version != previous.active_config_version)) {
         return Status(StatusCode::Conflict, {});
     }
+    const bool higher_control =
+        next.observed_control_generation > previous.observed_control_generation;
     if (previous.run_operation) {
         const auto& old = *previous.run_operation;
         const auto* run = next.run_operation ? &*next.run_operation : nullptr;
@@ -443,7 +447,8 @@ Result<void> recovery_successor(
                 const auto found = std::find_if(
                     run->authorized_pipelines.begin(), run->authorized_pipelines.end(),
                     [&](const auto& value) { return value.pipeline_id == entry.pipeline_id; });
-                if (found == run->authorized_pipelines.end() || !progresses(entry, *found)) {
+                if (found == run->authorized_pipelines.end() ||
+                    !progresses(entry, *found, higher_control)) {
                     return Status(StatusCode::Conflict, {});
                 }
             }
@@ -469,7 +474,7 @@ Result<void> recovery_successor(
                 const bool retained = std::any_of(
                     next.pipelines.begin(), next.pipelines.end(), [&](const auto& value) {
                         return value.control_generation == old.control_generation &&
-                               progresses(entry, value.instance);
+                               progresses(entry, value.instance, higher_control);
                     });
                 const bool cleanup = std::any_of(
                     next.cleanup_intents.begin(), next.cleanup_intents.end(),
@@ -491,7 +496,7 @@ Result<void> recovery_successor(
             });
         if (old != previous.pipelines.end() &&
             (old->control_generation != entry.control_generation ||
-             !progresses(old->instance, entry.instance))) {
+             !progresses(old->instance, entry.instance, higher_control))) {
             return Status(StatusCode::Conflict, {});
         }
     }

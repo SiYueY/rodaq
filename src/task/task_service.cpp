@@ -54,7 +54,12 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
         snapshot.snapshot_sequence = sequence;
         snapshot.captured_at = task::control_wall_now();
         snapshot.execution_condition =
-            entry.quiescent ? ExecutionCondition::Idle : ExecutionCondition::Protected;
+            entry.quiescent && control->desired_state != DesiredState::Running
+                ? ExecutionCondition::Idle
+                : ExecutionCondition::Protected;
+        if (entry.execution) {
+            snapshot.execution_condition = entry.execution->condition(control->desired_state);
+        }
         if (control->current_operation_id) {
             for (const auto& operation : control->operation_history.entries) {
                 if (operation.snapshot.operation_id == *control->current_operation_id) {
@@ -259,6 +264,15 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
     entry->identities = std::move(identities.value());
     entry->identity = std::move(identity.value());
     entry->controller = std::move(controller.value());
+    if (options->execution) {
+        auto recovery = task::TaskRecoveryStore::open(
+            options->root / "recovery", id, options->execution->recovery,
+            file_hook(task::ServiceFileDomain::Recovery));
+        if (!recovery.ok()) {
+            return recovery.status();
+        }
+        entry->recovery = std::move(recovery.value());
+    }
     entry->quiescent =
         !control.value().operation_history.history_truncated &&
         control.value().desired_state == DesiredState::Stopped &&
@@ -429,6 +443,27 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             fs::symlink_status(options.root).type() != fs::file_type::directory) {
             return Status(StatusCode::InvalidArgument, {});
         }
+        if (options.execution) {
+            const auto& execution = *options.execution;
+            if (options.max_tasks != 1 || !execution.resolve || !execution.commit ||
+                !execution.preparation_lane || !execution.cleanup_lane ||
+                execution.preparation_lane == execution.cleanup_lane ||
+                execution.preparation_lane == options.control_lane ||
+                execution.preparation_lane == options.create_lane ||
+                execution.cleanup_lane == options.control_lane ||
+                execution.cleanup_lane == options.create_lane ||
+                execution.native_timeout <= std::chrono::nanoseconds::zero() ||
+                execution.native_timeout > std::chrono::hours{1}) {
+                return Status(StatusCode::InvalidArgument, {});
+            }
+            for (const auto& domain : {execution.preparation_lane, execution.cleanup_lane}) {
+                const auto capacity = domain->snapshot();
+                if (!capacity.accepting || capacity.worker_count != 1 ||
+                    capacity.capacity < options.max_tasks) {
+                    return Status(StatusCode::InvalidArgument, {});
+                }
+            }
+        }
         const auto valid_labels = [](const auto& values) {
             if (values.size() > 256) {
                 return false;
@@ -471,7 +506,7 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         state->options = std::make_shared<const task::ServiceOptions>(std::move(options));
         state->installed = std::move(installed.value());
         state->entries.reserve(state->options->max_tasks);
-        for (const auto* name : {"tasks", "control", "identities", "create"}) {
+        for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
             auto made = state->directory(state->options->root / name);
             if (!made.ok()) {
                 return made.status();

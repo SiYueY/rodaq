@@ -375,4 +375,27 @@ INSTANTIATE_TEST_SUITE_P(
         persistence::FileStep::WriteTemporary, persistence::FileStep::SyncFile,
         persistence::FileStep::Publish, persistence::FileStep::SyncDirectory));
 
+TEST_F(TaskRecoveryTest, HigherControlRevokesContinuationWithoutResurrectingOldInstance) {
+    auto store = open().value();
+    ASSERT_TRUE(store->publish(record_, 0).ok());
+    auto revoked = record_;
+    ++revoked.record_revision;
+    for (auto& pipeline : revoked.run_operation->authorized_pipelines) {
+        pipeline.continuation_permission = false;
+    }
+    for (auto& pipeline : revoked.pipelines) {
+        pipeline.instance.continuation_permission = false;
+    }
+    EXPECT_FALSE(task::recovery_successor(record_, revoked).ok());
+    ++revoked.observed_control_generation;
+    ASSERT_TRUE(store->publish(revoked, record_.record_revision).ok());
+    EXPECT_FALSE(
+        store->load().value().run_operation->authorized_pipelines[0].continuation_permission);
+    auto resurrected = revoked;
+    ++resurrected.record_revision;
+    ++resurrected.observed_control_generation;
+    resurrected.run_operation->authorized_pipelines[0].continuation_permission = true;
+    EXPECT_FALSE(store->publish(resurrected, revoked.record_revision).ok());
+}
+
 }  // namespace
