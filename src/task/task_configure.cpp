@@ -59,6 +59,9 @@ Result<OperationId> TaskService::configure(
         bool dispatch = false;
         {
             std::lock_guard<std::mutex> control(entry->control_mutex);
+            if (!state_->accepting.load(std::memory_order_acquire)) {
+                return Status(StatusCode::InvalidState, {});
+            }
             auto current = std::atomic_load(&entry->published);
             const auto allowed = state_->validate_deployment(normalized.value());
             task::ConfigureFacts facts{

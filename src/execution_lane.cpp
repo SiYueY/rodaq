@@ -1,5 +1,6 @@
 #include "execution_lane.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
@@ -59,6 +60,15 @@ ExecutionLane::~ExecutionLane() noexcept {
     if (!state_->workers.empty()) {
         std::terminate();
     }
+}
+
+Result<void> ExecutionLane::wait_idle(std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(state_->mutex);
+    if (!state_->settled.wait_until(
+            lock, deadline, [&] { return state_->running == 0 && state_->size == 0; })) {
+        return Status(StatusCode::DeadlineExceeded, {});
+    }
+    return {};
 }
 
 Result<std::shared_ptr<ExecutionLane>> ExecutionLane::create(

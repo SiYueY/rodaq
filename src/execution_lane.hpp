@@ -36,6 +36,9 @@ public:
 
     Result<void> submit(std::shared_ptr<Work> work);
     LaneSnapshot snapshot() const;
+    // Observe actual idle without closing admission; needed when cleanup may
+    // still publish completion or require a later retry on this same domain.
+    Result<void> wait_idle(std::chrono::steady_clock::time_point deadline);
     Result<void> shutdown(std::chrono::steady_clock::time_point deadline);
 
 private:

@@ -53,6 +53,9 @@ Result<OperationId> TaskService::lifecycle(
         std::optional<OperationId> accepted;
         {
             std::lock_guard<std::mutex> control(entry->control_mutex);
+            if (!state_->accepting.load(std::memory_order_acquire)) {
+                return Status(StatusCode::InvalidState, {});
+            }
             const auto durable = entry->controller->durable_record();
             auto decision = entry->controller->request_lifecycle(
                 kind, request, precondition, task::control_wall_now(),

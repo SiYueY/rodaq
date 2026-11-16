@@ -172,7 +172,8 @@ void TaskService::State::CloseJob::run() noexcept {
     DataImpact impact = DataImpact::None;
     std::uint64_t accepted = 0;
     try {
-        auto revoked = internal_cleanup ? Result<void>{} : revoke_continuation(*entry, *control);
+        auto revoked = internal_cleanup || process_drain ? Result<void>{}
+                                                         : revoke_continuation(*entry, *control);
         if (!revoked.ok()) {
             reply->complete(revoked.status());
             return;
@@ -187,11 +188,11 @@ void TaskService::State::CloseJob::run() noexcept {
                 }
             }
         }
-        if (!internal_cleanup) {
+        if (!internal_cleanup && !process_drain) {
             std::lock_guard<std::mutex> lock(entry->control_mutex);
             entry->closed_acceptance = *control->current_operation_id;
         }
-        if (!internal_cleanup) {
+        if (!internal_cleanup && !process_drain) {
             reply->complete(*control->current_operation_id);
         }
         if (execution) {
@@ -271,6 +272,10 @@ void TaskService::State::CloseJob::run() noexcept {
             execution->result_impact = impact;
         }
         release.finish();
+        if (process_drain) {
+            reply->complete(OperationId{});
+            return;
+        }
         owner->finish_execution(
             entry, *control->current_operation_id, control->control_generation, failure, false,
             impact);

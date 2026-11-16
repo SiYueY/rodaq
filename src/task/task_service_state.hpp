@@ -180,6 +180,7 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         std::shared_ptr<const task::TaskControlRecord> control;
         std::shared_ptr<task::Reply<OperationId>> reply;
         bool internal_cleanup{false};
+        bool process_drain{false};
         StatusCode preparation_failure{StatusCode::Ok};
         void run() noexcept override;
     };

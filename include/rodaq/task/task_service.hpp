@@ -10,6 +10,9 @@
 #include <rodaq/task/types.hpp>
 
 namespace rodaq {
+namespace daq {
+class Composition;
+}
 namespace task {
 struct ServiceOptions;
 }
@@ -69,6 +72,11 @@ public:
     Result<OperationPage> list_operations(TaskId task_id, const PageRequest& request) const;
 
 private:
+    friend class daq::Composition;
+    Result<void> close_admission();
+    Result<void> drain_shutdown();
+    Result<void> refresh_execution_facts(bool protect = false);
+    bool shutdown_settled() const;
     struct State;
     explicit TaskService(std::shared_ptr<State> state) noexcept;
     Result<OperationId> lifecycle(

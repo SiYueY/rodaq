@@ -6,6 +6,8 @@
 #include "task/task_service.hpp"
 #include "artifact/segment_id_store.hpp"
 #include "persistence/json.hpp"
+#include "daq/composition.hpp"
+#include "daq/run_configuration.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -38,6 +40,28 @@ using namespace std::chrono_literals;
 
 rodaq::Result<rodaq::time::ClockSample> receive_clock() {
     return rodaq::time::ClockSample{200, 1100, 1};
+}
+
+struct ClockBlocker {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{false};
+    bool released{false};
+};
+
+std::atomic<ClockBlocker*> clock_blocker{nullptr};
+std::atomic<bool> clock_failed{false};
+
+rodaq::Result<rodaq::time::ClockSample> controlled_clock() {
+    if (auto* control = clock_blocker.load()) {
+        std::unique_lock<std::mutex> lock(control->mutex);
+        control->entered = true;
+        control->changed.notify_all();
+        control->changed.wait(lock, [&] { return control->released; });
+    }
+    return clock_failed.load()
+               ? rodaq::Result<rodaq::time::ClockSample>(rodaq::Status(StatusCode::Unavailable, {}))
+               : receive_clock();
 }
 
 plugin::Deadline soon() { return plugin::Deadline::after(2s).value(); }
@@ -174,6 +198,10 @@ protected:
     }
 
     void TearDown() override {
+        if (composition_) {
+            EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+            composition_.reset();
+        }
         for (const auto& lane : service_lanes_) {
             EXPECT_TRUE(lane->shutdown(std::chrono::steady_clock::now() + 3s).ok());
         }
@@ -351,69 +379,83 @@ protected:
         auto execution = std::make_shared<rodaq::task::RunExecutionOptions>();
         execution->preparation_lane = service_lanes_[0];
         execution->cleanup_lane = service_lanes_[1];
-        execution->resolve = [this](
+        auto resources = std::make_shared<rodaq::daq::RunResources>();
+        resources->options = composition_options();
+        resources->writers = {lane_};
+        execution->resolve = [this, resources](
                                  const auto& control, const auto& config,
                                  auto& identities) -> rodaq::Result<rodaq::task::RunInputs> {
-            auto selected = options_;
-            selected.definition = config.pipelines[0];
-            selected.identity = {
-                control.task_id, selected.definition.pipeline_id,
-                pipeline::new_instance_id().value(), control.control_generation};
-            selected.streams.clear();
-            for (const auto& stream : selected.definition.streams) {
-                auto records = identities.reserve(stream.stream_id, 1000);
-                if (!records.ok()) {
-                    return records.status();
-                }
-                auto descriptors = identities.reserve_descriptors(stream.stream_id, 1000);
-                if (!descriptors.ok()) {
-                    return descriptors.status();
-                }
-                selected.streams.push_back(
-                    {stream.stream_id, stream.stream_key, 8, records.value(), descriptors.value()});
-            }
-            auto segment = segment_ids_->reserve(1);
-            if (!segment.ok()) {
-                return segment.status();
-            }
-            selected.manifest.task_id = control.task_id;
-            selected.manifest.pipeline_id = selected.identity.pipeline_id;
-            selected.manifest.instance_id = pipeline::to_string(selected.identity.instance_id);
-            selected.manifest.control_generation = control.control_generation;
-            selected.manifest.reset_generation_at_commit = control.reset_generation;
-            selected.manifest.segment_id = segment.value().begin;
-            selected.manifest.config_version = control.active_config_version;
-            // This resolver is a component Deployment seam; production effective
-            // configuration resolution remains part of DAQ composition.
-            selected.manifest.effective_config_id =
-                rodaq::persistence::semantic_digest(
-                    {{"config_version", control.active_config_version},
-                     {"profile", "behavioral-fake.v1"},
-                     {"volume_id", artifact::to_string(volume_->identity())}},
-                    "rodaq.effective-config.v1")
-                    .value();
-            const auto effective = selected.manifest.effective_config_id;
-            auto controller = pipeline::PipelineController::create(std::move(selected));
-            if (!controller.ok()) {
-                return controller.status();
-            }
-            {
+            auto resolved = rodaq::daq::resolve_run(*resources, control, config, identities);
+            if (resolved.ok()) {
                 std::lock_guard<std::mutex> registered(resolved_mutex_);
-                controller_ = controller.value();
+                controller_ = resolved.value().pipelines[0].controller;
                 resolved_ = true;
                 resolved_changed_.notify_all();
             }
-            return rodaq::task::RunInputs{
-                {{std::move(controller.value()), effective, config.pipelines[0].required}},
-                boot(),
-                &receive_clock,
-                0};
+            return resolved;
         };
         execution->commit = [this](const auto& sealed) { return artifact_commit(sealed); };
         options.execution = std::move(execution);
         auto service = rodaq::TaskService::open(std::move(options));
         ASSERT_TRUE(service.ok());
         service_ = std::move(service.value());
+    }
+
+    rodaq::daq::CompositionOptions composition_options() {
+        rodaq::daq::CompositionOptions options;
+        options.task_root = root_ / "service";
+        options.plugins = manager_;
+        options.clock = clock_;
+        options.boot = boot();
+        options.volume = volume_;
+        options.capacity = capacity_;
+        options.ledger = ledger_;
+        options.segment_ids = segment_ids_;
+        options.deployment_generation = 1;
+        options.qualified_runtime_profile_id = "behavioral-fake.v1";
+        options.output_root = "local";
+        options.sample = &receive_clock;
+        options.tasks.config.max_pipelines = 1;
+        rodaq::daq::ResourceProfile profile;
+        profile.name = "basic";
+        profile.instance = options_.limits;
+        profile.storage = options_.envelope;
+        profile.manifest = options_.manifest_limits;
+        profile.max_prepared_descriptors = options_.max_prepared_descriptors;
+        profile.sequence_reservation = 1000;
+        profile.descriptor_reservation = 1000;
+        options.profiles.push_back(std::move(profile));
+        options.storage = {{"rodaq.fake.storage", "1.0.0", "fake"}};
+        options.allowed_plugins = {
+            {"rodaq.fake.acquisition", "1.0.0", rodaq::task::AdmissionRole::Acquisition},
+            {"rodaq.fake.storage", "1.0.0", rodaq::task::AdmissionRole::Storage}};
+        return options;
+    }
+
+    void open_composition(pipeline::ReceiveClock clock = &receive_clock) {
+        fs::create_directory(root_ / "service");
+        fs::create_directory(root_ / "segment-ids");
+        auto ids = artifact::SegmentIdStore::open(
+            root_ / "segment-ids", artifact::SegmentIdOpenMode::NewDeployment);
+        ASSERT_TRUE(ids.ok());
+        segment_ids_ = std::move(ids.value());
+        auto options = composition_options();
+        options.sample = clock;
+        auto composition = rodaq::daq::Composition::create(std::move(options));
+        ASSERT_TRUE(composition.ok());
+        composition_ = std::move(composition.value());
+    }
+
+    bool wait_composed(rodaq::TaskId task, rodaq::OperationId operation) {
+        const auto end = std::chrono::steady_clock::now() + 3s;
+        do {
+            auto actual = composition_->tasks().get_operation(task, operation);
+            if (actual.ok() && rodaq::task::terminal(actual.value().state)) {
+                return actual.value().state == rodaq::OperationState::Succeeded;
+            }
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < end);
+        return false;
     }
 
     bool wait_operation(rodaq::TaskId task, rodaq::OperationId operation) {
@@ -512,13 +554,219 @@ protected:
     std::shared_ptr<artifact::ArtifactCatalog> catalog_;
     std::unique_ptr<rodaq::ArtifactService> artifacts_;
     std::shared_ptr<ReadControl> read_control_{std::make_shared<ReadControl>()};
-    std::unique_ptr<artifact::SegmentIdStore> segment_ids_;
+    std::shared_ptr<artifact::SegmentIdStore> segment_ids_;
+    std::unique_ptr<rodaq::daq::Composition> composition_;
     std::vector<std::shared_ptr<rodaq::ExecutionLane>> service_lanes_;
     std::unique_ptr<rodaq::TaskService> service_;
     std::mutex resolved_mutex_;
     std::condition_variable resolved_changed_;
     bool resolved_{false};
 };
+
+TEST_F(PipelineControllerTest, CompositionRunsFormalLifecycleAndReadsActualCommittedFiles) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto created = service.create_task(formal_config(), {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(10ms);
+    auto pause = service.pause(id, {"pause"}, {true, 2});
+    ASSERT_TRUE(pause.ok());
+    ASSERT_TRUE(wait_composed(id, pause.value()));
+    ASSERT_TRUE(composition_->observe().ok());
+    auto page = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(page.ok());
+    ASSERT_EQ(page.value().items.size(), 1);
+    auto artifact = composition_->artifacts().get_artifact(page.value().items[0].artifact_id);
+    ASSERT_TRUE(artifact.ok());
+    ASSERT_EQ(artifact.value().files.size(), 1);
+    auto read = composition_->artifacts().acquire_read(
+        artifact.value().summary.artifact_id, artifact.value().files[0].file_id);
+    ASSERT_TRUE(read.ok());
+    std::array<std::byte, 8> bytes{};
+    EXPECT_EQ(read.value().read_at(0, {bytes.data(), bytes.size()}).value(), bytes.size());
+    auto resume = service.resume(id, {"resume"}, {true, 3});
+    ASSERT_TRUE(resume.ok());
+    ASSERT_TRUE(wait_composed(id, resume.value()));
+    std::this_thread::sleep_for(10ms);
+    auto stop = service.stop(id, {"stop"}, {true, 4});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
+    EXPECT_EQ(service.get_task(id).value().control_generation, 5);
+    EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(
+        read.value().read_at(0, {bytes.data(), bytes.size()}).status().code(),
+        StatusCode::InvalidState);
+}
+
+TEST_F(PipelineControllerTest, CompositionShutdownPreservesRunIntentGenerationAndContinuation) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(10ms);
+    auto before = service.get_task(id).value();
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    auto after = service.get_task(id).value();
+    EXPECT_EQ(after.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(after.control_generation, before.control_generation);
+    EXPECT_EQ(after.current_operation->operation_id, start.value());
+    EXPECT_EQ(after.current_operation->state, before.current_operation->state);
+    EXPECT_EQ(after.execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(service.stop(id, {"stop"}, {}).status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
+    auto record = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+    ASSERT_TRUE(record.ok());
+    auto recovery = rodaq::task::decode_recovery_record(record.value(), {});
+    ASSERT_TRUE(recovery.ok());
+    ASSERT_TRUE(recovery.value().run_operation);
+    EXPECT_EQ(recovery.value().run_operation->phase, rodaq::task::RunPhase::Ended);
+    ASSERT_EQ(recovery.value().run_operation->authorized_pipelines.size(), 1);
+    EXPECT_TRUE(recovery.value().run_operation->authorized_pipelines[0].continuation_permission);
+    EXPECT_TRUE(recovery.value().run_operation->authorized_pipelines[0].ended_boundary);
+}
+
+TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAndAllProfileLimits) {
+    fs::create_directory(root_ / "segment-ids");
+    segment_ids_ = artifact::SegmentIdStore::open(
+                       root_ / "segment-ids", artifact::SegmentIdOpenMode::NewDeployment)
+                       .value();
+    auto deployment = composition_options();
+    auto control = accepted_run();
+    auto definition = options_.definition;
+    definition.resource_profile = "basic";
+    definition.output_root = "local";
+    auto source = manager_->load("rodaq.fake.acquisition", "1.0.0").value().binary();
+    auto storage = manager_->load("rodaq.fake.storage", "1.0.0").value().binary();
+    const auto identity = [&](const auto& d, const auto& c, const auto& p, const auto& a,
+                              const auto& s) {
+        return rodaq::persistence::semantic_digest(
+                   rodaq::daq::effective_configuration(d, c, definition, p, a, s).value(),
+                   "rodaq.effective-config.v1")
+            .value();
+    };
+    const auto baseline = identity(deployment, control, deployment.profiles[0], source, storage);
+    auto same = control;
+    ++same.control_generation;
+    same.current_operation_id.reset();
+    EXPECT_EQ(identity(deployment, same, deployment.profiles[0], source, storage), baseline);
+    auto profile = deployment.profiles[0];
+    ++profile.instance.descriptors.max_owned_data_bytes;
+    EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
+    profile = deployment.profiles[0];
+    ++profile.manifest.max_epochs;
+    EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
+    profile = deployment.profiles[0];
+    ++profile.sequence_reservation;
+    EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
+    ++deployment.deployment_generation;
+    EXPECT_NE(identity(deployment, control, deployment.profiles[0], source, storage), baseline);
+    --deployment.deployment_generation;
+    deployment.qualified_runtime_profile_id += ".changed";
+    EXPECT_NE(identity(deployment, control, deployment.profiles[0], source, storage), baseline);
+    storage.sha256 = "sha256:" + std::string(64, '0');
+    EXPECT_NE(identity(composition_options(), control, profile, source, storage), baseline);
+    auto frozen =
+        rodaq::daq::effective_configuration(
+            composition_options(), control, definition, deployment.profiles[0], source, storage)
+            .value();
+    EXPECT_EQ(frozen["acquisition"]["sha256"], source.sha256);
+    EXPECT_EQ(frozen["volume_id"], artifact::to_string(volume_->identity()));
+}
+
+TEST_F(PipelineControllerTest, CompositionShutdownDeadlineRetainsLatePreparationAndCanBeRetried) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json =
+        R"({"streams":["first","second"],"mode":"late_start","delay_ms":300})";
+    auto id = composition_->tasks().create_task(config, {"create"}).value();
+    auto start = composition_->tasks().start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    std::this_thread::sleep_for(20ms);
+    auto observed = composition_->shutdown(std::chrono::steady_clock::now() + 2ms);
+    EXPECT_FALSE(observed.ok());
+    EXPECT_EQ(observed.status().code(), StatusCode::DeadlineExceeded);
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    const auto actual = composition_->tasks().get_task(id).value();
+    EXPECT_EQ(actual.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(actual.control_generation, 2);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 0);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
+TEST_F(PipelineControllerTest, CompositionBlockedMaintenanceDoesNotDelayCoreShutdown) {
+    open_composition(&controlled_clock);
+    ASSERT_TRUE(composition_);
+    ClockBlocker control;
+    clock_blocker.store(&control);
+    auto observer = std::async(std::launch::async, [this] { return composition_->observe(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(control.mutex);
+        entered = control.changed.wait_for(lock, 2s, [&] { return control.entered; });
+    }
+    const auto shutdown = composition_->shutdown(std::chrono::steady_clock::now() + 1s);
+    {
+        std::lock_guard<std::mutex> lock(control.mutex);
+        control.released = true;
+    }
+    control.changed.notify_all();
+    const auto observed = observer.get();
+    clock_blocker.store(nullptr);
+    EXPECT_TRUE(entered);
+    EXPECT_TRUE(shutdown.ok());
+    EXPECT_EQ(observed.status().code(), StatusCode::InvalidState);
+}
+
+TEST_F(PipelineControllerTest, CompositionFailedNativeCreationRequiresActualManagerShutdown) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json = R"({"mode":"invalid-mode"})";
+    auto& service = composition_->tasks();
+    auto id = service.create_task(config, {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    EXPECT_FALSE(wait_composed(id, start.value()));
+    EXPECT_NE(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_NE(manager_->phase(), plugin::PluginManagerPhase::Stopped);
+    EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(manager_->phase(), plugin::PluginManagerPhase::Stopped);
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
+TEST_F(PipelineControllerTest, CompositionObservationPublishesClockFailureWithoutChangingIntent) {
+    open_composition(&controlled_clock);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    clock_failed = true;
+    auto observed = composition_->observe();
+    clock_failed = false;
+    EXPECT_EQ(observed.status().code(), StatusCode::Unavailable);
+    auto protected_task = service.get_task(id).value();
+    EXPECT_EQ(protected_task.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(protected_task.control_generation, 2);
+    EXPECT_NE(protected_task.execution_condition, rodaq::ExecutionCondition::Active);
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
 
 TEST_F(
     PipelineControllerTest,

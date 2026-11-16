@@ -75,7 +75,7 @@ void TaskService::State::start_execution(const std::shared_ptr<task::TaskEntry>&
             std::unique_lock<std::mutex> control(entry->control_mutex);
             const auto current = entry->controller->durable_record();
             const auto* operation = current_operation(*current);
-            if (!operation ||
+            if (!accepting.load(std::memory_order_acquire) || !operation ||
                 !entry->controller->run_is_current(
                     operation->operation_id, current->control_generation) ||
                 !options->execution || task::terminal(operation->state)) {
@@ -281,7 +281,8 @@ void TaskService::State::PrepareJob::run() noexcept {
                         } else {
                             std::lock_guard<std::mutex> control(entry->control_mutex);
                             const auto current = entry->controller->durable_record();
-                            if (!entry->controller->run_is_current(
+                            if (!owner->accepting.load(std::memory_order_acquire) ||
+                                !entry->controller->run_is_current(
                                     *execution->control->current_operation_id,
                                     execution->control->control_generation)) {
                                 (void)run->fence();
