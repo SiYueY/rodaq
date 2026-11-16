@@ -52,7 +52,7 @@ RecordingInstance::RecordingInstance(
     RecordingIdentity owner, StreamTable stream_table, DescriptorRegistry registry,
     RecordBudget record_budget, PayloadPool pool, RecordQueue record_queue, InstanceLimits limits,
     std::shared_ptr<time::ClockCorrelation> clock, DescriptorPreparation prepare,
-    ReceiveClock sample)
+    ReceiveClock sample, RecordNotification accepted)
 : identity(owner),
   gate(owner.instance_id, owner.control_generation),
   streams(std::move(stream_table)),
@@ -63,7 +63,8 @@ RecordingInstance::RecordingInstance(
   limits_(limits),
   clock_(std::move(clock)),
   prepare_(std::move(prepare)),
-  sample_(sample) {
+  sample_(sample),
+  accepted_(std::move(accepted)) {
     facts_.streams.resize(streams.bindings().size());
     sources_.resize(streams.bindings().size());
     for (std::size_t i = 0; i < streams.bindings().size(); ++i) {
@@ -75,7 +76,7 @@ RecordingInstance::RecordingInstance(
 Result<std::shared_ptr<RecordingInstance>> RecordingInstance::create(
     RecordingIdentity identity, std::vector<StreamPreparation> prepared, InstanceLimits limits,
     std::shared_ptr<time::ClockCorrelation> clock, DescriptorPreparation prepare,
-    ReceiveClock sample) {
+    ReceiveClock sample, RecordNotification accepted) {
     if (!uuid::nonzero(identity.task_id.value) || identity.pipeline_id == 0 ||
         !valid_instance_id(identity.instance_id) || identity.control_generation == 0 || !clock ||
         !prepare || sample == nullptr || limits.callback_concurrency == 0 ||
@@ -120,7 +121,7 @@ Result<std::shared_ptr<RecordingInstance>> RecordingInstance::create(
         return std::shared_ptr<RecordingInstance>(new RecordingInstance(
             identity, std::move(table.value()), std::move(registry.value()),
             std::move(records.value()), std::move(payloads.value()), std::move(queue.value()),
-            limits, std::move(clock), std::move(prepare), sample));
+            limits, std::move(clock), std::move(prepare), sample, std::move(accepted)));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -141,6 +142,7 @@ Result<RecordingInstance::Callback> RecordingInstance::enter_callback() {
     if (facts_.callbacks == limits_.callback_concurrency) {
         increment(facts_.callback_rejections);
         facts_.evidence_complete = false;
+        readiness_changed_.notify_all();
         return Status(StatusCode::ResourceExhausted, {});
     }
     ++facts_.callbacks;
@@ -230,6 +232,17 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
             observe_source(index, attempt.source_id, std::nullopt);
         }
     }
+    if (submitted.ok() && submitted.value().disposition == RODAQ_SUBMIT_ACCEPTED && accepted_) {
+        // The accepted set is already published. Scheduling failure must never
+        // rewrite Accepted into a pre-admission rejection or release its owner.
+        try {
+            accepted_();
+        } catch (...) {
+            (void)gate.establish_control_fence(identity.instance_id);
+            std::lock_guard<std::mutex> lock(facts_mutex_);
+            facts_.terminal_failure = true;
+        }
+    }
     return submitted;
 }
 
@@ -308,6 +321,7 @@ Result<acquisition::DescriptorToken> RecordingInstance::propose_descriptor(
     {
         std::lock_guard<std::mutex> lock(facts_mutex_);
         facts_.streams[stream_index(proposal.stream_id)].descriptor_ready = true;
+        readiness_changed_.notify_all();
     }
     return next->token;
 }
@@ -353,6 +367,7 @@ Result<void> RecordingInstance::report_source_event(const acquisition::SourceEve
     }
     const auto index = stream_index(event.stream_id);
     std::lock_guard<std::mutex> lock(facts_mutex_);
+    readiness_changed_.notify_all();
     if (index == facts_.streams.size() || !acquisition::abi::valid_source_event(&event)) {
         increment(facts_.invalid_events);
         facts_.evidence_complete = false;
@@ -386,6 +401,7 @@ Result<void> RecordingInstance::report_acquisition_event(
     }
     if (!acquisition::abi::valid_acquisition_event(&event)) {
         std::lock_guard<std::mutex> lock(facts_mutex_);
+        readiness_changed_.notify_all();
         increment(facts_.invalid_events);
         facts_.evidence_complete = false;
         return Status(StatusCode::InvalidArgument, {});
@@ -393,6 +409,7 @@ Result<void> RecordingInstance::report_acquisition_event(
     const auto index = event.has_stream_id ? stream_index(event.stream_id) : facts_.streams.size();
     {
         std::lock_guard<std::mutex> lock(facts_mutex_);
+        readiness_changed_.notify_all();
         if (event.has_stream_id && index == facts_.streams.size()) {
             increment(facts_.invalid_events);
             facts_.evidence_complete = false;
@@ -432,6 +449,58 @@ Result<CallbackFacts> RecordingInstance::callback_facts() const {
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
+}
+
+bool RecordingInstance::ready_locked(const std::vector<ReadinessPolicy>& policies) const noexcept {
+    if (!facts_.transport_ready || facts_.terminal_failure || !facts_.evidence_complete ||
+        policies.size() != facts_.streams.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < policies.size(); ++i) {
+        const auto& stream = facts_.streams[i];
+        if (!stream.descriptor_ready || !stream.stream_ready || !stream.evidence_complete ||
+            (policies[i] != ReadinessPolicy::EntryReady &&
+             policies[i] != ReadinessPolicy::SourceReady) ||
+            (policies[i] == ReadinessPolicy::SourceReady && stream.active_sources == 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RecordingInstance::ready(const std::vector<ReadinessPolicy>& policies) const {
+    std::lock_guard<std::mutex> lock(facts_mutex_);
+    return ready_locked(policies);
+}
+
+Result<void> RecordingInstance::wait_ready(
+    const std::vector<ReadinessPolicy>& policies, plugin::Deadline deadline) {
+    std::unique_lock<std::mutex> lock(facts_mutex_);
+    const auto terminal = [&] {
+        return gate.admission_fenced() || facts_.terminal_failure || !facts_.evidence_complete ||
+               ready_locked(policies);
+    };
+    if (deadline.is_infinite()) {
+        readiness_changed_.wait(lock, terminal);
+    } else {
+        auto remaining = deadline.remaining();
+        if (!remaining.ok()) {
+            return remaining.status();
+        }
+        if (!readiness_changed_.wait_for(lock, remaining.value(), terminal)) {
+            return Status(StatusCode::DeadlineExceeded, {});
+        }
+    }
+    return !gate.admission_fenced() && ready_locked(policies)
+               ? Result<void>{}
+               : Result<void>(Status(StatusCode::InvalidState, {}));
+}
+
+Result<void> RecordingInstance::establish_control_fence() noexcept {
+    auto result = gate.establish_control_fence(identity.instance_id);
+    std::lock_guard<std::mutex> lock(facts_mutex_);
+    readiness_changed_.notify_all();
+    return result;
 }
 
 }  // namespace rodaq::pipeline

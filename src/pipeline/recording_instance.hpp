@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -68,6 +69,7 @@ struct CallbackFacts {
 using DescriptorPreparation = std::function<Result<void>(
     std::shared_ptr<RecordingSegment>, DescriptorRef, std::uint64_t, plugin::Deadline)>;
 using ReceiveClock = Result<time::ClockSample> (*)();
+using RecordNotification = std::function<void()>;
 
 // Actual per-Pipeline Recording Instance backing and Acquisition Service owner.
 // Registry/queued/Native work retain shared ownership through actual return.
@@ -78,7 +80,7 @@ public:
     static Result<std::shared_ptr<RecordingInstance>> create(
         RecordingIdentity identity, std::vector<StreamPreparation> streams, InstanceLimits limits,
         std::shared_ptr<time::ClockCorrelation> clock, DescriptorPreparation prepare_descriptor,
-        ReceiveClock receive_clock = &time::sample_clocks);
+        ReceiveClock receive_clock = &time::sample_clocks, RecordNotification accepted = {});
 
     // Task's control owner calls once while closed, after its durable full-set
     // OpenAuthorization, immediately before opening Gate. Publication is only
@@ -90,6 +92,11 @@ public:
     Result<void> report_source_event(const acquisition::SourceEvent& event);
     Result<void> report_acquisition_event(const acquisition::AcquisitionEvent& event);
     Result<CallbackFacts> callback_facts() const;
+    // Frozen policy rows align with StreamTable bindings; no allocation or I/O.
+    bool ready(const std::vector<ReadinessPolicy>& policies) const;
+    Result<void> wait_ready(
+        const std::vector<ReadinessPolicy>& policies, plugin::Deadline deadline);
+    Result<void> establish_control_fence() noexcept;
 
     const RecordingIdentity identity;
     AdmissionGate gate;
@@ -120,18 +127,21 @@ private:
         RecordingIdentity identity, StreamTable streams, DescriptorRegistry descriptors,
         RecordBudget records, PayloadPool payloads, RecordQueue queue, InstanceLimits limits,
         std::shared_ptr<time::ClockCorrelation> clock, DescriptorPreparation prepare,
-        ReceiveClock sample);
+        ReceiveClock sample, RecordNotification accepted);
     Result<Callback> enter_callback();
     std::size_t stream_index(StreamId stream) const noexcept;
     void submission(std::size_t index, rodaq_submit_disposition_t disposition);
     void observe_source(
         std::size_t index, const rodaq_source_id_t& source, std::optional<bool> visible);
+    bool ready_locked(const std::vector<ReadinessPolicy>& policies) const noexcept;
 
     const InstanceLimits limits_;
     std::shared_ptr<time::ClockCorrelation> clock_;
     DescriptorPreparation prepare_;
     const ReceiveClock sample_;
+    const RecordNotification accepted_;
     mutable std::mutex facts_mutex_;
+    std::condition_variable readiness_changed_;
     CallbackFacts facts_;
     std::vector<std::vector<Source>> sources_;
     std::atomic<bool> timeline_frozen_{false};
