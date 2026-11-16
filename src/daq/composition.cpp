@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "run_configuration.hpp"
+#include "startup.hpp"
 #include "../artifact/artifact_catalog.hpp"
 
 namespace rodaq::daq {
@@ -22,34 +23,38 @@ bool valid(const CompositionOptions& o) {
     if (!o.plugins || !o.clock || !o.volume || !o.capacity || !o.ledger || !o.segment_ids ||
         !o.sample || !boot.ok() || boot.value().id != o.boot.id ||
         o.clock->anchor().boot_id != o.boot.id || o.task_root.empty() ||
-        o.deployment_generation == 0 || o.qualified_runtime_profile_id.empty() ||
-        o.qualified_runtime_profile_id.size() > 256 || o.output_root.empty() ||
-        o.profiles.empty() || o.profiles.size() > 64 || o.storage.empty() ||
-        o.storage.size() > 64 || o.tasks.config.max_pipelines == 0 ||
-        o.tasks.config.max_pipelines > 64 || o.native_timeout <= std::chrono::nanoseconds::zero()) {
+        o.settings.deployment_generation == 0 || o.settings.qualified_runtime_profile_id.empty() ||
+        o.settings.qualified_runtime_profile_id.size() > 256 || o.settings.output_root.empty() ||
+        o.settings.profiles.empty() || o.settings.profiles.size() > 64 ||
+        o.settings.storage.empty() || o.settings.storage.size() > 64 ||
+        o.settings.tasks.config.max_pipelines == 0 || o.settings.tasks.config.max_pipelines > 64 ||
+        o.settings.native_timeout <= std::chrono::nanoseconds::zero()) {
         return false;
     }
-    for (auto i = o.profiles.begin(); i != o.profiles.end(); ++i) {
+    for (auto i = o.settings.profiles.begin(); i != o.settings.profiles.end(); ++i) {
         if (i->name.empty() || i->name.size() > 128 || i->sequence_reservation == 0 ||
             i->descriptor_reservation == 0 || i->instance.callback_concurrency == 0 ||
             i->instance.callback_concurrency > 4094 ||
             !artifact::validate_manifest_limits(i->manifest).ok() ||
-            std::any_of(o.profiles.begin(), i, [&](const auto& p) { return p.name == i->name; })) {
+            std::any_of(
+                o.settings.profiles.begin(), i, [&](const auto& p) { return p.name == i->name; })) {
             return false;
         }
     }
-    for (auto i = o.storage.begin(); i != o.storage.end(); ++i) {
+    for (auto i = o.settings.storage.begin(); i != o.settings.storage.end(); ++i) {
         if (i->plugin_id.empty() || i->plugin_version.empty() || i->format.empty() ||
             i->format.size() > 128 ||
             std::any_of(
-                o.storage.begin(), i,
+                o.settings.storage.begin(), i,
                 [&](const auto& s) {
                     return s.plugin_id == i->plugin_id && s.plugin_version == i->plugin_version;
                 }) ||
-            !std::any_of(o.allowed_plugins.begin(), o.allowed_plugins.end(), [&](const auto& p) {
-                return p.role == task::AdmissionRole::Storage && p.plugin_id == i->plugin_id &&
-                       p.plugin_version == i->plugin_version;
-            })) {
+            !std::any_of(
+                o.settings.allowed_plugins.begin(), o.settings.allowed_plugins.end(),
+                [&](const auto& p) {
+                    return p.role == task::AdmissionRole::Storage && p.plugin_id == i->plugin_id &&
+                           p.plugin_version == i->plugin_version;
+                })) {
             return false;
         }
     }
@@ -59,6 +64,8 @@ bool valid(const CompositionOptions& o) {
 }  // namespace
 
 struct Composition::State {
+    // Declared first: releases the namespace lease after composed authorities.
+    std::shared_ptr<DeploymentLease> deployment_lease;
     std::shared_ptr<RunResources> resources;
     std::shared_ptr<artifact::ArtifactCatalog> catalog;
     std::unique_ptr<ArtifactService> artifacts;
@@ -88,6 +95,10 @@ Composition::Composition(std::unique_ptr<State> state) noexcept : state_(std::mo
 
 Composition::~Composition() noexcept = default;
 
+void Composition::retain_lease(std::shared_ptr<DeploymentLease> lease) noexcept {
+    state_->deployment_lease = std::move(lease);
+}
+
 Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions options) {
     try {
         if (!valid(options)) {
@@ -107,15 +118,15 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         const auto& o = state->resources->options;
         // Reserve before creating any thread so every domain has an owner even
         // if a later allocation fails. Four distinct business scheduling lanes.
-        state->lanes.reserve(4 + o.tasks.config.max_pipelines);
-        state->resources->writers.reserve(o.tasks.config.max_pipelines);
+        state->lanes.reserve(4 + o.settings.tasks.config.max_pipelines);
+        state->resources->writers.reserve(o.settings.tasks.config.max_pipelines);
         std::size_t writer_capacity = 2;
-        for (const auto& profile : o.profiles) {
+        for (const auto& profile : o.settings.profiles) {
             writer_capacity = std::max(
                 writer_capacity,
                 static_cast<std::size_t>(profile.instance.callback_concurrency) + 2);
         }
-        for (std::size_t i = 0; i < 4 + o.tasks.config.max_pipelines; ++i) {
+        for (std::size_t i = 0; i < 4 + o.settings.tasks.config.max_pipelines; ++i) {
             auto lane = ExecutionLane::create(1, i < 4 ? 8 : writer_capacity);
             if (!lane.ok()) {
                 return lane.status();
@@ -130,8 +141,8 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         catalog.capacity = o.capacity;
         catalog.ledger = o.ledger;
         catalog.max_artifacts = o.ledger->capacity();
-        catalog.manifest = o.profiles.front().manifest;
-        for (const auto& p : o.profiles) {
+        catalog.manifest = o.settings.profiles.front().manifest;
+        for (const auto& p : o.settings.profiles) {
             catalog.manifest.max_bytes = std::max(catalog.manifest.max_bytes, p.manifest.max_bytes);
             catalog.manifest.max_files = std::max(catalog.manifest.max_files, p.manifest.max_files);
             catalog.manifest.max_descriptors =
@@ -163,16 +174,16 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         service.create_lane = state->lanes[0];
         service.control_lane = state->lanes[1];
         service.max_tasks = 1;
-        service.store = o.tasks;
-        service.allowed_plugins = o.allowed_plugins;
-        service.output_roots = {o.output_root};
-        for (const auto& profile : o.profiles) {
+        service.store = o.settings.tasks;
+        service.allowed_plugins = o.settings.allowed_plugins;
+        service.output_roots = {o.settings.output_root};
+        for (const auto& profile : o.settings.profiles) {
             service.resource_profiles.push_back(profile.name);
         }
         auto execution = std::make_shared<task::RunExecutionOptions>();
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
-        execution->native_timeout = o.native_timeout;
+        execution->native_timeout = o.settings.native_timeout;
         execution->resolve = [resources = std::shared_ptr<const RunResources>(state->resources)](
                                  const auto& control, const auto& config, auto& identities) {
             return resolve_run(*resources, control, config, identities);
@@ -186,6 +197,15 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return tasks.status();
         }
         state->tasks = std::move(tasks.value());
+        auto recovered = state->tasks->list_tasks({});
+        if (!recovered.ok()) {
+            return recovered.status();
+        }
+        for (const auto& item : recovered.value().items) {
+            if (item.task.execution_condition != ExecutionCondition::Idle) {
+                return Status(StatusCode::Unavailable, {});
+            }
+        }
         // Allocate the final facade before enabling its mandatory-shutdown rule.
         auto composition = std::unique_ptr<Composition>(new Composition(std::move(state)));
         auto observed = composition->observe();
@@ -209,6 +229,13 @@ Result<void> Composition::observe() {
         return Status(StatusCode::InvalidState, {});
     }
     const auto& o = state_->resources->options;
+    if (state_->deployment_lease) {
+        auto verified = state_->deployment_lease->verify();
+        if (!verified.ok()) {
+            (void)state_->tasks->refresh_execution_facts(true);
+            return verified.status();
+        }
+    }
     auto sample = o.sample();
     if (state_->stopping.load(std::memory_order_acquire)) {
         return Status(StatusCode::InvalidState, {});

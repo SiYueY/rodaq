@@ -80,18 +80,19 @@ Result<Json> effective_configuration(
             return !source.ok() ? source.status() : output.status();
         }
         const auto format = std::find_if(
-            deployment.storage.begin(), deployment.storage.end(), [&](const auto& admitted) {
+            deployment.settings.storage.begin(), deployment.settings.storage.end(),
+            [&](const auto& admitted) {
                 return admitted.plugin_id == storage.plugin_id &&
                        admitted.plugin_version == storage.plugin_version;
             });
-        if (format == deployment.storage.end()) {
+        if (format == deployment.settings.storage.end()) {
             return Status(StatusCode::PermissionDenied, {});
         }
         return Json{
             {"config_version", control.active_config_version},
             {"pipeline_id", std::to_string(definition.pipeline_id)},
-            {"deployment_generation", std::to_string(deployment.deployment_generation)},
-            {"qualified_runtime_profile_id", deployment.qualified_runtime_profile_id},
+            {"deployment_generation", std::to_string(deployment.settings.deployment_generation)},
+            {"qualified_runtime_profile_id", deployment.settings.qualified_runtime_profile_id},
             {"acquisition", binary(acquisition)},
             {"storage", binary(storage)},
             {"volume_id", artifact::to_string(deployment.volume->identity())},
@@ -99,7 +100,7 @@ Result<Json> effective_configuration(
             {"resolved_acquisition", std::move(source.value())},
             {"resolved_storage", std::move(output.value())},
             {"effective_pipeline_limits", limits(profile)},
-            {"native_timeout_ns", std::to_string(deployment.native_timeout.count())},
+            {"native_timeout_ns", std::to_string(deployment.settings.native_timeout.count())},
             // V1 supplies no secret-handoff ABI. No credential references or
             // Deployment overrides are admitted by this S2 composition.
             {"credential_reference_versions", Json::object()}};
@@ -122,10 +123,10 @@ Result<task::RunInputs> resolve_run(
         result.pipelines.reserve(config.pipelines.size());
         for (const auto& definition : config.pipelines) {
             const auto profile = std::find_if(
-                options.profiles.begin(), options.profiles.end(),
+                options.settings.profiles.begin(), options.settings.profiles.end(),
                 [&](const auto& value) { return value.name == definition.resource_profile; });
-            if (profile == options.profiles.end() ||
-                definition.output_root != options.output_root) {
+            if (profile == options.settings.profiles.end() ||
+                definition.output_root != options.settings.output_root) {
                 return Status(StatusCode::PermissionDenied, {});
             }
             auto source = options.plugins->load(
@@ -178,7 +179,8 @@ Result<task::RunInputs> resolve_run(
                 return segment.status();
             }
             const auto format = std::find_if(
-                options.storage.begin(), options.storage.end(), [&](const auto& value) {
+                options.settings.storage.begin(), options.settings.storage.end(),
+                [&](const auto& value) {
                     return value.plugin_id == definition.storage.plugin_id &&
                            value.plugin_version == definition.storage.plugin_version;
                 });
@@ -195,7 +197,7 @@ Result<task::RunInputs> resolve_run(
                 options.volume->identity(),
                 source.value().binary(),
                 output.value().binary(),
-                options.qualified_runtime_profile_id,
+                options.settings.qualified_runtime_profile_id,
                 format->format,
                 options.clock->anchor()};
             selected.plugins = options.plugins;
@@ -205,7 +207,7 @@ Result<task::RunInputs> resolve_run(
             selected.capacity = options.capacity;
             selected.ledger = options.ledger;
             selected.receive_clock = options.sample;
-            selected.native_timeout = options.native_timeout;
+            selected.native_timeout = options.settings.native_timeout;
             auto controller = pipeline::PipelineController::create(std::move(selected));
             if (!controller.ok()) {
                 return controller.status();

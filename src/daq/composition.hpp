@@ -38,6 +38,18 @@ struct StorageAdmission {
     std::string format;
 };
 
+struct DeploymentSettings {
+    std::uint64_t deployment_generation{0};
+    // Resolved by the Core release/support-matrix owner, never by a Plugin.
+    std::string qualified_runtime_profile_id;
+    std::string output_root;
+    std::vector<ResourceProfile> profiles;
+    std::vector<StorageAdmission> storage;
+    std::vector<task::AllowedPlugin> allowed_plugins;
+    task::TaskStorePolicy tasks;
+    std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
+};
+
 struct CompositionOptions {
     // Startup has exclusively opened/reconciled these actual authorities. This
     // composition never guesses absence, initializes a missing authority, or
@@ -50,17 +62,12 @@ struct CompositionOptions {
     std::shared_ptr<artifact::VolumeCapacity> capacity;
     std::shared_ptr<artifact::LedgerStore> ledger;
     std::shared_ptr<artifact::SegmentIdStore> segment_ids;
-    std::uint64_t deployment_generation{0};
-    // Resolved by the Core release/support-matrix owner, never by a Plugin.
-    std::string qualified_runtime_profile_id;
-    std::string output_root;
-    std::vector<ResourceProfile> profiles;
-    std::vector<StorageAdmission> storage;
-    std::vector<task::AllowedPlugin> allowed_plugins;
-    task::TaskStorePolicy tasks;
-    std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
+    DeploymentSettings settings;
     pipeline::ReceiveClock sample{&time::sample_clocks};
 };
+
+struct StartupOptions;
+struct DeploymentLease;
 
 // Single-Task, single-Volume S2 composition. Owns fixed, separate control,
 // create, prepare, cleanup and per-Pipeline Writer domains. No implicit monitor
@@ -68,6 +75,7 @@ struct CompositionOptions {
 class Composition {
 public:
     static Result<std::unique_ptr<Composition>> create(CompositionOptions options);
+    static Result<std::unique_ptr<Composition>> open(StartupOptions options);
     Composition(const Composition&) = delete;
     Composition& operator=(const Composition&) = delete;
     ~Composition() noexcept;
@@ -85,6 +93,7 @@ public:
 private:
     struct State;
     explicit Composition(std::unique_ptr<State> state) noexcept;
+    void retain_lease(std::shared_ptr<DeploymentLease> lease) noexcept;
     std::unique_ptr<State> state_;
 };
 

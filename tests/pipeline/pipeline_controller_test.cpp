@@ -8,6 +8,7 @@
 #include "persistence/json.hpp"
 #include "daq/composition.hpp"
 #include "daq/run_configuration.hpp"
+#include "daq/startup.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -251,7 +252,9 @@ protected:
         service_.reset();
         artifacts_.reset();
         catalog_.reset();
-        EXPECT_TRUE(manager_->shutdown(soon()).ok());
+        if (manager_) {
+            EXPECT_TRUE(manager_->shutdown(soon()).ok());
+        }
         manager_.reset();
         std::error_code error;
         fs::permissions(root_ / "packages", fs::perms::owner_all, error);
@@ -411,11 +414,11 @@ protected:
         options.capacity = capacity_;
         options.ledger = ledger_;
         options.segment_ids = segment_ids_;
-        options.deployment_generation = 1;
-        options.qualified_runtime_profile_id = "behavioral-fake.v1";
-        options.output_root = "local";
+        options.settings.deployment_generation = 1;
+        options.settings.qualified_runtime_profile_id = "behavioral-fake.v1";
+        options.settings.output_root = "local";
         options.sample = &receive_clock;
-        options.tasks.config.max_pipelines = 1;
+        options.settings.tasks.config.max_pipelines = 1;
         rodaq::daq::ResourceProfile profile;
         profile.name = "basic";
         profile.instance = options_.limits;
@@ -424,9 +427,9 @@ protected:
         profile.max_prepared_descriptors = options_.max_prepared_descriptors;
         profile.sequence_reservation = 1000;
         profile.descriptor_reservation = 1000;
-        options.profiles.push_back(std::move(profile));
-        options.storage = {{"rodaq.fake.storage", "1.0.0", "fake"}};
-        options.allowed_plugins = {
+        options.settings.profiles.push_back(std::move(profile));
+        options.settings.storage = {{"rodaq.fake.storage", "1.0.0", "fake"}};
+        options.settings.allowed_plugins = {
             {"rodaq.fake.acquisition", "1.0.0", rodaq::task::AdmissionRole::Acquisition},
             {"rodaq.fake.storage", "1.0.0", rodaq::task::AdmissionRole::Storage}};
         return options;
@@ -456,6 +459,35 @@ protected:
             std::this_thread::yield();
         } while (std::chrono::steady_clock::now() < end);
         return false;
+    }
+
+    rodaq::daq::StartupOptions startup_options(rodaq::daq::DeploymentOpenMode mode) {
+        rodaq::daq::StartupOptions options;
+        options.state_root = root_ / "startup-state";
+        options.volume_root = root_ / "startup-volume";
+        options.mode = mode;
+        options.settings = composition_options().settings;
+        options.plugins.search_paths = {root_ / "packages"};
+        options.plugins.max_loaded_plugins = 2;
+        options.plugins.max_instances = 4;
+        options.plugins.max_config_size = 4096;
+        options.plugins.shutdown_timeout = 2s;
+        options.capacity = {1000000, 1000000, 100, 2000000000, 8, 8, 16};
+        options.ledger_records = 8;
+        return options;
+    }
+
+    void initialize_deployment() {
+        ASSERT_TRUE(manager_->shutdown(soon()).ok());
+        options_.plugins.reset();
+        manager_.reset();
+        fs::create_directory(root_ / "startup-state");
+        fs::create_directory(root_ / "startup-volume");
+        auto composition = rodaq::daq::Composition::open(
+            startup_options(rodaq::daq::DeploymentOpenMode::Initialize));
+        ASSERT_TRUE(composition.ok()) << static_cast<int>(composition.status().code()) << " "
+                                      << composition.status().message();
+        composition_ = std::move(composition.value());
     }
 
     bool wait_operation(rodaq::TaskId task, rodaq::OperationId operation) {
@@ -655,31 +687,35 @@ TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAn
                    "rodaq.effective-config.v1")
             .value();
     };
-    const auto baseline = identity(deployment, control, deployment.profiles[0], source, storage);
+    const auto baseline =
+        identity(deployment, control, deployment.settings.profiles[0], source, storage);
     auto same = control;
     ++same.control_generation;
     same.current_operation_id.reset();
-    EXPECT_EQ(identity(deployment, same, deployment.profiles[0], source, storage), baseline);
-    auto profile = deployment.profiles[0];
+    EXPECT_EQ(
+        identity(deployment, same, deployment.settings.profiles[0], source, storage), baseline);
+    auto profile = deployment.settings.profiles[0];
     ++profile.instance.descriptors.max_owned_data_bytes;
     EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
-    profile = deployment.profiles[0];
+    profile = deployment.settings.profiles[0];
     ++profile.manifest.max_epochs;
     EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
-    profile = deployment.profiles[0];
+    profile = deployment.settings.profiles[0];
     ++profile.sequence_reservation;
     EXPECT_NE(identity(deployment, control, profile, source, storage), baseline);
-    ++deployment.deployment_generation;
-    EXPECT_NE(identity(deployment, control, deployment.profiles[0], source, storage), baseline);
-    --deployment.deployment_generation;
-    deployment.qualified_runtime_profile_id += ".changed";
-    EXPECT_NE(identity(deployment, control, deployment.profiles[0], source, storage), baseline);
+    ++deployment.settings.deployment_generation;
+    EXPECT_NE(
+        identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
+    --deployment.settings.deployment_generation;
+    deployment.settings.qualified_runtime_profile_id += ".changed";
+    EXPECT_NE(
+        identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
     storage.sha256 = "sha256:" + std::string(64, '0');
     EXPECT_NE(identity(composition_options(), control, profile, source, storage), baseline);
-    auto frozen =
-        rodaq::daq::effective_configuration(
-            composition_options(), control, definition, deployment.profiles[0], source, storage)
-            .value();
+    auto frozen = rodaq::daq::effective_configuration(
+                      composition_options(), control, definition, deployment.settings.profiles[0],
+                      source, storage)
+                      .value();
     EXPECT_EQ(frozen["acquisition"]["sha256"], source.sha256);
     EXPECT_EQ(frozen["volume_id"], artifact::to_string(volume_->identity()));
 }
@@ -766,6 +802,111 @@ TEST_F(PipelineControllerTest, CompositionObservationPublishesClockFailureWithou
     auto stop = service.stop(id, {"stop"}, {true, 2});
     ASSERT_TRUE(stop.ok());
     ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+TEST_F(PipelineControllerTest, StartupInitializesActualAuthoritiesAndRecordsWithRealBootClock) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    EXPECT_TRUE(fs::is_regular_file(root_ / "startup-state/bootstrap.json"));
+    EXPECT_TRUE(fs::is_regular_file(root_ / "startup-state/time/playback-anchor.json"));
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(10ms);
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
+    composition_.reset();
+    // Until S4C supplies verified recovery totals/scanning, retained data is an
+    // explicit diagnostic, never a zero-capacity projection or file adoption.
+    auto reopened =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(reopened.ok());
+    EXPECT_EQ(reopened.status().code(), StatusCode::Unavailable);
+    EXPECT_TRUE(fs::is_directory(root_ / "startup-volume/.rodaq/artifacts/1"));
+}
+
+TEST_F(PipelineControllerTest, StartupExclusiveLeasePersistsThroughShutdownUntilOwnerDestruction) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    auto duplicate =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(duplicate.ok());
+    EXPECT_EQ(duplicate.status().code(), StatusCode::Conflict);
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    duplicate =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_EQ(duplicate.status().code(), StatusCode::Conflict);
+    composition_.reset();
+    auto reopened =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    ASSERT_TRUE(reopened.ok());
+    composition_ = std::move(reopened.value());
+    EXPECT_TRUE(composition_->tasks().list_tasks({}).value().items.empty());
+}
+
+TEST_F(PipelineControllerTest, StartupNeverReinitializesMissingClockOrSegmentAuthority) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    composition_.reset();
+    const auto anchor = root_ / "startup-state/time/playback-anchor.json";
+    fs::rename(anchor, root_ / "saved-clock.json");
+    auto missing_clock =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(missing_clock.ok());
+    EXPECT_EQ(missing_clock.status().code(), StatusCode::Unavailable);
+    EXPECT_FALSE(fs::exists(anchor));
+    fs::rename(root_ / "saved-clock.json", anchor);
+    const auto ids = root_ / "startup-state/segment-ids/segment-identity.json";
+    fs::rename(ids, root_ / "saved-ids.json");
+    auto missing_ids =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(missing_ids.ok());
+    EXPECT_EQ(missing_ids.status().code(), StatusCode::DataLoss);
+    EXPECT_FALSE(fs::exists(ids));
+    auto reinitialize =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Initialize));
+    EXPECT_FALSE(reinitialize.ok());
+    EXPECT_EQ(reinitialize.status().code(), StatusCode::Conflict);
+    fs::remove(root_ / "startup-state/.daq.lock");
+    auto missing_lease =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(missing_lease.ok());
+    EXPECT_EQ(missing_lease.status().code(), StatusCode::DataLoss);
+    EXPECT_FALSE(fs::exists(root_ / "startup-state/.daq.lock"));
+}
+
+TEST_F(PipelineControllerTest, StartupRejectsPriorFactsAndMissingNamespaceWithoutAdoption) {
+    ASSERT_TRUE(manager_->shutdown(soon()).ok());
+    options_.plugins.reset();
+    manager_.reset();
+    fs::create_directory(root_ / "startup-state");
+    fs::create_directory(root_ / "startup-volume");
+    std::ofstream(root_ / "startup-volume/unexplained") << "recording evidence";
+    auto refused =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Initialize));
+    EXPECT_FALSE(refused.ok());
+    EXPECT_EQ(refused.status().code(), StatusCode::Conflict);
+    EXPECT_TRUE(fs::exists(root_ / "startup-volume/unexplained"));
+    EXPECT_FALSE(fs::exists(root_ / "startup-state/time"));
+    fs::remove(root_ / "startup-volume/unexplained");
+    auto composition =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Initialize));
+    ASSERT_TRUE(composition.ok());
+    composition_ = std::move(composition.value());
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    composition_.reset();
+    fs::remove_all(root_ / "startup-state/service/recovery");
+    auto missing =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    EXPECT_FALSE(missing.ok());
+    EXPECT_EQ(missing.status().code(), StatusCode::DataLoss);
+    EXPECT_FALSE(fs::exists(root_ / "startup-state/service/recovery"));
 }
 
 TEST_F(
