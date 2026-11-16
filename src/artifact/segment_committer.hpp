@@ -14,9 +14,11 @@ namespace rodaq::artifact {
 // here. A failed attempt requires recovery; it cannot be retried as new work.
 class SegmentCommitter {
 public:
+    // Transfer only on success. Validation/allocation failure leaves both
+    // actual file backing and registration/Volume capacity with the caller.
     static Result<std::unique_ptr<SegmentCommitter>> create(
-        std::unique_ptr<SealedFiles> files, SegmentManifest manifest, const ManifestLimits& limits,
-        CommitReservation reservation);
+        std::unique_ptr<SealedFiles>& files, const SegmentManifest& manifest,
+        const ManifestLimits& limits, CommitReservation& reservation);
     SegmentCommitter(const SegmentCommitter&) = delete;
     SegmentCommitter& operator=(const SegmentCommitter&) = delete;
 

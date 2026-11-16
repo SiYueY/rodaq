@@ -22,6 +22,7 @@ inline artifact::ManifestIdentity manifest_identity(std::uint64_t segment_id = 7
     result.acquisition = {"rodaq.fake.acquisition", "1.0.0", std::string(64, 'e')};
     result.storage = {"rodaq.fake.storage", "1.0.0", std::string(64, 'f')};
     result.qualified_runtime_profile_id = "behavioral-fake.v1";
+    result.format = "fake";
     result.playback_anchor = {42, 10, 1000};
     return result;
 }

@@ -648,4 +648,10 @@ Result<std::vector<LedgerRecord>> LedgerStore::recovery_snapshot() const {
     }
 }
 
+std::uint32_t LedgerStore::capacity() const noexcept {
+    return static_cast<std::uint32_t>(state_->slots.size());
+}
+
+StatusCode LedgerStore::protection() const noexcept { return state_->protection.load(); }
+
 }  // namespace rodaq::artifact

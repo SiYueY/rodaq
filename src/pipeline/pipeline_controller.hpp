@@ -13,6 +13,7 @@
 
 #include "pipeline_writer.hpp"
 #include "recording_instance.hpp"
+#include "sealed_segment.hpp"
 #include "../execution_lane.hpp"
 #include "../artifact/ledger_store.hpp"
 
@@ -86,16 +87,6 @@ struct PipelineSnapshot {
     StatusCode failure{StatusCode::Ok};
     std::uint64_t segment_id{0};
     std::uint64_t artifact_work_id{0};
-};
-
-// An actual sealed handoff; Artifact owns hashing/Manifest/Ledger/Catalog work.
-// The Controller retains its commit obligation until acknowledge_artifact.
-struct SealedPipelineSegment {
-    std::shared_ptr<RecordingSegment> segment;
-    storage::SegmentSealResult files;
-    storage::PrepareConfig envelope;
-    artifact::ManifestLimits manifest_limits;
-    std::uint64_t work_id{0};
 };
 
 class PipelineController {

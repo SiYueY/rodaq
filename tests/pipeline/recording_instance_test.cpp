@@ -350,8 +350,8 @@ TEST_F(
     EXPECT_NE(first->received.epoch_id, second->received.epoch_id);
     EXPECT_EQ(second->received.sample.realtime_ns, 5000000);
     EXPECT_EQ(second->acceptance_sequence, 2);
-    EXPECT_TRUE(first->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
-    EXPECT_TRUE(second->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    EXPECT_TRUE(first->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
+    EXPECT_TRUE(second->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
     EXPECT_EQ(state_->callback_facts().value().clock_rejections, 1);
 }
 
@@ -503,7 +503,7 @@ TEST_F(
     auto reservation = segment_->capacity.handoff_sealed(files.value()->storage_bytes());
     ASSERT_TRUE(reservation.ok());
     auto commit = artifact::SegmentCommitter::create(
-        std::move(files.value()), std::move(manifest.value()), {}, std::move(reservation.value()));
+        files.value(), manifest.value(), {}, reservation.value());
     ASSERT_TRUE(commit.ok());
     ASSERT_TRUE(commit.value()->commit(*ledger_).ok());
     EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);

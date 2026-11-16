@@ -1,5 +1,5 @@
 #include "pipeline/pipeline_controller.hpp"
-#include "artifact/segment_committer.hpp"
+#include "artifact/artifact_catalog.hpp"
 #include "task/recovery_store.hpp"
 #include "task/run_authorization.hpp"
 #include "task/task_controller.hpp"
@@ -17,6 +17,15 @@
 #include <cstdlib>
 #include <filesystem>
 #include <future>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+#include <fstream>
 #include <thread>
 
 namespace {
@@ -35,6 +44,13 @@ plugin::Deadline soon() { return plugin::Deadline::after(2s).value(); }
 
 class PipelineControllerTest : public testing::Test {
 protected:
+    struct ReadControl {
+        std::atomic<bool> block{false};
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered{false};
+        bool released{false};
+    };
     void SetUp() override {
         std::array<char, 40> pattern{};
         const std::string prefix = "/tmp/rodaq-pipeline-XXXXXX";
@@ -75,8 +91,12 @@ protected:
             artifact::ManagedVolume::open(root_ / "volume", artifact::VolumeOpenMode::Initialize);
         ASSERT_TRUE(volume.ok());
         volume_ = std::move(volume.value());
-        auto ledger =
-            artifact::LedgerStore::open(root_ / "ledger", artifact::LedgerOpenMode::Initialize, 8);
+        auto ledger = artifact::LedgerStore::open(
+            root_ / "ledger", artifact::LedgerOpenMode::Initialize, 8,
+            [fault = ledger_fault_](auto step) {
+                return fault->load() && step == rodaq::persistence::FileStep::SyncDirectory ? EIO
+                                                                                            : 0;
+            });
         ASSERT_TRUE(ledger.ok());
         ledger_ = std::shared_ptr<artifact::LedgerStore>(std::move(ledger.value()));
         capacity_ = std::make_shared<artifact::VolumeCapacity>(std::move(
@@ -128,6 +148,29 @@ protected:
         options_.capacity = capacity_;
         options_.ledger = ledger_;
         options_.receive_clock = &receive_clock;
+        artifact::CatalogOptions artifacts;
+        artifacts.volume = volume_;
+        artifacts.ledger = ledger_;
+        artifacts.capacity = capacity_;
+        artifacts.max_artifacts = 8;
+        artifacts.max_read_leases = 4;
+        artifacts.max_read_bytes = 64;
+        artifacts.manifest = options_.manifest_limits;
+        artifacts.read_faults = [control = read_control_](artifact::ReadStep step) {
+            if (step == artifact::ReadStep::Reading && control->block.load()) {
+                std::unique_lock<std::mutex> lock(control->mutex);
+                control->entered = true;
+                control->changed.notify_all();
+                control->changed.wait(lock, [&] { return control->released; });
+            }
+            return 0;
+        };
+        auto catalog = artifact::ArtifactCatalog::create(std::move(artifacts));
+        ASSERT_TRUE(catalog.ok());
+        catalog_ = std::move(catalog.value());
+        auto service = rodaq::ArtifactService::create(catalog_);
+        ASSERT_TRUE(service.ok());
+        artifacts_ = std::move(service.value());
     }
 
     void TearDown() override {
@@ -178,6 +221,8 @@ protected:
         EXPECT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
         controller_.reset();
         service_.reset();
+        artifacts_.reset();
+        catalog_.reset();
         EXPECT_TRUE(manager_->shutdown(soon()).ok());
         manager_.reset();
         std::error_code error;
@@ -246,43 +291,7 @@ protected:
     }
 
     rodaq::Result<void> artifact_commit(const pipeline::SealedPipelineSegment& sealed) {
-        const auto id = sealed.segment->metadata.segment_id();
-        auto files = artifact::SealedFiles::open(
-            volume_, id, sealed.files, sealed.envelope, sealed.manifest_limits.max_bytes);
-        if (!files.ok()) {
-            return files.status();
-        }
-        auto manifest = sealed.segment->metadata.capture_manifest(files.value()->evidence());
-        if (!manifest.ok()) {
-            return manifest.status();
-        }
-        auto reservation = sealed.segment->capacity.handoff_sealed(files.value()->storage_bytes());
-        if (!reservation.ok()) {
-            return reservation.status();
-        }
-        auto committer = artifact::SegmentCommitter::create(
-            std::move(files.value()), std::move(manifest.value()), sealed.manifest_limits,
-            std::move(reservation.value()));
-        if (!committer.ok()) {
-            return committer.status();
-        }
-        auto actual = committer.value()->commit(*ledger_);
-        if (!actual.ok()) {
-            commits_.push_back(std::move(committer.value()));
-            return actual.status();
-        }
-        // Component Artifact sink: publish verified Ledger facts into the
-        // test's bounded projection, then actually transfer the retained charge.
-        // Production ArtifactService/query/lease integration remains separate.
-        published_.push_back(committer.value()->ledger_record());
-        auto charge = committer.value()->take_committed_charge();
-        if (!charge.ok()) {
-            commits_.push_back(std::move(committer.value()));
-            return charge.status();
-        }
-        charges_.push_back(std::move(charge.value()));
-        commits_.push_back(std::move(committer.value()));
-        return {};
+        return catalog_->commit(sealed);
     }
 
     void commit(pipeline::SealedPipelineSegment sealed) {
@@ -290,6 +299,24 @@ protected:
         const auto id = sealed.segment->metadata.segment_id();
         const auto& owner = second_ && id == 8 ? second_ : controller_;
         ASSERT_TRUE(owner->acknowledge_artifact(sealed.work_id, id).ok());
+    }
+
+    void record_committed() {
+        create();
+        ASSERT_TRUE(controller_);
+        auto prepared = controller_->prepare(soon());
+        ASSERT_TRUE(prepared.ok());
+        ASSERT_EQ(
+            controller_->open_admission(authorize(prepared.value())),
+            pipeline::GateOpenResult::Opened);
+        ASSERT_TRUE(wait_written(4));
+        ASSERT_TRUE(controller_->establish_control_fence().ok());
+        ASSERT_TRUE(controller_->close_admission(8).ok());
+        auto sealed = controller_->drain(soon());
+        ASSERT_TRUE(sealed.ok());
+        ASSERT_TRUE(sealed.value());
+        commit(std::move(*sealed.value()));
+        ASSERT_TRUE(controller_->quiesce(soon()).ok());
     }
 
     void open_service(
@@ -478,12 +505,13 @@ protected:
     std::shared_ptr<artifact::ManagedVolume> volume_;
     std::shared_ptr<artifact::VolumeCapacity> capacity_;
     std::shared_ptr<artifact::LedgerStore> ledger_;
+    std::shared_ptr<std::atomic<bool>> ledger_fault_{std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<pipeline::PipelineController> controller_;
     std::shared_ptr<pipeline::PipelineController> second_;
     std::shared_ptr<rodaq::ExecutionLane> second_lane_;
-    std::vector<artifact::LedgerRecord> published_;
-    std::vector<artifact::ArtifactCharge> charges_;
-    std::vector<std::unique_ptr<artifact::SegmentCommitter>> commits_;
+    std::shared_ptr<artifact::ArtifactCatalog> catalog_;
+    std::unique_ptr<rodaq::ArtifactService> artifacts_;
+    std::shared_ptr<ReadControl> read_control_{std::make_shared<ReadControl>()};
     std::unique_ptr<artifact::SegmentIdStore> segment_ids_;
     std::vector<std::shared_ptr<rodaq::ExecutionLane>> service_lanes_;
     std::unique_ptr<rodaq::TaskService> service_;
@@ -825,7 +853,7 @@ TEST_F(
     ASSERT_TRUE(wait_operation(id, paused.value()));
     EXPECT_EQ(service_->get_task(id).value().desired_state, rodaq::DesiredState::Paused);
     EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
-    ASSERT_EQ(published_.size(), 1);
+    ASSERT_EQ(artifacts_->query_artifacts({}).value().items.size(), 1);
     EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "1/manifest.json"));
     auto resumed = service_->resume(id, {"resume"}, {true, 3});
     ASSERT_TRUE(resumed.ok());
@@ -838,7 +866,7 @@ TEST_F(
     EXPECT_EQ(service_->get_task(id).value().desired_state, rodaq::DesiredState::Stopped);
     EXPECT_EQ(service_->get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
     EXPECT_EQ(service_->get_task(id).value().control_generation, 5);
-    ASSERT_EQ(published_.size(), 2);
+    ASSERT_EQ(artifacts_->query_artifacts({}).value().items.size(), 2);
     EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "2/manifest.json"));
     EXPECT_EQ(service_->start(id, {"start"}, {true, 1}).value(), started.value());
     EXPECT_EQ(service_->stop(id, {"stop"}, {true, 4}).value(), stopped.value());
@@ -1042,6 +1070,283 @@ TEST_F(PipelineControllerTest, FormalStopReconcilesUnknownStartAfterObserverTime
     EXPECT_EQ(service_->start(id, {"start"}, {true, 1}).value(), original->operation_id);
     EXPECT_FALSE(controller_);
     EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
+TEST_F(PipelineControllerTest, ArtifactServiceQueriesAndReadsOnlyRealCommittedFiles) {
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    record_committed();
+    auto page = artifacts_->query_artifacts({});
+    ASSERT_TRUE(page.ok());
+    ASSERT_EQ(page.value().items.size(), 1);
+    const auto& summary = page.value().items[0];
+    EXPECT_EQ(summary.artifact_id.value, 7);
+    EXPECT_EQ(summary.format, "fake");
+    EXPECT_EQ(summary.logical_bytes, controller_->snapshot().value().records.written * 8);
+    EXPECT_GT(summary.physical_bytes, summary.logical_bytes);
+    EXPECT_EQ(capacity_->snapshot().commit_slots, 0);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    auto info = artifacts_->get_artifact({7}).value();
+    ASSERT_FALSE(info.files.empty());
+    const auto file = std::find_if(info.files.begin(), info.files.end(), [](const auto& candidate) {
+        return candidate.size >= 8;
+    });
+    ASSERT_NE(file, info.files.end());
+    EXPECT_EQ(
+        rodaq::parse_artifact_id(rodaq::to_string(summary.artifact_id)).value(),
+        summary.artifact_id);
+    EXPECT_EQ(
+        rodaq::parse_artifact_file_id(rodaq::to_string(file->file_id)).value(), file->file_id);
+    EXPECT_FALSE(rodaq::parse_artifact_id("../../7").ok());
+    EXPECT_FALSE(rodaq::parse_artifact_file_id("f.01").ok());
+    auto reader = artifacts_->acquire_read({7}, file->file_id);
+    ASSERT_TRUE(reader.ok());
+    EXPECT_EQ(reader.value().size(), file->size);
+    std::ifstream input(
+        volume_->artifacts_directory() / "7" / file->display_name, std::ios::binary);
+    std::array<char, 32> expected{};
+    input.seekg(1);
+    input.read(expected.data(), static_cast<std::streamsize>(expected.size()));
+    const auto count = static_cast<std::size_t>(input.gcount());
+    std::array<std::byte, 32> actual{};
+    auto read = reader.value().read_at(1, {actual.data(), actual.size()});
+    ASSERT_TRUE(read.ok());
+    ASSERT_EQ(read.value(), count);
+    for (std::size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(actual[i], static_cast<std::byte>(static_cast<unsigned char>(expected[i])));
+    }
+    EXPECT_EQ(reader.value().read_at(file->size, {}).value(), 0);
+    reader.value().request_cancel();
+    EXPECT_EQ(reader.value().read_at(0, {}).status().code(), StatusCode::InvalidState);
+}
+
+TEST_F(PipelineControllerTest, ArtifactReadQuotaAndBlockedLeaseAdmissionRemainBounded) {
+    record_committed();
+    const auto info = artifacts_->get_artifact({7}).value();
+    std::vector<rodaq::ArtifactReadHandle> readers;
+    readers.reserve(4);
+    for (unsigned i = 0; i < 4; ++i) {
+        auto reader = artifacts_->acquire_read({7}, info.files[0].file_id);
+        ASSERT_TRUE(reader.ok());
+        readers.push_back(std::move(reader.value()));
+    }
+    EXPECT_EQ(catalog_->snapshot().read_leases, 4);
+    EXPECT_EQ(
+        artifacts_->acquire_read({7}, info.files[0].file_id).status().code(),
+        StatusCode::ResourceExhausted);
+    std::array<std::byte, 65> too_large{};
+    EXPECT_EQ(
+        readers[0].read_at(0, {too_large.data(), too_large.size()}).status().code(),
+        StatusCode::InvalidArgument);
+    ASSERT_TRUE(catalog_->block_reads({7}).ok());
+    EXPECT_FALSE(artifacts_->acquire_read({7}, info.files[0].file_id).ok());
+    EXPECT_EQ(
+        catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1ms).status().code(),
+        StatusCode::DeadlineExceeded);
+    readers.clear();
+    EXPECT_TRUE(catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1s).ok());
+    EXPECT_EQ(catalog_->snapshot().read_leases, 0);
+}
+
+TEST_F(
+    PipelineControllerTest,
+    ArtifactCancelledReadRetainsLeaseAfterWrapperDestructionUntilActualReturn) {
+    record_committed();
+    const auto info = artifacts_->get_artifact({7}).value();
+    auto acquired = artifacts_->acquire_read({7}, info.files[0].file_id);
+    ASSERT_TRUE(acquired.ok());
+    auto reader = std::make_unique<rodaq::ArtifactReadHandle>(std::move(acquired.value()));
+    std::array<std::byte, 32> bytes{};
+    read_control_->block = true;
+    auto actual = std::async(std::launch::async, [raw = reader.get(), &bytes] {
+        return raw->read_at(0, {bytes.data(), bytes.size()});
+    });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(read_control_->mutex);
+        entered = read_control_->changed.wait_for(lock, 2s, [&] { return read_control_->entered; });
+    }
+    if (entered) {
+        EXPECT_EQ(reader->read_at(0, {}).status().code(), StatusCode::Conflict);
+        EXPECT_TRUE(catalog_->block_reads({7}).ok());
+        catalog_->cancel_readers(rodaq::ArtifactId{7});
+        reader.reset();
+        EXPECT_EQ(catalog_->snapshot().read_leases, 1);
+        EXPECT_EQ(catalog_->snapshot().reads_inflight, 1);
+        EXPECT_EQ(
+            catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1ms).status().code(),
+            StatusCode::DeadlineExceeded);
+    }
+    {
+        std::lock_guard<std::mutex> lock(read_control_->mutex);
+        read_control_->released = true;
+    }
+    read_control_->changed.notify_all();
+    auto returned = actual.get();
+    ASSERT_TRUE(entered);
+    EXPECT_FALSE(returned.ok());
+    EXPECT_EQ(returned.status().code(), StatusCode::InvalidState);
+    EXPECT_TRUE(catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1s).ok());
+    EXPECT_EQ(catalog_->snapshot().read_leases, 0);
+    EXPECT_EQ(catalog_->snapshot().reads_inflight, 0);
+}
+
+TEST_F(
+    PipelineControllerTest, ArtifactCatalogRebuildVerifiesLedgerAndIgnoresUnregisteredDirectories) {
+    record_committed();
+    const auto original = artifacts_->get_artifact({7}).value();
+    fs::create_directory(volume_->artifacts_directory() / "999");
+    std::ofstream(volume_->artifacts_directory() / "999/manifest.json") << "unregistered";
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = ledger_;
+    options.max_artifacts = 8;
+    options.capacity = std::make_shared<artifact::VolumeCapacity>(
+        std::move(artifact::VolumeCapacity::create(
+                      {1000000, 1000000, 100, 10000, 8, 8, 16}, original.summary.physical_bytes, 1)
+                      .value()));
+    auto restored = artifact::ArtifactCatalog::create(options).value();
+    ASSERT_TRUE(restored->rebuild().ok());
+    auto service = rodaq::ArtifactService::create(restored).value();
+    ASSERT_EQ(service->query_artifacts({}).value().items.size(), 1);
+    auto rebuilt = service->get_artifact({7}).value();
+    EXPECT_EQ(rebuilt.summary.logical_bytes, original.summary.logical_bytes);
+    EXPECT_EQ(rebuilt.summary.physical_bytes, original.summary.physical_bytes);
+    EXPECT_EQ(rebuilt.files[0].file_id, original.files[0].file_id);
+    EXPECT_EQ(rebuilt.files[0].etag, original.files[0].etag);
+    EXPECT_EQ(service->get_artifact({999}).status().code(), StatusCode::NotFound);
+    EXPECT_FALSE(restored->rebuild().ok());
+}
+
+TEST_F(PipelineControllerTest, ArtifactChangedCommittedFileIsHiddenAndRebuildReportsDataLoss) {
+    record_committed();
+    const auto info = artifacts_->get_artifact({7}).value();
+    std::ofstream(
+        volume_->artifacts_directory() / "7" / info.files[0].display_name,
+        std::ios::binary | std::ios::trunc)
+        << "corrupt";
+    EXPECT_EQ(
+        artifacts_->acquire_read({7}, info.files[0].file_id).status().code(), StatusCode::DataLoss);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    EXPECT_EQ(artifacts_->get_artifact({7}).status().code(), StatusCode::DataLoss);
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = ledger_;
+    options.max_artifacts = 8;
+    options.capacity = std::make_shared<artifact::VolumeCapacity>(
+        std::move(artifact::VolumeCapacity::create(
+                      {1000000, 1000000, 100, 10000, 8, 8, 16}, info.summary.physical_bytes, 1)
+                      .value()));
+    auto restored = artifact::ArtifactCatalog::create(options).value();
+    EXPECT_EQ(restored->rebuild().status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(restored->get({7}).status().code(), StatusCode::DataLoss);
+    EXPECT_TRUE(restored->query({}).value().items.empty());
+}
+
+TEST_F(PipelineControllerTest, ArtifactKeysetPagesSurviveInsertionAndExcludeDurableDeleteIntent) {
+    open_service();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    const auto episode = [&](unsigned index) {
+        auto started =
+            service_->start(id, {"start-" + std::to_string(index)}, {true, 1 + index * 2});
+        if (!started.ok() || !wait_operation(id, started.value()) || !wait_written(3)) {
+            return false;
+        }
+        auto stopped = service_->stop(id, {"stop-" + std::to_string(index)}, {true, 2 + index * 2});
+        return stopped.ok() && wait_operation(id, stopped.value());
+    };
+    ASSERT_TRUE(episode(0));
+    ASSERT_TRUE(episode(1));
+    rodaq::ArtifactQuery query;
+    query.limit = 1;
+    auto first = artifacts_->query_artifacts(query).value();
+    ASSERT_EQ(first.items.size(), 1);
+    ASSERT_TRUE(first.has_more);
+    ASSERT_FALSE(first.next_cursor.empty());
+    const auto original = first.items[0];
+    ASSERT_TRUE(episode(2));
+    query.cursor = first.next_cursor;
+    auto next = artifacts_->query_artifacts(query).value();
+    ASSERT_EQ(next.items.size(), 1);
+    EXPECT_FALSE(next.items[0].artifact_id == original.artifact_id);
+    EXPECT_TRUE(
+        next.items[0].committed_at < original.committed_at ||
+        (next.items[0].committed_at == original.committed_at &&
+         next.items[0].artifact_id.value > original.artifact_id.value));
+    auto wrong_scope = query;
+    wrong_scope.format = "other";
+    EXPECT_EQ(
+        artifacts_->query_artifacts(wrong_scope).status().code(), StatusCode::InvalidArgument);
+    rodaq::ArtifactQuery invalid_range;
+    invalid_range.recording_range = rodaq::RecordingRange{0, 100};
+    EXPECT_EQ(
+        artifacts_->query_artifacts(invalid_range).status().code(), StatusCode::InvalidArgument);
+    invalid_range.task_id = id;
+    EXPECT_EQ(artifacts_->query_artifacts(invalid_range).value().items.size(), 3);
+    const auto target = next.items[0].artifact_id;
+    ASSERT_TRUE(catalog_->block_reads(target).ok());
+    ASSERT_TRUE(catalog_->wait_readers(target, std::chrono::steady_clock::now() + 1s).ok());
+    auto deleting = ledger_->get(target.value).value();
+    deleting.state = artifact::LedgerState::Deleting;
+    deleting.delete_generation = 7;
+    deleting.delete_reason = "retention";
+    ASSERT_TRUE(ledger_->advance(deleting, artifact::LedgerState::Committed).ok());
+    EXPECT_EQ(artifacts_->get_artifact(target).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(artifacts_->query_artifacts({}).value().items.size(), 2);
+    EXPECT_EQ(catalog_->snapshot().visible, 2);
+    EXPECT_EQ(catalog_->snapshot().pending, 1);
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / std::to_string(target.value)));
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 3);
+}
+
+TEST_F(
+    PipelineControllerTest, ArtifactInvalidHandoffRetainsRegistrationAndCapacityForActualCleanup) {
+    create();
+    ASSERT_TRUE(controller_);
+    auto prepared = controller_->prepare(soon()).value();
+    ASSERT_EQ(controller_->open_admission(authorize(prepared)), pipeline::GateOpenResult::Opened);
+    ASSERT_TRUE(wait_written(4));
+    ASSERT_TRUE(controller_->establish_control_fence().ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    auto drained = controller_->drain(soon());
+    ASSERT_TRUE(drained.ok());
+    ASSERT_TRUE(drained.value());
+    auto malformed = *drained.value();
+    ++malformed.files.files[0].physical_size;
+    EXPECT_FALSE(catalog_->commit(malformed).ok());
+    EXPECT_EQ(catalog_->snapshot().pending, 1);
+    EXPECT_EQ(catalog_->snapshot().visible, 0);
+    EXPECT_EQ(catalog_->snapshot().commit_inflight, 0);
+    EXPECT_EQ(capacity_->snapshot().commit_slots, 1);
+    EXPECT_FALSE(controller_->quiesce(soon()).ok());
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "7.tmp"));
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+}
+
+TEST_F(PipelineControllerTest, ArtifactUncertainLedgerIsUnavailableUntilActualReconciliation) {
+    record_committed();
+    const auto info = artifacts_->get_artifact({7}).value();
+    ASSERT_TRUE(catalog_->block_reads({7}).ok());
+    auto deleting = ledger_->get(7).value();
+    deleting.state = artifact::LedgerState::Deleting;
+    deleting.delete_generation = 8;
+    deleting.delete_reason = "retention";
+    *ledger_fault_ = true;
+    EXPECT_FALSE(ledger_->advance(deleting, artifact::LedgerState::Committed).ok());
+    EXPECT_EQ(artifacts_->query_artifacts({}).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(artifacts_->get_artifact({7}).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(
+        artifacts_->acquire_read({7}, info.files[0].file_id).status().code(),
+        StatusCode::Unavailable);
+    EXPECT_EQ(catalog_->snapshot().protection, StatusCode::Unavailable);
+    EXPECT_EQ(catalog_->snapshot().read_leases, 0);
+    *ledger_fault_ = false;
+    ASSERT_TRUE(ledger_->reconcile(7).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    EXPECT_EQ(catalog_->snapshot().protection, StatusCode::Ok);
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "7"));
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
 }
 
 }  // namespace

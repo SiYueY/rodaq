@@ -100,8 +100,7 @@ protected:
         }
         artifact::CommitReservation reservation{
             std::move(capacity.value()), std::move(registration.value()), 3, 8192};
-        return artifact::SegmentCommitter::create(
-            std::move(files.value()), manifest_, {}, std::move(reservation));
+        return artifact::SegmentCommitter::create(files.value(), manifest_, {}, reservation);
     }
 
     void crash_at(int boundary);

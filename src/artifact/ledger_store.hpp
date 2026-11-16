@@ -60,6 +60,8 @@ public:
     Result<void> reconcile(std::uint64_t segment_id);
     Result<LedgerRecord> get(std::uint64_t segment_id) const;
     Result<std::vector<LedgerRecord>> recovery_snapshot() const;
+    std::uint32_t capacity() const noexcept;
+    StatusCode protection() const noexcept;
 
 private:
     explicit LedgerStore(std::shared_ptr<LedgerStoreState> state) noexcept;

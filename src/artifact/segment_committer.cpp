@@ -17,8 +17,8 @@ SegmentCommitter::SegmentCommitter(
   reservation_(std::move(reservation)) {}
 
 Result<std::unique_ptr<SegmentCommitter>> SegmentCommitter::create(
-    std::unique_ptr<SealedFiles> files, SegmentManifest manifest, const ManifestLimits& limits,
-    CommitReservation reservation) {
+    std::unique_ptr<SealedFiles>& files, const SegmentManifest& manifest,
+    const ManifestLimits& limits, CommitReservation& reservation) {
     if (!files || reservation.registration.segment_id() != manifest.identity.segment_id ||
         files->segment_id() != manifest.identity.segment_id ||
         !(files->volume_id() == manifest.identity.volume_id)) {

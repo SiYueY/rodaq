@@ -102,13 +102,14 @@ TEST(SegmentMetadata, ExactOnceSettlementBuildsTheAcceptedDescriptorEpochAndReco
     EXPECT_EQ(metadata.capture_manifest(files()).status().code(), StatusCode::InvalidState);
     ASSERT_TRUE(written.mark_native_entered().ok());
     EXPECT_EQ(written.mark_native_entered().status().code(), StatusCode::InvalidState);
-    ASSERT_TRUE(written.finish(RecordSettlementKind::Written).ok());
+    ASSERT_TRUE(written.finish(RecordSettlementKind::Written, 17).ok());
     EXPECT_EQ(
-        written.finish(RecordSettlementKind::Written).status().code(), StatusCode::InvalidState);
-    ASSERT_TRUE(failed.finish(RecordSettlementKind::KnownFailed).ok());
+        written.finish(RecordSettlementKind::Written, 0).status().code(), StatusCode::InvalidState);
+    ASSERT_TRUE(failed.finish(RecordSettlementKind::KnownFailed, 0).ok());
     metadata.close_admission();
     auto captured = metadata.capture_manifest(files());
     ASSERT_TRUE(captured.ok());
+    EXPECT_EQ(captured.value().logical_bytes, 17);
     EXPECT_EQ(captured.value().coverage[0].accepted, 2);
     EXPECT_EQ(captured.value().coverage[0].written, 1);
     EXPECT_EQ(captured.value().coverage[0].known_failed, 1);
@@ -134,14 +135,14 @@ TEST(SegmentMetadata, UnenteredRecordCannotBeWrittenOrUnknownAndPendingNativeRet
     ASSERT_TRUE(candidate.ok());
     auto claim = candidate.value().accept(1);
     EXPECT_EQ(
-        claim.finish(RecordSettlementKind::Written).status().code(), StatusCode::InvalidState);
+        claim.finish(RecordSettlementKind::Written, 0).status().code(), StatusCode::InvalidState);
     EXPECT_EQ(
-        claim.finish(RecordSettlementKind::Unknown).status().code(), StatusCode::InvalidState);
+        claim.finish(RecordSettlementKind::Unknown, 0).status().code(), StatusCode::InvalidState);
     ASSERT_TRUE(claim.mark_native_entered().ok());
     metadata.close_admission();
     EXPECT_EQ(metadata.snapshot().native_inflight, 1);
     EXPECT_EQ(metadata.capture_manifest(files()).status().code(), StatusCode::InvalidState);
-    ASSERT_TRUE(claim.finish(RecordSettlementKind::Unknown).ok());
+    ASSERT_TRUE(claim.finish(RecordSettlementKind::Unknown, 0).ok());
     EXPECT_EQ(metadata.snapshot().native_inflight, 0);
     auto captured = metadata.capture_manifest(files());
     ASSERT_TRUE(captured.ok());
@@ -208,7 +209,7 @@ TEST(SegmentMetadata, ByteAndEpochLimitsRejectBeforeAcceptAndCancelledEpochCanBe
     auto candidate = created.value().reserve_record(1, 1, changed, 100);
     ASSERT_TRUE(candidate.ok());
     auto claim = candidate.value().accept(1);
-    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed, 0).ok());
     EXPECT_EQ(
         created.value().reserve_record(1, 1, received(), 0).status().code(),
         StatusCode::ResourceExhausted);
@@ -242,7 +243,7 @@ TEST(SegmentMetadata, TransferredFailedDescriptorRetainsBoundAndUnusedReadyFacts
     auto candidate = ready.value().reserve_record(1, 1, received(), 0);
     ASSERT_TRUE(candidate.ok());
     auto claim = candidate.value().accept(1);
-    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed, 0).ok());
     ready.value().close_admission();
     auto captured = ready.value().capture_manifest(files());
     ASSERT_TRUE(captured.ok());
@@ -265,7 +266,7 @@ TEST(SegmentMetadata, ConcurrentStreamOwnersKeepExactCountsAndNoUnresolvedOrPend
             }
             auto claim = reserved.value().accept(index + 1);
             if (!claim.mark_native_entered().ok() ||
-                !claim.finish(RecordSettlementKind::Written).ok()) {
+                !claim.finish(RecordSettlementKind::Written, 0).ok()) {
                 return false;
             }
         }
@@ -305,7 +306,7 @@ TEST(SegmentMetadata, ConservativeBoundsCoverControlEscapesAndFullWidthNumericEn
         created.value().reserve_record(1, 1, clock, std::numeric_limits<std::uint64_t>::max());
     ASSERT_TRUE(candidate.ok());
     auto claim = candidate.value().accept(std::numeric_limits<std::uint64_t>::max());
-    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(claim.finish(RecordSettlementKind::KnownFailed, 0).ok());
     created.value().close_admission();
     auto proof = files();
     proof[0].relative_path = std::string(64, '\4');
@@ -333,7 +334,7 @@ TEST(SegmentMetadata, ClosingAndObserverExpirationCannotFinishTheActualInflightC
             const bool marked = owned.mark_native_entered().ok();
             entered.set_value();
             allowed.wait();
-            return marked && owned.finish(RecordSettlementKind::Written).ok();
+            return marked && owned.finish(RecordSettlementKind::Written, 0).ok();
         });
     entered.get_future().wait();
     metadata.close_admission();

@@ -30,6 +30,8 @@ artifact::SegmentManifest manifest() {
     result.identity.acquisition = {"rodaq.fake.acquisition", "1.0.0", std::string(64, 'e')};
     result.identity.storage = {"rodaq.fake.storage", "1.0.0", std::string(64, 'f')};
     result.identity.qualified_runtime_profile_id = "behavioral-fake.v1";
+    result.identity.format = "fake";
+    result.logical_bytes = 3;
     result.files = {
         {"data.bin", 3, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}};
     artifact::ManifestDescriptor descriptor;
@@ -64,7 +66,7 @@ TEST(SegmentManifest, IndependentGoldenBindsIdentityFilesDescriptorsCoverageAndP
     // Independent Python hashlib + sorted compact JSON, using the same
     // explicit ASCII fixture facts, not encoder output as golden input.
     EXPECT_EQ(
-        digest.value(), "sha256:7805e38809fc8fa2efd4e5133e2e17c48cad873c22925da911a32b162f9aa535");
+        digest.value(), "sha256:d8cb67c34f1f98282644806b22bc665142951f4a22a40717a09a3fa81dd27901");
     auto document = persistence::parse_json(encoded.value());
     ASSERT_TRUE(document.ok());
     EXPECT_EQ(document.value().at("content_digest"), digest.value());
@@ -78,6 +80,7 @@ TEST(SegmentManifest, FullWidthNumbersAndClockDiscontinuityFactsRemainExact) {
     auto value = manifest();
     value.identity.segment_id = std::numeric_limits<std::uint64_t>::max();
     value.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
+    value.logical_bytes = std::numeric_limits<std::uint64_t>::max();
     value.identity.playback_anchor.realtime_ns = std::numeric_limits<std::int64_t>::min();
     value.min_receive_realtime = std::numeric_limits<std::int64_t>::min();
     value.max_receive_realtime = std::numeric_limits<std::int64_t>::max();
@@ -90,6 +93,7 @@ TEST(SegmentManifest, FullWidthNumbersAndClockDiscontinuityFactsRemainExact) {
     ASSERT_TRUE(encoded.ok());
     auto decoded = artifact::decode_manifest(encoded.value(), {});
     ASSERT_TRUE(decoded.ok());
+    EXPECT_EQ(decoded.value().logical_bytes, value.logical_bytes);
     EXPECT_EQ(decoded.value().identity.segment_id, value.identity.segment_id);
     EXPECT_EQ(decoded.value().recording_end_ns, value.recording_end_ns);
     EXPECT_EQ(

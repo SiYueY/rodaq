@@ -259,8 +259,7 @@ protected:
             return reservation.status();
         }
         return artifact::SegmentCommitter::create(
-            std::move(files.value()), std::move(manifest.value()), {},
-            std::move(reservation.value()));
+            files.value(), manifest.value(), {}, reservation.value());
     }
 
     fs::path root_;

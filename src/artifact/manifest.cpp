@@ -181,7 +181,7 @@ void validate_identity(const ManifestIdentity& identity) {
         identity.control_generation != 0 && uuid::nonzero(identity.volume_id.value) &&
         persistence::valid_digest(identity.config_version) &&
         persistence::valid_digest(identity.effective_config_id) &&
-        valid_text(identity.qualified_runtime_profile_id, 256));
+        valid_text(identity.qualified_runtime_profile_id, 256) && valid_text(identity.format, 128));
     take(uuid::parse(identity.instance_id));
     validate_plugin(identity.acquisition);
     validate_plugin(identity.storage);
@@ -433,6 +433,8 @@ Json document(const SegmentManifest& manifest) {
         {"acquisition", plugin_document(manifest.identity.acquisition)},
         {"storage", plugin_document(manifest.identity.storage)},
         {"qualified_runtime_profile_id", manifest.identity.qualified_runtime_profile_id},
+        {"format", manifest.identity.format},
+        {"logical_bytes", std::to_string(manifest.logical_bytes)},
         {"files", std::move(files)},
         {"descriptors", std::move(descriptors)},
         {"coverage", std::move(coverage)},
@@ -526,6 +528,7 @@ Result<std::size_t> manifest_base_size_bound(
         sizing.max_receive_realtime = std::numeric_limits<std::int64_t>::min();
         sizing.recording_begin_ns = std::numeric_limits<std::uint64_t>::max();
         sizing.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
+        sizing.logical_bytes = std::numeric_limits<std::uint64_t>::max();
         auto shape = document(sizing);
         shape["content_digest"] = "sha256:" + std::string(64, '0');
         auto sizing_limits = json_limits(limits);
@@ -560,6 +563,15 @@ Result<std::size_t> manifest_descriptor_size_bound(
         return std::move(failure.status);
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> validate_manifest_limits(const ManifestLimits& limits) {
+    try {
+        valid_limits(limits);
+        return {};
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
     }
 }
 
@@ -615,6 +627,8 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
                     "acquisition",
                     "storage",
                     "qualified_runtime_profile_id",
+                    "format",
+                    "logical_bytes",
                     "files",
                     "descriptors",
                     "coverage",
@@ -647,6 +661,8 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
         manifest.identity.storage = read_plugin(value.at("storage"));
         manifest.identity.qualified_runtime_profile_id =
             text(value, "qualified_runtime_profile_id");
+        manifest.identity.format = text(value, "format");
+        manifest.logical_bytes = number(value, "logical_bytes");
         for (const auto* list : {"files", "descriptors", "coverage", "clock_epochs"}) {
             require(value.at(list).is_array());
         }

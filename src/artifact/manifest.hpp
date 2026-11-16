@@ -68,6 +68,7 @@ struct ManifestIdentity {
     plugin::PluginBinaryInfo acquisition;
     plugin::PluginBinaryInfo storage;
     std::string qualified_runtime_profile_id;
+    std::string format;
     time::PlaybackAnchor playback_anchor;
 };
 
@@ -83,6 +84,7 @@ struct SegmentManifest {
     std::int64_t max_receive_realtime{0};
     std::uint64_t recording_begin_ns{0};
     std::uint64_t recording_end_ns{0};
+    std::uint64_t logical_bytes{0};
 };
 
 struct ManifestLimits {
@@ -98,6 +100,7 @@ Result<ManifestDescriptor> capture_manifest_descriptor(
     const storage::StreamDescriptor& descriptor, std::uint64_t accepted_records,
     std::uint32_t max_schema_bytes = 1024 * 1024, std::uint32_t max_qos_profiles = 256);
 Result<void> validate_manifest_identity(const ManifestIdentity& identity);
+Result<void> validate_manifest_limits(const ManifestLimits& limits);
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits);
 
 // Conservative sizing of the frozen header / one prepared Descriptor. These

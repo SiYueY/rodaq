@@ -130,7 +130,7 @@ Result<void> RecordSettlement::mark_native_entered() {
     return {};
 }
 
-Result<void> RecordSettlement::finish(RecordSettlementKind kind) {
+Result<void> RecordSettlement::finish(RecordSettlementKind kind, std::uint64_t logical_bytes) {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -141,14 +141,20 @@ Result<void> RecordSettlement::finish(RecordSettlementKind kind) {
     if (!native_entered_ && kind != RecordSettlementKind::KnownFailed) {
         return Status(StatusCode::InvalidState, {});
     }
-    auto state = std::move(state_);
+    auto state = state_;
     std::lock_guard<std::mutex> lock(state->mutex);
+    if (kind == RecordSettlementKind::Written &&
+        logical_bytes > std::numeric_limits<std::uint64_t>::max() - state->facts.logical_bytes) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    state_.reset();
     auto& coverage = state->streams[stream_];
     if (native_entered_) {
         --state->facts.native_inflight;
     }
     switch (kind) {
         case RecordSettlementKind::Written:
+            state->facts.logical_bytes += logical_bytes;
             ++coverage.written;
             ++state->facts.written;
             break;
@@ -457,6 +463,7 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
 
             reserved_bound = facts.manifest_bytes_bound;
             manifest.identity = state_->identity;
+            manifest.logical_bytes = facts.logical_bytes;
             manifest.files = std::move(files);
             for (const auto& stream : state_->streams) {
                 if (stream.accepted != 0) {

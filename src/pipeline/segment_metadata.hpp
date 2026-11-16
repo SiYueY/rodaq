@@ -29,7 +29,7 @@ public:
 
     explicit operator bool() const noexcept;
     Result<void> mark_native_entered();
-    Result<void> finish(RecordSettlementKind kind);
+    Result<void> finish(RecordSettlementKind kind, std::uint64_t logical_bytes);
 
 private:
     friend class RecordMetadataReservation;
@@ -91,6 +91,7 @@ private:
 struct SegmentMetadataSnapshot {
     std::uint64_t accepted{0};
     std::uint64_t written{0};
+    std::uint64_t logical_bytes{0};
     std::uint64_t known_failed{0};
     std::uint64_t unknown{0};
     // Records attached to write_batch frames; not a count/proof of all Native

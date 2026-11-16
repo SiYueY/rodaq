@@ -218,7 +218,7 @@ TEST_F(AdmissionTest, AcceptedRecordOwnsCopyAndRetainsSettlementAfterQueuePop) {
     EXPECT_EQ(budget_->snapshot().records, 1);
     EXPECT_EQ(volume_->snapshot().future_bytes, 8315);
     EXPECT_EQ(gate_->snapshot().accepted_records, 1);
-    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
     record.reset();
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
@@ -326,7 +326,7 @@ TEST_F(AdmissionTest, ConcurrentProducersPublishContinuousSameStreamSequencesAnd
             if (record->acceptance_sequence != expected++) {
                 failed = true;
             }
-            if (!record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok()) {
+            if (!record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok()) {
                 failed = true;
             }
         }
@@ -391,7 +391,7 @@ TEST_F(AdmissionTest, PreparedCopyAndCommitAndFenceRollbackWorkWithAllocationDis
     EXPECT_EQ(result.value().disposition, RODAQ_SUBMIT_ACCEPTED);
     auto record = queue_->pop();
     ASSERT_TRUE(record);
-    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
     record.reset();
     ASSERT_TRUE(gate_->establish_control_fence(instance_).ok());
     admission_allocation::reject = true;
@@ -419,7 +419,8 @@ TEST_F(AdmissionTest, EpochMetadataPressureRejectsBeforeSequenceAndKeepsTheExact
     ASSERT_EQ(first.value().disposition, RODAQ_SUBMIT_ACCEPTED);
     auto first_record = queue_->pop();
     ASSERT_TRUE(first_record);
-    ASSERT_TRUE(first_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(
+        first_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
     first_record.reset();
     auto changed = received_;
     changed.epoch_id = 2;
@@ -431,7 +432,8 @@ TEST_F(AdmissionTest, EpochMetadataPressureRejectsBeforeSequenceAndKeepsTheExact
     ASSERT_EQ(second.value().disposition, RODAQ_SUBMIT_ACCEPTED);
     auto second_record = queue_->pop();
     ASSERT_TRUE(second_record);
-    ASSERT_TRUE(second_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed).ok());
+    ASSERT_TRUE(
+        second_record->settlement.finish(pipeline::RecordSettlementKind::KnownFailed, 0).ok());
     second_record.reset();
     changed.epoch_id = 3;
     changed.sample = {300, 2000, 2};
@@ -497,7 +499,8 @@ TEST_F(AdmissionTest, AcceptedCopyAndActualFileTransferAllOwnershipIntoDurableLe
     file.write(reinterpret_cast<const char*>(view.payload.data), view.payload.size);
     file.close();
     ASSERT_TRUE(file);
-    ASSERT_TRUE(record->settlement.finish(pipeline::RecordSettlementKind::Written).ok());
+    ASSERT_TRUE(
+        record->settlement.finish(pipeline::RecordSettlementKind::Written, view.payload.size).ok());
     record.reset();
     EXPECT_EQ(budget_->snapshot().records, 0);
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
@@ -515,7 +518,7 @@ TEST_F(AdmissionTest, AcceptedCopyAndActualFileTransferAllOwnershipIntoDurableLe
     auto reservation = stream_.segment->capacity.handoff_sealed(files.value()->storage_bytes());
     ASSERT_TRUE(reservation.ok());
     auto commit = artifact::SegmentCommitter::create(
-        std::move(files.value()), std::move(manifest.value()), {}, std::move(reservation.value()));
+        files.value(), manifest.value(), {}, reservation.value());
     ASSERT_TRUE(commit.ok());
     stream_.segment.reset();
     EXPECT_EQ(volume_->snapshot().orphaned_reservations, 0);

@@ -193,7 +193,7 @@ Result<void> PipelineWriter::settle(WriterStep& progress, std::uint32_t prefix, 
         const auto kind = index < prefix ? RecordSettlementKind::Written
                           : unknown      ? RecordSettlementKind::Unknown
                                          : RecordSettlementKind::KnownFailed;
-        auto settled = batch_[index].settlement.finish(kind);
+        auto settled = batch_[index].settlement.finish(kind, batch_[index].payload.size());
         if (!settled.ok()) {
             fail(StatusCode::DataLoss);
             return settled.status();
