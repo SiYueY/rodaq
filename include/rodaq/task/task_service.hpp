@@ -74,7 +74,7 @@ public:
 private:
     friend class daq::Composition;
     Result<void> close_admission();
-    Result<void> drain_shutdown();
+    Result<void> drain_shutdown(bool pending_only = false);
     Result<void> refresh_execution_facts(bool protect = false);
     bool shutdown_settled() const;
     struct State;

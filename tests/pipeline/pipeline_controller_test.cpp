@@ -435,7 +435,9 @@ protected:
         return options;
     }
 
-    void open_composition(pipeline::ReceiveClock clock = &receive_clock) {
+    void open_composition(
+        pipeline::ReceiveClock clock = &receive_clock,
+        std::chrono::nanoseconds native_timeout = 5s) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -444,6 +446,7 @@ protected:
         segment_ids_ = std::move(ids.value());
         auto options = composition_options();
         options.sample = clock;
+        options.settings.native_timeout = native_timeout;
         auto composition = rodaq::daq::Composition::create(std::move(options));
         ASSERT_TRUE(composition.ok());
         composition_ = std::move(composition.value());
@@ -828,6 +831,45 @@ TEST_F(PipelineControllerTest, StartupInitializesActualAuthoritiesAndRecordsWith
     EXPECT_FALSE(reopened.ok());
     EXPECT_EQ(reopened.status().code(), StatusCode::Unavailable);
     EXPECT_TRUE(fs::is_directory(root_ / "startup-volume/.rodaq/artifacts/1"));
+}
+
+TEST_F(PipelineControllerTest, MaintenanceSettlesLateCloseWithoutRewritingFailedPauseOrIntent) {
+    open_composition(&receive_clock, 30ms);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json =
+        R"({"streams":["first","second"],"mode":"late_shutdown","delay_ms":200})";
+    auto& service = composition_->tasks();
+    auto id = service.create_task(config, {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(10ms);
+    auto pause = service.pause(id, {"pause"}, {true, 2});
+    ASSERT_TRUE(pause.ok());
+    EXPECT_FALSE(wait_composed(id, pause.value()));
+    auto pending = service.get_task(id).value();
+    EXPECT_EQ(pending.execution_condition, rodaq::ExecutionCondition::PendingCleanup);
+    EXPECT_EQ(pending.desired_state, rodaq::DesiredState::Paused);
+    EXPECT_EQ(pending.control_generation, 3);
+    EXPECT_EQ(
+        service.get_operation(id, pause.value()).value().state, rodaq::OperationState::Failed);
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        pending = service.get_task(id).value();
+        if (pending.execution_condition == rodaq::ExecutionCondition::Idle) {
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    } while (std::chrono::steady_clock::now() < end);
+    EXPECT_EQ(pending.execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(pending.desired_state, rodaq::DesiredState::Paused);
+    EXPECT_EQ(pending.control_generation, 3);
+    EXPECT_EQ(
+        service.get_operation(id, pause.value()).value().state, rodaq::OperationState::Failed);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
 }
 
 TEST_F(PipelineControllerTest, StartupExclusiveLeasePersistsThroughShutdownUntilOwnerDestruction) {

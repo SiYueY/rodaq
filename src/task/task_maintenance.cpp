@@ -24,7 +24,7 @@ Result<void> TaskService::close_admission() {
     return {};
 }
 
-Result<void> TaskService::drain_shutdown() {
+Result<void> TaskService::drain_shutdown(bool pending_only) {
     try {
         std::vector<std::shared_ptr<task::TaskEntry>> entries;
         {
@@ -41,6 +41,32 @@ Result<void> TaskService::drain_shutdown() {
                 std::lock_guard<std::mutex> control(entry->control_mutex);
                 if (entry->quiescent || entry->closing) {
                     continue;
+                }
+                if (pending_only) {
+                    if (entry->persisting || entry->controller->persistence_protected() ||
+                        !entry->execution ||
+                        entry->execution->condition(
+                            entry->controller->durable_record()->desired_state) !=
+                            ExecutionCondition::PendingCleanup) {
+                        continue;
+                    }
+                    bool ready = true;
+                    std::lock_guard<std::mutex> registered(entry->execution->registration);
+                    for (const auto& selected : entry->execution->pipelines) {
+                        auto facts = selected.controller->snapshot();
+                        if (!facts.ok() || !facts.value().quiescence.control_fenced ||
+                            facts.value().quiescence.control_inflight != 0 ||
+                            facts.value().quiescence.writer_inflight != 0 ||
+                            facts.value().quiescence.callbacks != 0 ||
+                            facts.value().quiescence.commit_inflight != 0 ||
+                            facts.value().quiescence.admission_candidates != 0) {
+                            ready = false;
+                            break;
+                        }
+                    }
+                    if (!ready) {
+                        continue;
+                    }
                 }
                 if (!entry->execution || !state_->options->execution) {
                     // A protected recovered Task is not proof of quiescence.

@@ -61,9 +61,9 @@ public:
             }
             mode_ = config.value("mode", std::string("normal"));
             constexpr std::string_view modes[]{
-                "normal",       "fail_prepare",    "fail_start",     "late_start",
-                "fail_quiesce", "fail_shutdown",   "terminal_event", "invalid_attempt",
-                "stale_token",  "oversize_attempt"};
+                "normal",       "fail_prepare",     "fail_start",     "late_start",
+                "fail_quiesce", "fail_shutdown",    "terminal_event", "invalid_attempt",
+                "stale_token",  "oversize_attempt", "late_shutdown"};
             if (std::find(std::begin(modes), std::end(modes), mode_) == std::end(modes)) {
                 return Status(StatusCode::InvalidArgument, {});
             }
@@ -228,6 +228,11 @@ public:
     }
 
     Result<void> shutdown(Deadline deadline) {
+        if (mode_ == "late_shutdown") {
+            // Framework close is single-flight. Observer expiry neither calls
+            // this twice nor proves that the delayed Native owner returned.
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
+        }
         auto stopped = quiesce(deadline);
         if (!stopped.ok()) {
             return stopped.status();

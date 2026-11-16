@@ -269,7 +269,13 @@ Result<void> Composition::observe() {
     if (!updated.ok()) {
         return updated.status();
     }
-    return state_->tasks->refresh_execution_facts();
+    auto refreshed = state_->tasks->refresh_execution_facts();
+    if (!refreshed.ok()) {
+        return refreshed.status();
+    }
+    // One actual cleanup worker and one per-Task flight. Retry only retained,
+    // fenced cleanup; never manufacture a new lifecycle request or re-open Run.
+    return state_->tasks->drain_shutdown(true);
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {
