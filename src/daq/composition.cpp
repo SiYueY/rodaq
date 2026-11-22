@@ -340,10 +340,9 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         return controls.status();
     }
     if (!state_->tasks->shutdown_settled()) {
-        // A failed SDK create has no public per-create completion handle.
-        // Only actual Manager shutdown can resolve its private Native owner.
-        // Do this while cleanup/Writer domains are still available, then let
-        // the same Task owners reconcile that evidence rather than asserting
+        // Private failed-initialization cleanup is still unproven. Observe
+        // actual Manager shutdown while cleanup/Writer domains remain available.
+        // Let the same Task owners reconcile that evidence rather than asserting
         // that a failed create necessarily left no instance behind.
         auto native_deadline = plugin::Deadline::after(std::max(
             std::chrono::nanoseconds::zero(), std::chrono::duration_cast<std::chrono::nanoseconds>(

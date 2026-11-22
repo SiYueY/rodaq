@@ -824,6 +824,59 @@ TEST_F(PipelineControllerTest, MultiplePipelinesPauseResumeAndCommitTheirOwnAcce
     EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 4);
 }
 
+TEST_F(
+    PipelineControllerTest, PluginCapacityRejectionCanStopFailedTaskWhileHealthyTaskKeepsRunning) {
+    open_composition(&receive_clock, 5s, 2, 2);
+    ASSERT_TRUE(composition_);
+    auto busy = formal_config();
+    busy.pipelines.push_back(busy.pipelines.front());
+    auto& service = composition_->tasks();
+    const auto healthy = service.create_task(busy, {"healthy"}).value();
+    const auto rejected = service.create_task(formal_config(), {"rejected"}).value();
+    const auto start = service.start(healthy, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(healthy, start.value()));
+    ASSERT_TRUE(wait_composed_records(healthy));
+    const auto exhausted = service.start(rejected, {"start"}, {true, 1});
+    ASSERT_TRUE(exhausted.ok());
+    const auto failed = wait_composed_operation(rejected, exhausted.value());
+    ASSERT_TRUE(failed.ok());
+    EXPECT_EQ(failed.value().state, rodaq::OperationState::Failed);
+    const auto rejected_runtime = service.get_runtime_snapshot(rejected).value();
+    ASSERT_EQ(rejected_runtime.pipelines.size(), 1);
+    ASSERT_TRUE(rejected_runtime.pipelines[0].facts);
+    EXPECT_EQ(
+        rejected_runtime.pipelines[0].facts->prepare_status,
+        std::optional<StatusCode>{StatusCode::ResourceExhausted});
+    EXPECT_EQ(rejected_runtime.pipelines[0].facts->accepted_records, 0);
+    const auto before = service.get_runtime_snapshot(healthy).value();
+    const auto stop = service.stop(rejected, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    const auto stopped = wait_composed_operation(rejected, stop.value());
+    ASSERT_TRUE(stopped.ok());
+    EXPECT_EQ(stopped.value().state, rodaq::OperationState::Succeeded);
+    EXPECT_EQ(
+        service.get_task(rejected).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(
+        service.get_task(healthy).value().execution_condition, rodaq::ExecutionCondition::Active);
+    EXPECT_EQ(manager_->phase(), plugin::PluginManagerPhase::Running);
+    bool advanced = false;
+    const auto limit = std::chrono::steady_clock::now() + 2s;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        const auto after = service.get_runtime_snapshot(healthy).value();
+        advanced = after.pipelines[0].facts->accepted_records >
+                       before.pipelines[0].facts->accepted_records &&
+                   after.pipelines[1].facts->accepted_records >
+                       before.pipelines[1].facts->accepted_records;
+        if (!advanced) {
+            std::this_thread::sleep_for(1ms);
+        }
+    } while (!advanced && std::chrono::steady_clock::now() < limit);
+    EXPECT_TRUE(advanced);
+    EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+}
+
 TEST_F(PipelineControllerTest, CompositionRejectsUnboundedTaskAndWriterDeploymentCapacity) {
     fs::create_directory(root_ / "service");
     fs::create_directory(root_ / "segment-ids");
@@ -1207,7 +1260,7 @@ TEST_F(PipelineControllerTest, CompositionBlockedMaintenanceDoesNotDelayCoreShut
     EXPECT_EQ(observed.status().code(), StatusCode::InvalidState);
 }
 
-TEST_F(PipelineControllerTest, CompositionFailedNativeCreationRequiresActualManagerShutdown) {
+TEST_F(PipelineControllerTest, CompositionFailedNativeCreationUsesFrameworkCleanupProof) {
     open_composition();
     ASSERT_TRUE(composition_);
     auto config = formal_config();
@@ -1223,9 +1276,20 @@ TEST_F(PipelineControllerTest, CompositionFailedNativeCreationRequiresActualMana
         service.get_operation(id, start.value()).value().status_code, StatusCode::Unavailable);
     EXPECT_NE(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
     EXPECT_NE(manager_->phase(), plugin::PluginManagerPhase::Stopped);
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!manager_->initialization_cleanup_settled() &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(manager_->initialization_cleanup_settled());
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(manager_->phase(), plugin::PluginManagerPhase::Running);
     EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
     EXPECT_EQ(manager_->phase(), plugin::PluginManagerPhase::Stopped);
-    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Stopped);
     EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
 }
 

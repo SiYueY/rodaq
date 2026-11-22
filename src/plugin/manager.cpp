@@ -7,6 +7,7 @@
 #include "lifecycle.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -299,6 +300,25 @@ bool PluginManager::restart_required() const noexcept {
     assert(state_);
     std::lock_guard<std::mutex> lock(state_->mutex);
     return state_->restart_required;
+}
+
+bool PluginManager::initialization_cleanup_settled() const noexcept {
+    assert(state_);
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->phase == PluginManagerPhase::Stopped) {
+        return true;
+    }
+    if (state_->phase != PluginManagerPhase::Running || state_->restart_required) {
+        return false;
+    }
+    // Failed initialization backing remains indexed until actual destroy and
+    // Registry release precede close's terminal publication. Unreturned creates
+    // cannot be discharged by this fact; successful Open instances are unrelated.
+    return std::none_of(
+        state_->instances.begin(), state_->instances.end(), [](const auto& instance) {
+            return instance && instance->initialization.done &&
+                   !instance->initialization.result.ok();
+        });
 }
 
 Result<void> PluginManager::shutdown(Deadline deadline) {

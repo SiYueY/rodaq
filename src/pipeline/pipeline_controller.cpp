@@ -542,12 +542,13 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
         }
         state_->source_closed = true;
     }
-    // Failed SDK create may retain private Framework initialization/cleanup.
-    // Without a public per-create completion handle, only a completed global
-    // shutdown proves that unknown ownership gone; never invent per-Task idle.
-    if (state_->creation_unresolved &&
-        state_->options.plugins->phase() != plugin::PluginManagerPhase::Stopped) {
-        return Status(StatusCode::InvalidState, {});
+    if (state_->creation_unresolved) {
+        if (!state_->options.plugins->initialization_cleanup_settled()) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        // Latch the actual proof for this returned failed create. An unrelated
+        // future failed initialization must never resurrect this obligation.
+        state_->creation_unresolved = false;
     }
     auto segment = std::atomic_load(&output->segment);
     if (segment && segment->metadata.snapshot().accepted == 0 && !state_->empty_settled) {
@@ -666,17 +667,16 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     quiet.unsettled_records = outstanding.value();
     quiet.buffered_records = state_->output->instance->records.snapshot().records;
     quiet.unsettled_descriptors = result.records.pending_descriptors;
-    quiet.settled = quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
-                    quiet.control_inflight == 0 && quiet.writer_inflight == 0 &&
-                    quiet.source_quiesced && quiet.storage_closed && quiet.callbacks == 0 &&
-                    quiet.queued_records == 0 && result.queue.reserved_slots == 0 &&
-                    quiet.unsettled_records == 0 && result.records.pending_admissions == 0 &&
-                    result.records.unresolved_owners == 0 && result.records.native_inflight == 0 &&
-                    quiet.unsettled_descriptors == 0 && quiet.admission_candidates == 0 &&
-                    quiet.buffered_records == 0 && quiet.commit_inflight == 0 &&
-                    result.successor_segment_id == 0 &&
-                    (!state_->creation_unresolved ||
-                     state_->options.plugins->phase() == plugin::PluginManagerPhase::Stopped);
+    quiet.settled =
+        quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
+        quiet.control_inflight == 0 && quiet.writer_inflight == 0 && quiet.source_quiesced &&
+        quiet.storage_closed && quiet.callbacks == 0 && quiet.queued_records == 0 &&
+        result.queue.reserved_slots == 0 && quiet.unsettled_records == 0 &&
+        result.records.pending_admissions == 0 && result.records.unresolved_owners == 0 &&
+        result.records.native_inflight == 0 && quiet.unsettled_descriptors == 0 &&
+        quiet.admission_candidates == 0 && quiet.buffered_records == 0 &&
+        quiet.commit_inflight == 0 && result.successor_segment_id == 0 &&
+        (!state_->creation_unresolved || state_->options.plugins->initialization_cleanup_settled());
     return result;
 }
 

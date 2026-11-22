@@ -1,0 +1,31 @@
+{
+  "id": "S4A-20261123-01",
+  "stage": "S4A",
+  "role": "contract-repair-verification",
+  "captured_at": "2026-11-22 16:24:59 UTC",
+  "code_base": "7014991",
+  "sources": [
+    {
+      "page_id": "417da2b2a80f81699a6eed6616aee423",
+      "last_edited_at": "2026-11-22T16:19:09.332Z",
+      "url": "https://app.notion.com/p/417da2b2a80f81699a6eed6616aee423?pvs=204"
+    },
+    {
+      "page_id": "418da2b2a80f817db957fa6f017c64bf",
+      "last_edited_at": "2026-11-14T16:47:16.580Z"
+    }
+  ],
+  "affected_boundary": "PluginManager returned-failure initialization cleanup observation; Stable C ABI unchanged",
+  "reproducer": {
+    "test": "PipelineControllerTest.PluginCapacityRejectionCanStopFailedTaskWhileHealthyTaskKeepsRunning",
+    "before_log": "build/s1/s4a-plugin-capacity-before.log",
+    "before_result": "Failed Stop and PendingCleanup despite pre-create capacity rejection"
+  },
+  "qualification": "Targeted verification only; S4A remains In Progress",
+  "evidence": [
+    "build/s1/s4a-initialization-proof-test.log",
+    "build/asan-ubsan/s4a-initialization-proof-test.log",
+    "build/s1/s4a-initialization-final-test.log",
+    "build/asan-ubsan/s4a-initialization-final-test.log"
+  ]
+}

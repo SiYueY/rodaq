@@ -60,6 +60,7 @@ TEST(PluginManagerBasic, InvalidOptionsAndExclusiveAuthority) {
     ASSERT_TRUE(manager.shutdown(soon()).ok());
     EXPECT_EQ(manager.phase(), plugin::PluginManagerPhase::Stopped);
     EXPECT_FALSE(manager.restart_required());
+    EXPECT_TRUE(manager.initialization_cleanup_settled());
 }
 
 class PluginRuntimeTest : public testing::Test {
@@ -791,6 +792,7 @@ TEST_F(PluginRuntimeTest, UnknownConfigureFaultsLibraryAndNeverPublishesOpen) {
         library.create_instance(services, config("unknown_configure")).status().code(),
         rodaq::StatusCode::Internal);
     EXPECT_TRUE(manager.restart_required());
+    EXPECT_FALSE(manager.initialization_cleanup_settled());
     EXPECT_EQ(manager.shutdown(soon()).status().code(), rodaq::StatusCode::Internal);
 }
 
@@ -880,10 +882,12 @@ TEST_F(PluginRuntimeTest, FailedConfigureKeepsCapacityUntilActualCleanupComplete
     auto library = std::move(loaded).value();
     plugin::ServiceRegistry services;
     ASSERT_TRUE(services.freeze().ok());
+    EXPECT_TRUE(manager.initialization_cleanup_settled());
     EXPECT_EQ(
         library.create_instance(services, config("configure_fail_wait")).status().code(),
         rodaq::StatusCode::Unavailable);
     EXPECT_TRUE(entered());
+    EXPECT_FALSE(manager.initialization_cleanup_settled());
     EXPECT_EQ(
         library.create_instance(services, {}).status().code(),
         rodaq::StatusCode::ResourceExhausted);
@@ -900,6 +904,7 @@ TEST_F(PluginRuntimeTest, FailedConfigureKeepsCapacityUntilActualCleanupComplete
         std::this_thread::sleep_for(1ms);
     }
     ASSERT_TRUE(replacement.has_value());
+    EXPECT_TRUE(manager.initialization_cleanup_settled());
     EXPECT_TRUE(replacement->close(soon()).ok());
     EXPECT_TRUE(manager.shutdown(soon()).ok());
 }

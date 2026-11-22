@@ -38,6 +38,9 @@ public:
     Result<PluginLibrary> load(std::string_view plugin_id, std::string_view plugin_version);
     [[nodiscard]] PluginManagerPhase phase() const noexcept;
     [[nodiscard]] bool restart_required() const noexcept;
+    // Only discharges create failures already returned to the caller. A true
+    // observation is not quiescence proof for ordinary Open instances.
+    [[nodiscard]] bool initialization_cleanup_settled() const noexcept;
     Result<void> shutdown(Deadline deadline);
 
 private:
