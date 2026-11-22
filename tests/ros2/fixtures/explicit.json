@@ -1,0 +1,35 @@
+{
+  "format_version": "1.0",
+  "domain_id": 173,
+  "executor_threads": 2,
+  "graph_poll_interval": {
+    "value": "100",
+    "unit": "ms"
+  },
+  "qos_change_debounce": {
+    "value": "50",
+    "unit": "ms"
+  },
+  "streams": [
+    {
+      "stream_key": "joint_states",
+      "topic": "/joint_states",
+      "type": "sensor_msgs/msg/JointState",
+      "qos": {
+        "mode": "explicit",
+        "depth": "16",
+        "reliability": "reliable",
+        "durability": "transient_local"
+      }
+    },
+    {
+      "stream_key": "images",
+      "topic": "/images",
+      "type": "sensor_msgs/msg/Image",
+      "qos": {
+        "mode": "adapt",
+        "depth": "4"
+      }
+    }
+  ]
+}

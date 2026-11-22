@@ -1,0 +1,13 @@
+{
+  "format_version": "1.0",
+  "streams": [
+    {
+      "stream_key": "joint_states",
+      "topic": "/joint_states",
+      "type": "sensor_msgs/msg/JointState",
+      "qos": {
+        "mode": "adapt"
+      }
+    }
+  ]
+}

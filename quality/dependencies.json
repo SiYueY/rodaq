@@ -57,6 +57,22 @@
       "source": "Prepared ROS 2 Humble package; Jazzy is rebuilt against its own prepared package",
       "purpose": "Private MCAP format writer and IWritable; no rosbag2 Recorder/storage lifecycle",
       "verification": "Native API probe, checked I/O/sidecar/capacity fixtures, independent reader and Humble/Jazzy info/play qualification"
+    },
+    {
+      "name": "rclcpp / public RMW API",
+      "version": "Humble rclcpp 16.0.21 / rmw 6.1.2; Jazzy rclcpp 28.1.22 / rmw 7.3.3",
+      "license": "Apache-2.0",
+      "source": "Prepared ROS 2 distribution packages; each distro builds its own plugin DSO",
+      "purpose": "Private Context/Node/GenericSubscription/Executor and public topic/QoS/MessageInfo mapping; no RMW private headers",
+      "verification": "Same-source Humble/Jazzy config, schema, GenericSubscription, callback/quiesce and ROS 2-to-MCAP qualification"
+    },
+    {
+      "name": "ament_index_cpp",
+      "version": "Humble 1.4.0; Jazzy 1.8.4",
+      "license": "Apache-2.0",
+      "source": "Prepared ROS 2 distribution packages",
+      "purpose": "Shared private ROS 2 interface resource lookup for complete canonical MSG/IDL definitions",
+      "verification": "Recursive/self-contained schema golden fixtures, bounded parsing and Humble/Jazzy installed-package lookup"
     }
   ],
   "test_only": [
