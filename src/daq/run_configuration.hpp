@@ -2,6 +2,8 @@
 
 #include "composition.hpp"
 
+#include <mutex>
+
 #include "../persistence/json.hpp"
 
 namespace rodaq::daq {
@@ -9,6 +11,10 @@ namespace rodaq::daq {
 struct RunResources {
     CompositionOptions options;
     std::vector<std::shared_ptr<ExecutionLane>> writers;
+    // One fixed slice per registered Task for this composition lifetime. The
+    // control catalog uses the same max_tasks bound; no Native calls under lock.
+    mutable std::mutex writer_ownership;
+    mutable std::vector<TaskId> writer_tasks;
 };
 
 // Identity excludes volatile Instance/Operation/Segment IDs and clock readings.

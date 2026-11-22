@@ -523,8 +523,8 @@ protected:
     }
 
     void open_composition(
-        pipeline::ReceiveClock clock = &receive_clock,
-        std::chrono::nanoseconds native_timeout = 5s) {
+        pipeline::ReceiveClock clock = &receive_clock, std::chrono::nanoseconds native_timeout = 5s,
+        std::size_t max_tasks = 1) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -534,6 +534,7 @@ protected:
         auto options = composition_options();
         options.sample = clock;
         options.settings.native_timeout = native_timeout;
+        options.settings.max_tasks = max_tasks;
         auto composition = rodaq::daq::Composition::create(std::move(options));
         ASSERT_TRUE(composition.ok());
         composition_ = std::move(composition.value());
@@ -684,6 +685,67 @@ protected:
     std::condition_variable resolved_changed_;
     bool resolved_{false};
 };
+
+TEST_F(PipelineControllerTest, CompositionRejectsUnboundedTaskAndWriterDeploymentCapacity) {
+    fs::create_directory(root_ / "service");
+    fs::create_directory(root_ / "segment-ids");
+    auto ids = artifact::SegmentIdStore::open(
+        root_ / "segment-ids", artifact::SegmentIdOpenMode::NewDeployment);
+    ASSERT_TRUE(ids.ok());
+    segment_ids_ = std::move(ids.value());
+    auto options = composition_options();
+    options.settings.max_tasks = 0;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.max_tasks = 17;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.max_tasks = 16;
+    options.settings.tasks.config.max_pipelines = 17;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.max_tasks = 1;
+    options.settings.tasks.config.max_pipelines = 1;
+    auto valid = rodaq::daq::Composition::create(std::move(options));
+    ASSERT_TRUE(valid.ok());
+    EXPECT_TRUE(valid.value()->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+}
+
+TEST_F(PipelineControllerTest, CompositionAllocatesIndependentWriterSlicesForTwoTasks) {
+    open_composition(&receive_clock, 5s, 2);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto first = service.create_task(formal_config(), {"create-first"}).value();
+    const auto second = service.create_task(formal_config(), {"create-second"}).value();
+    auto one = std::async(std::launch::async, [&] {
+        return service.start(first, {"start"}, {true, 1});
+    });
+    const auto two = service.start(second, {"start"}, {true, 1});
+    const auto started = one.get();
+    ASSERT_TRUE(started.ok());
+    ASSERT_TRUE(two.ok());
+    ASSERT_TRUE(wait_composed(first, started.value()));
+    ASSERT_TRUE(wait_composed(second, two.value()));
+    const auto stopped_first = service.stop(first, {"stop"}, {true, 2});
+    ASSERT_TRUE(stopped_first.ok());
+    ASSERT_TRUE(wait_composed(first, stopped_first.value()));
+    EXPECT_EQ(
+        service.get_task(second).value().execution_condition, rodaq::ExecutionCondition::Active);
+    const auto stopped_second = service.stop(second, {"stop"}, {true, 2});
+    ASSERT_TRUE(stopped_second.ok());
+    ASSERT_TRUE(wait_composed(second, stopped_second.value()));
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 2);
+    EXPECT_TRUE(
+        (artifacts.value().items[0].task_id == first &&
+         artifacts.value().items[1].task_id == second) ||
+        (artifacts.value().items[0].task_id == second &&
+         artifacts.value().items[1].task_id == first));
+    EXPECT_EQ(
+        service.create_task(formal_config(), {"third"}).status().code(),
+        StatusCode::ResourceExhausted);
+}
 
 TEST_F(PipelineControllerTest, CompositionRunsFormalLifecycleAndReadsActualCommittedFiles) {
     open_composition();

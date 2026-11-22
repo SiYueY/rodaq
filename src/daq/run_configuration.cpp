@@ -114,8 +114,25 @@ Result<task::RunInputs> resolve_run(
     pipeline::StreamIdentityStore& identities) {
     try {
         const auto& options = resources.options;
-        if (config.pipelines.size() > resources.writers.size()) {
+        const auto width = options.settings.tasks.config.max_pipelines;
+        if (width == 0 || options.settings.max_tasks == 0 || config.pipelines.size() > width ||
+            resources.writers.size() / width < options.settings.max_tasks) {
             return Status(StatusCode::ResourceExhausted, {});
+        }
+        std::size_t writer_offset = 0;
+        {
+            std::lock_guard<std::mutex> lock(resources.writer_ownership);
+            auto found = std::find(
+                resources.writer_tasks.begin(), resources.writer_tasks.end(), control.task_id);
+            if (found == resources.writer_tasks.end()) {
+                if (resources.writer_tasks.size() == options.settings.max_tasks) {
+                    return Status(StatusCode::ResourceExhausted, {});
+                }
+                resources.writer_tasks.push_back(control.task_id);
+                found = resources.writer_tasks.end() - 1;
+            }
+            writer_offset =
+                static_cast<std::size_t>(found - resources.writer_tasks.begin()) * width;
         }
         task::RunInputs result;
         result.boot = options.boot;
@@ -201,7 +218,7 @@ Result<task::RunInputs> resolve_run(
                 format->format,
                 options.clock->anchor()};
             selected.plugins = options.plugins;
-            selected.writer_lane = resources.writers[result.pipelines.size()];
+            selected.writer_lane = resources.writers[writer_offset + result.pipelines.size()];
             selected.clock = options.clock;
             selected.volume = options.volume;
             selected.capacity = options.capacity;

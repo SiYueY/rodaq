@@ -28,6 +28,8 @@ bool valid(const CompositionOptions& o) {
         o.settings.profiles.empty() || o.settings.profiles.size() > 64 ||
         o.settings.storage.empty() || o.settings.storage.size() > 64 ||
         o.settings.tasks.config.max_pipelines == 0 || o.settings.tasks.config.max_pipelines > 64 ||
+        o.settings.max_tasks == 0 || o.settings.max_tasks > 16 ||
+        o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
         o.settings.native_timeout <= std::chrono::nanoseconds::zero()) {
         return false;
     }
@@ -118,16 +120,20 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         const auto& o = state->resources->options;
         // Reserve before creating any thread so every domain has an owner even
         // if a later allocation fails. Four distinct business scheduling lanes.
-        state->lanes.reserve(4 + o.settings.tasks.config.max_pipelines);
-        state->resources->writers.reserve(o.settings.tasks.config.max_pipelines);
+        const auto writer_count = o.settings.max_tasks * o.settings.tasks.config.max_pipelines;
+        state->lanes.reserve(4 + writer_count);
+        state->resources->writers.reserve(writer_count);
+        state->resources->writer_tasks.reserve(o.settings.max_tasks);
         std::size_t writer_capacity = 2;
         for (const auto& profile : o.settings.profiles) {
             writer_capacity = std::max(
                 writer_capacity,
                 static_cast<std::size_t>(profile.instance.callback_concurrency) + 2);
         }
-        for (std::size_t i = 0; i < 4 + o.settings.tasks.config.max_pipelines; ++i) {
-            auto lane = ExecutionLane::create(1, i < 4 ? 8 : writer_capacity);
+        for (std::size_t i = 0; i < 4 + writer_count; ++i) {
+            const auto workers = i == 2 || i == 3 ? o.settings.max_tasks : 1;
+            auto lane = ExecutionLane::create(
+                workers, i < 4 ? std::max<std::size_t>(8, o.settings.max_tasks) : writer_capacity);
             if (!lane.ok()) {
                 return lane.status();
             }
@@ -173,7 +179,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         service.plugin_manager = o.plugins;
         service.create_lane = state->lanes[0];
         service.control_lane = state->lanes[1];
-        service.max_tasks = 1;
+        service.max_tasks = o.settings.max_tasks;
         service.store = o.settings.tasks;
         service.allowed_plugins = o.settings.allowed_plugins;
         service.output_roots = {o.settings.output_root};

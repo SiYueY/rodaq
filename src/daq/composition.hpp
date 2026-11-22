@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -47,6 +48,9 @@ struct DeploymentSettings {
     std::vector<StorageAdmission> storage;
     std::vector<task::AllowedPlugin> allowed_plugins;
     task::TaskStorePolicy tasks;
+    // Registered Task capacity: 1..16; total preallocated Writer lanes <=256.
+    // Each Task owns a full max_pipelines slice, including while it is idle.
+    std::size_t max_tasks{1};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
 };
 
@@ -69,7 +73,7 @@ struct CompositionOptions {
 struct StartupOptions;
 struct DeploymentLease;
 
-// Single-Task, single-Volume S2 composition. Owns fixed, separate control,
+// Bounded Task, single-Volume composition. Owns fixed, separate control,
 // create, prepare, cleanup and per-Pipeline Writer domains. No implicit monitor
 // thread: the daemon explicitly schedules observe() on maintenance capacity.
 class Composition {
