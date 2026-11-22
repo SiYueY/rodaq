@@ -179,10 +179,9 @@ Result<SegmentIdRange> SegmentIdStore::reserve(std::uint32_t count) {
     if (count == 0) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    std::unique_lock<std::mutex> lock(state_->execution, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
+    // Dedicated persistence serialization, never a structural/Admission lock.
+    // Independent Task preparations share this deployment-wide authority.
+    std::lock_guard<std::mutex> lock(state_->execution);
     if (state_->protected_state) {
         return Status(StatusCode::Unavailable, {});
     }

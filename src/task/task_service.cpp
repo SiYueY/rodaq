@@ -450,9 +450,9 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         }
         if (options.execution) {
             const auto& execution = *options.execution;
-            if (options.max_tasks != 1 || !execution.resolve || !execution.commit ||
-                !execution.reserve_segment || !execution.preparation_lane ||
-                !execution.cleanup_lane || execution.preparation_lane == execution.cleanup_lane ||
+            if (!execution.resolve || !execution.commit || !execution.reserve_segment ||
+                !execution.preparation_lane || !execution.cleanup_lane ||
+                execution.preparation_lane == execution.cleanup_lane ||
                 execution.preparation_lane == options.control_lane ||
                 execution.preparation_lane == options.create_lane ||
                 execution.cleanup_lane == options.control_lane ||
@@ -463,7 +463,7 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             }
             for (const auto& domain : {execution.preparation_lane, execution.cleanup_lane}) {
                 const auto capacity = domain->snapshot();
-                if (!capacity.accepting || capacity.worker_count != 1 ||
+                if (!capacity.accepting || capacity.worker_count < options.max_tasks ||
                     capacity.capacity < options.max_tasks) {
                     return Status(StatusCode::InvalidArgument, {});
                 }

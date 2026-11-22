@@ -29,6 +29,8 @@ public:
 
     // Runs on persistence execution, never Admission. Only durable successful
     // ranges may be consumed. Restarts abandon the entire previous range tail.
+    // Concurrent reservations serialize through actual publication; callers
+    // retain their execution owners while waiting for another persistence call.
     Result<SegmentIdRange> reserve(std::uint32_t count);
     Result<void> reconcile();
 

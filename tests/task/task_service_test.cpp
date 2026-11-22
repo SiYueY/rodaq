@@ -229,6 +229,32 @@ TEST_F(
     EXPECT_EQ(task_directories(), 0);
 }
 
+TEST_F(TaskServiceTest, NativeExecutionRequiresIndependentCapacityForEveryAdmittedTask) {
+    options_.max_tasks = 2;
+    auto single = rodaq::ExecutionLane::create(1, 8).value();
+    auto preparation = rodaq::ExecutionLane::create(2, 8).value();
+    auto cleanup = rodaq::ExecutionLane::create(2, 8).value();
+    auto execution = std::make_shared<task::RunExecutionOptions>();
+    execution->resolve = [](const auto&, const auto&, auto&) -> rodaq::Result<task::RunInputs> {
+        return rodaq::Status(StatusCode::Unavailable, {});
+    };
+    execution->commit = [](const auto&) -> rodaq::Result<void> { return {}; };
+    execution->reserve_segment = []() -> rodaq::Result<std::uint64_t> { return 1; };
+    execution->preparation_lane = single;
+    execution->cleanup_lane = cleanup;
+    options_.execution = execution;
+    EXPECT_EQ(rodaq::TaskService::open(options_).status().code(), StatusCode::InvalidArgument);
+    execution->preparation_lane = preparation;
+    execution->cleanup_lane = single;
+    EXPECT_EQ(rodaq::TaskService::open(options_).status().code(), StatusCode::InvalidArgument);
+    execution->cleanup_lane = cleanup;
+    auto admitted = rodaq::TaskService::open(options_);
+    EXPECT_TRUE(admitted.ok());
+    EXPECT_TRUE(single->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_TRUE(preparation->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_TRUE(cleanup->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+}
+
 TEST_F(TaskServiceTest, ConcurrentSameKeyCreateReturnsOneTaskAndBoundedCapacityStillAllowsRetry) {
     options_.max_tasks = 1;
     open();

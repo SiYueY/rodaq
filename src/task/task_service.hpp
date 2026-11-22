@@ -42,8 +42,9 @@ struct RunInputs {
 };
 
 struct RunExecutionOptions {
-    // S2 admits one Task and one actual worker per preparation/cleanup lane.
-    // Full multi-Task scheduling and recovery policy closure belong to S4A.
+    // Separate bounded Native domains, each with at least max_tasks workers
+    // and queue slots. A blocked Task cannot consume another Task's capacity.
+    // The resolver must supply independent actual Writer ownership per run.
     std::shared_ptr<ExecutionLane> preparation_lane;
     std::shared_ptr<ExecutionLane> cleanup_lane;
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};

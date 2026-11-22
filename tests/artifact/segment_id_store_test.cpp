@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -182,14 +183,14 @@ TEST_F(SegmentIdStoreTest, UnknownNamespaceFilesAndSymlinkAuthorityAreNotSilentl
         StatusCode::DataLoss);
 }
 
-TEST_F(SegmentIdStoreTest, ActualPersistenceFlightExcludesAnotherReserveAndReconciliation) {
-    bool armed = false;
+TEST_F(SegmentIdStoreTest, ConcurrentReservationsSerializeAndReconciliationObservesBusy) {
+    std::atomic<bool> armed{false};
     std::promise<void> entered;
     std::promise<void> release;
     auto allowed = release.get_future().share();
     auto opened = SegmentIdStore::open(
         root_, SegmentIdOpenMode::NewDeployment, [&](persistence::FileStep step) {
-            if (armed && step == persistence::FileStep::SyncFile) {
+            if (step == persistence::FileStep::SyncFile && armed.exchange(false)) {
                 entered.set_value();
                 allowed.wait();
             }
@@ -201,8 +202,9 @@ TEST_F(SegmentIdStoreTest, ActualPersistenceFlightExcludesAnotherReserveAndRecon
     auto started = entered.get_future();
     const bool inside = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
     EXPECT_TRUE(inside);
+    auto second = std::async(std::launch::async, [&] { return opened.value()->reserve(1); });
     if (inside) {
-        EXPECT_EQ(opened.value()->reserve(1).status().code(), StatusCode::Conflict);
+        EXPECT_EQ(second.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
         EXPECT_EQ(opened.value()->reconcile().status().code(), StatusCode::Conflict);
     }
     release.set_value();
@@ -210,6 +212,10 @@ TEST_F(SegmentIdStoreTest, ActualPersistenceFlightExcludesAnotherReserveAndRecon
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.value().begin, 1);
     EXPECT_EQ(result.value().end_exclusive, 3);
+    const auto following = second.get();
+    ASSERT_TRUE(following.ok());
+    EXPECT_EQ(following.value().begin, 3);
+    EXPECT_EQ(following.value().end_exclusive, 4);
 }
 
 }  // namespace

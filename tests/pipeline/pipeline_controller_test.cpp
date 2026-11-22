@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <future>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <condition_variable>
@@ -406,7 +407,8 @@ protected:
     void open_service(
         std::function<int(rodaq::task::ServiceFileDomain, rodaq::persistence::FileStep)> faults =
             {},
-        std::chrono::nanoseconds request_wait = 30s) {
+        std::chrono::nanoseconds request_wait = 30s, std::size_t max_tasks = 1,
+        std::function<void(rodaq::TaskId)> before_resolve = {}) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -415,7 +417,7 @@ protected:
         segment_ids_ = std::move(ids.value());
         // Actual scheduling domains, independently drainable from the Writer.
         for (unsigned i = 0; i < 4; ++i) {
-            auto lane = rodaq::ExecutionLane::create(1, 8);
+            auto lane = rodaq::ExecutionLane::create(i < 2 ? max_tasks : 1, 8);
             ASSERT_TRUE(lane.ok());
             service_lanes_.push_back(std::move(lane.value()));
         }
@@ -424,7 +426,7 @@ protected:
         options.plugin_manager = manager_;
         options.file_faults = std::move(faults);
         options.request_wait = request_wait;
-        options.max_tasks = 1;
+        options.max_tasks = max_tasks;
         options.create_lane = service_lanes_[2];
         options.control_lane = service_lanes_[3];
         options.resource_profiles = {{"basic", options_.envelope.max_segment_physical_bytes}};
@@ -438,10 +440,37 @@ protected:
         auto resources = std::make_shared<rodaq::daq::RunResources>();
         resources->options = composition_options();
         resources->writers = {lane_};
-        execution->resolve = [this, resources](
-                                 const auto& control, const auto& config,
-                                 auto& identities) -> rodaq::Result<rodaq::task::RunInputs> {
-            auto resolved = rodaq::daq::resolve_run(*resources, control, config, identities);
+        std::vector<std::shared_ptr<rodaq::daq::RunResources>> task_resources{resources};
+        for (std::size_t i = 1; i < max_tasks; ++i) {
+            auto writer = rodaq::ExecutionLane::create(1, 8);
+            ASSERT_TRUE(writer.ok());
+            service_lanes_.push_back(writer.value());
+            auto additional = std::make_shared<rodaq::daq::RunResources>();
+            additional->options = composition_options();
+            additional->writers = {std::move(writer.value())};
+            task_resources.push_back(std::move(additional));
+        }
+        execution->resolve =
+            [this, task_resources, before_resolve, tasks = std::vector<rodaq::TaskId>{}](
+                const auto& control, const auto& config,
+                auto& identities) mutable -> rodaq::Result<rodaq::task::RunInputs> {
+            std::shared_ptr<rodaq::daq::RunResources> selected;
+            {
+                std::lock_guard<std::mutex> registered(resolved_mutex_);
+                auto found = std::find(tasks.begin(), tasks.end(), control.task_id);
+                if (found == tasks.end()) {
+                    if (tasks.size() == task_resources.size()) {
+                        return rodaq::Status(StatusCode::ResourceExhausted, {});
+                    }
+                    tasks.push_back(control.task_id);
+                    found = std::prev(tasks.end());
+                }
+                selected = task_resources[static_cast<std::size_t>(found - tasks.begin())];
+            }
+            if (before_resolve) {
+                before_resolve(control.task_id);
+            }
+            auto resolved = rodaq::daq::resolve_run(*selected, control, config, identities);
             if (resolved.ok()) {
                 std::lock_guard<std::mutex> registered(resolved_mutex_);
                 controller_ = resolved.value().pipelines[0].controller;
@@ -1715,6 +1744,84 @@ TEST_F(PipelineControllerTest, FenceDuringActualAuthorizationPublishDefeatsLateS
     EXPECT_EQ(store->load().value().run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
     EXPECT_FALSE(run->open(control).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
+}
+
+TEST_F(PipelineControllerTest, TwoTasksOwnIndependentRunControlAndCommittedArtifacts) {
+    rodaq::TaskId blocked;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto allowed = release.get_future().share();
+    open_service({}, 30s, 2, [&](rodaq::TaskId id) {
+        if (id == blocked) {
+            entered.set_value();
+            allowed.wait();
+        }
+    });
+    ASSERT_TRUE(service_);
+    auto config = formal_config();
+    const auto first = service_->create_task(config, {"create-first"}).value();
+    const auto second = service_->create_task(config, {"create-second"}).value();
+    ASSERT_FALSE(first == second);
+    blocked = first;
+
+    auto first_start = std::async(std::launch::async, [&] {
+        return service_->start(first, {"start"}, {true, 1});
+    });
+    const bool preparing = entered.get_future().wait_for(2s) == std::future_status::ready;
+    auto second_start = service_->start(second, {"start"}, {true, 1});
+    const bool second_ready = second_start.ok() && wait_operation(second, second_start.value());
+    const auto first_while_blocked = service_->get_task(first);
+    release.set_value();
+    auto started = first_start.get();
+    EXPECT_TRUE(preparing);
+    EXPECT_TRUE(second_ready);
+    ASSERT_TRUE(first_while_blocked.ok());
+    EXPECT_EQ(
+        first_while_blocked.value().execution_condition, rodaq::ExecutionCondition::Preparing);
+    ASSERT_TRUE(started.ok());
+    ASSERT_TRUE(second_start.ok());
+    ASSERT_TRUE(wait_operation(first, started.value()))
+        << static_cast<int>(service_->get_operation(first, started.value()).value().status_code);
+    ASSERT_TRUE(wait_operation(second, second_start.value())) << static_cast<int>(
+        service_->get_operation(second, second_start.value()).value().status_code);
+    EXPECT_EQ(
+        service_->get_task(first).value().execution_condition, rodaq::ExecutionCondition::Active);
+    EXPECT_EQ(
+        service_->get_task(second).value().execution_condition, rodaq::ExecutionCondition::Active);
+
+    const auto paused = service_->pause(first, {"pause"}, {true, 2});
+    ASSERT_TRUE(paused.ok());
+    ASSERT_TRUE(wait_operation(first, paused.value()));
+    EXPECT_EQ(service_->get_task(first).value().desired_state, rodaq::DesiredState::Paused);
+    EXPECT_EQ(service_->get_task(second).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(service_->get_task(second).value().control_generation, 2);
+    EXPECT_EQ(
+        service_->get_task(second).value().execution_condition, rodaq::ExecutionCondition::Active);
+    EXPECT_EQ(
+        service_->get_operation(second, started.value()).status().code(), StatusCode::NotFound);
+
+    const auto second_stop = service_->stop(second, {"stop"}, {true, 2});
+    ASSERT_TRUE(second_stop.ok());
+    ASSERT_TRUE(wait_operation(second, second_stop.value()));
+    const auto first_stop = service_->stop(first, {"stop"}, {true, 3});
+    ASSERT_TRUE(first_stop.ok());
+    ASSERT_TRUE(wait_operation(first, first_stop.value()));
+    EXPECT_EQ(service_->start(first, {"start"}, {true, 1}).value(), started.value());
+    EXPECT_EQ(service_->start(second, {"start"}, {true, 1}).value(), second_start.value());
+    EXPECT_EQ(service_->list_operations(first, {}).value().items.size(), 3);
+    EXPECT_EQ(service_->list_operations(second, {}).value().items.size(), 2);
+    const auto artifacts = artifacts_->query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 2);
+    EXPECT_TRUE(
+        (artifacts.value().items[0].task_id == first &&
+         artifacts.value().items[1].task_id == second) ||
+        (artifacts.value().items[0].task_id == second &&
+         artifacts.value().items[1].task_id == first));
+    EXPECT_EQ(
+        service_->get_task(first).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(
+        service_->get_task(second).value().execution_condition, rodaq::ExecutionCondition::Idle);
 }
 
 TEST_F(
