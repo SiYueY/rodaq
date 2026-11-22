@@ -56,6 +56,7 @@ struct StreamRuntimeSnapshot {
 struct PipelineRuntimeFacts {
     std::string instance_id;
     ControlGeneration control_generation{0};
+    std::optional<StatusCode> prepare_status;
     bool admission_open{false};
     bool quiescent{false};
     StatusCode writer_failure{StatusCode::Ok};

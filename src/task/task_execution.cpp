@@ -257,6 +257,13 @@ void TaskService::State::PrepareJob::run() noexcept {
                                         ? run->prepare(deadline.value())
                                         : Result<task::RunPrepareResult>(deadline.status());
                     if (prepared.ok()) {
+                        {
+                            std::lock_guard<std::mutex> registered(execution->registration);
+                            for (std::size_t i = 0; i < execution->pipelines.size(); ++i) {
+                                execution->pipelines[i].prepare_status =
+                                    prepared.value().pipelines[i];
+                            }
+                        }
                         std::lock_guard<std::mutex> recovery(entry->recovery_execution);
                         auto checkpoint = run->checkpoint_prepared();
                         if (!checkpoint.ok()) {

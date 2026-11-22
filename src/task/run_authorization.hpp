@@ -15,6 +15,7 @@ struct RunPipeline {
     std::shared_ptr<pipeline::PipelineController> controller;
     std::string effective_config_id;
     bool required{true};
+    std::optional<StatusCode> prepare_status{};
 };
 
 struct RunPrepareResult {

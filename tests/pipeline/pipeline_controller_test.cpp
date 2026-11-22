@@ -31,6 +31,7 @@
 #include <vector>
 #include <fstream>
 #include <thread>
+#include <tuple>
 
 namespace {
 namespace pipeline = rodaq::pipeline;
@@ -531,7 +532,7 @@ protected:
 
     void open_composition(
         pipeline::ReceiveClock clock = &receive_clock, std::chrono::nanoseconds native_timeout = 5s,
-        std::size_t max_tasks = 1) {
+        std::size_t max_tasks = 1, std::size_t max_pipelines = 1) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -542,19 +543,45 @@ protected:
         options.sample = clock;
         options.settings.native_timeout = native_timeout;
         options.settings.max_tasks = max_tasks;
+        options.settings.tasks.config.max_pipelines = max_pipelines;
         auto composition = rodaq::daq::Composition::create(std::move(options));
         ASSERT_TRUE(composition.ok());
         composition_ = std::move(composition.value());
     }
 
-    bool wait_composed(rodaq::TaskId task, rodaq::OperationId operation) {
+    rodaq::Result<rodaq::OperationSnapshot> wait_composed_operation(
+        rodaq::TaskId task, rodaq::OperationId operation) {
         const auto end = std::chrono::steady_clock::now() + 3s;
         do {
             auto actual = composition_->tasks().get_operation(task, operation);
             if (actual.ok() && rodaq::task::terminal(actual.value().state)) {
-                return actual.value().state == rodaq::OperationState::Succeeded;
+                return actual;
             }
             std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < end);
+        return rodaq::Status(StatusCode::DeadlineExceeded, {});
+    }
+
+    bool wait_composed(rodaq::TaskId task, rodaq::OperationId operation) {
+        const auto actual = wait_composed_operation(task, operation);
+        return actual.ok() && actual.value().state == rodaq::OperationState::Succeeded;
+    }
+
+    bool wait_composed_records(rodaq::TaskId task) {
+        const auto end = std::chrono::steady_clock::now() + 3s;
+        do {
+            if (!composition_->observe().ok()) {
+                return false;
+            }
+            const auto runtime = composition_->tasks().get_runtime_snapshot(task);
+            if (runtime.ok() && std::all_of(
+                                    runtime.value().pipelines.begin(),
+                                    runtime.value().pipelines.end(), [](const auto& row) {
+                                        return row.facts && row.facts->accepted_records != 0;
+                                    })) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
         } while (std::chrono::steady_clock::now() < end);
         return false;
     }
@@ -693,6 +720,109 @@ protected:
     std::condition_variable resolved_changed_;
     bool resolved_{false};
 };
+
+class CompositionPolicyTest : public PipelineControllerTest,
+                              public testing::WithParamInterface<std::tuple<bool, bool>> {};
+
+TEST_P(CompositionPolicyTest, FormalPrepareBarrierUsesRequiredAndBestEffortPolicy) {
+    const auto [best_effort, failed_required] = GetParam();
+    open_composition(&receive_clock, 5s, 1, 2);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.start_policy =
+        best_effort ? rodaq::StartPolicyMode::BestEffort : rodaq::StartPolicyMode::AllRequired;
+    auto failed = config.pipelines.front();
+    failed.required = failed_required;
+    failed.acquisition.json = R"({"streams":["first","second"],"mode":"fail_prepare"})";
+    config.pipelines.push_back(std::move(failed));
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto terminal = wait_composed_operation(id, start.value());
+    ASSERT_TRUE(terminal.ok());
+    const bool allowed = best_effort || !failed_required;
+    EXPECT_EQ(
+        terminal.value().state,
+        allowed ? rodaq::OperationState::PartiallySucceeded : rodaq::OperationState::Failed);
+    const auto task = service.get_task(id).value();
+    EXPECT_EQ(task.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(
+        task.execution_condition,
+        allowed ? rodaq::ExecutionCondition::Degraded : rodaq::ExecutionCondition::Protected);
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_EQ(runtime.pipelines.size(), 2);
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    ASSERT_TRUE(runtime.pipelines[1].facts);
+    EXPECT_EQ(
+        runtime.pipelines[0].facts->prepare_status, std::optional<StatusCode>{StatusCode::Ok});
+    EXPECT_EQ(
+        runtime.pipelines[1].facts->prepare_status,
+        std::optional<StatusCode>{StatusCode::InvalidState});
+    EXPECT_EQ(runtime.pipelines[0].facts->admission_open, allowed);
+    EXPECT_FALSE(runtime.pipelines[1].facts->admission_open);
+    EXPECT_EQ(runtime.pipelines[1].facts->accepted_records, 0);
+    if (!allowed) {
+        EXPECT_EQ(runtime.pipelines[0].facts->accepted_records, 0);
+        EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
+    }
+    EXPECT_EQ(service.start(id, {"start"}, {true, 1}).value(), start.value());
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RequiredAndPolicy, CompositionPolicyTest, testing::Combine(testing::Bool(), testing::Bool()));
+
+TEST_F(PipelineControllerTest, MultiplePipelinesPauseResumeAndCommitTheirOwnAcceptedSets) {
+    open_composition(&receive_clock, 5s, 1, 2);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines.push_back(config.pipelines.front());
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto running = service.get_runtime_snapshot(id).value();
+    ASSERT_EQ(running.pipelines.size(), 2);
+    EXPECT_NE(running.pipelines[0].pipeline_id, running.pipelines[1].pipeline_id);
+    EXPECT_NE(running.pipelines[0].streams[0].stream_id, running.pipelines[1].streams[0].stream_id);
+    const auto pause = service.pause(id, {"pause"}, {true, 2});
+    ASSERT_TRUE(pause.ok());
+    ASSERT_TRUE(wait_composed(id, pause.value()));
+    const auto paused = service.get_runtime_snapshot(id).value();
+    for (const auto& row : paused.pipelines) {
+        ASSERT_TRUE(row.facts);
+        EXPECT_TRUE(row.facts->quiescent);
+        EXPECT_GT(row.facts->accepted_records, 0);
+        EXPECT_EQ(row.facts->accepted_records, row.facts->written_records);
+    }
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
+    const auto resume = service.resume(id, {"resume"}, {true, 3});
+    ASSERT_TRUE(resume.ok());
+    ASSERT_TRUE(wait_composed(id, resume.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto resumed = service.get_runtime_snapshot(id).value();
+    for (std::size_t i = 0; i < resumed.pipelines.size(); ++i) {
+        ASSERT_TRUE(resumed.pipelines[i].facts);
+        EXPECT_NE(resumed.pipelines[i].facts->instance_id, paused.pipelines[i].facts->instance_id);
+    }
+    const auto stop = service.stop(id, {"stop"}, {true, 4});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto ended = service.get_runtime_snapshot(id).value();
+    for (const auto& row : ended.pipelines) {
+        ASSERT_TRUE(row.facts);
+        EXPECT_TRUE(row.facts->quiescent);
+        EXPECT_EQ(row.facts->accepted_records, row.facts->written_records);
+        EXPECT_EQ(row.facts->data_impact, rodaq::DataImpact::None);
+    }
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 4);
+}
 
 TEST_F(PipelineControllerTest, CompositionRejectsUnboundedTaskAndWriterDeploymentCapacity) {
     fs::create_directory(root_ / "service");

@@ -96,6 +96,7 @@ Result<TaskRuntimeSnapshot> capture_task_runtime(
                 PipelineRuntimeFacts facts;
                 facts.instance_id = pipeline::to_string(source.identity.instance_id);
                 facts.control_generation = source.identity.control_generation;
+                facts.prepare_status = observed[at].prepare_status;
                 facts.admission_open = source.gate.open && !source.gate.control_fence;
                 facts.quiescent = source.quiescence.settled;
                 facts.writer_failure = source.failure;
