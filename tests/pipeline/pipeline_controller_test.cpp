@@ -32,6 +32,9 @@
 #include <fstream>
 #include <thread>
 #include <tuple>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 namespace pipeline = rodaq::pipeline;
@@ -99,6 +102,7 @@ bool fake_footer_written(const fs::path& directory) {
 
 class PipelineControllerTest : public testing::Test {
 protected:
+    bool lifecycle_fixture_{false};
     struct ReadControl {
         std::atomic<bool> block{false};
         std::mutex mutex;
@@ -120,16 +124,21 @@ protected:
         fs::copy(
             RODAQ_PIPELINE_ACQUISITION_PACKAGE, root_ / "packages/acquisition",
             fs::copy_options::recursive);
+        if (lifecycle_fixture_) {
+            fs::copy(
+                RODAQ_PIPELINE_LIFECYCLE_PACKAGE, root_ / "packages/lifecycle",
+                fs::copy_options::recursive);
+        }
         for (const auto& entry : fs::recursive_directory_iterator(root_ / "packages")) {
             fs::permissions(entry.path(), fs::perms::owner_read | fs::perms::owner_exec);
         }
         fs::permissions(root_ / "packages", fs::perms::owner_read | fs::perms::owner_exec);
         plugin::PluginManagerOptions plugins;
         plugins.search_paths = {root_ / "packages"};
-        plugins.max_loaded_plugins = 2;
+        plugins.max_loaded_plugins = lifecycle_fixture_ ? 3 : 2;
         plugins.max_instances = 4;
         plugins.max_config_size = 4096;
-        plugins.shutdown_timeout = 2s;
+        plugins.shutdown_timeout = lifecycle_fixture_ ? 10s : 2s;
         auto manager = plugin::PluginManager::create(std::move(plugins));
         ASSERT_TRUE(manager.ok());
         manager_ = std::make_shared<plugin::PluginManager>(std::move(manager.value()));
@@ -442,6 +451,10 @@ protected:
         options.allowed_plugins = {
             {"rodaq.fake.acquisition", "1.0.0", rodaq::task::AdmissionRole::Acquisition},
             {"rodaq.fake.storage", "1.0.0", rodaq::task::AdmissionRole::Storage}};
+        if (lifecycle_fixture_) {
+            options.allowed_plugins.push_back(
+                {"com.example.lifecycle", "1.0.0", rodaq::task::AdmissionRole::Acquisition});
+        }
         auto execution = std::make_shared<rodaq::task::RunExecutionOptions>();
         execution->preparation_lane = service_lanes_[0];
         execution->cleanup_lane = service_lanes_[1];
@@ -720,6 +733,99 @@ protected:
     std::condition_variable resolved_changed_;
     bool resolved_{false};
 };
+
+class CleanupSchedulingTest : public PipelineControllerTest {
+protected:
+    void SetUp() override {
+        lifecycle_fixture_ = true;
+        PipelineControllerTest::SetUp();
+    }
+};
+
+TEST_F(CleanupSchedulingTest, SupersedingStopSerializesCleanupWhileSiblingTaskStops) {
+    std::future<rodaq::Result<rodaq::OperationId>> first_stop;
+    std::future<rodaq::Result<rodaq::OperationId>> sibling_stop;
+    struct ShutdownGate {
+        fs::path path;
+        bool released{false};
+        bool release() {
+            if (released) {
+                return true;
+            }
+            const auto deadline = std::chrono::steady_clock::now() + 2s;
+            do {
+                const auto fd = open(path.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+                if (fd >= 0) {
+                    const char byte = 'x';
+                    const auto count = write(fd, &byte, 1);
+                    close(fd);
+                    released = count == 1;
+                    return released;
+                }
+                std::this_thread::sleep_for(1ms);
+            } while (std::chrono::steady_clock::now() < deadline);
+            return false;
+        }
+
+        ~ShutdownGate() { (void)release(); }
+    } gate{root_ / "cleanup.gate"};
+    ASSERT_EQ(mkfifo(gate.path.c_str(), 0600), 0);
+    open_service({}, 10s, 2);
+    ASSERT_TRUE(service_);
+    const auto sibling = service_->create_task(formal_config(), {"sibling"}).value();
+    const auto running = service_->start(sibling, {"start"}, {true, 1});
+    ASSERT_TRUE(running.ok());
+    ASSERT_TRUE(wait_operation(sibling, running.value()));
+    auto broken = formal_config();
+    broken.pipelines[0].acquisition = {
+        "com.example.lifecycle", "1.0.0",
+        rodaq::persistence::Json{
+            {"mode", "shutdown_wait"},
+            {"gate", gate.path.string()},
+            {"events", (root_ / "cleanup.events").string()}}
+            .dump()};
+    const auto first = service_->create_task(broken, {"first"}).value();
+    const auto starting = service_->start(first, {"start"}, {true, 1});
+    ASSERT_TRUE(starting.ok());
+    const auto entered_by = std::chrono::steady_clock::now() + 2s;
+    while (!fs::exists(gate.path.string() + ".entered") &&
+           std::chrono::steady_clock::now() < entered_by) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(fs::exists(gate.path.string() + ".entered"));
+    first_stop = std::async(std::launch::async, [&] {
+        return service_->stop(first, {"stop"}, {true, 2});
+    });
+    const auto accepted_by = std::chrono::steady_clock::now() + 2s;
+    while (service_->get_task(first).value().control_generation != 3 &&
+           std::chrono::steady_clock::now() < accepted_by) {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(service_->get_task(first).value().control_generation, 3);
+    sibling_stop = std::async(std::launch::async, [&] {
+        return service_->stop(sibling, {"stop"}, {true, 2});
+    });
+    EXPECT_EQ(sibling_stop.wait_for(2s), std::future_status::ready);
+    const auto pending = service_->get_task(first).value();
+    EXPECT_TRUE(pending.current_operation);
+    if (pending.current_operation) {
+        EXPECT_FALSE(rodaq::task::terminal(pending.current_operation->state));
+    }
+    EXPECT_TRUE(gate.release());
+    const auto stopped = first_stop.get();
+    const auto sibling_stopped = sibling_stop.get();
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(sibling_stopped.ok());
+    EXPECT_TRUE(wait_operation(first, stopped.value()));
+    EXPECT_TRUE(wait_operation(sibling, sibling_stopped.value()));
+    EXPECT_EQ(
+        service_->get_operation(first, starting.value()).value().state,
+        rodaq::OperationState::Superseded);
+    EXPECT_EQ(
+        service_->get_task(first).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(
+        service_->get_task(sibling).value().execution_condition, rodaq::ExecutionCondition::Idle);
+}
 
 class CompositionPolicyTest : public PipelineControllerTest,
                               public testing::WithParamInterface<std::tuple<bool, bool>> {};

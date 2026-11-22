@@ -127,7 +127,7 @@ bool TaskService::State::cleanup_failed_prepare(
             std::lock_guard<std::mutex> registered(execution->registration);
             execution->draining = true;
         }
-        auto queued = options->execution->cleanup_lane->submit(job);
+        auto queued = enqueue_cleanup(entry, job);
         if (!queued.ok()) {
             CloseFlight release{*entry, execution};
             return false;
@@ -156,7 +156,7 @@ void TaskService::State::close_execution(
                 job->execution->draining = true;
             }
         }
-        auto queued = options->execution->cleanup_lane->submit(job);
+        auto queued = enqueue_cleanup(entry, job);
         if (!queued.ok()) {
             CloseFlight release{*entry, job->execution};
             job->reply->complete(queued.status());

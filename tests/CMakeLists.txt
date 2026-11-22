@@ -536,10 +536,13 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     target_link_libraries(rodaq_pipeline_controller_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
     target_compile_definitions(rodaq_pipeline_controller_test PRIVATE
         RODAQ_PIPELINE_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_PIPELINE_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0"
         RODAQ_PIPELINE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
     add_dependencies(rodaq_pipeline_controller_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_pipeline_controller_test)
     gtest_discover_tests(rodaq_pipeline_controller_test PROPERTIES TIMEOUT 30)
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/pipeline/cleanup_fixture.cmake")
     add_executable(rodaq_task_service_crash_probe task/service_crash_probe.cpp)
     target_include_directories(rodaq_task_service_crash_probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_task_service_crash_probe PRIVATE rodaq::daq nlohmann_json::nlohmann_json)

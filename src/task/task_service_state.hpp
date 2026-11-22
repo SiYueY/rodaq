@@ -62,6 +62,11 @@ struct PublishedTask {
     std::chrono::steady_clock::time_point observed_at;
 };
 
+struct CleanupWork {
+    std::uint64_t work_id{0};
+    std::shared_ptr<Work> frame;
+};
+
 struct RunExecution {
     std::mutex registration;
     std::condition_variable returned;
@@ -103,6 +108,11 @@ struct TaskEntry {
     // Failed dispatch only; an actual ended result is replayed, never re-issued.
     bool ready_to_submit{false};
     std::uint32_t closing{0};
+    // One actual Native cleanup per Task and one deferred superseding flight.
+    // Failed lane admission retains ready ownership for maintenance retry.
+    std::uint64_t cleanup_active_id{0};
+    CleanupWork cleanup_ready;
+    CleanupWork cleanup_pending;
     std::optional<OperationId> closed_acceptance;
     std::shared_ptr<const task::ControlWork> control_work;
     std::shared_ptr<Reply<OperationId>> operation_reply;
@@ -145,6 +155,9 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
     Result<std::shared_ptr<task::TaskEntry>> materialize(
         TaskId id, const task::AssignedConfig* initial);
     Result<TaskId> create(const TaskConfig& config, const RequestIdentity& request);
+    Result<void> enqueue_cleanup(
+        const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body);
+    Result<void> retry_cleanup(const std::shared_ptr<task::TaskEntry>& entry);
     void start_execution(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
     bool cleanup_failed_prepare(
         const std::shared_ptr<task::TaskEntry>& entry,
@@ -163,6 +176,14 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         TaskConfig config;
         RequestIdentity request;
         std::shared_ptr<task::Reply<TaskId>> reply;
+        void run() noexcept override;
+    };
+
+    struct CleanupFrame final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<Work> body;
+        std::uint64_t work_id{0};
         void run() noexcept override;
     };
 

@@ -82,6 +82,7 @@ target_sources(rodaq_daq PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/task/task_maintenance.cpp
     src/task/task_rotation.cpp
     src/task/task_runtime.cpp
+    src/task/cleanup_execution.cpp
     src/task/run_authorization.cpp
     src/task/task_execution.cpp src/task/task_drain.cpp src/task/task_lifecycle.cpp src/task/task_control.cpp
     src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp

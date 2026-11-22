@@ -32,6 +32,10 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
             entries = state_->entries;
         }
         for (const auto& entry : entries) {
+            auto retried = state_->retry_cleanup(entry);
+            if (!retried.ok()) {
+                return retried.status();
+            }
             auto job = std::make_shared<State::CloseJob>();
             job->owner = state_;
             job->entry = entry;
@@ -79,7 +83,7 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
                 job->execution->draining = true;
                 ++entry->closing;
             }
-            auto queued = state_->options->execution->cleanup_lane->submit(job);
+            auto queued = state_->enqueue_cleanup(entry, job);
             if (!queued.ok()) {
                 std::lock_guard<std::mutex> control(entry->control_mutex);
                 --entry->closing;
@@ -127,7 +131,9 @@ bool TaskService::shutdown_settled() const {
     std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
     for (const auto& entry : state_->entries) {
         std::lock_guard<std::mutex> control(entry->control_mutex);
-        if (!entry->quiescent || entry->closing || entry->persisting) {
+        if (!entry->quiescent || entry->closing || entry->persisting ||
+            entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
+            entry->cleanup_pending.frame) {
             return false;
         }
     }
