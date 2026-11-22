@@ -217,6 +217,7 @@ Result<task::RunInputs> resolve_run(
                 options.settings.qualified_runtime_profile_id,
                 format->format,
                 options.clock->anchor()};
+            selected.manifest.effective_configuration = std::move(frozen.value());
             selected.plugins = options.plugins;
             selected.writer_lane = resources.writers[writer_offset + result.pipelines.size()];
             selected.clock = options.clock;

@@ -54,21 +54,28 @@ void valid_limits(const ManifestLimits& limits) {
 persistence::JsonLimits json_limits(const ManifestLimits& limits) {
     return {
         limits.max_bytes,
-        5,
-        4096,
-        32,
+        36,
+        64 * 1024,
+        256,
         std::max(
-            {limits.max_files, limits.max_descriptors, limits.max_streams, limits.max_epochs,
+            {4096u, limits.max_files, limits.max_descriptors, limits.max_streams, limits.max_epochs,
              limits.max_qos_profiles}),
-        256 + static_cast<std::size_t>(limits.max_files) * 4 +
+        256 + 2 * persistence::JsonLimits{}.max_nodes +
+            static_cast<std::size_t>(limits.max_files) * 4 +
             static_cast<std::size_t>(limits.max_descriptors) *
                 (16 + static_cast<std::size_t>(limits.max_qos_profiles) * 13) +
             static_cast<std::size_t>(limits.max_streams) * 9 +
             static_cast<std::size_t>(limits.max_epochs) * 14};
 }
 
-void fields(const Json& object, std::initializer_list<const char*> names) {
-    require(object.is_object() && object.size() == names.size());
+void fields(
+    const Json& object, std::initializer_list<const char*> names,
+    std::initializer_list<const char*> optional = {}) {
+    std::size_t present = 0;
+    for (const auto* name : optional) {
+        present += object.contains(name) ? 1 : 0;
+    }
+    require(object.is_object() && object.size() == names.size() + present);
     for (const auto* name : names) {
         require(object.contains(name));
     }
@@ -186,6 +193,13 @@ void validate_identity(const ManifestIdentity& identity) {
     validate_plugin(identity.acquisition);
     validate_plugin(identity.storage);
     require(identity.playback_anchor.boot_id != 0);
+    if (identity.effective_configuration) {
+        const auto& effective = *identity.effective_configuration;
+        require(effective.is_object());
+        require(
+            take(persistence::semantic_digest(effective, "rodaq.effective-config.v1")) ==
+            identity.effective_config_id);
+    }
 }
 
 void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
@@ -417,7 +431,7 @@ Json document(const SegmentManifest& manifest) {
              {"last_receive_monotonic", std::to_string(value.last_receive_monotonic)},
              {"max_sample_error_bound_ns", std::to_string(value.max_sample_error_bound_ns)}});
     }
-    return {
+    Json result{
         {"format_version", "1.0"},
         {"segment_id", std::to_string(manifest.identity.segment_id)},
         {"task_id", to_string(manifest.identity.task_id)},
@@ -449,6 +463,10 @@ Json document(const SegmentManifest& manifest) {
         {"max_receive_realtime", std::to_string(manifest.max_receive_realtime)},
         {"recording_begin_ns", std::to_string(manifest.recording_begin_ns)},
         {"recording_end_ns", std::to_string(manifest.recording_end_ns)}};
+    if (manifest.identity.effective_configuration) {
+        result["effective_configuration"] = *manifest.identity.effective_configuration;
+    }
+    return result;
 }
 
 }  // namespace
@@ -613,36 +631,38 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
         valid_limits(limits);
         const auto value = take(persistence::parse_json(encoded, json_limits(limits)));
         fields(
-            value, {"format_version",
-                    "segment_id",
-                    "task_id",
-                    "pipeline_id",
-                    "instance_id",
-                    "segment_sequence",
-                    "config_version",
-                    "effective_config_id",
-                    "control_generation",
-                    "reset_generation_at_commit",
-                    "volume_id",
-                    "acquisition",
-                    "storage",
-                    "qualified_runtime_profile_id",
-                    "format",
-                    "logical_bytes",
-                    "files",
-                    "descriptors",
-                    "coverage",
-                    "system_boot_id",
-                    "playback_anchor_monotonic",
-                    "playback_anchor_realtime",
-                    "clock_epochs",
-                    "first_receive_monotonic",
-                    "last_receive_monotonic",
-                    "min_receive_realtime",
-                    "max_receive_realtime",
-                    "recording_begin_ns",
-                    "recording_end_ns",
-                    "content_digest"});
+            value,
+            {"format_version",
+             "segment_id",
+             "task_id",
+             "pipeline_id",
+             "instance_id",
+             "segment_sequence",
+             "config_version",
+             "effective_config_id",
+             "control_generation",
+             "reset_generation_at_commit",
+             "volume_id",
+             "acquisition",
+             "storage",
+             "qualified_runtime_profile_id",
+             "format",
+             "logical_bytes",
+             "files",
+             "descriptors",
+             "coverage",
+             "system_boot_id",
+             "playback_anchor_monotonic",
+             "playback_anchor_realtime",
+             "clock_epochs",
+             "first_receive_monotonic",
+             "last_receive_monotonic",
+             "min_receive_realtime",
+             "max_receive_realtime",
+             "recording_begin_ns",
+             "recording_end_ns",
+             "content_digest"},
+            {"effective_configuration"});
         if (text(value, "format_version") != "1.0") {
             return Status(StatusCode::Unavailable, {});
         }
@@ -654,6 +674,9 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
         manifest.identity.segment_sequence = number(value, "segment_sequence");
         manifest.identity.config_version = text(value, "config_version");
         manifest.identity.effective_config_id = text(value, "effective_config_id");
+        if (value.contains("effective_configuration")) {
+            manifest.identity.effective_configuration = value.at("effective_configuration");
+        }
         manifest.identity.control_generation = number(value, "control_generation");
         manifest.identity.reset_generation_at_commit = number(value, "reset_generation_at_commit");
         manifest.identity.volume_id = take(parse_volume_id(text(value, "volume_id")));

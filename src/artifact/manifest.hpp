@@ -13,6 +13,7 @@
 
 #include "managed_volume.hpp"
 #include "sealed_files.hpp"
+#include "../persistence/json.hpp"
 #include "../time/clock.hpp"
 
 namespace rodaq::artifact {
@@ -70,6 +71,9 @@ struct ManifestIdentity {
     std::string qualified_runtime_profile_id;
     std::string format;
     time::PlaybackAnchor playback_anchor;
+    // Frozen non-secret canonical identity input, when supplied by Core
+    // composition. Its digest must equal effective_config_id.
+    std::optional<persistence::Json> effective_configuration{};
 };
 
 struct SegmentManifest {

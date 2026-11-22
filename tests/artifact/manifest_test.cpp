@@ -76,6 +76,54 @@ TEST(SegmentManifest, IndependentGoldenBindsIdentityFilesDescriptorsCoverageAndP
     EXPECT_EQ(decoded.value().descriptors[0].schema_digest, value.descriptors[0].schema_digest);
 }
 
+TEST(SegmentManifest, EffectiveConfigurationRemainsIndependentlyVerifiableAfterRoundTrip) {
+    auto value = manifest();
+    persistence::Json effective{
+        {"config_version", value.identity.config_version},
+        {"resolved_acquisition", {{"calibration", std::string(9000, 'x')}}},
+        {"effective_pipeline_limits", {{"instance", {{"records", "64"}}}}}};
+    value.identity.effective_config_id =
+        persistence::semantic_digest(effective, "rodaq.effective-config.v1").value();
+    value.identity.effective_configuration = effective;
+    const auto encoded = artifact::encode_manifest(value, {});
+    ASSERT_TRUE(encoded.ok());
+    const auto decoded = artifact::decode_manifest(encoded.value(), {});
+    ASSERT_TRUE(decoded.ok());
+    ASSERT_TRUE(decoded.value().identity.effective_configuration);
+    EXPECT_EQ(*decoded.value().identity.effective_configuration, effective);
+    EXPECT_EQ(
+        persistence::semantic_digest(
+            *decoded.value().identity.effective_configuration, "rodaq.effective-config.v1")
+            .value(),
+        decoded.value().identity.effective_config_id);
+
+    auto altered = persistence::parse_json(encoded.value()).value();
+    altered["effective_configuration"]["effective_pipeline_limits"]["instance"]["records"] = "65";
+    // Even an internally consistent outer digest cannot substitute another
+    // effective contract for the instance's authorized effective_config_id.
+    const auto resealed = persistence::encode_integrity(altered, "rodaq.segment-manifest.v1");
+    ASSERT_TRUE(resealed.ok());
+    EXPECT_EQ(
+        artifact::decode_manifest(resealed.value(), {}).status().code(), StatusCode::DataLoss);
+    value.identity.effective_configuration = nullptr;
+    EXPECT_FALSE(artifact::encode_manifest(value, {}).ok());
+}
+
+TEST(SegmentManifest, EffectiveConfigurationConsumesTheSameBoundedManifestEnvelope) {
+    auto value = manifest();
+    value.identity.effective_configuration = persistence::Json{{"data", std::string(9000, 'x')}};
+    value.identity.effective_config_id =
+        persistence::semantic_digest(
+            *value.identity.effective_configuration, "rodaq.effective-config.v1")
+            .value();
+    artifact::ManifestLimits limits;
+    limits.max_bytes = 4096;
+    EXPECT_FALSE(artifact::encode_manifest(value, limits).ok());
+    const auto reserved = artifact::manifest_base_size_bound(value.identity, limits);
+    ASSERT_TRUE(reserved.ok());
+    EXPECT_GT(reserved.value(), limits.max_bytes);
+}
+
 TEST(SegmentManifest, FullWidthNumbersAndClockDiscontinuityFactsRemainExact) {
     auto value = manifest();
     value.identity.segment_id = std::numeric_limits<std::uint64_t>::max();

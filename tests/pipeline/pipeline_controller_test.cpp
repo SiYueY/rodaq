@@ -1675,6 +1675,19 @@ TEST_F(PipelineControllerTest, CompositionAutomaticallyRotatesAtFrozenRecordEnve
             65536);
         auto manifest =
             artifact::decode_manifest(encoded.value(), options_.manifest_limits).value();
+        ASSERT_TRUE(manifest.identity.effective_configuration);
+        const auto& effective = *manifest.identity.effective_configuration;
+        EXPECT_EQ(effective["config_version"], manifest.identity.config_version);
+        EXPECT_EQ(
+            effective["qualified_runtime_profile_id"],
+            manifest.identity.qualified_runtime_profile_id);
+        EXPECT_EQ(effective["volume_id"], artifact::to_string(manifest.identity.volume_id));
+        EXPECT_EQ(
+            effective["effective_pipeline_limits"]["instance"]["queue_capacity"],
+            std::to_string(options_.limits.queue_capacity));
+        EXPECT_EQ(
+            rodaq::persistence::semantic_digest(effective, "rodaq.effective-config.v1").value(),
+            manifest.identity.effective_config_id);
         std::uint64_t accepted = 0;
         for (const auto& stream : manifest.coverage) {
             accepted += stream.accepted;
