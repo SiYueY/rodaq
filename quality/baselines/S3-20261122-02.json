@@ -1,0 +1,61 @@
+{
+  "id": "S3-20261122-02",
+  "stage": "S3",
+  "role": "exit",
+  "captured_at": "2026-11-22T11:55:50.886846+00:00",
+  "code_commit": "df1d9c465eaff87c2297ea47300aeb1edb407386",
+  "entry_baseline": "S3-20261122-01",
+  "gate": "M3 minimal real ROS2 -> Pipeline -> MCAP -> Artifact path",
+  "result": "Passed within declared matrix",
+  "runs": [
+    {
+      "profile": "Humble GCC11 Fast DDS",
+      "count": 81,
+      "passed": 81,
+      "inventory": "build/s1/s3-exit-selected-tests.json",
+      "log": "build/s1/s3-exit-selected-test.log",
+      "log_sha256": "cdfd22ca366a7b343034d905dcafa58f99547a3c9a7f40fe22ddfc2afb8fa729"
+    },
+    {
+      "profile": "Humble ASan UBSan LSan detect_leaks=1",
+      "count": 81,
+      "passed": 81,
+      "inventory": "build/asan-ubsan/s3-exit-selected-tests.json",
+      "log": "build/asan-ubsan/s3-exit-selected-test.log",
+      "log_sha256": "7f8752e52d2d04fe66c978dd96f2e0c11b166d218cf35163187fb28125838e60"
+    },
+    {
+      "profile": "Jazzy GCC13 Fast DDS",
+      "count": 81,
+      "passed": 81,
+      "inventory": "build/s3-jazzy/s3-exit-selected-tests.json",
+      "log": "build/s3-jazzy/s3-exit-selected-test.log",
+      "log_sha256": "05480b194bcde11369c7cae39288fb5fec61af98dc6fc9cea2de10349d2b99c5"
+    }
+  ],
+  "separate_static_review": {
+    "scope": [
+      "API and module boundaries",
+      "ownership and borrowed CDR lifetime",
+      "error containment and paired-file settlement",
+      "native thread and service-call bounds",
+      "lock ordering and late completion",
+      "format and function spacing"
+    ],
+    "corrected_findings": [
+      "4884c3c native Context cycle and dispatcher ownership",
+      "df1d9c4 reservation rollback ABA and descriptor-cut discard evidence"
+    ],
+    "remaining_core_work": [
+      "S4A Effective Configuration / Recording Session runtime audit projection",
+      "S4A multi-Task execution and full control/projection closure",
+      "S4B/S4C complete Artifact lifecycle and recovery"
+    ]
+  },
+  "qualification_limits": [
+    "No full-Core or production qualification",
+    "Mixed-vendor plus cross-distro shared-domain profile is not supported by these results",
+    "TSan, long-running stress and release-package regression remain S7",
+    "Initial invalid CTest regex selected no tests; excluded from passes and corrected with --no-tests=error"
+  ]
+}
