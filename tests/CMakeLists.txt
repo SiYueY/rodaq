@@ -42,7 +42,7 @@ target_link_libraries(rodaq_build_contract_test PRIVATE rodaq::daq GTest::gtest_
 rodaq_enable_project_warnings(rodaq_build_contract_test)
 include(GoogleTest)
 if(TARGET rodaq_ros2_config)
-    add_executable(rodaq_ros2_runtime_test ros2/runtime_test.cpp)
+    add_executable(rodaq_ros2_runtime_test ros2/runtime_test.cpp ros2/core_test.cpp)
     target_link_libraries(rodaq_ros2_runtime_test PRIVATE rodaq_ros2_runtime GTest::gtest_main
         nlohmann_json::nlohmann_json)
     target_compile_definitions(rodaq_ros2_runtime_test PRIVATE
