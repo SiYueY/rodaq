@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rodaq:plugin:com.rodaq.storage.mcap:config:1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version"],
+  "properties": {
+    "format_version": {"const": "1.0"},
+    "compression": {"const": "none", "default": "none"},
+    "chunk_mode": {"const": "none", "default": "none"},
+    "chunk_crc": {"const": false, "default": false},
+    "message_index": {"const": false, "default": false},
+    "summary": {"const": false, "default": false},
+    "rosbag2_metadata": {"const": "legacy_ros_distro", "default": "legacy_ros_distro"}
+  }
+}

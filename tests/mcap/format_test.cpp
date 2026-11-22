@@ -173,6 +173,18 @@ TEST(RodaqMeta, ExactSignedTimeAndFooterOffsetsCannotWrap) {
     EXPECT_FALSE(format::decode_meta_footer(footer).ok());
 }
 
+TEST(RodaqMeta, OptionalSourceFactsRequireTheirPersistentSourceIdentity) {
+    auto input = record();
+    input.has_source_session_id = 1;
+    input.source_session_id = 8;
+    EXPECT_EQ(format::encode_meta_entry(input, 0).status().code(), StatusCode::InvalidArgument);
+    input = record();
+    input.has_source_sequence = 1;
+    input.source_sequence = 9;
+    input.sequence_scope = RODAQ_SEQUENCE_SCOPE_OPAQUE;
+    EXPECT_EQ(format::encode_meta_entry(input, 0).status().code(), StatusCode::InvalidArgument);
+}
+
 class CheckedSinkTest : public testing::Test {
 protected:
     void SetUp() override {

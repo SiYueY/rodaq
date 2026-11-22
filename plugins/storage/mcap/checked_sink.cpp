@@ -27,6 +27,7 @@ Result<void> CheckedSink::open(int directory, const char* name) {
         fail(errno == EEXIST ? StatusCode::Conflict : StatusCode::Unavailable);
         return Status(status_, {});
     }
+    created_ = true;
     return {};
 }
 
@@ -43,6 +44,8 @@ void CheckedSink::end() {
 std::uint64_t CheckedSink::size() const { return logical_; }
 
 std::uint64_t CheckedSink::confirmed_bytes() const noexcept { return confirmed_; }
+
+bool CheckedSink::file_created() const noexcept { return created_; }
 
 StatusCode CheckedSink::status() const noexcept { return status_; }
 

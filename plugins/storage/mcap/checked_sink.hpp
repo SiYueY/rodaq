@@ -26,6 +26,7 @@ public:
     void end() override;
     std::uint64_t size() const override;
     std::uint64_t confirmed_bytes() const noexcept;
+    bool file_created() const noexcept;
     StatusCode status() const noexcept;
 
 private:
@@ -34,6 +35,7 @@ private:
 
     Write write_;
     int file_{-1};
+    bool created_{false};
     std::uint64_t logical_{0};
     std::uint64_t confirmed_{0};
     StatusCode status_{StatusCode::Ok};

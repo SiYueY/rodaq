@@ -80,7 +80,8 @@ std::array<std::byte, kMetaHeaderBytes> encode_meta_header() noexcept {
 }
 
 Result<MetaEntry> encode_meta_entry(const storage::Record& record, std::uint64_t ordinal) {
-    if (!storage::abi::valid_record(record)) {
+    if (!storage::abi::valid_record(record) ||
+        ((record.has_source_session_id || record.has_source_sequence) && !record.has_source_id)) {
         return Status(StatusCode::InvalidArgument, {});
     }
     MetaEntry entry;

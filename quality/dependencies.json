@@ -33,8 +33,8 @@
       "version": "3.10.5",
       "package": "nlohmann-json3-dev 3.10.5-2",
       "license": "MIT",
-      "source": "Ubuntu 22.04 system package",
-      "purpose": "Private bounded strict SAX JSON and Plugin Manifest parsing; no public JSON types",
+      "source": "Ubuntu 22.04 system package; byte-identical prepared header/CMake prefix for Noble backend builds",
+      "purpose": "Private bounded strict SAX JSON for Core stores, Plugin manifests and backend configuration; no public JSON types",
       "verification": "strict ingress, decoded duplicate keys, Unicode, depth/cardinality and typed schema tests"
     },
     {
@@ -48,8 +48,11 @@
     },
     {
       "name": "mcap_vendor / libmcap",
-      "version": "0.15.16 / 0.8.0",
-      "package": "ros-humble-mcap-vendor 0.15.16-1jammy.20260304.195727",
+      "version": "Humble 0.15.16 / libmcap 0.8.0; Jazzy 0.26.11 / libmcap 1.3.1",
+      "package": {
+        "humble": "ros-humble-mcap-vendor 0.15.16-1jammy.20260304.195727",
+        "jazzy": "ros-jazzy-mcap-vendor 0.26.11-1noble.20260603.151024"
+      },
       "license": "MIT (libmcap); Apache-2.0 (ROS vendor)",
       "source": "Prepared ROS 2 Humble package; Jazzy is rebuilt against its own prepared package",
       "purpose": "Private MCAP format writer and IWritable; no rosbag2 Recorder/storage lifecycle",
