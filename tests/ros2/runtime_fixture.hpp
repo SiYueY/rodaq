@@ -11,11 +11,13 @@
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/version.h>
+#include <rmw/rmw.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -171,6 +173,14 @@ public:
 class Ros2Runtime : public testing::Test {
 protected:
     void SetUp() override {
+        if (const auto* selected = std::getenv("RODAQ_ROS2_TEST_DOMAIN_ID")) {
+            const std::string_view input(selected);
+            const auto parsed =
+                std::from_chars(input.data(), input.data() + input.size(), domain_id);
+            ASSERT_EQ(parsed.ec, std::errc{});
+            ASSERT_EQ(parsed.ptr, input.data() + input.size());
+            ASSERT_LE(domain_id, 232);
+        }
         std::array<char, 40> pattern{};
         const std::string prefix = "/tmp/rodaq-ros2-XXXXXX";
         std::copy(prefix.begin(), prefix.end(), pattern.begin());
@@ -198,7 +208,7 @@ protected:
         ASSERT_TRUE(services.freeze().ok());
         context = std::make_shared<rclcpp::Context>();
         rclcpp::InitOptions init;
-        init.set_domain_id(173);
+        init.set_domain_id(domain_id);
         init.auto_initialize_logging(false);
         context->init(0, nullptr, init);
         rclcpp::NodeOptions node_options;
@@ -259,7 +269,7 @@ protected:
         }
         return {
             {"format_version", "1.0"},
-            {"domain_id", 173},
+            {"domain_id", domain_id},
             {"executor_threads", 4},
             {"graph_poll_interval", {{"value", "20"}, {"unit", "ms"}}},
             {"qos_change_debounce", {{"value", "0"}, {"unit", "ms"}}},
@@ -297,6 +307,16 @@ protected:
         return {0, 1, 0, 0, 6, 0, 0, 0, 'h', 'e', 'l', 'l', 'o', 0};
     }
 
+    static std::vector<std::uint8_t> received_cdr(std::vector<std::uint8_t> input) {
+        // Qualified Cyclone DDS 0.10.5 aligns serialized transport payloads to
+        // four bytes. This is the independent publisher oracle; RoDAQ itself
+        // must preserve every received byte and never normalize that padding.
+        if (std::string_view(rmw_get_implementation_identifier()) == "rmw_cyclonedds_cpp") {
+            input.resize((input.size() + 3) / 4 * 4, 0);
+        }
+        return input;
+    }
+
     static void publish(const rclcpp::GenericPublisher::SharedPtr& publisher) {
         const auto input = bytes();
         rclcpp::SerializedMessage message(input.size());
@@ -323,7 +343,7 @@ protected:
     }
 
 #ifdef RODAQ_MCAP_PACKAGE
-    void open_core() {
+    void open_core(bool robot = false) {
         library.reset();
         ASSERT_TRUE(manager->shutdown(soon()).ok());
         manager.reset();
@@ -380,6 +400,14 @@ protected:
             1};
         profile.max_prepared_descriptors = 16;
         profile.manifest.max_bytes = 65536;
+        if (robot) {
+            profile.instance.logical_bytes = 16 * 1024 * 1024;
+            profile.instance.payloads = {16 * 1024 * 1024, 4096, 1024 * 1024, 32};
+            profile.storage.max_record_bytes = 1024 * 1024;
+            profile.storage.max_batch_bytes = 4 * 1024 * 1024;
+            profile.storage.max_batch_records = 4;
+            profile.storage.max_segment_input_bytes = 64 * 1024 * 1024;
+        }
         options.settings.profiles.push_back(profile);
         auto opened = rodaq::daq::Composition::open(std::move(options));
         ASSERT_TRUE(opened.ok()) << opened.status().message();
@@ -435,6 +463,7 @@ protected:
 #endif
 
     fs::path root;
+    std::uint32_t domain_id{173};
     std::shared_ptr<Receiver> receiver;
     plugin::ServiceRegistry services;
     std::optional<plugin::PluginManager> manager;

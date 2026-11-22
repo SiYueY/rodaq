@@ -103,6 +103,7 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
                     // the local raw-CDR publisher deliberately sends 14 bytes.
                     expected.resize(16, 0);
                 }
+                expected = received_cdr(std::move(expected));
                 ASSERT_EQ(message.message.dataSize, expected.size());
                 EXPECT_EQ(std::memcmp(message.message.data, expected.data(), expected.size()), 0);
                 EXPECT_EQ(message.message.publishTime, message.message.logTime);
@@ -144,7 +145,11 @@ TEST_P(Ros2SegmentRuntime, LateStreamPauseResumeAndRotationPreserveAcceptedRecor
     publishers[0] = node->create_generic_publisher(
         "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(100).reliable());
     ASSERT_TRUE(connected(publishers[0]));
-    std::map<std::string, std::string> sent;
+    struct SentPayload {
+        std::string topic;
+        std::vector<std::uint8_t> bytes;
+    };
+    std::map<std::string, SentPayload> sent;
     const auto send = [&](unsigned stream, std::string text, bool recordable) {
         std::vector<std::uint8_t> payload{0, 1, 0, 0};
         const auto length = static_cast<std::uint32_t>(text.size() + 1);
@@ -159,7 +164,9 @@ TEST_P(Ros2SegmentRuntime, LateStreamPauseResumeAndRotationPreserveAcceptedRecor
         raw.buffer_length = payload.size();
         publishers[stream]->publish(message);
         if (recordable) {
-            sent.emplace(std::move(text), "/rodaq_test_" + std::to_string(stream));
+            sent.emplace(
+                std::move(text),
+                SentPayload{"/rodaq_test_" + std::to_string(stream), std::move(payload)});
         }
     };
     const auto pump = [&](unsigned phase, unsigned count, bool late_stream) {
@@ -255,12 +262,15 @@ TEST_P(Ros2SegmentRuntime, LateStreamPauseResumeAndRotationPreserveAcceptedRecor
                                     (static_cast<std::uint32_t>(payload[6]) << 16) |
                                     (static_cast<std::uint32_t>(payload[7]) << 24);
                 ASSERT_GT(length, 0);
-                ASSERT_EQ(message.message.dataSize, 8 + length);
+                ASSERT_LE(length, message.message.dataSize - 8);
                 EXPECT_EQ(payload[8 + length - 1], 0);
                 const std::string text(reinterpret_cast<const char*>(payload + 8), length - 1);
                 const auto expected = sent.find(text);
                 ASSERT_NE(expected, sent.end()) << text;
-                EXPECT_EQ(message.channel->topic, expected->second);
+                EXPECT_EQ(message.channel->topic, expected->second.topic);
+                const auto expected_bytes = received_cdr(expected->second.bytes);
+                ASSERT_EQ(message.message.dataSize, expected_bytes.size());
+                EXPECT_EQ(std::memcmp(payload, expected_bytes.data(), expected_bytes.size()), 0);
                 EXPECT_EQ(message.schema->name, "std_msgs/msg/String");
                 EXPECT_TRUE(received.insert(text).second) << text;
                 resumed_data = resumed_data || text.rfind("2/", 0) == 0;

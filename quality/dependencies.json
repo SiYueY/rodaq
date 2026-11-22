@@ -73,6 +73,23 @@
       "source": "Prepared ROS 2 distribution packages",
       "purpose": "Shared private ROS 2 interface resource lookup for complete canonical MSG/IDL definitions",
       "verification": "Recursive/self-contained schema golden fixtures, bounded parsing and Humble/Jazzy installed-package lookup"
+    },
+    {
+      "name": "sensor_msgs (ROS 2 robot-workload qualification only)",
+      "version": "Humble 4.9.0 / Jazzy 5.3.8",
+      "license": "Apache-2.0",
+      "source": "Prepared ROS APT profiles: ros-humble-sensor-msgs 4.9.0-1jammy.20250719.005058; ros-jazzy-sensor-msgs 5.3.8-1noble.20260615.112429",
+      "purpose": "Test-only typed camera and joint publishers/independent CDR deserializers; official acquisition remains runtime-generic and does not compile sensor message types",
+      "verification": "Representative Image/JointState real Task/MCAP workload; raw serialized-payload digests and typed field checks on both ROS distributions"
+    },
+    {
+      "name": "rmw_cyclonedds_cpp + Cyclone DDS (qualification only)",
+      "version": "rmw_cyclonedds_cpp 2.2.4 / Cyclone DDS 0.10.5",
+      "license": "rmw_cyclonedds_cpp Apache-2.0; Cyclone DDS EPL-2.0 / EDL-1.0",
+      "source": "ROS Jazzy APT pinned ros-jazzy-rmw-cyclonedds-cpp 2.2.4-1noble.20261105.063358 (SHA256 d39451b3d3e5fc9d4efa286f36668316a53e53462daa7a87f2f8c8f8ee029bc2), ros-jazzy-cyclonedds 0.10.5-1noble.20260225.142613 (SHA256 d6a34a96a1cf2900f6b8c884d583df92bad88ffaa359e2788697f4d614112f47)",
+      "purpose": "Isolated non-Fast-DDS RMW build/runtime qualification of the unchanged official ROS 2 backend; not a required production dependency or a Supported qualification claim",
+      "verification": "Package metadata/license and simulated transaction reviewed: eight additions, zero upgrades/removals; run actual SDK/Core acquisition, rotation, quiescence and representative workload with RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; preserve image/package inventory",
+      "prepared_image": "rodaq-s3-cyclone:jazzy-amd64-local @ sha256:b43d0c95ee7b3762c9ccc24f1dec7ba13e984c6ecd3c8dbd61bf189dff4c2679; rclcpp 28.1.22 and rmw 7.3.3 unchanged; full package inventory in build/s3-jazzy/s3-cyclone-dpkg.txt"
     }
   ],
   "test_only": [

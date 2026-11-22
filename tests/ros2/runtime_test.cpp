@@ -94,7 +94,7 @@ TEST_F(Ros2Runtime, LatePublisherDeliversExactBorrowedCdrAndCompatibleRequestSta
     std::lock_guard<std::mutex> lock(receiver->mutex);
     ASSERT_FALSE(receiver->payloads.empty());
     for (const auto& payload : receiver->payloads) {
-        EXPECT_EQ(payload, bytes());
+        EXPECT_EQ(payload, received_cdr(bytes()));
     }
     EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
 }

@@ -49,6 +49,10 @@ if(TARGET rodaq_ros2_config)
         RODAQ_ROS2_PACKAGE="${PROJECT_BINARY_DIR}/plugins/acquisition/ros2/rodaq-plugins")
     add_dependencies(rodaq_ros2_runtime_test rodaq_ros2_acquisition)
     if(TARGET rodaq_mcap_format)
+        find_package(sensor_msgs REQUIRED)
+        target_sources(rodaq_ros2_runtime_test PRIVATE ros2/robot_test.cpp)
+        target_link_libraries(rodaq_ros2_runtime_test PRIVATE
+            sensor_msgs::sensor_msgs__rosidl_typesupport_cpp OpenSSL::Crypto)
         target_link_libraries(rodaq_ros2_runtime_test PRIVATE rodaq::daq rodaq_mcap_format)
         target_include_directories(rodaq_ros2_runtime_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
         target_compile_definitions(rodaq_ros2_runtime_test PRIVATE
