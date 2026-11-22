@@ -1,0 +1,6 @@
+# Apply the two-element property after GoogleTest discovers the test names.
+# Passing list-valued PROPERTIES through older GoogleTest helpers flattens it.
+if(rodaq_ros2_runtime_test_TESTS)
+    set_tests_properties(${rodaq_ros2_runtime_test_TESTS} PROPERTIES ENVIRONMENT_MODIFICATION
+        "AMENT_PREFIX_PATH=path_list_prepend:@rodaq_ros2_custom_prefix@;LD_LIBRARY_PATH=path_list_prepend:@rodaq_ros2_custom_prefix@/lib")
+endif()

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import rclpy
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from rosidl_runtime_py.utilities import get_message
 
 
 def main():
@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--expected-count", type=int, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--message-type", default="std_msgs/msg/String")
     args = parser.parse_args()
     if not 1 <= args.expected_count <= 10000 or not 1 <= args.timeout <= 120:
         parser.error("probe requires bounded positive count and timeout")
@@ -36,7 +37,7 @@ def main():
         invalid += message.data != "hello"
 
     node.create_subscription(
-        String,
+        get_message(args.message_type),
         "/rodaq_test_0",
         received,
         QoSProfile(
@@ -68,6 +69,7 @@ def main():
             report = {
                 "bag": str(args.bag.resolve()),
                 "expected_count": args.expected_count,
+                "message_type": args.message_type,
                 "received_count": count,
                 "invalid_payload_count": invalid,
                 "player_exit_code": process.returncode,

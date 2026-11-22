@@ -50,6 +50,23 @@ if(TARGET rodaq_ros2_config)
     add_dependencies(rodaq_ros2_runtime_test rodaq_ros2_acquisition)
     if(TARGET rodaq_mcap_format)
         find_package(sensor_msgs REQUIRED)
+        include(ExternalProject)
+        get_filename_component(rodaq_ros2_fixture_ros_prefix "${sensor_msgs_DIR}/../../.." ABSOLUTE)
+        set(rodaq_ros2_custom_prefix "${CMAKE_CURRENT_BINARY_DIR}/ros2-custom-overlay/install")
+        ExternalProject_Add(rodaq_ros2_custom_overlay
+            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ros2/custom_overlay"
+            BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/ros2-custom-overlay/build"
+            INSTALL_DIR "${rodaq_ros2_custom_prefix}"
+            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+            BUILD_ALWAYS TRUE
+            CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+                -DCMAKE_PREFIX_PATH=${rodaq_ros2_fixture_ros_prefix}
+                -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+                -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release
+                -DPython3_EXECUTABLE=${Python3_EXECUTABLE} -DBUILD_TESTING=OFF
+            BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --parallel 2)
+        add_dependencies(rodaq_ros2_runtime_test rodaq_ros2_custom_overlay)
         target_sources(rodaq_ros2_runtime_test PRIVATE ros2/robot_test.cpp)
         target_link_libraries(rodaq_ros2_runtime_test PRIVATE
             sensor_msgs::sensor_msgs__rosidl_typesupport_cpp OpenSSL::Crypto)
@@ -60,7 +77,14 @@ if(TARGET rodaq_ros2_config)
         add_dependencies(rodaq_ros2_runtime_test rodaq_mcap_storage)
     endif()
     rodaq_enable_project_warnings(rodaq_ros2_runtime_test)
-    gtest_discover_tests(rodaq_ros2_runtime_test PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
+    gtest_discover_tests(rodaq_ros2_runtime_test DISCOVERY_MODE PRE_TEST
+        PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
+    if(TARGET rodaq_ros2_custom_overlay)
+        configure_file(ros2/overlay_environment.cmake.in
+            "${CMAKE_CURRENT_BINARY_DIR}/ros2-overlay-environment.cmake" @ONLY)
+        set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/ros2-overlay-environment.cmake")
+    endif()
     add_executable(rodaq_ros2_support_test ros2/support_test.cpp)
     target_link_libraries(rodaq_ros2_support_test PRIVATE rodaq_ros2_support GTest::gtest_main)
     rodaq_enable_project_warnings(rodaq_ros2_support_test)

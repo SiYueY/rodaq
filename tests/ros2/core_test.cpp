@@ -8,6 +8,101 @@
 
 namespace rodaq::test::ros2_backend {
 
+TEST_F(Ros2Runtime, SeparatelyInstalledCustomMessageRecordsWithoutCompiledMessageHeaders) {
+    open_core();
+    ASSERT_TRUE(core);
+    constexpr const char* type = "rodaq_qualification_msgs/msg/Probe";
+    auto source = config();
+    source["streams"][0]["type"] = type;
+    TaskConfig task;
+    task.name = "Unknown compiled message with recursive Header schema";
+    task.segment_policy.max_duration = 60s;
+    PipelineConfig pipeline;
+    pipeline.resource_profile = "basic";
+    pipeline.output_root = "local";
+    pipeline.acquisition = {"com.rodaq.acquisition.ros2", "1.0.0", source.dump()};
+    pipeline.storage = {"com.rodaq.storage.mcap", "1.0.0", R"({"format_version":"1.0"})"};
+    pipeline.streams = {{0, "s0", {}, ReadinessPolicy::EntryReady}};
+    task.pipelines.push_back(std::move(pipeline));
+    auto created = core->tasks().create_task(task, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    auto start = core->tasks().start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(completed(id, start.value()));
+    auto publisher =
+        node->create_generic_publisher("/rodaq_test_0", type, rclcpp::QoS(10).reliable());
+    ASSERT_TRUE(connected(publisher));
+    // CDR Header {stamp={0,0}, frame_id="probe"}, then data="hello".
+    // Neither this application nor the official backend includes or links the
+    // separately generated Probe C++ type or typesupport target.
+    const std::vector<std::uint8_t> input{0, 1, 0, 0, 0,   0,   0,   0,   0,   0, 0, 0,
+                                          6, 0, 0, 0, 'p', 'r', 'o', 'b', 'e', 0, 0, 0,
+                                          6, 0, 0, 0, 'h', 'e', 'l', 'l', 'o', 0};
+    for (unsigned i = 0; i < 20; ++i) {
+        rclcpp::SerializedMessage message(input.size());
+        auto& raw = message.get_rcl_serialized_message();
+        std::copy(input.begin(), input.end(), raw.buffer);
+        raw.buffer_length = input.size();
+        publisher->publish(message);
+        std::this_thread::sleep_for(10ms);
+    }
+    auto stop = core->tasks().stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(completed(id, stop.value()));
+    ASSERT_TRUE(core->observe().ok());
+    auto page = core->artifacts().query_artifacts({});
+    ASSERT_TRUE(page.ok());
+    ASSERT_EQ(page.value().items.size(), 1);
+    auto artifact = core->artifacts().get_artifact(page.value().items[0].artifact_id);
+    ASSERT_TRUE(artifact.ok());
+    ASSERT_EQ(artifact.value().coverage.size(), 1);
+    EXPECT_GT(artifact.value().coverage[0].written, 0);
+    EXPECT_EQ(artifact.value().coverage[0].accepted, artifact.value().coverage[0].written);
+    std::uint64_t count = 0;
+    for (const auto& file : artifact.value().files) {
+        auto bytes = read_file(artifact.value().summary.artifact_id, file.file_id);
+        ASSERT_TRUE(bytes.ok());
+        if (const auto* destination = std::getenv("RODAQ_ROS2_EVIDENCE_DIR")) {
+            const fs::path directory(destination);
+            ASSERT_TRUE(directory.is_absolute() && fs::is_directory(directory));
+            ASSERT_EQ(fs::path(file.display_name).filename().string(), file.display_name);
+            std::ofstream output(directory / file.display_name, std::ios::binary);
+            output.write(
+                reinterpret_cast<const char*>(bytes.value().data()),
+                static_cast<std::streamsize>(bytes.value().size()));
+            ASSERT_TRUE(output.good());
+        }
+        if (file.display_name.find(".mcap") == std::string::npos) {
+            continue;
+        }
+        const auto path = root / "custom-read.mcap";
+        {
+            std::ofstream output(path, std::ios::binary);
+            output.write(
+                reinterpret_cast<const char*>(bytes.value().data()),
+                static_cast<std::streamsize>(bytes.value().size()));
+            ASSERT_TRUE(output.good());
+        }
+        mcap::McapReader reader;
+        ASSERT_TRUE(reader.open(path.string()).ok());
+        for (const auto& message : reader.readMessages()) {
+            EXPECT_EQ(message.schema->name, type);
+            EXPECT_EQ(message.schema->encoding, "ros2msg");
+            const std::string schema(
+                reinterpret_cast<const char*>(message.schema->data.data()),
+                message.schema->data.size());
+            EXPECT_NE(schema.find("MSG: std_msgs/Header\n"), std::string::npos);
+            EXPECT_NE(schema.find("MSG: builtin_interfaces/Time\n"), std::string::npos);
+            const auto expected = received_cdr(input);
+            ASSERT_EQ(message.message.dataSize, expected.size());
+            EXPECT_EQ(std::memcmp(message.message.data, expected.data(), expected.size()), 0);
+            ++count;
+        }
+    }
+    EXPECT_EQ(count, artifact.value().coverage[0].written);
+}
+
 TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     open_core();
     ASSERT_TRUE(core);
