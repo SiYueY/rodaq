@@ -1293,6 +1293,49 @@ TEST_F(PipelineControllerTest, CompositionFailedNativeCreationUsesFrameworkClean
     EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
 }
 
+TEST_F(
+    PipelineControllerTest, LateFailedInitializationMaintenanceReleasesItsCoreSegmentReservation) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json =
+        R"({"streams":["first","first"],"mode":"late_shutdown","delay_ms":1000})";
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto failed = wait_composed_operation(id, start.value());
+    ASSERT_TRUE(failed.ok());
+    EXPECT_EQ(failed.value().state, rodaq::OperationState::Failed);
+    EXPECT_FALSE(manager_->initialization_cleanup_settled());
+    EXPECT_EQ(capacity_->snapshot().segment_slots, 1);
+    const auto limit = std::chrono::steady_clock::now() + 3s;
+    while (!manager_->initialization_cleanup_settled() &&
+           std::chrono::steady_clock::now() < limit) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(manager_->initialization_cleanup_settled());
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        if (capacity_->snapshot().segment_slots == 0 &&
+            service.get_task(id).value().execution_condition ==
+                rodaq::ExecutionCondition::Protected) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < limit);
+    EXPECT_EQ(capacity_->snapshot().segment_slots, 0);
+    EXPECT_EQ(capacity_->snapshot().orphaned_reservations, 0);
+    const auto task = service.get_task(id).value();
+    EXPECT_EQ(task.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(task.control_generation, 2);
+    EXPECT_EQ(task.execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state, rodaq::OperationState::Failed);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
 TEST_F(PipelineControllerTest, CompositionObservationPublishesClockFailureWithoutChangingIntent) {
     open_composition(&controlled_clock);
     ASSERT_TRUE(composition_);

@@ -250,7 +250,7 @@ struct PipelineController::State {
     std::uint64_t recording_base{0};
     bool prepare_attempted{false};
     std::atomic<bool> artifact_handed_off{false};
-    bool empty_settled{false};
+    std::atomic<bool> empty_settled{false};
     // Fixed two-Segment envelope: current Native drain plus successor, or
     // current writable Segment plus one retained Artifact handoff. No new
     // rotation is admitted until that retained handoff actually settles.

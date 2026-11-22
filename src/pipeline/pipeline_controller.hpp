@@ -65,6 +65,7 @@ struct PipelineQuiescence {
     bool control_fenced{false};
     bool source_quiesced{false};
     bool storage_closed{false};
+    bool segment_resources_settled{false};
     std::uint32_t control_inflight{0};
     std::uint32_t writer_inflight{0};
     std::uint32_t callbacks{0};

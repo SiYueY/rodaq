@@ -658,6 +658,10 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     }
     quiet.source_quiesced = state_->source_quiesced.load() && state_->source_closed.load();
     quiet.storage_closed = state_->storage_closed.load();
+    // Segment/Ledger capacity remains owned until Artifact acknowledgement or
+    // verified empty abort, including after failed Native initialization ends.
+    quiet.segment_resources_settled =
+        !current || state_->artifact_settled.load() || state_->empty_settled.load();
     quiet.callbacks = callbacks.value().callbacks;
     quiet.queued_records = result.queue.queued_records;
     auto outstanding = unsettled_record_count(result.records);
@@ -667,16 +671,20 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     quiet.unsettled_records = outstanding.value();
     quiet.buffered_records = state_->output->instance->records.snapshot().records;
     quiet.unsettled_descriptors = result.records.pending_descriptors;
-    quiet.settled =
-        quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
-        quiet.control_inflight == 0 && quiet.writer_inflight == 0 && quiet.source_quiesced &&
-        quiet.storage_closed && quiet.callbacks == 0 && quiet.queued_records == 0 &&
-        result.queue.reserved_slots == 0 && quiet.unsettled_records == 0 &&
-        result.records.pending_admissions == 0 && result.records.unresolved_owners == 0 &&
-        result.records.native_inflight == 0 && quiet.unsettled_descriptors == 0 &&
-        quiet.admission_candidates == 0 && quiet.buffered_records == 0 &&
-        quiet.commit_inflight == 0 && result.successor_segment_id == 0 &&
-        (!state_->creation_unresolved || state_->options.plugins->initialization_cleanup_settled());
+    // A concurrent Segment cut invalidates this quiescence observation.
+    quiet.settled = quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
+                    quiet.control_inflight == 0 && quiet.writer_inflight == 0 &&
+                    quiet.source_quiesced && quiet.storage_closed &&
+                    quiet.segment_resources_settled && quiet.callbacks == 0 &&
+                    quiet.queued_records == 0 && result.queue.reserved_slots == 0 &&
+                    quiet.unsettled_records == 0 && result.records.pending_admissions == 0 &&
+                    result.records.unresolved_owners == 0 && result.records.native_inflight == 0 &&
+                    quiet.unsettled_descriptors == 0 && quiet.admission_candidates == 0 &&
+                    quiet.buffered_records == 0 && quiet.commit_inflight == 0 &&
+                    result.successor_segment_id == 0 &&
+                    (!state_->creation_unresolved ||
+                     state_->options.plugins->initialization_cleanup_settled()) &&
+                    std::atomic_load(&state_->output->segment) == current;
     return result;
 }
 
