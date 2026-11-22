@@ -12,6 +12,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "config.hpp"
+#include "native_resources.hpp"
 #include "ros2/schema.hpp"
 
 namespace rodaq::ros2_acquisition {
@@ -93,7 +94,7 @@ struct Backend::State {
     std::optional<Config> config;
     std::optional<acquisition::ServiceReference> service;
     std::vector<std::unique_ptr<Stream>> streams;
-    rclcpp::Context::SharedPtr context;
+    std::shared_ptr<Context> context;
     rclcpp::Node::SharedPtr node;
     std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor;
     std::thread spin_thread;

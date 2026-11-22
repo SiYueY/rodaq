@@ -13,6 +13,8 @@
 #include <rclcpp/version.h>
 #include <rmw/rmw.h>
 
+#include "native_resources.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -206,7 +208,7 @@ protected:
         receiver = std::make_shared<Receiver>();
         ASSERT_TRUE(services.add_shared<acquisition::Service>(receiver).ok());
         ASSERT_TRUE(services.freeze().ok());
-        context = std::make_shared<rclcpp::Context>();
+        context = std::make_shared<ros2_acquisition::Context>();
         rclcpp::InitOptions init;
         init.set_domain_id(domain_id);
         init.auto_initialize_logging(false);
@@ -245,6 +247,7 @@ protected:
         node.reset();
         if (context) {
             context->shutdown("test complete");
+            EXPECT_TRUE(context->release_after_join().ok());
         }
         context.reset();
         std::error_code error;
@@ -470,7 +473,7 @@ protected:
     std::optional<plugin::PluginLibrary> library;
     std::optional<plugin::PluginInstance> instance;
     std::optional<acquisition::Handle> handle;
-    rclcpp::Context::SharedPtr context;
+    std::shared_ptr<ros2_acquisition::Context> context;
     rclcpp::Node::SharedPtr node;
 };
 

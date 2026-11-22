@@ -2,6 +2,68 @@
 
 namespace rodaq::test::ros2_backend {
 
+TEST_F(Ros2Runtime, ActualContextReleaseBreaksNativeSubcontextOwnershipAfterShutdown) {
+    auto owned = std::make_shared<ros2_acquisition::Context>();
+    rclcpp::InitOptions options;
+    options.set_domain_id(domain_id);
+    options.auto_initialize_logging(false);
+    owned->init(0, nullptr, options);
+    auto participant = std::make_shared<rclcpp::Node>(
+        "rodaq_context_owner", rclcpp::NodeOptions().context(owned).enable_rosout(false));
+    EXPECT_EQ(owned->release_after_join().status().code(), StatusCode::InvalidState);
+    EXPECT_TRUE(owned->is_valid());
+    participant.reset();
+    EXPECT_TRUE(owned->shutdown("owner regression"));
+    EXPECT_TRUE(owned->release_after_join().ok());
+    std::weak_ptr<rclcpp::Context> weak = owned;
+    owned.reset();
+    EXPECT_TRUE(weak.expired());
+    EXPECT_TRUE(context->is_valid());
+}
+
+TEST_F(Ros2Runtime, ConcurrentResidentTypeLoadsShareActualOwnerAndFailuresDoNotPoisonFutureLoads) {
+    std::array<std::future<Result<std::shared_ptr<rcpputils::SharedLibrary>>>, 8> loads;
+    for (auto& loading : loads) {
+        loading = std::async(std::launch::async, [] {
+            return ros2_acquisition::resident_typesupport("std_msgs/msg/String", soon());
+        });
+    }
+    std::shared_ptr<rcpputils::SharedLibrary> first;
+    for (auto& loading : loads) {
+        auto loaded = loading.get();
+        ASSERT_TRUE(loaded.ok()) << loaded.status().message();
+        if (!first) {
+            first = loaded.value();
+        }
+        EXPECT_EQ(loaded.value(), first);
+    }
+    EXPECT_EQ(
+        ros2_acquisition::resident_typesupport("rodaq_missing_package/msg/Absent", soon())
+            .status()
+            .code(),
+        StatusCode::Unavailable);
+    auto again = ros2_acquisition::resident_typesupport("std_msgs/msg/String", soon());
+    ASSERT_TRUE(again.ok());
+    EXPECT_EQ(again.value(), first);
+}
+
+TEST_F(Ros2Runtime, RepeatedActualPluginLifecyclesReleasePrivateContextsAndReuseTypeSupport) {
+    for (unsigned cycle = 0; cycle < 8; ++cycle) {
+        create(config());
+        ASSERT_TRUE(handle);
+        ASSERT_TRUE(prepare().ok());
+        ASSERT_TRUE(handle->start(soon()).ok());
+        ASSERT_TRUE(handle->quiesce(soon()).ok());
+        handle.reset();
+        ASSERT_TRUE(instance->close(soon()).ok());
+        instance.reset();
+    }
+    EXPECT_TRUE(context->is_valid());
+    std::lock_guard<std::mutex> lock(receiver->mutex);
+    EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_STREAM_READY], 8);
+    EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
+}
+
 TEST_F(Ros2Runtime, IdleExplicitTypeIsLocallyReadyAndPrivateShutdownPreservesOtherContext) {
     create(config());
     ASSERT_TRUE(handle);

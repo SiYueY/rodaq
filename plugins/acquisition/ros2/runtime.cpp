@@ -166,7 +166,7 @@ Result<void> Backend::prepare(const acquisition::PrepareConfig& limits, plugin::
             stream->id = binding->stream_id;
             state.streams.push_back(std::move(stream));
         }
-        state.context = std::make_shared<rclcpp::Context>();
+        state.context = std::make_shared<Context>();
         rclcpp::InitOptions init;
         init.set_domain_id(state.config->domain_id);
         init.auto_initialize_logging(false);
@@ -346,6 +346,12 @@ Result<void> Backend::quiesce(plugin::Deadline deadline) {
     state.streams.clear();
     state.executor.reset();
     state.node.reset();
+    if (state.context) {
+        auto released = state.context->release_after_join();
+        if (!released.ok()) {
+            return released;
+        }
+    }
     state.context.reset();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.phase = State::Phase::Stopped;

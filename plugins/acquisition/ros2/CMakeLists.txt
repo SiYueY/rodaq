@@ -7,7 +7,7 @@ target_link_libraries(rodaq_ros2_config PUBLIC rodaq_ros2_support
 target_include_directories(rodaq_ros2_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 rodaq_enable_project_warnings(rodaq_ros2_config)
 
-add_library(rodaq_ros2_runtime STATIC runtime.cpp subscription.cpp)
+add_library(rodaq_ros2_runtime STATIC runtime.cpp subscription.cpp native_resources.cpp)
 target_link_libraries(rodaq_ros2_runtime PUBLIC rodaq_ros2_config rclcpp::rclcpp)
 rodaq_enable_project_warnings(rodaq_ros2_runtime)
 

@@ -4,7 +4,6 @@
 #include <cstring>
 #include <limits>
 
-#include <rclcpp/typesupport_helpers.hpp>
 #include <rclcpp/version.h>
 
 #include "../../../src/ros2_qos.hpp"
@@ -173,17 +172,9 @@ Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadli
                 return schema.status();
             }
             // Validate loadability before offering an interpretation to Core.
-            auto library =
-                rclcpp::get_typesupport_library(next->facts.type, "rosidl_typesupport_cpp");
-#if RCLCPP_VERSION_MAJOR >= 28
-            const auto* support = rclcpp::get_message_typesupport_handle(
-                next->facts.type, "rosidl_typesupport_cpp", *library);
-#else
-            const auto* support = rclcpp::get_typesupport_handle(
-                next->facts.type, "rosidl_typesupport_cpp", *library);
-#endif
-            if (support == nullptr) {
-                return Status(StatusCode::Unavailable, "ROS 2 message typesupport unavailable");
+            auto library = resident_typesupport(next->facts.type, deadline);
+            if (!library.ok()) {
+                return library.status();
             }
             next->schema = std::move(schema.value());
         }

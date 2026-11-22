@@ -64,7 +64,8 @@
       "license": "Apache-2.0",
       "source": "Prepared ROS 2 distribution packages; each distro builds its own plugin DSO",
       "purpose": "Private Context/Node/GenericSubscription/Executor and public topic/QoS/MessageInfo mapping; no RMW private headers",
-      "verification": "Same-source Humble/Jazzy config, schema, GenericSubscription, callback/quiesce and ROS 2-to-MCAP qualification"
+      "verification": "Same-source Humble/Jazzy config, schema, GenericSubscription, callback/quiesce and ROS 2-to-MCAP qualification",
+      "native_lifetime_policy": "Private derived Context invokes protected clean_up only after actual users join and Node/Executor destruction; bounded process-resident dispatcher library owners (256 canonical types per official backend binary) prevent SDK implementation-handle caches from losing their mapped owners. No RMW-private API, library patch or LeakSanitizer suppression."
     },
     {
       "name": "ament_index_cpp",
