@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <future>
@@ -46,6 +47,9 @@ public:
         explicit Call(std::atomic<unsigned>& count) : count_(count) {
             EXPECT_EQ(count_.fetch_add(1), 0u);
         }
+
+        Call(const Call&) = delete;
+        Call& operator=(const Call&) = delete;
 
         ~Call() { count_.fetch_sub(1); }
 
@@ -571,6 +575,9 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     pipeline.acquisition = {"com.rodaq.acquisition.ros2", "1.0.0", config().dump()};
     pipeline.storage = {"com.rodaq.storage.mcap", "1.0.0", R"({"format_version":"1.0"})"};
     pipeline.streams = {{0, "s0", {}, rodaq::ReadinessPolicy::EntryReady}};
+    if (std::getenv("RODAQ_ROS2_EXTERNAL_PUBLISHER") != nullptr) {
+        pipeline.streams[0].readiness_policy = rodaq::ReadinessPolicy::SourceReady;
+    }
     task.pipelines.push_back(std::move(pipeline));
     auto created = composition->tasks().create_task(task, {"create"});
     ASSERT_TRUE(created.ok()) << created.status().message();
@@ -598,12 +605,18 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     auto start = composition->tasks().start(id, {"start"}, {true, 1});
     ASSERT_TRUE(start.ok()) << start.status().message();
     ASSERT_TRUE(completed(start.value()));
-    auto publisher = node->create_generic_publisher(
-        "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(100).reliable());
-    ASSERT_TRUE(connected(publisher));
-    for (unsigned i = 0; i < 30; ++i) {
-        publish(publisher);
-        std::this_thread::sleep_for(10ms);
+    if (std::getenv("RODAQ_ROS2_EXTERNAL_PUBLISHER") != nullptr) {
+        // Qualification harness supplies a real publisher from another ROS
+        // distro/process. No local producer may mask that transport path.
+        std::this_thread::sleep_for(3s);
+    } else {
+        auto publisher = node->create_generic_publisher(
+            "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(100).reliable());
+        ASSERT_TRUE(connected(publisher));
+        for (unsigned i = 0; i < 30; ++i) {
+            publish(publisher);
+            std::this_thread::sleep_for(10ms);
+        }
     }
     auto stop = composition->tasks().stop(id, {"stop"}, {true, 2});
     ASSERT_TRUE(stop.ok());
@@ -631,6 +644,16 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
         auto count = read.value().read_at(0, {output.data(), output.size()});
         ASSERT_TRUE(count.ok());
         ASSERT_EQ(count.value(), output.size());
+        if (const auto* destination = std::getenv("RODAQ_ROS2_EVIDENCE_DIR")) {
+            const fs::path directory(destination);
+            ASSERT_TRUE(directory.is_absolute() && fs::is_directory(directory));
+            ASSERT_EQ(fs::path(file.display_name).filename().string(), file.display_name);
+            std::ofstream evidence(directory / file.display_name, std::ios::binary);
+            evidence.write(
+                reinterpret_cast<const char*>(output.data()),
+                static_cast<std::streamsize>(output.size()));
+            ASSERT_TRUE(evidence.good());
+        }
         if (file.display_name.size() >= 5 &&
             file.display_name.substr(file.display_name.size() - 5) == ".mcap") {
             const auto exported = root / "read-back.mcap";
@@ -647,7 +670,13 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
                 EXPECT_EQ(message.channel->topic, "/rodaq_test_0");
                 EXPECT_EQ(message.channel->messageEncoding, "cdr");
                 EXPECT_EQ(message.schema->name, "std_msgs/msg/String");
-                const auto expected = bytes();
+                auto expected = bytes();
+                if (std::getenv("RODAQ_ROS2_EXTERNAL_PUBLISHER") != nullptr) {
+                    // The qualified rclpy/Fast DDS String serializer includes
+                    // two trailing alignment bytes. Preserve those bytes too;
+                    // the local raw-CDR publisher deliberately sends 14 bytes.
+                    expected.resize(16, 0);
+                }
                 ASSERT_EQ(message.message.dataSize, expected.size());
                 EXPECT_EQ(std::memcmp(message.message.data, expected.data(), expected.size()), 0);
                 EXPECT_EQ(message.message.publishTime, message.message.logTime);
