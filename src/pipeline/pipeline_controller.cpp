@@ -504,6 +504,14 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
         return Status(StatusCode::Conflict, {});
     }
     auto output = state_->output;
+    if (output->instance->gate.admission_fenced() && !state_->source_quiesced &&
+        state_->acquisition) {
+        auto stopped = state_->acquisition->quiesce(deadline);
+        if (!stopped.ok()) {
+            return stopped.status();
+        }
+        state_->source_quiesced = true;
+    }
     if (output->instance->gate.admission_fenced() && !state_->acquisition &&
         state_->acquisition_instance && !state_->source_closed) {
         auto closed = state_->acquisition_instance->close(deadline);

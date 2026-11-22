@@ -156,8 +156,10 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         TaskId id, const task::AssignedConfig* initial);
     Result<TaskId> create(const TaskConfig& config, const RequestIdentity& request);
     Result<void> enqueue_cleanup(
-        const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body);
+        const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body,
+        bool allow_defer = true);
     Result<void> retry_cleanup(const std::shared_ptr<task::TaskEntry>& entry);
+    void cleanup_failed_pipelines(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
     void start_execution(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
     bool cleanup_failed_prepare(
         const std::shared_ptr<task::TaskEntry>& entry,
@@ -184,6 +186,12 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         std::shared_ptr<task::TaskEntry> entry;
         std::shared_ptr<Work> body;
         std::uint64_t work_id{0};
+        void run() noexcept override;
+    };
+
+    struct FailedPipelineCleanup final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::RunExecution> execution;
         void run() noexcept override;
     };
 

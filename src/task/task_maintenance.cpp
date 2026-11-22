@@ -32,6 +32,9 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
             entries = state_->entries;
         }
         for (const auto& entry : entries) {
+            if (pending_only) {
+                state_->cleanup_failed_pipelines(entry);
+            }
             auto retried = state_->retry_cleanup(entry);
             if (!retried.ok()) {
                 return retried.status();

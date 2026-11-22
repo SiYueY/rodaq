@@ -882,6 +882,60 @@ TEST_P(CompositionPolicyTest, FormalPrepareBarrierUsesRequiredAndBestEffortPolic
 INSTANTIATE_TEST_SUITE_P(
     RequiredAndPolicy, CompositionPolicyTest, testing::Combine(testing::Bool(), testing::Bool()));
 
+TEST_F(PipelineControllerTest, PartialRunReleasesFailedPipelineWhileHealthySourceKeepsRecording) {
+    open_composition(&receive_clock, 5s, 2, 2);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    auto failed = config.pipelines.front();
+    failed.required = false;
+    failed.acquisition.json = R"({"streams":["first","second"],"mode":"fail_prepare"})";
+    config.pipelines.push_back(std::move(failed));
+    auto& service = composition_->tasks();
+    const auto first = service.create_task(config, {"first"}).value();
+    const auto start = service.start(first, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto started = wait_composed_operation(first, start.value());
+    ASSERT_TRUE(started.ok());
+    ASSERT_EQ(started.value().state, rodaq::OperationState::PartiallySucceeded);
+    bool settled = false;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        const auto runtime = service.get_runtime_snapshot(first).value();
+        settled = runtime.pipelines[1].facts && runtime.pipelines[1].facts->quiescent;
+        if (!settled) {
+            std::this_thread::sleep_for(1ms);
+        }
+    } while (!settled && std::chrono::steady_clock::now() < deadline);
+    ASSERT_TRUE(settled);
+    EXPECT_EQ(capacity_->snapshot().segment_slots, 1);
+    const auto before = service.get_runtime_snapshot(first).value();
+    ASSERT_TRUE(before.pipelines[0].facts);
+    EXPECT_EQ(before.pipelines[1].facts->accepted_records, 0);
+    EXPECT_EQ(service.get_task(first).value().control_generation, 2);
+    EXPECT_EQ(
+        service.get_task(first).value().execution_condition, rodaq::ExecutionCondition::Degraded);
+    EXPECT_EQ(
+        service.get_operation(first, start.value()).value().state,
+        rodaq::OperationState::PartiallySucceeded);
+    const auto sibling = service.create_task(formal_config(), {"sibling"}).value();
+    const auto sibling_start = service.start(sibling, {"start"}, {true, 1});
+    ASSERT_TRUE(sibling_start.ok());
+    ASSERT_TRUE(wait_composed(sibling, sibling_start.value()));
+    ASSERT_TRUE(wait_composed_records(sibling));
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto after = service.get_runtime_snapshot(first).value();
+    EXPECT_GT(
+        after.pipelines[0].facts->accepted_records, before.pipelines[0].facts->accepted_records);
+    const auto first_stop = service.stop(first, {"stop"}, {true, 2});
+    const auto sibling_stop = service.stop(sibling, {"stop"}, {true, 2});
+    ASSERT_TRUE(first_stop.ok());
+    ASSERT_TRUE(sibling_stop.ok());
+    ASSERT_TRUE(wait_composed(first, first_stop.value()));
+    ASSERT_TRUE(wait_composed(sibling, sibling_stop.value()));
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
+}
+
 TEST_F(PipelineControllerTest, MultiplePipelinesPauseResumeAndCommitTheirOwnAcceptedSets) {
     open_composition(&receive_clock, 5s, 1, 2);
     ASSERT_TRUE(composition_);

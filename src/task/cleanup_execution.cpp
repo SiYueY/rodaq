@@ -11,7 +11,7 @@
 namespace rodaq {
 
 Result<void> TaskService::State::enqueue_cleanup(
-    const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body) {
+    const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body, bool allow_defer) {
     try {
         auto identity = next_work_id();
         if (!identity.ok()) {
@@ -26,6 +26,9 @@ Result<void> TaskService::State::enqueue_cleanup(
         {
             std::lock_guard<std::mutex> lock(entry->control_mutex);
             if (entry->cleanup_active_id != 0 || entry->cleanup_ready.frame) {
+                if (!allow_defer) {
+                    return Status(StatusCode::Conflict, {});
+                }
                 if (entry->cleanup_pending.frame) {
                     return Status(StatusCode::ResourceExhausted, {});
                 }
