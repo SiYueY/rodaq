@@ -45,6 +45,15 @@
       "source": "Ubuntu 22.04 system package",
       "purpose": "Private EVP artifact SHA-256 and domain-separated semantic integrity; no public OpenSSL types",
       "verification": "artifact identity/replacement tests; canonical-byte and domain-separated digest golden fixtures"
+    },
+    {
+      "name": "mcap_vendor / libmcap",
+      "version": "0.15.16 / 0.8.0",
+      "package": "ros-humble-mcap-vendor 0.15.16-1jammy.20260304.195727",
+      "license": "MIT (libmcap); Apache-2.0 (ROS vendor)",
+      "source": "Prepared ROS 2 Humble package; Jazzy is rebuilt against its own prepared package",
+      "purpose": "Private MCAP format writer and IWritable; no rosbag2 Recorder/storage lifecycle",
+      "verification": "Native API probe, checked I/O/sidecar/capacity fixtures, independent reader and Humble/Jazzy info/play qualification"
     }
   ],
   "test_only": [

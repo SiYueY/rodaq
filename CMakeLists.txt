@@ -117,6 +117,10 @@ target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
 rodaq_enable_project_warnings(rodaq_daq)
 
 option(RODAQ_BUILD_BEHAVIORAL_FAKES "Build qualification-only fault-injection backends" OFF)
+option(RODAQ_BUILD_MCAP_STORAGE "Build the MCAP format backend using prepared ROS dependencies" OFF)
+if(RODAQ_BUILD_MCAP_STORAGE)
+    add_subdirectory(plugins/storage/mcap)
+endif()
 if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_subdirectory(plugins/fake_storage)
     add_subdirectory(plugins/fake_acquisition)
