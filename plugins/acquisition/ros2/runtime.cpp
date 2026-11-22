@@ -73,8 +73,13 @@ Backend::State::Permit Backend::State::control_permit(plugin::Deadline deadline)
 
 Backend::State::Permit Backend::State::data_permit(Stream& stream, std::uint64_t generation) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (stopping || phase != Phase::Running || !stream.gate ||
-        stream.snapshot->generation != generation) {
+    if (stopping || phase != Phase::Running) {
+        return {};
+    }
+    if (!stream.gate || stream.snapshot->generation != generation) {
+        if (stream.lost != std::numeric_limits<std::uint64_t>::max()) {
+            ++stream.lost;
+        }
         return {};
     }
     if (active == capacity) {

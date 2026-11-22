@@ -33,6 +33,9 @@ struct Reservation {
     Reservation& operator=(const Reservation&) = delete;
 
     ~Reservation() {
+        if (!armed) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(cache.mutex);
         if (slot.phase == Phase::Loading) {
             slot.type.clear();
@@ -43,6 +46,7 @@ struct Reservation {
 
     Libraries& cache;
     Library& slot;
+    bool armed{true};
 };
 
 Libraries& libraries() {
@@ -149,6 +153,9 @@ Result<std::shared_ptr<rcpputils::SharedLibrary>> resident_typesupport(
             selected->type.clear();
             selected->phase = Phase::Empty;
         }
+        // Disarm before making the free slot visible to another loader. A
+        // destructor that only checked Loading could erase its successor.
+        reservation.armed = false;
         cache.changed.notify_all();
     }
     return loaded;

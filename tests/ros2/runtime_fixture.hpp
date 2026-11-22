@@ -130,6 +130,8 @@ public:
         ++events[event.kind];
         if (event.kind == RODAQ_ACQUISITION_EVENT_OVERFLOW) {
             overflow += event.count;
+        } else if (event.kind == RODAQ_ACQUISITION_EVENT_DROPPED) {
+            dropped += event.count;
         }
         changed.notify_all();
         return {};
@@ -166,6 +168,7 @@ public:
     unsigned active{0};
     unsigned high_water{0};
     std::uint64_t overflow{0};
+    std::uint64_t dropped{0};
     std::array<unsigned, 11> events{};
     std::array<unsigned, 7> sources{};
     std::vector<std::string> schemas;

@@ -64,6 +64,65 @@ TEST_F(Ros2Runtime, RepeatedActualPluginLifecyclesReleasePrivateContextsAndReuse
     EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
 }
 
+TEST_F(Ros2Runtime, FailedLoadContentionCannotEraseOrMisidentifyAnotherTypeOwner) {
+    std::array<std::future<Result<void>>, 8> loads;
+    for (unsigned worker = 0; worker < loads.size(); ++worker) {
+        loads[worker] = std::async(std::launch::async, [worker]() -> Result<void> {
+            const auto* type =
+                worker % 2 == 0 ? "std_msgs/msg/String" : "builtin_interfaces/msg/Time";
+            const auto* package = worker % 2 == 0 ? "libstd_msgs__" : "libbuiltin_interfaces__";
+            for (unsigned attempt = 0; attempt < 12; ++attempt) {
+                const auto absent = "rodaq_missing_" + std::to_string(worker) + "_" +
+                                    std::to_string(attempt) + "/msg/Absent";
+                auto failed = ros2_acquisition::resident_typesupport(absent, soon());
+                if (failed.status().code() != StatusCode::Unavailable) {
+                    return Status(StatusCode::Internal, "Failed load lost reservation ownership");
+                }
+                auto valid = ros2_acquisition::resident_typesupport(type, soon());
+                if (!valid.ok()) {
+                    return valid.status();
+                }
+                if (valid.value()->get_library_path().find(package) == std::string::npos) {
+                    return Status(StatusCode::DataLoss, "Resident type references another package");
+                }
+            }
+            return {};
+        });
+    }
+    for (auto& loading : loads) {
+        auto result = loading.get();
+        EXPECT_TRUE(result.ok()) << result.status().message();
+    }
+}
+
+TEST_F(Ros2Runtime, LocalDescriptorCutReportsDiscardedNativeCallbacksAsCoverageEvidence) {
+    create(config());
+    ASSERT_TRUE(handle);
+    ASSERT_TRUE(prepare().ok());
+    ASSERT_TRUE(handle->start(soon()).ok());
+    {
+        std::lock_guard<std::mutex> lock(receiver->mutex);
+        receiver->block_descriptor = true;
+    }
+    auto publisher = node->create_generic_publisher(
+        "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(100).reliable());
+    const bool cutting = receiver->wait([&] { return receiver->descriptor_active; });
+    if (!cutting) {
+        receiver->release();
+    }
+    ASSERT_TRUE(cutting);
+    ASSERT_TRUE(connected(publisher));
+    for (unsigned i = 0; i < 20; ++i) {
+        publish(publisher);
+        std::this_thread::sleep_for(2ms);
+    }
+    receiver->release();
+    ASSERT_TRUE(receiver->wait([&] { return receiver->dropped != 0; }));
+    ASSERT_TRUE(handle->quiesce(soon()).ok());
+    std::lock_guard<std::mutex> lock(receiver->mutex);
+    EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
+}
+
 TEST_F(Ros2Runtime, IdleExplicitTypeIsLocallyReadyAndPrivateShutdownPreservesOtherContext) {
     create(config());
     ASSERT_TRUE(handle);
