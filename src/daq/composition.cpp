@@ -195,7 +195,9 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                                  const auto& control, const auto& config, auto& identities) {
             return resolve_run(*resources, control, config, identities);
         };
-        execution->commit = [catalog = state->catalog](const auto& sealed) {
+        execution->commit = [catalog = state->catalog,
+                             resources = state->resources](const auto& sealed) {
+            std::lock_guard<std::mutex> flight(resources->commit_execution);
             return catalog->commit(sealed);
         };
         execution->reserve_segment = [ids = o.segment_ids]() -> Result<std::uint64_t> {

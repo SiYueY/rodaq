@@ -147,7 +147,14 @@ protected:
         volume_ = std::move(volume.value());
         auto ledger = artifact::LedgerStore::open(
             root_ / "ledger", artifact::LedgerOpenMode::Initialize, 8,
-            [fault = ledger_fault_](auto step) {
+            [fault = ledger_fault_, control = ledger_control_](auto step) {
+                if (step == rodaq::persistence::FileStep::SyncFile &&
+                    control->block.exchange(false)) {
+                    std::unique_lock<std::mutex> lock(control->mutex);
+                    control->entered = true;
+                    control->changed.notify_all();
+                    control->changed.wait(lock, [&] { return control->released; });
+                }
                 return fault->load() && step == rodaq::persistence::FileStep::SyncDirectory ? EIO
                                                                                             : 0;
             });
@@ -671,6 +678,7 @@ protected:
     std::shared_ptr<artifact::VolumeCapacity> capacity_;
     std::shared_ptr<artifact::LedgerStore> ledger_;
     std::shared_ptr<std::atomic<bool>> ledger_fault_{std::make_shared<std::atomic<bool>>(false)};
+    std::shared_ptr<ReadControl> ledger_control_{std::make_shared<ReadControl>()};
     std::shared_ptr<pipeline::PipelineController> controller_;
     std::shared_ptr<pipeline::PipelineController> second_;
     std::shared_ptr<rodaq::ExecutionLane> second_lane_;
@@ -745,6 +753,49 @@ TEST_F(PipelineControllerTest, CompositionAllocatesIndependentWriterSlicesForTwo
     EXPECT_EQ(
         service.create_task(formal_config(), {"third"}).status().code(),
         StatusCode::ResourceExhausted);
+}
+
+TEST_F(PipelineControllerTest, ConcurrentTaskStopsRetainCommitOwnershipWhileLedgerSyncIsBlocked) {
+    open_composition(&receive_clock, 5s, 2);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto first = service.create_task(formal_config(), {"first"}).value();
+    const auto second = service.create_task(formal_config(), {"second"}).value();
+    const auto first_start = service.start(first, {"start"}, {true, 1});
+    const auto second_start = service.start(second, {"start"}, {true, 1});
+    ASSERT_TRUE(first_start.ok());
+    ASSERT_TRUE(second_start.ok());
+    ASSERT_TRUE(wait_composed(first, first_start.value()));
+    ASSERT_TRUE(wait_composed(second, second_start.value()));
+
+    ledger_control_->block = true;
+    const auto first_stop = service.stop(first, {"stop"}, {true, 2});
+    bool inside = false;
+    {
+        std::unique_lock<std::mutex> lock(ledger_control_->mutex);
+        inside =
+            ledger_control_->changed.wait_for(lock, 2s, [&] { return ledger_control_->entered; });
+    }
+    const auto second_stop = service.stop(second, {"stop"}, {true, 2});
+    // Give independent Cleanup execution time to reach the occupied Commit
+    // domain. Queries and durable control acceptance remain responsive.
+    std::this_thread::sleep_for(20ms);
+    const auto before_release = second_stop.ok()
+                                    ? service.get_operation(second, second_stop.value())
+                                    : rodaq::Result<rodaq::OperationSnapshot>(second_stop.status());
+    {
+        std::lock_guard<std::mutex> lock(ledger_control_->mutex);
+        ledger_control_->released = true;
+        ledger_control_->changed.notify_all();
+    }
+    EXPECT_TRUE(inside);
+    ASSERT_TRUE(first_stop.ok());
+    ASSERT_TRUE(second_stop.ok());
+    ASSERT_TRUE(before_release.ok());
+    EXPECT_FALSE(rodaq::task::terminal(before_release.value().state));
+    ASSERT_TRUE(wait_composed(first, first_stop.value()));
+    ASSERT_TRUE(wait_composed(second, second_stop.value()));
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
 }
 
 TEST_F(PipelineControllerTest, CompositionRunsFormalLifecycleAndReadsActualCommittedFiles) {
