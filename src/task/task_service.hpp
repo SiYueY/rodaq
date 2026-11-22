@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -23,6 +24,11 @@ struct AllowedPlugin {
     std::string plugin_id;
     std::string plugin_version;
     AdmissionRole role{AdmissionRole::Acquisition};
+};
+
+struct ResourceProfileAdmission {
+    std::string name;
+    std::uint64_t max_segment_physical_bytes{0};
 };
 
 enum class ServiceFileDomain { Directories, CreateReceipts, Task, StreamIdentity, Recovery };
@@ -51,6 +57,7 @@ struct RunExecutionOptions {
     // Actual Artifact owner retains failed/uncertain commits. Success proves
     // durable Ledger + Catalog publication and transfer of retained charges.
     std::function<Result<void>(const pipeline::SealedPipelineSegment&)> commit;
+    std::function<Result<std::uint64_t>()> reserve_segment;
 };
 
 struct ServiceOptions {
@@ -66,7 +73,7 @@ struct ServiceOptions {
     std::shared_ptr<ExecutionLane> control_lane;
     std::shared_ptr<const RunExecutionOptions> execution;
     std::vector<AllowedPlugin> allowed_plugins;
-    std::vector<std::string> resource_profiles;
+    std::vector<ResourceProfileAdmission> resource_profiles;
     std::vector<std::string> output_roots;
     std::size_t max_tasks{8};
     std::size_t max_requests{32};

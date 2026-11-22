@@ -67,6 +67,8 @@ struct RunExecution {
     bool preparation_returned{false};
     bool preparing{true};
     bool draining{false};
+    bool rotating{false};
+    bool rotating_native{false};
     bool result_ready{false};
     bool result_partial{false};
     DataImpact result_impact{DataImpact::None};
@@ -182,6 +184,14 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         bool internal_cleanup{false};
         bool process_drain{false};
         StatusCode preparation_failure{StatusCode::Ok};
+        void run() noexcept override;
+    };
+
+    struct RotateJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::RunExecution> execution;
+        std::uint64_t now_monotonic{0};
         void run() noexcept override;
     };
 };

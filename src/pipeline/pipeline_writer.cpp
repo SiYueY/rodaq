@@ -6,6 +6,7 @@
 #include <new>
 #include <utility>
 
+#include <fmt/format.h>
 #include <rodaq/storage/validation.hpp>
 
 namespace rodaq::pipeline {
@@ -292,11 +293,21 @@ Result<storage::SegmentSealResult> PipelineWriter::seal(
     const auto physical = segment->capacity.snapshot();
     if (!batch_.empty() || quiescent_ || seal_attempted_ || active_ != segment ||
         !(segment->instance_id == instance_) || !metadata.closed || physical.writable ||
-        physical.candidates != 0 || metadata.pending_records != 0 ||
+        physical.candidates != 0 || metadata.pending_admissions != 0 ||
         metadata.pending_descriptors != 0 || metadata.native_inflight != 0 ||
         metadata.unresolved_owners != 0 || metadata.unknown != 0 ||
         metadata.accepted != metadata.written + metadata.known_failed || metadata.written == 0) {
-        return Status(StatusCode::InvalidState, {});
+        return Status(
+            StatusCode::InvalidState,
+            fmt::format(
+                "Seal requires settled closed Segment: batch={} quiescent={} attempted={} "
+                "active={} "
+                "closed={} writable={} candidates={} records={} descriptors={} native={} "
+                "unresolved={} unknown={} accepted={} written={} failed={}",
+                batch_.size(), quiescent_, seal_attempted_, active_ == segment, metadata.closed,
+                physical.writable, physical.candidates, metadata.pending_admissions,
+                metadata.pending_descriptors, metadata.native_inflight, metadata.unresolved_owners,
+                metadata.unknown, metadata.accepted, metadata.written, metadata.known_failed));
     }
     seal_attempted_ = true;
     auto verified = volume_->verify();

@@ -57,7 +57,7 @@ public:
                 "normal",          "prefix_unwritten", "prefix_unknown", "full_failed",
                 "invalid_output",  "late_write",       "hang_write",     "fail_prepare",
                 "fail_descriptor", "fail_open",        "fail_seal",      "fail_quiesce",
-                "fail_shutdown"};
+                "fail_shutdown",   "late_seal"};
             if (std::find(std::begin(modes), std::end(modes), mode_) == std::end(modes)) {
                 return Status(StatusCode::InvalidArgument, {});
             }
@@ -298,6 +298,11 @@ public:
         if (closed != 0) {
             poisoned_ = true;
             return Status(StatusCode::Unavailable, {});
+        }
+        if (mode_ == "late_seal") {
+            // A complete format footer is observable while the actual Native
+            // Seal frame still owns its output. Core must wait for the return.
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
         }
         return storage::SegmentSealResult{{{"records.fake", physical_}}, physical_};
     }

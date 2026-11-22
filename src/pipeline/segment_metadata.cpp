@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <mutex>
 #include <new>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace rodaq::pipeline {
 namespace {
@@ -48,6 +51,15 @@ bool valid_clock(const time::ClockSnapshot& received, const time::PlaybackAnchor
 
 }  // namespace
 
+Result<std::uint64_t> unsettled_record_count(const SegmentMetadataSnapshot& snapshot) {
+    if (snapshot.written > snapshot.accepted ||
+        snapshot.known_failed > snapshot.accepted - snapshot.written ||
+        snapshot.unknown > snapshot.accepted - snapshot.written - snapshot.known_failed) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    return snapshot.accepted - snapshot.written - snapshot.known_failed - snapshot.unknown;
+}
+
 struct SegmentMetadataState {
     artifact::ManifestIdentity identity;
     artifact::ManifestLimits limits;
@@ -77,7 +89,7 @@ struct SegmentMetadataState {
     }
 
     void cancel_record(std::size_t epoch) noexcept {
-        --facts.pending_records;
+        --facts.pending_admissions;
         auto& entry = epochs[epoch];
         --entry.pending;
         if (entry.pending == 0 && entry.facts->accepted_records == 0) {
@@ -203,7 +215,7 @@ RecordSettlement RecordMetadataReservation::accept(std::uint64_t sequence) noexc
         assert(!state->facts.closed);
         auto& coverage = state->streams[stream_];
         assert(coverage.accepted == 0 || sequence > coverage.last_sequence);
-        --state->facts.pending_records;
+        --state->facts.pending_admissions;
         ++state->facts.accepted;
 
         if (coverage.accepted == 0) {
@@ -395,8 +407,9 @@ Result<RecordMetadataReservation> SegmentMetadata::reserve_record(
     if (stream == state_->streams.end() || descriptor == state_->descriptors.end()) {
         return Status(StatusCode::InvalidState, {});
     }
-    if (state_->facts.pending_records >= 65536 || state_->facts.accepted >= state_->max_records ||
-        state_->facts.pending_records >= state_->max_records - state_->facts.accepted) {
+    if (state_->facts.pending_admissions >= 65536 ||
+        state_->facts.accepted >= state_->max_records ||
+        state_->facts.pending_admissions >= state_->max_records - state_->facts.accepted) {
         return Status(StatusCode::ResourceExhausted, {});
     }
     auto epoch = std::find_if(state_->epochs.begin(), state_->epochs.end(), [&](const auto& entry) {
@@ -422,7 +435,7 @@ Result<RecordMetadataReservation> SegmentMetadata::reserve_record(
         return Status(StatusCode::DataLoss, {});
     }
     ++epoch->pending;
-    ++state_->facts.pending_records;
+    ++state_->facts.pending_admissions;
     return RecordMetadataReservation(
         state_, static_cast<std::size_t>(stream - state_->streams.begin()),
         static_cast<std::size_t>(descriptor - state_->descriptors.begin()),
@@ -453,7 +466,7 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             const auto& facts = state_->facts;
-            if (!facts.closed || facts.accepted == 0 || facts.pending_records != 0 ||
+            if (!facts.closed || facts.accepted == 0 || facts.pending_admissions != 0 ||
                 facts.pending_descriptors != 0 || facts.native_inflight != 0 ||
                 facts.unresolved_owners != 0 || facts.written > facts.accepted ||
                 facts.known_failed > facts.accepted - facts.written ||

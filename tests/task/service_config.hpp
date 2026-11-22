@@ -29,7 +29,7 @@ inline task::ServiceOptions service_options(
     options.plugin_manager = std::move(manager);
     options.create_lane = std::move(create_lane);
     options.control_lane = std::move(control_lane);
-    options.resource_profiles = {"basic"};
+    options.resource_profiles = {{"basic", 100000}};
     options.output_roots = {"local"};
     options.allowed_plugins = {
         {"rodaq.fake.acquisition", "1.0.0", task::AdmissionRole::Acquisition},

@@ -1,242 +1,29 @@
 #include "pipeline_controller.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
 #include <rodaq/acquisition/interface.hpp>
 #include <rodaq/acquisition/service.hpp>
 #include <rodaq/plugin/registry.hpp>
 
+#include "pipeline_controller_state.hpp"
 #include "../work_id.hpp"
 
-#include <algorithm>
-#include <condition_variable>
-#include <exception>
-#include <functional>
-#include <mutex>
-#include <new>
-#include <utility>
-
 namespace rodaq::pipeline {
-namespace {
-
-class ControlCall {
-public:
-    explicit ControlCall(std::atomic<std::uint32_t>& count) noexcept {
-        std::uint32_t empty = 0;
-        if (count.compare_exchange_strong(empty, 1)) {
-            count_ = &count;
-        }
-    }
-
-    ~ControlCall() noexcept {
-        if (count_) {
-            count_->store(0);
-        }
-    }
-
-    explicit operator bool() const noexcept { return count_ != nullptr; }
-    ControlCall(const ControlCall&) = delete;
-    ControlCall& operator=(const ControlCall&) = delete;
-
-private:
-    std::atomic<std::uint32_t>* count_{nullptr};
-};
-
-}  // namespace
-
-struct PipelineController::WriterDomain {
-    std::shared_ptr<RecordingInstance> instance;
-    std::shared_ptr<RecordingSegment> segment;
-    std::unique_ptr<PipelineWriter> writer;
-    std::shared_ptr<ExecutionLane> lane;
-    std::chrono::nanoseconds timeout;
-    std::atomic<StatusCode> failure{StatusCode::Ok};
-    mutable std::mutex mutex;
-    std::condition_variable changed;
-    std::uint32_t jobs{0};
-    bool scheduled{false};
-    std::weak_ptr<Work> pump;
-
-    void fail(StatusCode error) noexcept {
-        auto expected = StatusCode::Ok;
-        (void)failure.compare_exchange_strong(expected, error);
-        (void)instance->establish_control_fence();
-    }
-
-    struct Operation final : Work {
-        std::shared_ptr<WriterDomain> owner;
-        std::function<Result<void>()> body;
-        std::mutex mutex;
-        std::condition_variable returned;
-        std::optional<Result<void>> result;
-
-        void run() noexcept override {
-            Result<void> actual;
-            try {
-                actual = body();
-            } catch (const std::bad_alloc&) {
-                actual = Status(StatusCode::ResourceExhausted, {});
-            } catch (...) {
-                actual = Status(StatusCode::Internal, {});
-            }
-            if (!actual.ok()) {
-                owner->fail(actual.status().code());
-            }
-            {
-                std::lock_guard<std::mutex> lock(owner->mutex);
-                --owner->jobs;
-                owner->changed.notify_all();
-            }
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                result.emplace(std::move(actual));
-            }
-            returned.notify_all();
-        }
-    };
-
-    Result<void> execute(std::shared_ptr<WriterDomain> self, std::function<Result<void>()> body) {
-        try {
-            auto job = std::make_shared<Operation>();
-            job->owner = std::move(self);
-            job->body = std::move(body);
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                ++jobs;
-            }
-            auto queued = lane->submit(job);
-            if (!queued.ok()) {
-                std::lock_guard<std::mutex> lock(mutex);
-                --jobs;
-                changed.notify_all();
-                return queued.status();
-            }
-            std::unique_lock<std::mutex> lock(job->mutex);
-            // Actual wait, not the Task caller's observation deadline. The
-            // bounded frame retains all Native inputs until the actual return.
-            job->returned.wait(lock, [&] { return job->result.has_value(); });
-            return std::move(*job->result);
-        } catch (const std::bad_alloc&) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-    }
-
-    void wake() noexcept {
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (scheduled) {
-                return;
-            }
-            scheduled = true;
-        }
-        auto work = pump.lock();
-        auto queued = work ? lane->submit(std::move(work))
-                           : Result<void>(Status(StatusCode::InvalidState, {}));
-        if (!queued.ok()) {
-            fail(queued.status().code());
-            std::lock_guard<std::mutex> lock(mutex);
-            scheduled = false;
-            changed.notify_all();
-        }
-    }
-
-    struct Pump final : Work {
-        std::shared_ptr<WriterDomain> owner;
-        void run() noexcept override {
-            auto segment = std::atomic_load(&owner->segment);
-            bool continue_draining = true;
-            try {
-                auto deadline = plugin::Deadline::after(owner->timeout);
-                if (!deadline.ok()) {
-                    owner->fail(deadline.status().code());
-                    continue_draining = false;
-                } else if (owner->writer && segment) {
-                    auto result = owner->writer->write_available(
-                        owner->instance->queue, segment, deadline.value());
-                    if (!result.ok()) {
-                        owner->fail(result.status().code());
-                        continue_draining = false;
-                    } else if (result.value().failure != StatusCode::Ok) {
-                        owner->fail(result.value().failure);
-                    }
-                } else {
-                    owner->fail(StatusCode::InvalidState);
-                    continue_draining = false;
-                }
-            } catch (...) {
-                owner->fail(StatusCode::Internal);
-                continue_draining = false;
-            }
-            bool more = false;
-            {
-                std::lock_guard<std::mutex> lock(owner->mutex);
-                // Publish happens before wake. The same lock serializes the
-                // empty->idle cut with a concurrent producer's next wake.
-                more = continue_draining && owner->instance->queue.snapshot().queued_records != 0;
-                if (!more) {
-                    owner->scheduled = false;
-                    owner->changed.notify_all();
-                }
-            }
-            if (more) {
-                auto next = owner->pump.lock();
-                auto queued = next ? owner->lane->submit(std::move(next))
-                                   : Result<void>(Status(StatusCode::InvalidState, {}));
-                if (!queued.ok()) {
-                    owner->fail(queued.status().code());
-                    std::lock_guard<std::mutex> lock(owner->mutex);
-                    owner->scheduled = false;
-                    owner->changed.notify_all();
-                }
-            }
-        }
-    };
-
-    Result<void> wait_idle(plugin::Deadline deadline) {
-        std::unique_lock<std::mutex> lock(mutex);
-        const auto idle = [&] { return jobs == 0 && !scheduled; };
-        if (deadline.is_infinite()) {
-            changed.wait(lock, idle);
-            return {};
-        }
-        auto remaining = deadline.remaining();
-        if (!remaining.ok()) {
-            return remaining.status();
-        }
-        if (!changed.wait_for(lock, remaining.value(), idle)) {
-            return Status(StatusCode::DeadlineExceeded, {});
-        }
-        return {};
-    }
-};
-
-struct PipelineController::State {
-    explicit State(PipelineOptions value) : options(std::move(value)) {}
-    PipelineOptions options;
-    std::shared_ptr<WriterDomain> output;
-    std::shared_ptr<Work> pump;
-    std::vector<ReadinessPolicy> policies;
-    std::optional<plugin::PluginLibrary> acquisition_library;
-    std::optional<plugin::PluginLibrary> storage_library;
-    std::optional<plugin::PluginInstance> acquisition_instance;
-    std::optional<plugin::PluginInstance> storage_instance;
-    std::optional<acquisition::Handle> acquisition;
-    std::atomic<std::uint32_t> control{0};
-    std::atomic<bool> prepared{false};
-    std::atomic<bool> source_quiesced{true};
-    std::atomic<bool> storage_closed{true};
-    std::atomic<bool> source_closed{true};
-    bool artifact_settled{false};
-    std::atomic<bool> creation_unresolved{false};
-    std::atomic<std::uint64_t> artifact_work{0};
-    std::atomic<std::uint64_t> prepared_at{0};
-    std::mutex open_mutex;
-    bool opened{false};
-    std::uint64_t opened_at{0};
-    std::uint64_t recording_base{0};
-    bool prepare_attempted{false};
-    bool artifact_handed_off{false};
-    bool empty_settled{false};
-};
-
 PipelineController::PipelineController(std::shared_ptr<State> state) noexcept
 : state_(std::move(state)) {}
 
@@ -249,8 +36,10 @@ bool PipelineController::matches_configuration(
 PipelineController::~PipelineController() noexcept {
     // No destructor performs business quiesce or waits on unknown Native work.
     // Composition must retain failed/timed-out owners until actual settlement.
-    if (state_->control.load() != 0 || !state_->source_closed.load() ||
-        !state_->storage_closed.load() || state_->artifact_work.load() != 0 ||
+    std::lock_guard<std::mutex> slots(state_->segments);
+    if (state_->successor || state_->retained || state_->control.load() != 0 ||
+        !state_->source_closed.load() || !state_->storage_closed.load() ||
+        state_->artifact_work.load() != 0 ||
         (state_->creation_unresolved &&
          state_->options.plugins->phase() != plugin::PluginManagerPhase::Stopped)) {
         std::terminate();
@@ -334,7 +123,7 @@ Result<std::shared_ptr<PipelineController>> PipelineController::create(PipelineO
 }
 
 Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) {
-    ControlCall call(state_->control);
+    PipelineControlCall call(state_->control);
     if (!call) {
         return Status(StatusCode::Conflict, {});
     }
@@ -528,9 +317,10 @@ GateOpenResult PipelineController::open_admission(const OpenAuthorization& autho
     }
     const auto result = state_->output->instance->gate.open_admission(
         identity.instance_id, identity.control_generation);
-    if (result == GateOpenResult::Opened) {
+    if (result == GateOpenResult::Opened && !state_->opened) {
         state_->opened = true;
         state_->opened_at = authorization.opened_monotonic;
+        state_->segment_started_at = authorization.opened_monotonic;
         state_->recording_base = authorization.recording_base;
     }
     return result;
@@ -551,24 +341,28 @@ Result<GateSnapshot> PipelineController::close_admission(ControlGeneration gener
     if (!closed.ok()) {
         return closed.status();
     }
-    if (auto segment = std::atomic_load(&state_->output->segment)) {
+    std::shared_ptr<RecordingSegment> segment;
+    std::shared_ptr<RecordingSegment> successor;
+    {
+        std::lock_guard<std::mutex> slots(state_->segments);
+        segment = std::atomic_load(&state_->output->segment);
+        successor = state_->successor;
+    }
+    if (segment) {
         segment->close_admission();
+    }
+    if (successor) {
+        successor->close_admission();
     }
     return closed;
 }
 
 Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::Deadline deadline) {
-    ControlCall call(state_->control);
+    PipelineControlCall call(state_->control);
     if (!call) {
         return Status(StatusCode::Conflict, {});
     }
     auto output = state_->output;
-    if (state_->artifact_settled) {
-        return std::optional<SealedPipelineSegment>{};
-    }
-    if (state_->artifact_work.load() != 0) {
-        return Status(StatusCode::Conflict, {});
-    }
     if (!output->instance->gate.admission_fenced()) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -581,6 +375,23 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     }
     if (!state_->source_quiesced && !state_->source_closed) {
         return Status(StatusCode::InvalidState, {});
+    }
+    if (state_->successor) {
+        return state_->finish_rotation(deadline);
+    }
+    {
+        std::lock_guard<std::mutex> slots(state_->segments);
+        if (state_->retained) {
+            // Native source quiescence precedes waiting for old Artifact I/O.
+            // The same stable handoff may be replayed to its actual owner.
+            return state_->retained->handoff;
+        }
+    }
+    if (state_->artifact_settled) {
+        return std::optional<SealedPipelineSegment>{};
+    }
+    if (state_->artifact_work.load() != 0) {
+        return Status(StatusCode::Conflict, {});
     }
     auto idle = output->wait_idle(deadline);
     if (!idle.ok()) {
@@ -609,7 +420,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
         return drained.status();
     }
     const auto facts = segment->metadata.snapshot();
-    if (facts.pending_records || facts.pending_descriptors || facts.native_inflight ||
+    if (facts.pending_admissions || facts.pending_descriptors || facts.native_inflight ||
         facts.unresolved_owners) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -644,16 +455,35 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
 
 Result<void> PipelineController::acknowledge_artifact(
     std::uint64_t work_id, std::uint64_t segment_id) {
-    ControlCall call(state_->control);
-    if (!call) {
-        return Status(StatusCode::Conflict, {});
+    std::shared_ptr<RotatedSegment> retired;
+    std::unique_lock<std::mutex> slots(state_->segments);
+    for (const auto& done : state_->acknowledged) {
+        if (work_id != 0 && done.first == work_id && done.second == segment_id) {
+            return {};
+        }
     }
-    if (segment_id != state_->options.manifest.segment_id || work_id == 0 ||
+    if (state_->retained && state_->retained->work_id == work_id && work_id != 0 &&
+        state_->retained->segment->metadata.segment_id() == segment_id) {
+        auto& old = *state_->retained;
+        if (!old.handoff || !old.segment->capacity.snapshot().sealed) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        auto added = add_segment_records(state_->completed, old.segment->metadata.snapshot(), true);
+        if (!added.ok()) {
+            return added.status();
+        }
+        retired = std::move(state_->retained);
+        state_->acknowledged[state_->acknowledged_next++ % state_->acknowledged.size()] = {
+            work_id, segment_id};
+        slots.unlock();
+        return {};
+    }
+    auto segment = std::atomic_load(&state_->output->segment);
+    if (!segment || segment_id != segment->metadata.segment_id() || work_id == 0 ||
         !state_->artifact_handed_off) {
         return Status(StatusCode::Conflict, {});
     }
-    auto segment = std::atomic_load(&state_->output->segment);
-    if (!segment || !segment->capacity.snapshot().sealed) {
+    if (!segment->capacity.snapshot().sealed) {
         return Status(StatusCode::InvalidState, {});
     }
     auto expected = work_id;
@@ -661,18 +491,15 @@ Result<void> PipelineController::acknowledge_artifact(
         return Status(StatusCode::Conflict, {});
     }
     state_->artifact_settled = true;
+    state_->acknowledged[state_->acknowledged_next++ % state_->acknowledged.size()] = {
+        work_id, segment_id};
     return {};
 }
 
-Result<void> PipelineController::quiesce(plugin::Deadline deadline) {
-    if (state_->artifact_work.load() != 0) {
-        return Status(StatusCode::InvalidState, {});
-    }
-    return cleanup(deadline);
-}
+Result<void> PipelineController::quiesce(plugin::Deadline deadline) { return cleanup(deadline); }
 
 Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
-    ControlCall call(state_->control);
+    PipelineControlCall call(state_->control);
     if (!call) {
         return Status(StatusCode::Conflict, {});
     }
@@ -743,7 +570,8 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
         }
         state_->empty_settled = true;
     }
-    if (state_->artifact_work.load() != 0) {
+    std::lock_guard<std::mutex> slots(state_->segments);
+    if (state_->successor || state_->retained || state_->artifact_work.load() != 0) {
         return Status(StatusCode::InvalidState, {});
     }
     return {};
@@ -751,7 +579,7 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
 
 Result<void> PipelineController::acknowledge_deleted(
     std::uint64_t work_id, std::uint64_t segment_id) {
-    ControlCall call(state_->control);
+    PipelineControlCall call(state_->control);
     if (!call || work_id == 0 || segment_id != state_->options.manifest.segment_id ||
         state_->artifact_work.load() != work_id || !state_->storage_closed ||
         !state_->source_closed) {
@@ -762,7 +590,7 @@ Result<void> PipelineController::acknowledge_deleted(
         return Status(StatusCode::InvalidState, {});
     }
     const auto facts = segment->metadata.snapshot();
-    if (facts.pending_records || facts.pending_descriptors || facts.native_inflight ||
+    if (facts.pending_admissions || facts.pending_descriptors || facts.native_inflight ||
         facts.unresolved_owners || state_->output->instance->queue.snapshot().queued_records != 0) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -780,12 +608,39 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     result.identity = state_->options.identity;
     result.gate = state_->output->instance->gate.snapshot();
     result.queue = state_->output->instance->queue.snapshot();
-    if (auto segment = std::atomic_load(&state_->output->segment)) {
-        result.records = segment->metadata.snapshot();
-        result.segment_id = segment->metadata.segment_id();
-        result.quiescence.admission_candidates = segment->capacity.snapshot().candidates;
+    std::shared_ptr<RecordingSegment> current;
+    std::shared_ptr<RecordingSegment> additional;
+    {
+        std::lock_guard<std::mutex> slots(state_->segments);
+        current = std::atomic_load(&state_->output->segment);
+        result.records = state_->completed;
+        result.records.closed = true;
+        result.artifact_work_id = state_->artifact_work.load();
+        result.quiescence.commit_inflight = result.artifact_work_id != 0 ? 1 : 0;
+        if (state_->successor) {
+            additional = state_->successor;
+            result.successor_segment_id = additional->metadata.segment_id();
+        } else if (state_->retained) {
+            additional = state_->retained->segment;
+            result.artifact_work_id = state_->retained->work_id;
+            ++result.quiescence.commit_inflight;
+        }
     }
-    result.artifact_work_id = state_->artifact_work.load();
+    for (const auto& segment : {current, additional}) {
+        if (!segment) {
+            continue;
+        }
+        auto added = add_segment_records(result.records, segment->metadata.snapshot());
+        if (!added.ok()) {
+            return added.status();
+        }
+        result.quiescence.admission_candidates += segment->capacity.snapshot().candidates;
+    }
+    if (current) {
+        result.segment_id = current->metadata.segment_id();
+        result.capacity = current->capacity.snapshot();
+    }
+    result.segment_started_monotonic = state_->segment_started_at.load();
     auto callbacks = state_->output->instance->callback_facts();
     if (!callbacks.ok()) {
         return callbacks.status();
@@ -804,18 +659,22 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     quiet.storage_closed = state_->storage_closed.load();
     quiet.callbacks = callbacks.value().callbacks;
     quiet.queued_records = result.queue.queued_records;
-    quiet.unsettled_records = result.records.pending_records + result.records.unresolved_owners +
-                              result.records.native_inflight;
+    auto outstanding = unsettled_record_count(result.records);
+    if (!outstanding.ok()) {
+        return outstanding.status();
+    }
+    quiet.unsettled_records = outstanding.value();
     quiet.buffered_records = state_->output->instance->records.snapshot().records;
     quiet.unsettled_descriptors = result.records.pending_descriptors;
-    quiet.commit_inflight = state_->artifact_work.load() != 0 ? 1 : 0;
     quiet.settled = quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
                     quiet.control_inflight == 0 && quiet.writer_inflight == 0 &&
                     quiet.source_quiesced && quiet.storage_closed && quiet.callbacks == 0 &&
                     quiet.queued_records == 0 && result.queue.reserved_slots == 0 &&
-                    quiet.unsettled_records == 0 && quiet.unsettled_descriptors == 0 &&
-                    quiet.admission_candidates == 0 && quiet.buffered_records == 0 &&
-                    quiet.commit_inflight == 0 &&
+                    quiet.unsettled_records == 0 && result.records.pending_admissions == 0 &&
+                    result.records.unresolved_owners == 0 && result.records.native_inflight == 0 &&
+                    quiet.unsettled_descriptors == 0 && quiet.admission_candidates == 0 &&
+                    quiet.buffered_records == 0 && quiet.commit_inflight == 0 &&
+                    result.successor_segment_id == 0 &&
                     (!state_->creation_unresolved ||
                      state_->options.plugins->phase() == plugin::PluginManagerPhase::Stopped);
     return result;

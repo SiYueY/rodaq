@@ -61,6 +61,8 @@ public:
     // Moves only the contiguous front set for this already-reserved Segment.
     // Destination must be empty with max_records capacity prepared beforehand;
     // no allocation or backing release occurs while holding the queue lock.
+    // The result identifies the next queue head, if present; it can still be
+    // this same Segment after a record/byte-limited batch.
     Result<std::optional<rodaq_segment_id_t>> pop_batch(
         rodaq_segment_id_t segment, std::size_t max_records, std::uint64_t max_bytes,
         std::vector<Record>& destination);

@@ -87,6 +87,9 @@ struct PipelineSnapshot {
     StatusCode failure{StatusCode::Ok};
     std::uint64_t segment_id{0};
     std::uint64_t artifact_work_id{0};
+    std::uint64_t successor_segment_id{0};
+    std::uint64_t segment_started_monotonic{0};
+    SegmentCapacitySnapshot capacity;
 };
 
 class PipelineController {
@@ -103,6 +106,13 @@ public:
     Result<void> establish_control_fence() noexcept;
     Result<GateSnapshot> close_admission(ControlGeneration generation);
     Result<std::optional<SealedPipelineSegment>> drain(plugin::Deadline deadline);
+    // Caller reserves a deployment-wide durable ID before entering. Repeating
+    // an unfinished transition supplies the same successor ID. Admission of
+    // the successor starts at the Gate cut; Native Writer stays serial, and
+    // at most one old sealed handoff remains retained for actual Artifact ack.
+    Result<std::optional<SealedPipelineSegment>> rotate(
+        std::uint64_t successor_segment_id, plugin::Deadline deadline);
+    Result<bool> rotation_due(const SegmentPolicy& policy, std::uint64_t now_monotonic) const;
     // Only the actual Artifact owner acknowledges Catalog/retained settlement.
     Result<void> acknowledge_artifact(std::uint64_t work_id, std::uint64_t segment_id);
     Result<void> quiesce(plugin::Deadline deadline);

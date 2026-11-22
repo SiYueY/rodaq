@@ -100,12 +100,16 @@ struct SegmentMetadataSnapshot {
     std::uint64_t unresolved_owners{0};
     std::uint64_t manifest_bytes_bound{0};
     std::uint64_t high_water_manifest_bytes_bound{0};
-    std::uint32_t pending_records{0};
+    // Pre-Admission reservations only. They leave this counter at Accept;
+    // accepted-but-unsettled work is derived from the settlement counters.
+    std::uint32_t pending_admissions{0};
     std::uint32_t pending_descriptors{0};
     std::uint32_t descriptors{0};
     std::uint32_t epochs{0};
     bool closed{false};
 };
+
+Result<std::uint64_t> unsettled_record_count(const SegmentMetadataSnapshot& snapshot);
 
 // Per-Segment fixed metadata capacity, separate from business Gate authority.
 // One short mutex owns reservations and accepted/settled facts. No method calls

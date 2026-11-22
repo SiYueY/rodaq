@@ -5,6 +5,7 @@
 
 #include <future>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 #include <optional>
 
@@ -77,14 +78,42 @@ TEST(SegmentMetadata, DescriptorAndRecordRollbackReleaseOnlyTheirOwnPreallocated
     {
         auto candidate = metadata.reserve_record(1, 1, received(), 0);
         ASSERT_TRUE(candidate.ok());
-        EXPECT_EQ(metadata.snapshot().pending_records, 1);
+        EXPECT_EQ(metadata.snapshot().pending_admissions, 1);
         EXPECT_EQ(metadata.snapshot().epochs, 1);
     }
-    EXPECT_EQ(metadata.snapshot().pending_records, 0);
+    EXPECT_EQ(metadata.snapshot().pending_admissions, 0);
     EXPECT_EQ(metadata.snapshot().epochs, 0);
     EXPECT_EQ(metadata.snapshot().accepted, 0);
     EXPECT_EQ(metadata.snapshot().manifest_bytes_bound, prepared_bound);
     EXPECT_GT(metadata.snapshot().high_water_manifest_bytes_bound, prepared_bound);
+}
+
+TEST(SegmentMetadata, AdmissionReservationsAndAcceptedOutstandingWorkHaveDifferentLifetimes) {
+    auto metadata = pipeline::SegmentMetadata::create(
+                        rodaq::test::manifest_identity(), {1}, envelope(), limits())
+                        .value();
+    prepare(metadata);
+    auto candidate = metadata.reserve_record(1, 1, received(), 0);
+    ASSERT_TRUE(candidate.ok());
+    EXPECT_EQ(metadata.snapshot().pending_admissions, 1);
+    EXPECT_EQ(pipeline::unsettled_record_count(metadata.snapshot()).value(), 0);
+    auto accepted = candidate.value().accept(1);
+    EXPECT_EQ(metadata.snapshot().pending_admissions, 0);
+    EXPECT_EQ(pipeline::unsettled_record_count(metadata.snapshot()).value(), 1);
+    ASSERT_TRUE(accepted.mark_native_entered().ok());
+    EXPECT_EQ(pipeline::unsettled_record_count(metadata.snapshot()).value(), 1);
+    ASSERT_TRUE(accepted.finish(pipeline::RecordSettlementKind::Written, 8).ok());
+    EXPECT_EQ(pipeline::unsettled_record_count(metadata.snapshot()).value(), 0);
+}
+
+TEST(SegmentMetadata, OutstandingCountRejectsImpossibleCountersWithoutUnsignedWrap) {
+    pipeline::SegmentMetadataSnapshot snapshot;
+    snapshot.accepted = std::numeric_limits<std::uint64_t>::max();
+    snapshot.written = snapshot.accepted - 1;
+    snapshot.unknown = 1;
+    EXPECT_EQ(pipeline::unsettled_record_count(snapshot).value(), 0);
+    snapshot.unknown = 2;
+    EXPECT_EQ(pipeline::unsettled_record_count(snapshot).status().code(), StatusCode::DataLoss);
 }
 
 TEST(SegmentMetadata, ExactOnceSettlementBuildsTheAcceptedDescriptorEpochAndRecordingRanges) {
@@ -280,7 +309,7 @@ TEST(SegmentMetadata, ConcurrentStreamOwnersKeepExactCountsAndNoUnresolvedOrPend
     const auto snapshot = metadata.snapshot();
     EXPECT_EQ(snapshot.accepted, 200);
     EXPECT_EQ(snapshot.written, 200);
-    EXPECT_EQ(snapshot.pending_records, 0);
+    EXPECT_EQ(snapshot.pending_admissions, 0);
     EXPECT_EQ(snapshot.native_inflight, 0);
     EXPECT_EQ(snapshot.unresolved_owners, 0);
     EXPECT_TRUE(metadata.capture_manifest(files()).ok());

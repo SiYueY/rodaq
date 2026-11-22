@@ -204,7 +204,7 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
         // failed sampler/authority cannot keep advertising a recording Gate.
         const bool authority_failed = !sample.ok() || !clock_->snapshot().ok();
         if (authority_failed) {
-            (void)gate.establish_control_fence(identity.instance_id);
+            (void)establish_control_fence();
         }
         std::lock_guard<std::mutex> lock(facts_mutex_);
         increment(facts_.clock_rejections);
@@ -238,7 +238,7 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
         try {
             accepted_();
         } catch (...) {
-            (void)gate.establish_control_fence(identity.instance_id);
+            (void)establish_control_fence();
             std::lock_guard<std::mutex> lock(facts_mutex_);
             facts_.terminal_failure = true;
         }
@@ -267,7 +267,24 @@ Result<acquisition::DescriptorToken> RecordingInstance::propose_descriptor(
     DescriptorRef previous;
     std::shared_ptr<RecordingSegment> segment;
     {
-        std::lock_guard<std::mutex> lock(stream->mutex);
+        std::unique_lock<std::mutex> lock(stream->mutex);
+        const auto available = [&] {
+            return !stream->segment_transition || gate.admission_fenced();
+        };
+        if (deadline.is_infinite()) {
+            stream->segment_changed.wait(lock, available);
+        } else {
+            auto remaining = deadline.remaining();
+            if (!remaining.ok()) {
+                return remaining.status();
+            }
+            if (!stream->segment_changed.wait_for(lock, remaining.value(), available)) {
+                return Status(StatusCode::DeadlineExceeded, {});
+            }
+        }
+        if (gate.admission_fenced()) {
+            return Status(StatusCode::InvalidState, {});
+        }
         if (stream->descriptor_proposal_inflight || !stream->segment) {
             return Status(StatusCode::Conflict, {});
         }
@@ -437,7 +454,7 @@ Result<void> RecordingInstance::report_acquisition_event(
         }
     }
     if (event.kind == RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE) {
-        (void)gate.establish_control_fence(identity.instance_id);
+        (void)establish_control_fence();
     }
     return {};
 }
@@ -498,6 +515,11 @@ Result<void> RecordingInstance::wait_ready(
 
 Result<void> RecordingInstance::establish_control_fence() noexcept {
     auto result = gate.establish_control_fence(identity.instance_id);
+    for (const auto& binding : streams.bindings()) {
+        auto* stream = streams.find(binding.stream_id);
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        stream->segment_changed.notify_all();
+    }
     std::lock_guard<std::mutex> lock(facts_mutex_);
     readiness_changed_.notify_all();
     return result;

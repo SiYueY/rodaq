@@ -355,6 +355,47 @@ TEST_F(
     EXPECT_EQ(state_->callback_facts().value().clock_rejections, 1);
 }
 
+TEST_F(RecordingInstanceTest, DescriptorWaitsForSegmentTransitionWithoutConsumingIdentity) {
+    prepare();
+    ASSERT_TRUE(state_);
+    auto* stream = state_->streams.find(1);
+    {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        stream->segment_transition = true;
+    }
+    auto expired = state_->propose_descriptor(proposal(), plugin::Deadline::after(1ms).value());
+    EXPECT_EQ(expired.status().code(), StatusCode::DeadlineExceeded);
+    EXPECT_EQ(native_prepares_, 0);
+    auto work = std::async(
+        std::launch::async, [this] { return state_->propose_descriptor(proposal(), soon()); });
+    EXPECT_EQ(work.wait_for(5ms), std::future_status::timeout);
+    {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        EXPECT_EQ(stream->descriptor_ids.snapshot().active_remaining, 1000);
+        stream->segment_transition = false;
+        stream->segment_changed.notify_all();
+    }
+    ASSERT_TRUE(work.get().ok());
+    EXPECT_EQ(native_prepares_, 1);
+}
+
+TEST_F(RecordingInstanceTest, ControlFenceWakesDescriptorWaitingForSegmentTransition) {
+    prepare();
+    ASSERT_TRUE(state_);
+    {
+        auto* stream = state_->streams.find(1);
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        stream->segment_transition = true;
+    }
+    auto work = std::async(
+        std::launch::async, [this] { return state_->propose_descriptor(proposal(), soon()); });
+    EXPECT_EQ(work.wait_for(5ms), std::future_status::timeout);
+    EXPECT_TRUE(state_->establish_control_fence().ok());
+    EXPECT_EQ(work.wait_for(100ms), std::future_status::ready);
+    EXPECT_EQ(work.get().status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(native_prepares_, 0);
+}
+
 TEST_F(RecordingInstanceTest, ActualDescriptorReturnAfterFenceCannotBindOrReopenOldInstance) {
     prepare();
     ASSERT_TRUE(state_);

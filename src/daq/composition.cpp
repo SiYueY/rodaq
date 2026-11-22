@@ -178,7 +178,8 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         service.allowed_plugins = o.settings.allowed_plugins;
         service.output_roots = {o.settings.output_root};
         for (const auto& profile : o.settings.profiles) {
-            service.resource_profiles.push_back(profile.name);
+            service.resource_profiles.push_back(
+                {profile.name, profile.storage.max_segment_physical_bytes});
         }
         auto execution = std::make_shared<task::RunExecutionOptions>();
         execution->preparation_lane = state->lanes[2];
@@ -190,6 +191,11 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         };
         execution->commit = [catalog = state->catalog](const auto& sealed) {
             return catalog->commit(sealed);
+        };
+        execution->reserve_segment = [ids = o.segment_ids]() -> Result<std::uint64_t> {
+            auto reserved = ids->reserve(1);
+            return reserved.ok() ? Result<std::uint64_t>(reserved.value().begin)
+                                 : Result<std::uint64_t>(reserved.status());
         };
         service.execution = std::move(execution);
         auto tasks = TaskService::open(std::move(service));
@@ -275,7 +281,11 @@ Result<void> Composition::observe() {
     }
     // One actual cleanup worker and one per-Task flight. Retry only retained,
     // fenced cleanup; never manufacture a new lifecycle request or re-open Run.
-    return state_->tasks->drain_shutdown(true);
+    auto cleanup = state_->tasks->drain_shutdown(true);
+    if (!cleanup.ok()) {
+        return cleanup.status();
+    }
+    return state_->tasks->schedule_rotation(completed.value().monotonic_ns);
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {
@@ -299,11 +309,17 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     if (!controls.ok()) {
         return controls.status();
     }
+    // Initiate independent cleanup before observing the rotation/Prepare
+    // domain, which may still own a blocking Native or Commit operation.
+    auto draining = state_->tasks->drain_shutdown();
+    if (!draining.ok()) {
+        return draining.status();
+    }
     auto prepared = state_->lanes[2]->shutdown(deadline);
     if (!prepared.ok()) {
         return prepared.status();
     }
-    auto draining = state_->tasks->drain_shutdown();
+    draining = state_->tasks->drain_shutdown();
     if (!draining.ok()) {
         return draining.status();
     }

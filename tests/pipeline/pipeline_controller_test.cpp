@@ -67,6 +67,34 @@ rodaq::Result<rodaq::time::ClockSample> controlled_clock() {
 
 plugin::Deadline soon() { return plugin::Deadline::after(2s).value(); }
 
+bool fake_footer_written(const fs::path& directory) {
+    auto file = rodaq::persistence::read_file(directory, "records.fake", 100000);
+    if (!file.ok() || file.value().size() < 49 || file.value().substr(0, 8) != "RDAQFK1\n") {
+        return false;
+    }
+    const auto& bytes = file.value();
+    std::size_t offset = 40;
+    while (offset < bytes.size()) {
+        const auto tag = static_cast<unsigned char>(bytes[offset]);
+        if (tag == 3) {
+            return bytes.size() - offset == 9;
+        }
+        if ((tag != 1 && tag != 2) || bytes.size() - offset < 5) {
+            return false;
+        }
+        std::uint32_t length = 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            length |= static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[offset + i + 1]))
+                      << (8 * i);
+        }
+        if (length > bytes.size() - offset - 5) {
+            return false;
+        }
+        offset += 5 + length;
+    }
+    return false;
+}
+
 class PipelineControllerTest : public testing::Test {
 protected:
     struct ReadControl {
@@ -321,6 +349,31 @@ protected:
         return false;
     }
 
+    rodaq::Result<std::optional<pipeline::SealedPipelineSegment>> rotate_ready(std::uint64_t next) {
+        const auto deadline = soon();
+        for (;;) {
+            auto rotated = controller_->rotate(next, deadline);
+            if (rotated.ok()) {
+                return rotated;
+            }
+            const auto actual = controller_->snapshot().value();
+            if (rotated.status().code() != StatusCode::Unavailable ||
+                actual.successor_segment_id != next || actual.failure != StatusCode::Ok ||
+                deadline.remaining().value() == 0ns) {
+                ADD_FAILURE() << "rotation status=" << static_cast<int>(rotated.status().code())
+                              << " message=" << rotated.status().message()
+                              << " pipeline_failure=" << static_cast<int>(actual.failure)
+                              << " successor=" << actual.successor_segment_id
+                              << " candidates=" << actual.quiescence.admission_candidates
+                              << " pending=" << actual.records.pending_admissions;
+                return rotated;
+            }
+            // Captured pre-cut candidates own their rollback until actual
+            // return. Resume the same reservation/ID, never manufacture a cut.
+            std::this_thread::sleep_for(1ms);
+        }
+    }
+
     rodaq::Result<void> artifact_commit(const pipeline::SealedPipelineSegment& sealed) {
         return catalog_->commit(sealed);
     }
@@ -374,7 +427,7 @@ protected:
         options.max_tasks = 1;
         options.create_lane = service_lanes_[2];
         options.control_lane = service_lanes_[3];
-        options.resource_profiles = {"basic"};
+        options.resource_profiles = {{"basic", options_.envelope.max_segment_physical_bytes}};
         options.output_roots = {"local"};
         options.allowed_plugins = {
             {"rodaq.fake.acquisition", "1.0.0", rodaq::task::AdmissionRole::Acquisition},
@@ -398,6 +451,11 @@ protected:
             return resolved;
         };
         execution->commit = [this](const auto& sealed) { return artifact_commit(sealed); };
+        execution->reserve_segment = [this]() -> rodaq::Result<std::uint64_t> {
+            auto ids = segment_ids_->reserve(1);
+            return ids.ok() ? rodaq::Result<std::uint64_t>(ids.value().begin)
+                            : rodaq::Result<std::uint64_t>(ids.status());
+        };
         options.execution = std::move(execution);
         auto service = rodaq::TaskService::open(std::move(options));
         ASSERT_TRUE(service.ok());
@@ -778,6 +836,10 @@ TEST_F(PipelineControllerTest, CompositionFailedNativeCreationRequiresActualMana
     auto start = service.start(id, {"start"}, {true, 1});
     ASSERT_TRUE(start.ok());
     EXPECT_FALSE(wait_composed(id, start.value()));
+    // Required Prepare barrier failure is primary; PendingCleanup's
+    // InvalidState must not replace it during subsequent cleanup.
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().status_code, StatusCode::Unavailable);
     EXPECT_NE(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
     EXPECT_NE(manager_->phase(), plugin::PluginManagerPhase::Stopped);
     EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
@@ -870,6 +932,397 @@ TEST_F(PipelineControllerTest, MaintenanceSettlesLateCloseWithoutRewritingFailed
         service.get_operation(id, pause.value()).value().state, rodaq::OperationState::Failed);
     EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
     EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
+}
+
+TEST_F(PipelineControllerTest, RotationKeepsInstanceAndSequencesWhileOldCommitIsStillRetained) {
+    open_service();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    ASSERT_TRUE(wait_written(4));
+    const auto before = controller_->snapshot().value();
+    const auto next = segment_ids_->reserve(1).value().begin;
+    auto rotated = rotate_ready(next);
+    ASSERT_TRUE(rotated.ok());
+    ASSERT_TRUE(rotated.value());
+    auto old = *rotated.value();
+    EXPECT_EQ(old.segment->metadata.segment_id(), before.segment_id);
+    const auto old_records = old.segment->metadata.snapshot().accepted;
+    ASSERT_TRUE(wait_written(old_records + 4));
+    auto active = controller_->snapshot().value();
+    EXPECT_TRUE(active.gate.open);
+    EXPECT_EQ(active.identity.instance_id, before.identity.instance_id);
+    EXPECT_EQ(active.identity.control_generation, before.identity.control_generation);
+    EXPECT_EQ(active.segment_id, next);
+    auto obsolete = controller_->rotation_due(formal_config().segment_policy, 199);
+    ASSERT_TRUE(obsolete.ok());
+    EXPECT_FALSE(obsolete.value());
+    EXPECT_EQ(active.quiescence.commit_inflight, 1);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    EXPECT_EQ(
+        controller_->rotate(segment_ids_->reserve(1).value().begin, soon()).status().code(),
+        StatusCode::ResourceExhausted);
+    EXPECT_TRUE(controller_->snapshot().value().gate.open);
+    commit(old);
+    EXPECT_EQ(controller_->snapshot().value().quiescence.commit_inflight, 0);
+    auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_operation(id, stop.value()));
+    EXPECT_EQ(artifacts_->query_artifacts({}).value().items.size(), 2);
+    const auto manifest = [&](std::uint64_t segment) {
+        auto bytes = rodaq::persistence::read_file(
+            volume_->artifacts_directory() / std::to_string(segment), "manifest.json", 65536);
+        return artifact::decode_manifest(bytes.value(), options_.manifest_limits).value();
+    };
+    const auto first = manifest(before.segment_id);
+    const auto second = manifest(next);
+    EXPECT_EQ(first.identity.segment_sequence, 1);
+    EXPECT_EQ(second.identity.segment_sequence, 2);
+    EXPECT_EQ(first.identity.instance_id, second.identity.instance_id);
+    EXPECT_EQ(first.identity.effective_config_id, second.identity.effective_config_id);
+    ASSERT_EQ(first.coverage.size(), second.coverage.size());
+    for (std::size_t index = 0; index < first.coverage.size(); ++index) {
+        EXPECT_EQ(first.coverage[index].stream_id, second.coverage[index].stream_id);
+        EXPECT_LT(first.coverage[index].last_sequence, second.coverage[index].first_sequence);
+    }
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 2);
+    EXPECT_TRUE(controller_->snapshot().value().quiescence.settled);
+}
+
+TEST_F(PipelineControllerTest, CompositionAutomaticallyRotatesAtFrozenRecordEnvelope) {
+    options_.envelope.max_segment_records = 6;
+    options_.envelope.max_segment_input_bytes = 48;
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    std::size_t count = 0;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        count = composition_->artifacts().query_artifacts({}).value().items.size();
+        if (count >= 3) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < end);
+    ASSERT_GE(count, 3);
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(service.get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+    auto artifacts = composition_->artifacts().query_artifacts({}).value();
+    ASSERT_GE(artifacts.items.size(), 3);
+    for (const auto& item : artifacts.items) {
+        auto encoded = rodaq::persistence::read_file(
+            volume_->artifacts_directory() / std::to_string(item.segment_id), "manifest.json",
+            65536);
+        auto manifest =
+            artifact::decode_manifest(encoded.value(), options_.manifest_limits).value();
+        std::uint64_t accepted = 0;
+        for (const auto& stream : manifest.coverage) {
+            accepted += stream.accepted;
+            EXPECT_EQ(stream.accepted, stream.written);
+        }
+        EXPECT_LE(accepted, 6);
+        EXPECT_EQ(item.logical_bytes, accepted * 8);
+    }
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, StartupCompositionRotatesByActualMonotonicDuration) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.segment_policy.max_duration = 10ms;
+    auto& service = composition_->tasks();
+    auto id = service.create_task(config, {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(15ms);
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    bool committed = false;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        committed = !composition_->artifacts().query_artifacts({}).value().items.empty();
+        if (committed) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < end);
+    ASSERT_TRUE(committed);
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().control_generation, 3);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+TEST_F(
+    PipelineControllerTest,
+    ExhaustedSuccessorCapacityProtectsGateAndSettlesAcceptedCurrentSegment) {
+    options_.envelope.max_segment_records = 6;
+    options_.envelope.max_segment_input_bytes = 48;
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    const auto end = std::chrono::steady_clock::now() + 3s;
+    auto actual = service.get_task(id).value();
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        actual = service.get_task(id).value();
+        if (actual.execution_condition == rodaq::ExecutionCondition::Protected) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < end);
+    EXPECT_EQ(actual.execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(actual.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(actual.control_generation, 2);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 8);
+    const auto reserved =
+        rodaq::persistence::read_file(root_ / "segment-ids", "segment-identity.json", 1024).value();
+    ASSERT_TRUE(composition_->observe().ok());
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(
+        rodaq::persistence::read_file(root_ / "segment-ids", "segment-identity.json", 1024).value(),
+        reserved);
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, SilentRotationDoesNotCreateEmptyFilesOrRetainOldReservations) {
+    options_.definition.acquisition.json = R"({"streams":["first","second"],"mode":"silent"})";
+    open_service();
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    for (unsigned index = 0; index < 3; ++index) {
+        auto next = segment_ids_->reserve(1).value().begin;
+        auto rotated = controller_->rotate(next, soon());
+        ASSERT_TRUE(rotated.ok());
+        EXPECT_FALSE(rotated.value());
+        auto actual = controller_->snapshot().value();
+        EXPECT_TRUE(actual.gate.open);
+        EXPECT_EQ(actual.records.accepted, 0);
+        EXPECT_EQ(actual.segment_id, next);
+        EXPECT_EQ(actual.quiescence.commit_inflight, 0);
+        EXPECT_EQ(capacity_->snapshot().segment_slots, 1);
+        EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+    }
+    auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_operation(id, stop.value()));
+    EXPECT_EQ(capacity_->snapshot().segment_slots, 0);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+}
+
+TEST_F(PipelineControllerTest, PhysicalRolloverThresholdPreservesIndependentHardEnvelope) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.segment_policy.max_physical_bytes = 100001;
+    EXPECT_EQ(
+        service.create_task(config, {"invalid"}).status().code(), StatusCode::InvalidArgument);
+    EXPECT_TRUE(service.list_tasks({}).value().items.empty());
+    config.segment_policy.max_physical_bytes = 1000;
+    auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    auto start = service.start(created.value(), {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(created.value(), start.value()));
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    rodaq::ArtifactPage page;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        page = composition_->artifacts().query_artifacts({}).value();
+        if (!page.items.empty()) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    } while (std::chrono::steady_clock::now() < end);
+    ASSERT_FALSE(page.items.empty());
+    auto artifact = composition_->artifacts().get_artifact(page.items.front().artifact_id).value();
+    ASSERT_EQ(artifact.files.size(), 1);
+    EXPECT_GE(artifact.files[0].size, 1000);
+    EXPECT_LE(artifact.files[0].size, options_.envelope.max_segment_physical_bytes);
+    auto stop = service.stop(created.value(), {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(created.value(), stop.value())) << static_cast<int>(
+        service.get_operation(created.value(), stop.value()).value().status_code);
+}
+
+TEST_F(PipelineControllerTest, SchemaChangeDuringActualRotationBindsToSuccessor) {
+    options_.definition.acquisition.json =
+        R"({"streams":["first","second"],"period_us":10000,"schema_change_after":10})";
+    options_.definition.storage.json = R"({"mode":"late_seal","delay_ms":300})";
+    open_service();
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    ASSERT_TRUE(wait_written(2));
+    const auto next = segment_ids_->reserve(1).value().begin;
+    auto rotation = std::async(std::launch::async, [this, next] { return rotate_ready(next); });
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    while (!fake_footer_written(volume_->artifacts_directory() / "1.tmp") &&
+           std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_TRUE(fake_footer_written(volume_->artifacts_directory() / "1.tmp"));
+    auto rotated = rotation.get();
+    ASSERT_TRUE(rotated.ok());
+    ASSERT_TRUE(rotated.value());
+    commit(*rotated.value());
+    const auto ready_by = std::chrono::steady_clock::now() + 2s;
+    auto facts = controller_->snapshot().value();
+    do {
+        facts = controller_->snapshot().value();
+        if (facts.records.descriptors >= 4 && facts.records.pending_descriptors == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < ready_by);
+    EXPECT_EQ(facts.segment_id, next);
+    EXPECT_GE(facts.records.descriptors, 4);
+    EXPECT_EQ(facts.failure, StatusCode::Ok);
+    EXPECT_TRUE(facts.gate.open);
+    auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    EXPECT_TRUE(wait_operation(id, stop.value()));
+    EXPECT_EQ(artifacts_->query_artifacts({}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, StopDuringActualLateSealCannotReopenTheSuccessor) {
+    options_.envelope.max_segment_records = 6;
+    options_.envelope.max_segment_input_bytes = 48;
+    options_.definition.storage.json = R"({"mode":"late_seal","delay_ms":500})";
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto id = service.create_task(formal_config(), {"create"}).value();
+    auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(10ms);
+    const auto began = std::chrono::steady_clock::now();
+    ASSERT_TRUE(composition_->observe().ok());
+    bool entered = false;
+    do {
+        entered = fake_footer_written(volume_->artifacts_directory() / "1.tmp");
+        if (entered) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() - began < 200ms);
+    ASSERT_TRUE(entered);
+    // Footer creation precedes the injected 500ms actual Native return.
+    ASSERT_LT(std::chrono::steady_clock::now() - began, 250ms);
+    EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
+    auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Stopped);
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto final = service.get_task(id).value();
+    EXPECT_EQ(final.control_generation, 3);
+    EXPECT_EQ(final.execution_condition, rodaq::ExecutionCondition::Idle);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
+}
+
+TEST_F(
+    PipelineControllerTest,
+    StopDrainsBothRotatedHandoffAndFinalSegmentWithoutAnotherUserOperation) {
+    open_service();
+    ASSERT_TRUE(service_);
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    ASSERT_TRUE(wait_written(4));
+    auto rotated = rotate_ready(segment_ids_->reserve(1).value().begin);
+    ASSERT_TRUE(rotated.ok());
+    ASSERT_TRUE(rotated.value());
+    const auto old = *rotated.value();
+    ASSERT_TRUE(wait_written(old.segment->metadata.snapshot().accepted + 4));
+    auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    const bool completed = wait_operation(id, stop.value());
+    if (!completed) {
+        const auto actual = controller_->snapshot().value();
+        const auto operation = service_->get_operation(id, stop.value()).value();
+        const auto catalog = catalog_->snapshot();
+        ADD_FAILURE() << "stop status=" << static_cast<int>(operation.status_code)
+                      << " impact=" << static_cast<int>(operation.data_impact)
+                      << " segment=" << actual.segment_id
+                      << " successor=" << actual.successor_segment_id
+                      << " artifact_work=" << actual.artifact_work_id
+                      << " accepted=" << actual.records.accepted
+                      << " written=" << actual.records.written
+                      << " pending=" << actual.records.pending_admissions
+                      << " unknown=" << actual.records.unknown
+                      << " source_closed=" << actual.quiescence.source_quiesced
+                      << " storage_closed=" << actual.quiescence.storage_closed
+                      << " catalog_visible=" << catalog.visible
+                      << " catalog_pending=" << catalog.pending;
+    }
+    ASSERT_TRUE(completed);
+    const auto final = controller_->snapshot().value();
+    EXPECT_TRUE(final.quiescence.settled);
+    EXPECT_EQ(final.records.accepted, final.records.written);
+    EXPECT_EQ(artifacts_->query_artifacts({}).value().items.size(), 2);
+    // A late exact completion replays a bounded receipt, never accounts the
+    // already retired Segment twice or settles the successor by mistake.
+    EXPECT_TRUE(
+        controller_->acknowledge_artifact(old.work_id, old.segment->metadata.segment_id()).ok());
+    EXPECT_EQ(controller_->snapshot().value().records.accepted, final.records.accepted);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 3);
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, RotationDrainsQueuedAcceptedRecordsAfterTheBackgroundPumpStops) {
+    options_.definition.storage.json = R"({"mode":"late_write","delay_ms":25})";
+    open_service();
+    auto id = service_->create_task(formal_config(), {"create"}).value();
+    auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    ASSERT_TRUE(wait_written(4));
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    while (controller_->snapshot().value().queue.queued_records < 6 &&
+           std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_GE(controller_->snapshot().value().queue.queued_records, 6);
+    auto rotated = rotate_ready(segment_ids_->reserve(1).value().begin);
+    ASSERT_TRUE(rotated.ok());
+    ASSERT_TRUE(rotated.value());
+    const auto old = rotated.value()->segment->metadata.snapshot();
+    EXPECT_EQ(old.pending_admissions, 0);
+    EXPECT_EQ(old.accepted, old.written);
+    EXPECT_EQ(pipeline::unsettled_record_count(old).value(), 0);
+    commit(*rotated.value());
+    auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_operation(id, stop.value()));
+    EXPECT_TRUE(controller_->snapshot().value().quiescence.settled);
 }
 
 TEST_F(PipelineControllerTest, StartupExclusiveLeasePersistsThroughShutdownUntilOwnerDestruction) {

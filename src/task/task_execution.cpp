@@ -23,7 +23,7 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
     if (preparing) {
         return ExecutionCondition::Preparing;
     }
-    bool all_settled = preparation_returned;
+    bool all_settled = preparation_returned && !rotating;
     bool any_open = false;
     bool all_open = !pipelines.empty();
     bool required_open = true;

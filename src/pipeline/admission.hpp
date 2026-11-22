@@ -1,5 +1,6 @@
 #pragma once
 
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 
@@ -18,6 +19,7 @@ namespace rodaq::pipeline {
 // finalization use this same short mutex. Never hold it across Native or I/O.
 struct StreamAdmission {
     std::mutex mutex;
+    std::condition_variable segment_changed;
     const StreamId stream_id;
     const std::uint64_t max_record_bytes;
     DescriptorRef active_descriptor;
@@ -27,6 +29,7 @@ struct StreamAdmission {
     // prepare may burn an ID but can never reuse an interpretation identity.
     SequenceAllocator descriptor_ids;
     bool descriptor_proposal_inflight{false};
+    bool segment_transition{false};
 
     StreamAdmission(StreamId identity, std::uint64_t max_bytes) noexcept
     : stream_id(identity), max_record_bytes(max_bytes) {}

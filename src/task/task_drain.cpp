@@ -1,6 +1,9 @@
 #include "task_service_state.hpp"
 
+#include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <utility>
 
@@ -171,6 +174,11 @@ void TaskService::State::CloseJob::run() noexcept {
     StatusCode failure = preparation_failure;
     DataImpact impact = DataImpact::None;
     std::uint64_t accepted = 0;
+    const auto fail = [&](StatusCode error) noexcept {
+        if (failure == StatusCode::Ok) {
+            failure = error;
+        }
+    };
     try {
         auto revoked = internal_cleanup || process_drain ? Result<void>{}
                                                          : revoke_continuation(*entry, *control);
@@ -200,46 +208,79 @@ void TaskService::State::CloseJob::run() noexcept {
                 std::unique_lock<std::mutex> lock(execution->registration);
                 // Actual prepare return, independent of the caller's observer.
                 execution->returned.wait(lock, [&] { return execution->preparation_returned; });
+                if (!execution->returned.wait_for(
+                        lock, owner->options->execution->native_timeout,
+                        [&] { return !execution->rotating_native; })) {
+                    reply->complete(Status(StatusCode::DeadlineExceeded, {}));
+                    return;
+                }
             }
             for (const auto& pipeline : execution->pipelines) {
                 auto closed = pipeline.controller->close_admission(control->control_generation);
                 if (!closed.ok()) {
-                    failure = closed.status().code();
+                    fail(closed.status().code());
                     continue;
                 }
                 auto deadline = plugin::Deadline::after(owner->options->execution->native_timeout);
                 if (!deadline.ok()) {
-                    failure = deadline.status().code();
+                    fail(deadline.status().code());
                     continue;
                 }
-                auto drained = pipeline.controller->drain(deadline.value());
-                if (!drained.ok()) {
-                    failure = drained.status().code();
-                } else if (drained.value()) {
+                // Fixed two-Segment rotation envelope: settle the old handoff,
+                // then the final writable Segment, followed by an empty proof.
+                // Never loop unboundedly or release a busy/uncertain Commit.
+                for (unsigned pass = 0; pass < 3; ++pass) {
+                    auto drained = pipeline.controller->drain(deadline.value());
+                    if (!drained.ok()) {
+                        fail(drained.status().code());
+                        break;
+                    }
+                    if (!drained.value()) {
+                        break;
+                    }
                     auto committed = owner->options->execution->commit(*drained.value());
+                    if (!committed.ok() && committed.status().code() == StatusCode::Conflict) {
+                        bool returned = false;
+                        {
+                            std::unique_lock<std::mutex> registered(execution->registration);
+                            if (execution->rotating) {
+                                returned = execution->returned.wait_for(
+                                    registered, owner->options->execution->native_timeout,
+                                    [&] { return !execution->rotating; });
+                            }
+                        }
+                        if (returned) {
+                            committed = owner->options->execution->commit(*drained.value());
+                        }
+                    }
                     if (committed.ok()) {
                         committed = pipeline.controller->acknowledge_artifact(
                             drained.value()->work_id,
                             drained.value()->segment->metadata.segment_id());
                     }
                     if (!committed.ok()) {
-                        failure = committed.status().code();
+                        fail(committed.status().code());
                         impact = DataImpact::PersistenceUnknown;
+                        break;
                     }
                 }
                 auto cleanup = pipeline.controller->cleanup(deadline.value());
                 if (!cleanup.ok()) {
-                    failure = cleanup.status().code();
+                    fail(cleanup.status().code());
                 }
                 auto facts = pipeline.controller->snapshot();
                 if (!facts.ok()) {
-                    failure = facts.status().code();
+                    fail(facts.status().code());
                 } else {
                     accepted += facts.value().records.accepted;
                 }
+                if (facts.ok() && failure != StatusCode::Ok && facts.value().records.written != 0 &&
+                    facts.value().artifact_work_id != 0 && impact == DataImpact::None) {
+                    impact = DataImpact::PersistenceUnknown;
+                }
                 if (facts.ok() && (facts.value().records.unknown != 0 ||
                                    facts.value().records.known_failed != 0)) {
-                    failure = StatusCode::DataLoss;
+                    fail(StatusCode::DataLoss);
                     if (facts.value().records.unknown != 0) {
                         impact = DataImpact::PersistenceUnknown;
                     } else if (impact == DataImpact::None) {
@@ -248,7 +289,12 @@ void TaskService::State::CloseJob::run() noexcept {
                 }
             }
             {
-                std::lock_guard<std::mutex> lock(execution->registration);
+                std::unique_lock<std::mutex> lock(execution->registration);
+                if (!execution->returned.wait_for(
+                        lock, owner->options->execution->native_timeout,
+                        [&] { return !execution->rotating; })) {
+                    fail(StatusCode::DeadlineExceeded);
+                }
                 execution->draining = false;
                 execution->failure = failure;
             }
@@ -257,7 +303,7 @@ void TaskService::State::CloseJob::run() noexcept {
             auto ended = settled ? record_ended(*entry, *execution)
                                  : Result<void>(Status(StatusCode::InvalidState, {}));
             if (!ended.ok()) {
-                failure = ended.status().code();
+                fail(ended.status().code());
             }
             std::lock_guard<std::mutex> lock(entry->control_mutex);
             entry->quiescent = settled && ended.ok();

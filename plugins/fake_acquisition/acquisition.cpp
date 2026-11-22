@@ -63,7 +63,7 @@ public:
             constexpr std::string_view modes[]{
                 "normal",       "fail_prepare",     "fail_start",     "late_start",
                 "fail_quiesce", "fail_shutdown",    "terminal_event", "invalid_attempt",
-                "stale_token",  "oversize_attempt", "late_shutdown"};
+                "stale_token",  "oversize_attempt", "late_shutdown",  "silent"};
             if (std::find(std::begin(modes), std::end(modes), mode_) == std::end(modes)) {
                 return Status(StatusCode::InvalidArgument, {});
             }
@@ -331,6 +331,10 @@ private:
         }
         if (mode_ == "terminal_event") {
             return Status(StatusCode::Unavailable, {});
+        }
+        if (mode_ == "silent") {
+            std::unique_lock<std::mutex> lock(mutex_);
+            changed_.wait(lock, [&] { return stopping_.load(std::memory_order_acquire); });
         }
         for (std::uint64_t sequence = 1; !stopping_.load(std::memory_order_acquire); ++sequence) {
             if (record_limit_ != 0 && sequence > record_limit_) {

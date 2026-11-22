@@ -99,13 +99,18 @@ Result<void> TaskService::State::directory(const fs::path& path) const {
 
 Result<void> TaskService::State::validate_deployment(const TaskConfig& config) const {
     for (const auto& pipeline : config.pipelines) {
-        if (std::find(
-                options->resource_profiles.begin(), options->resource_profiles.end(),
-                pipeline.resource_profile) == options->resource_profiles.end() ||
+        const auto profile = std::find_if(
+            options->resource_profiles.begin(), options->resource_profiles.end(),
+            [&](const auto& admitted) { return admitted.name == pipeline.resource_profile; });
+        if (profile == options->resource_profiles.end() ||
             std::find(
                 options->output_roots.begin(), options->output_roots.end(), pipeline.output_root) ==
                 options->output_roots.end()) {
             return Status(StatusCode::PermissionDenied, {});
+        }
+        if (config.segment_policy.max_physical_bytes &&
+            *config.segment_policy.max_physical_bytes > profile->max_segment_physical_bytes) {
+            return Status(StatusCode::InvalidArgument, {});
         }
         const auto allowed = [&](const PluginConfig& selected, task::AdmissionRole role) {
             const bool installed_exact =
@@ -446,8 +451,8 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         if (options.execution) {
             const auto& execution = *options.execution;
             if (options.max_tasks != 1 || !execution.resolve || !execution.commit ||
-                !execution.preparation_lane || !execution.cleanup_lane ||
-                execution.preparation_lane == execution.cleanup_lane ||
+                !execution.reserve_segment || !execution.preparation_lane ||
+                !execution.cleanup_lane || execution.preparation_lane == execution.cleanup_lane ||
                 execution.preparation_lane == options.control_lane ||
                 execution.preparation_lane == options.create_lane ||
                 execution.cleanup_lane == options.control_lane ||
@@ -476,11 +481,18 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             }
             return true;
         };
-        if (!valid_labels(options.resource_profiles) || !valid_labels(options.output_roots) ||
+        if (options.resource_profiles.size() > 256 || !valid_labels(options.output_roots) ||
             options.allowed_plugins.size() > 512 || options.store.max_config_versions == 0 ||
             options.store.max_config_versions > 4096 ||
             !task::validate_history({}, options.store.history).ok()) {
             return Status(StatusCode::InvalidArgument, {});
+        }
+        std::set<std::string_view> profile_names;
+        for (const auto& profile : options.resource_profiles) {
+            if (!label(profile.name) || profile.max_segment_physical_bytes == 0 ||
+                !profile_names.insert(profile.name).second) {
+                return Status(StatusCode::InvalidArgument, {});
+            }
         }
         for (std::size_t i = 0; i < options.allowed_plugins.size(); ++i) {
             const auto& pin = options.allowed_plugins[i];

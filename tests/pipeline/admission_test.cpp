@@ -170,7 +170,7 @@ protected:
         EXPECT_EQ(stream_.segment->capacity.snapshot().candidates, 0);
         EXPECT_EQ(stream_.sequences.snapshot().active_remaining, 1000);
         EXPECT_EQ(volume_->snapshot().future_bytes, 8301);
-        EXPECT_EQ(stream_.segment->metadata.snapshot().pending_records, 0);
+        EXPECT_EQ(stream_.segment->metadata.snapshot().pending_admissions, 0);
         EXPECT_EQ(stream_.segment->metadata.snapshot().accepted, 0);
         EXPECT_EQ(stream_.segment->metadata.snapshot().epochs, 0);
         EXPECT_EQ(gate_->snapshot().accepted_records, 0);
@@ -447,7 +447,7 @@ TEST_F(AdmissionTest, EpochMetadataPressureRejectsBeforeSequenceAndKeepsTheExact
     EXPECT_EQ(pool_->snapshot().live_buffers, 0);
     EXPECT_EQ(stream_.segment->capacity.snapshot().records, 2);
     EXPECT_EQ(stream_.segment->metadata.snapshot().accepted, 2);
-    EXPECT_EQ(stream_.segment->metadata.snapshot().pending_records, 0);
+    EXPECT_EQ(stream_.segment->metadata.snapshot().pending_admissions, 0);
     EXPECT_EQ(stream_.segment->metadata.snapshot().epochs, 2);
     ASSERT_TRUE(gate_->close_and_capture(instance_).ok());
     stream_.segment->close_admission();
