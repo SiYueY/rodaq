@@ -42,6 +42,21 @@ target_link_libraries(rodaq_build_contract_test PRIVATE rodaq::daq GTest::gtest_
 rodaq_enable_project_warnings(rodaq_build_contract_test)
 include(GoogleTest)
 if(TARGET rodaq_ros2_config)
+    add_executable(rodaq_ros2_runtime_test ros2/runtime_test.cpp)
+    target_link_libraries(rodaq_ros2_runtime_test PRIVATE rodaq_ros2_runtime GTest::gtest_main
+        nlohmann_json::nlohmann_json)
+    target_compile_definitions(rodaq_ros2_runtime_test PRIVATE
+        RODAQ_ROS2_PACKAGE="${PROJECT_BINARY_DIR}/plugins/acquisition/ros2/rodaq-plugins")
+    add_dependencies(rodaq_ros2_runtime_test rodaq_ros2_acquisition)
+    if(TARGET rodaq_mcap_format)
+        target_link_libraries(rodaq_ros2_runtime_test PRIVATE rodaq::daq rodaq_mcap_format)
+        target_include_directories(rodaq_ros2_runtime_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+        target_compile_definitions(rodaq_ros2_runtime_test PRIVATE
+            RODAQ_MCAP_PACKAGE="${PROJECT_BINARY_DIR}/plugins/storage/mcap/rodaq-plugins")
+        add_dependencies(rodaq_ros2_runtime_test rodaq_mcap_storage)
+    endif()
+    rodaq_enable_project_warnings(rodaq_ros2_runtime_test)
+    gtest_discover_tests(rodaq_ros2_runtime_test PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
     add_executable(rodaq_ros2_support_test ros2/support_test.cpp)
     target_link_libraries(rodaq_ros2_support_test PRIVATE rodaq_ros2_support GTest::gtest_main)
     rodaq_enable_project_warnings(rodaq_ros2_support_test)
