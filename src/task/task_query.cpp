@@ -34,6 +34,26 @@ Result<TaskConfig> TaskService::get_active_config(TaskId id) const {
     }
 }
 
+Result<TaskRuntimeSnapshot> TaskService::get_runtime_snapshot(TaskId id) const {
+    const auto entry = state_->find(id);
+    if (!entry) {
+        return Status(StatusCode::NotFound, {});
+    }
+    try {
+        const auto published = std::atomic_load(&entry->published);
+        auto result = published->runtime;
+        result.age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - published->observed_at);
+        if (result.freshness == SnapshotFreshness::Fresh &&
+            result.age > state_->options->runtime_snapshot_max_age) {
+            result.freshness = SnapshotFreshness::Stale;
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 Result<OperationSnapshot> TaskService::get_operation(TaskId id, OperationId operation) const {
     auto entry = state_->find(id);
     if (!entry) {
@@ -96,11 +116,19 @@ Result<TaskPage> TaskService::list_tasks(const PageRequest& request) const {
         }
         page.items.reserve(selected.size());
         for (const auto& entry : selected) {
+            const auto published = std::atomic_load(&entry->published);
+            auto freshness = published->runtime.freshness;
+            if (freshness == SnapshotFreshness::Fresh &&
+                std::chrono::steady_clock::now() - published->observed_at >
+                    state_->options->runtime_snapshot_max_age) {
+                freshness = SnapshotFreshness::Stale;
+            }
             page.items.push_back(
-                {std::atomic_load(&entry->published)->snapshot,
+                {published->snapshot,
+                 published->runtime.accepted_records_per_second,
                  {},
-                 {},
-                 SnapshotFreshness::NotObserved});
+                 freshness,
+                 published->runtime.data_impact});
         }
         if (page.has_more) {
             page.next_cursor = "tasks:v1:" + to_string(page.items.back().task.task_id);

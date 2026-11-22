@@ -67,8 +67,17 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
                 }
             }
         }
-        return std::make_shared<const PublishedTask>(
-            PublishedTask{std::move(snapshot), std::move(control), std::move(config)});
+        auto runtime = capture_task_runtime(entry, *config, snapshot);
+        if (!runtime.ok()) {
+            return runtime.status();
+        }
+        snapshot.data_impact = runtime.value().data_impact;
+        auto published = std::make_shared<PublishedTask>(PublishedTask{
+            std::move(snapshot), std::move(control), std::move(config), std::move(runtime.value()),
+            std::chrono::steady_clock::now()});
+        const auto previous = std::atomic_load(&entry.published);
+        project_runtime_rates(*published, previous.get());
+        return std::shared_ptr<const PublishedTask>(std::move(published));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -437,7 +446,9 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         options.max_stream_identities == 0 || options.max_stream_identities > 65536 ||
         options.request_wait <= std::chrono::nanoseconds::zero() ||
         options.request_wait > std::chrono::hours{24} || options.resource_profiles.empty() ||
-        options.output_roots.empty() || options.allowed_plugins.empty()) {
+        options.runtime_snapshot_max_age <= std::chrono::nanoseconds::zero() ||
+        options.runtime_snapshot_max_age > std::chrono::hours{24} || options.output_roots.empty() ||
+        options.allowed_plugins.empty()) {
         return Status(StatusCode::InvalidArgument, {});
     }
     try {

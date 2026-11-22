@@ -58,6 +58,8 @@ struct PublishedTask {
     TaskSnapshot snapshot;
     std::shared_ptr<const task::TaskControlRecord> control;
     std::shared_ptr<const TaskConfig> config;
+    TaskRuntimeSnapshot runtime;
+    std::chrono::steady_clock::time_point observed_at;
 };
 
 struct RunExecution {
@@ -112,6 +114,11 @@ struct TaskEntry {
 Result<std::shared_ptr<const PublishedTask>> make_task_publication(
     const TaskEntry& entry, std::shared_ptr<const TaskConfig> config, std::uint64_t sequence,
     std::shared_ptr<const TaskControlRecord> control = {});
+
+Result<TaskRuntimeSnapshot> capture_task_runtime(
+    const TaskEntry& entry, const TaskConfig& config, const TaskSnapshot& snapshot);
+
+void project_runtime_rates(PublishedTask& current, const PublishedTask* previous) noexcept;
 
 std::optional<OperationSnapshot> completed_configuration(const TaskControlRecord& control);
 

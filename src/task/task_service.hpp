@@ -81,6 +81,7 @@ struct ServiceOptions {
     std::size_t max_stream_identities{1024};
     TaskStorePolicy store;
     std::chrono::nanoseconds request_wait{std::chrono::seconds{30}};
+    std::chrono::nanoseconds runtime_snapshot_max_age{std::chrono::seconds{2}};
     // Private deterministic persistence/crash seams, absent in production.
     std::function<int(ServiceFileDomain, persistence::FileStep)> file_faults;
     std::function<int(MaterializationStep)> materialization_faults;

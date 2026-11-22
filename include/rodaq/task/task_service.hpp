@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <rodaq/task/types.hpp>
+#include <rodaq/task/runtime.hpp>
 
 namespace rodaq {
 namespace daq {
@@ -27,15 +28,15 @@ struct TaskSnapshot {
     ExecutionCondition execution_condition{ExecutionCondition::Protected};
     std::uint64_t snapshot_sequence{0};
     WallTime captured_at;
+    DataImpact data_impact{DataImpact::None};
 };
-
-enum class SnapshotFreshness { NotObserved, Fresh, Stale };
 
 struct TaskSummary {
     TaskSnapshot task;
     std::optional<double> accepted_records_per_second;
     std::optional<std::chrono::nanoseconds> commit_lag;
     SnapshotFreshness freshness{SnapshotFreshness::NotObserved};
+    DataImpact data_impact{DataImpact::None};
 };
 
 struct TaskPage {
@@ -66,6 +67,7 @@ public:
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
 
     Result<TaskSnapshot> get_task(TaskId task_id) const;
+    Result<TaskRuntimeSnapshot> get_runtime_snapshot(TaskId task_id) const;
     Result<TaskConfig> get_active_config(TaskId task_id) const;
     Result<TaskPage> list_tasks(const PageRequest& request) const;
     Result<OperationSnapshot> get_operation(TaskId task_id, OperationId operation_id) const;

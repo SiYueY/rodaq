@@ -798,6 +798,115 @@ TEST_F(PipelineControllerTest, ConcurrentTaskStopsRetainCommitOwnershipWhileLedg
     EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
 }
 
+TEST_F(
+    PipelineControllerTest, SilentReadySourcePublishesObservedZeroRateWithoutInferringDisconnect) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json = R"({"streams":["first","second"],"mode":"silent"})";
+    for (auto& stream : config.pipelines[0].streams) {
+        stream.readiness_policy = rodaq::ReadinessPolicy::SourceReady;
+    }
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(config, {"silent"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(composition_->observe().ok());
+    std::this_thread::sleep_for(20ms);
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_EQ(runtime.pipelines.size(), 1);
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    EXPECT_TRUE(runtime.pipelines[0].facts->admission_open);
+    EXPECT_EQ(runtime.accepted_records_per_second, std::optional<double>{0.0});
+    for (const auto& stream : runtime.pipelines[0].streams) {
+        ASSERT_TRUE(stream.facts);
+        EXPECT_TRUE(stream.facts->entry_ready);
+        EXPECT_TRUE(stream.facts->source_ready);
+        EXPECT_EQ(stream.facts->receiving, std::optional<bool>{false});
+        EXPECT_EQ(stream.facts->received_records_per_second, std::optional<double>{0.0});
+        EXPECT_FALSE(stream.facts->last_receive_at);
+    }
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+TEST_F(PipelineControllerTest, RuntimeQueriesReadPublishedFactsAndRetainTheirObservationIdentity) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(formal_config(), {"create"}).value();
+    const auto initial = service.get_runtime_snapshot(id);
+    ASSERT_TRUE(initial.ok());
+    EXPECT_EQ(initial.value().freshness, rodaq::SnapshotFreshness::NotObserved);
+    ASSERT_EQ(initial.value().pipelines.size(), 1);
+    EXPECT_FALSE(initial.value().pipelines[0].facts);
+    ASSERT_EQ(initial.value().pipelines[0].streams.size(), 2);
+    EXPECT_FALSE(initial.value().pipelines[0].streams[0].facts);
+    EXPECT_EQ(service.get_runtime_snapshot({}).status().code(), StatusCode::NotFound);
+
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    std::this_thread::sleep_for(20ms);
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto captured = service.get_runtime_snapshot(id).value();
+    EXPECT_EQ(captured.freshness, rodaq::SnapshotFreshness::Fresh);
+    EXPECT_EQ(captured.snapshot_sequence, service.get_task(id).value().snapshot_sequence);
+    ASSERT_TRUE(captured.pipelines[0].facts);
+    const auto& pipeline = *captured.pipelines[0].facts;
+    EXPECT_TRUE(pipeline.admission_open);
+    EXPECT_GT(pipeline.accepted_records, 0);
+    for (const auto& stream : captured.pipelines[0].streams) {
+        ASSERT_TRUE(stream.facts);
+        EXPECT_TRUE(stream.facts->entry_ready);
+        EXPECT_GT(stream.facts->received_records, 0);
+        EXPECT_GE(stream.facts->received_records, stream.facts->accepted_records);
+        EXPECT_TRUE(stream.facts->last_receive_at);
+    }
+
+    std::this_thread::sleep_for(20ms);
+    auto unchanged = service.get_runtime_snapshot(id).value();
+    EXPECT_EQ(unchanged.snapshot_sequence, captured.snapshot_sequence);
+    EXPECT_EQ(unchanged.captured_at, captured.captured_at);
+    EXPECT_EQ(unchanged.pipelines[0].facts->accepted_records, pipeline.accepted_records);
+    EXPECT_EQ(service.list_tasks({}).value().items[0].freshness, rodaq::SnapshotFreshness::Fresh);
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto measured = service.get_runtime_snapshot(id).value();
+    EXPECT_TRUE(measured.window);
+    EXPECT_TRUE(measured.accepted_records_per_second);
+    EXPECT_TRUE(service.list_tasks({}).value().items[0].accepted_records_per_second);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto ended = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(ended.pipelines[0].facts);
+    EXPECT_TRUE(ended.pipelines[0].facts->quiescent);
+    EXPECT_EQ(
+        ended.pipelines[0].facts->accepted_records, ended.pipelines[0].facts->written_records);
+    EXPECT_EQ(ended.data_impact, rodaq::DataImpact::None);
+    EXPECT_FALSE(ended.pipelines[0].streams[0].facts->entry_ready);
+    std::this_thread::sleep_for(2100ms);
+    const auto stale = service.get_runtime_snapshot(id).value();
+    EXPECT_EQ(stale.freshness, rodaq::SnapshotFreshness::Stale);
+    EXPECT_GE(stale.age, 2s);
+    EXPECT_EQ(stale.snapshot_sequence, ended.snapshot_sequence);
+    EXPECT_EQ(service.list_tasks({}).value().items[0].freshness, rodaq::SnapshotFreshness::Stale);
+    const auto restart = service.start(id, {"restart"}, {true, 3});
+    ASSERT_TRUE(restart.ok());
+    ASSERT_TRUE(wait_composed(id, restart.value()));
+    const auto replacement = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(replacement.pipelines[0].facts);
+    EXPECT_NE(replacement.pipelines[0].facts->instance_id, ended.pipelines[0].facts->instance_id);
+    EXPECT_FALSE(replacement.accepted_records_per_second);
+    EXPECT_FALSE(replacement.pipelines[0].streams[0].facts->received_records_per_second);
+    const auto final_stop = service.stop(id, {"final-stop"}, {true, 4});
+    ASSERT_TRUE(final_stop.ok());
+    ASSERT_TRUE(wait_composed(id, final_stop.value()));
+}
+
 TEST_F(PipelineControllerTest, CompositionRunsFormalLifecycleAndReadsActualCommittedFiles) {
     open_composition();
     ASSERT_TRUE(composition_);

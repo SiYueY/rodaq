@@ -179,15 +179,23 @@ Result<void> RecordingInstance::freeze_open_timeline(std::uint64_t opened, std::
 
 Result<acquisition::SubmitResult> RecordingInstance::submit_record(
     const acquisition::RecordAttempt& attempt) {
+    const auto index = stream_index(attempt.stream_id);
+    if (index != streams.bindings().size()) {
+        std::lock_guard<std::mutex> lock(facts_mutex_);
+        auto& stream = facts_.streams[index];
+        const bool records_complete = increment(stream.received_records);
+        const bool bytes_complete =
+            increment(stream.received_logical_bytes, attempt.payload.logical_size);
+        stream.evidence_complete = stream.evidence_complete && records_complete && bytes_complete;
+        facts_.evidence_complete = facts_.evidence_complete && stream.evidence_complete;
+    }
     auto callback = enter_callback();
     if (!callback.ok()) {
-        const auto index = stream_index(attempt.stream_id);
         if (index != streams.bindings().size()) {
             submission(index, RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
         }
         return rejected(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
     }
-    const auto index = stream_index(attempt.stream_id);
     if (index == streams.bindings().size()) {
         return rejected(RODAQ_SUBMIT_INVALID_RECORD);
     }
@@ -211,6 +219,10 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
         increment(facts_.streams[index].submissions[RODAQ_SUBMIT_RESOURCE_EXHAUSTED]);
         facts_.terminal_failure = facts_.terminal_failure || authority_failed;
         return rejected(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
+    }
+    {
+        std::lock_guard<std::mutex> lock(facts_mutex_);
+        facts_.streams[index].last_receive_realtime_ns = received.value().sample.realtime_ns;
     }
     AdmissionDomain domain{
         identity.task_id,

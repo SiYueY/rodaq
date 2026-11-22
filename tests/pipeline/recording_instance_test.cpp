@@ -288,6 +288,33 @@ protected:
     std::shared_future<void> permission_{released_.get_future().share()};
 };
 
+TEST_F(RecordingInstanceTest, ReceivedObservationsIncludeRejectionsAndSaturateWithoutWrapping) {
+    prepare();
+    ASSERT_TRUE(state_);
+    const auto token = state_->propose_descriptor(proposal(), soon());
+    ASSERT_TRUE(token.ok());
+    open();
+    const auto record = attempt(token.value());
+    EXPECT_EQ(state_->submit_record(record).value().disposition, RODAQ_SUBMIT_ACCEPTED);
+    auto oversized = record;
+    oversized.payload.logical_size = std::numeric_limits<std::uint64_t>::max();
+    EXPECT_EQ(state_->submit_record(oversized).value().disposition, RODAQ_SUBMIT_RECORD_TOO_LARGE);
+    EXPECT_EQ(state_->submit_record(oversized).value().disposition, RODAQ_SUBMIT_RECORD_TOO_LARGE);
+    const auto actual = state_->callback_facts().value();
+    ASSERT_EQ(actual.streams.size(), 2);
+    EXPECT_EQ(actual.streams[0].received_records, 3);
+    EXPECT_EQ(actual.streams[0].received_logical_bytes, std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(actual.streams[0].submissions[RODAQ_SUBMIT_ACCEPTED], 1);
+    EXPECT_EQ(actual.streams[0].submissions[RODAQ_SUBMIT_RECORD_TOO_LARGE], 2);
+    EXPECT_TRUE(actual.streams[0].last_receive_realtime_ns);
+    EXPECT_FALSE(actual.streams[0].evidence_complete);
+    EXPECT_FALSE(actual.evidence_complete);
+    EXPECT_EQ(actual.streams[1].received_records, 0);
+    EXPECT_TRUE(writer_->write_available(state_->queue, segment_, soon()).ok());
+    close();
+    EXPECT_TRUE(writer_->seal(segment_, soon()).ok());
+}
+
 TEST_F(
     RecordingInstanceTest,
     InitialAndChangedDescriptorsBindOnlyAfterActualNativePrepareAndUnchangedFactsReuseToken) {

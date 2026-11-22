@@ -36,6 +36,9 @@ struct InstanceLimits {
 
 struct StreamCallbackFacts {
     StreamId stream_id{0};
+    std::uint64_t received_records{0};
+    std::uint64_t received_logical_bytes{0};
+    std::optional<std::int64_t> last_receive_realtime_ns;
     std::array<std::uint64_t, 9> submissions{};
     std::array<std::uint64_t, 7> source_events{};
     std::array<std::uint64_t, 11> acquisition_events{};
