@@ -599,6 +599,21 @@ protected:
         return false;
     }
 
+    bool wait_composed_condition(rodaq::TaskId task, rodaq::ExecutionCondition expected) {
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        do {
+            if (!composition_->observe().ok()) {
+                return false;
+            }
+            const auto actual = composition_->tasks().get_task(task);
+            if (actual.ok() && actual.value().execution_condition == expected) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
     rodaq::daq::StartupOptions startup_options(rodaq::daq::DeploymentOpenMode mode) {
         rodaq::daq::StartupOptions options;
         options.state_root = root_ / "startup-state";
@@ -851,6 +866,8 @@ TEST_P(CompositionPolicyTest, FormalPrepareBarrierUsesRequiredAndBestEffortPolic
     EXPECT_EQ(
         terminal.value().state,
         allowed ? rodaq::OperationState::PartiallySucceeded : rodaq::OperationState::Failed);
+    ASSERT_TRUE(wait_composed_condition(
+        id, allowed ? rodaq::ExecutionCondition::Degraded : rodaq::ExecutionCondition::Protected));
     const auto task = service.get_task(id).value();
     EXPECT_EQ(task.desired_state, rodaq::DesiredState::Running);
     EXPECT_EQ(
@@ -907,7 +924,8 @@ TEST_P(CompositionPolicyTest, ConfigurationRejectionFailsOnlyWhenNoLegalRunCanBe
     EXPECT_EQ(
         terminal.value().state,
         allowed ? rodaq::OperationState::PartiallySucceeded : rodaq::OperationState::Failed);
-    ASSERT_TRUE(composition_->observe().ok());
+    ASSERT_TRUE(wait_composed_condition(
+        id, allowed ? rodaq::ExecutionCondition::Degraded : rodaq::ExecutionCondition::Failed));
     const auto actual = service.get_task(id).value();
     EXPECT_EQ(actual.desired_state, rodaq::DesiredState::Running);
     EXPECT_EQ(actual.control_generation, 2);
@@ -1018,6 +1036,68 @@ TEST_F(PipelineControllerTest, PartialRunReleasesFailedPipelineWhileHealthySourc
     ASSERT_TRUE(wait_composed(first, first_stop.value()));
     ASSERT_TRUE(wait_composed(sibling, sibling_stop.value()));
     EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, PartialRunKeepsPendingCleanupAboveDegradedUntilFailedOwnerSettles) {
+    open_composition(&receive_clock, 5s, 1, 2);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json = R"({"streams":["first","second"],"period_us":1000000})";
+    auto failed = config.pipelines.front();
+    failed.required = false;
+    failed.acquisition.json =
+        R"({"streams":["first","first"],"mode":"late_shutdown","delay_ms":1000})";
+    config.pipelines.push_back(std::move(failed));
+    auto& service = composition_->tasks();
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto terminal = wait_composed_operation(id, start.value());
+    ASSERT_TRUE(terminal.ok());
+    EXPECT_EQ(terminal.value().state, rodaq::OperationState::PartiallySucceeded);
+    ASSERT_FALSE(manager_->initialization_cleanup_settled());
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(
+        service.get_task(id).value().execution_condition,
+        rodaq::ExecutionCondition::PendingCleanup);
+    const auto before = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(before.pipelines[0].facts);
+    ASSERT_TRUE(before.pipelines[1].facts);
+    EXPECT_TRUE(before.pipelines[0].facts->admission_open);
+    EXPECT_FALSE(before.pipelines[1].facts->quiescent);
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    bool settled = false;
+    do {
+        ASSERT_TRUE(composition_->observe().ok());
+        const auto current = service.get_runtime_snapshot(id).value();
+        settled =
+            current.pipelines[0].facts && current.pipelines[1].facts &&
+            current.pipelines[0].facts->accepted_records >
+                before.pipelines[0].facts->accepted_records &&
+            current.pipelines[1].facts->quiescent &&
+            service.get_task(id).value().execution_condition == rodaq::ExecutionCondition::Degraded;
+        if (!settled) {
+            std::this_thread::sleep_for(1ms);
+        }
+    } while (!settled && std::chrono::steady_clock::now() < deadline);
+    ASSERT_TRUE(settled) << "condition="
+                         << static_cast<int>(service.get_task(id).value().execution_condition)
+                         << " cleanup_settled=" << manager_->initialization_cleanup_settled()
+                         << " segment_slots=" << capacity_->snapshot().segment_slots;
+    const auto after = service.get_runtime_snapshot(id).value();
+    EXPECT_GT(
+        after.pipelines[0].facts->accepted_records, before.pipelines[0].facts->accepted_records);
+    EXPECT_EQ(after.pipelines[1].facts->accepted_records, 0);
+    EXPECT_EQ(service.get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state,
+        rodaq::OperationState::PartiallySucceeded);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
 }
 
 TEST_F(PipelineControllerTest, MultiplePipelinesPauseResumeAndCommitTheirOwnAcceptedSets) {
@@ -1617,6 +1697,9 @@ TEST_F(
     EXPECT_EQ(failed.value().state, rodaq::OperationState::Failed);
     EXPECT_FALSE(manager_->initialization_cleanup_settled());
     EXPECT_EQ(capacity_->snapshot().segment_slots, 1);
+    EXPECT_EQ(
+        service.get_task(id).value().execution_condition,
+        rodaq::ExecutionCondition::PendingCleanup);
     const auto limit = std::chrono::steady_clock::now() + 3s;
     while (!manager_->initialization_cleanup_settled() &&
            std::chrono::steady_clock::now() < limit) {
@@ -1626,8 +1709,7 @@ TEST_F(
     do {
         ASSERT_TRUE(composition_->observe().ok());
         if (capacity_->snapshot().segment_slots == 0 &&
-            service.get_task(id).value().execution_condition ==
-                rodaq::ExecutionCondition::Protected) {
+            service.get_task(id).value().execution_condition == rodaq::ExecutionCondition::Failed) {
             break;
         }
         std::this_thread::sleep_for(1ms);
@@ -1637,7 +1719,7 @@ TEST_F(
     const auto task = service.get_task(id).value();
     EXPECT_EQ(task.desired_state, rodaq::DesiredState::Running);
     EXPECT_EQ(task.control_generation, 2);
-    EXPECT_EQ(task.execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(task.execution_condition, rodaq::ExecutionCondition::Failed);
     EXPECT_EQ(
         service.get_operation(id, start.value()).value().state, rodaq::OperationState::Failed);
     EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);

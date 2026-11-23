@@ -27,6 +27,7 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
     bool any_open = false;
     bool all_open = !pipelines.empty();
     bool required_open = true;
+    bool failed_pipeline_pending = false;
     bool required_configuration_rejected = false;
     bool recoverable_pipeline = false;
     for (const auto& selected : pipelines) {
@@ -35,6 +36,10 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
             return ExecutionCondition::Protected;
         }
         all_settled = all_settled && actual.value().quiescence.settled;
+        failed_pipeline_pending =
+            failed_pipeline_pending ||
+            (selected.prepare_status && *selected.prepare_status != StatusCode::Ok &&
+             !actual.value().quiescence.settled);
         const bool open = actual.value().gate.open && !actual.value().gate.control_fence &&
                           actual.value().failure == StatusCode::Ok;
         any_open = any_open || open;
@@ -44,6 +49,9 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
             required_configuration_rejected ||
             (selected.required && actual.value().configuration_rejected);
         recoverable_pipeline = recoverable_pipeline || !actual.value().configuration_rejected;
+    }
+    if (failed_pipeline_pending) {
+        return ExecutionCondition::PendingCleanup;
     }
     if (any_open) {
         if (!required_open && config->start_policy == StartPolicyMode::AllRequired) {
