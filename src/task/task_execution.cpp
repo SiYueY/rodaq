@@ -27,6 +27,8 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
     bool any_open = false;
     bool all_open = !pipelines.empty();
     bool required_open = true;
+    bool required_configuration_rejected = false;
+    bool recoverable_pipeline = false;
     for (const auto& selected : pipelines) {
         auto actual = selected.controller->snapshot();
         if (!actual.ok()) {
@@ -38,6 +40,10 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
         any_open = any_open || open;
         all_open = all_open && open;
         required_open = required_open && (!selected.required || open);
+        required_configuration_rejected =
+            required_configuration_rejected ||
+            (selected.required && actual.value().configuration_rejected);
+        recoverable_pipeline = recoverable_pipeline || !actual.value().configuration_rejected;
     }
     if (any_open) {
         if (!required_open && config->start_policy == StartPolicyMode::AllRequired) {
@@ -45,9 +51,20 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
         }
         return all_open ? ExecutionCondition::Active : ExecutionCondition::Degraded;
     }
-    return all_settled ? (desired == DesiredState::Running ? ExecutionCondition::Protected
-                                                           : ExecutionCondition::Idle)
-                       : ExecutionCondition::PendingCleanup;
+    if (!all_settled) {
+        return ExecutionCondition::PendingCleanup;
+    }
+    if (desired != DesiredState::Running) {
+        return ExecutionCondition::Idle;
+    }
+    // A restart with unchanged immutable inputs cannot repair rejected Plugin
+    // configuration. Partial BestEffort runs still take the Degraded path above.
+    const bool configuration_blocks_recovery =
+        !pipelines.empty() &&
+        (!recoverable_pipeline ||
+         (config->start_policy == StartPolicyMode::AllRequired && required_configuration_rejected));
+    return configuration_blocks_recovery ? ExecutionCondition::Failed
+                                         : ExecutionCondition::Protected;
 }
 
 }  // namespace rodaq::task

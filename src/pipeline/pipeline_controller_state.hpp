@@ -238,6 +238,7 @@ struct PipelineController::State {
     std::optional<acquisition::Handle> acquisition;
     std::atomic<std::uint32_t> control{0};
     std::atomic<bool> prepared{false};
+    std::atomic<bool> configuration_rejected{false};
     std::atomic<bool> source_quiesced{true};
     std::atomic<bool> storage_closed{true};
     std::atomic<bool> source_closed{true};

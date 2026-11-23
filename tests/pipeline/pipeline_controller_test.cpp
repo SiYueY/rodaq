@@ -884,6 +884,88 @@ TEST_P(CompositionPolicyTest, FormalPrepareBarrierUsesRequiredAndBestEffortPolic
 INSTANTIATE_TEST_SUITE_P(
     RequiredAndPolicy, CompositionPolicyTest, testing::Combine(testing::Bool(), testing::Bool()));
 
+TEST_P(CompositionPolicyTest, ConfigurationRejectionFailsOnlyWhenNoLegalRunCanBeRecovered) {
+    const auto [best_effort, failed_required] = GetParam();
+    open_composition(&receive_clock, 5s, 1, 2);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.start_policy =
+        best_effort ? rodaq::StartPolicyMode::BestEffort : rodaq::StartPolicyMode::AllRequired;
+    auto failed = config.pipelines.front();
+    failed.required = failed_required;
+    failed.acquisition.json = R"({"streams":["first","second"],"unknown_option":true})";
+    config.pipelines.push_back(std::move(failed));
+    auto& service = composition_->tasks();
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto terminal = wait_composed_operation(id, start.value());
+    ASSERT_TRUE(terminal.ok());
+    const bool allowed = best_effort || !failed_required;
+    EXPECT_EQ(
+        terminal.value().state,
+        allowed ? rodaq::OperationState::PartiallySucceeded : rodaq::OperationState::Failed);
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto actual = service.get_task(id).value();
+    EXPECT_EQ(actual.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(actual.control_generation, 2);
+    EXPECT_EQ(
+        actual.execution_condition,
+        allowed ? rodaq::ExecutionCondition::Degraded : rodaq::ExecutionCondition::Failed);
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_EQ(runtime.pipelines.size(), 2);
+    ASSERT_TRUE(runtime.pipelines[1].facts);
+    EXPECT_EQ(runtime.pipelines[1].facts->prepare_status, StatusCode::InvalidArgument);
+    EXPECT_FALSE(runtime.pipelines[1].facts->admission_open);
+    EXPECT_EQ(runtime.pipelines[1].facts->accepted_records, 0);
+    EXPECT_EQ(service.start(id, {"start"}, {true, 1}).value(), start.value());
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Idle);
+}
+
+TEST_F(PipelineControllerTest, BestEffortWithEveryConfigurationRejectedHasNoRecoverableRun) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.start_policy = rodaq::StartPolicyMode::BestEffort;
+    config.pipelines[0].storage.json = R"({"unknown_option":true})";
+    auto& service = composition_->tasks();
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto start = service.start(created.value(), {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    const auto terminal = wait_composed_operation(created.value(), start.value());
+    ASSERT_TRUE(terminal.ok());
+    EXPECT_EQ(terminal.value().state, rodaq::OperationState::Failed);
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(
+        service.get_task(created.value()).value().execution_condition,
+        rodaq::ExecutionCondition::Failed);
+    EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
+    const auto stopped = service.stop(created.value(), {"stop-failed"}, {true, 2});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_composed(created.value(), stopped.value()));
+    auto corrected = service.get_active_config(created.value()).value();
+    corrected.pipelines[0].storage.json = formal_config().pipelines[0].storage.json;
+    const auto configured = service.configure(created.value(), corrected, {"correct"}, {true, 3});
+    ASSERT_TRUE(configured.ok());
+    ASSERT_TRUE(wait_composed(created.value(), configured.value()));
+    const auto restarted = service.start(created.value(), {"start-corrected"}, {true, 4});
+    ASSERT_TRUE(restarted.ok());
+    ASSERT_TRUE(wait_composed(created.value(), restarted.value()));
+    ASSERT_TRUE(wait_composed_records(created.value()));
+    EXPECT_EQ(
+        service.get_task(created.value()).value().execution_condition,
+        rodaq::ExecutionCondition::Active);
+    const auto final_stop = service.stop(created.value(), {"stop-corrected"}, {true, 5});
+    ASSERT_TRUE(final_stop.ok());
+    ASSERT_TRUE(wait_composed(created.value(), final_stop.value()));
+}
+
 TEST_F(PipelineControllerTest, PartialRunReleasesFailedPipelineWhileHealthySourceKeepsRecording) {
     open_composition(&receive_clock, 5s, 2, 2);
     ASSERT_TRUE(composition_);

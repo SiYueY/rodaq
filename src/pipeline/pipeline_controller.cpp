@@ -153,6 +153,8 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         auto created_storage =
             state_->storage_library->create_instance(empty, options.definition.storage.json);
         if (!created_storage.ok()) {
+            state_->configuration_rejected =
+                created_storage.status().code() == StatusCode::InvalidArgument;
             state_->creation_unresolved = true;
             return created_storage.status();
         }
@@ -234,6 +236,8 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         auto created_source = state_->acquisition_library->create_instance(
             services, options.definition.acquisition.json);
         if (!created_source.ok()) {
+            state_->configuration_rejected =
+                created_source.status().code() == StatusCode::InvalidArgument;
             state_->creation_unresolved = true;
             return created_source.status();
         }
@@ -660,6 +664,7 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
         return callbacks.status();
     }
     result.prepared = state_->prepared.load();
+    result.configuration_rejected = state_->configuration_rejected.load();
     result.failure = state_->output->failure.load();
     auto& quiet = result.quiescence;
     quiet.gate_closed = !result.gate.open;

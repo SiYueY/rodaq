@@ -86,6 +86,9 @@ struct PipelineSnapshot {
     RecordQueueSnapshot queue;
     PipelineQuiescence quiescence;
     bool prepared{false};
+    // Immutable Plugin initialization inputs were rejected as InvalidArgument.
+    // This does not classify later Prepare/Source/Writer failures.
+    bool configuration_rejected{false};
     StatusCode failure{StatusCode::Ok};
     std::uint64_t segment_id{0};
     std::uint64_t artifact_work_id{0};
