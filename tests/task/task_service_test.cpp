@@ -1,5 +1,6 @@
 #include "service_config.hpp"
 #include "task/create_store.hpp"
+#include "task/identity.hpp"
 
 #include <gtest/gtest.h>
 
@@ -15,6 +16,8 @@
 #include <poll.h>
 #include <spawn.h>
 #include <string>
+#include <thread>
+#include <vector>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -510,6 +513,124 @@ TEST_F(
         service_->configure(id, changed, {"configure"}, {true, 1}).value(), operation.value());
     EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
     EXPECT_EQ(service_->get_active_config(id).value().pipelines[0].streams[1].stream_id, 2);
+}
+
+TEST_F(TaskServiceTest, RetainedHistoryBoundariesAndConfigureRecoverySurviveTruncationAndRestart) {
+    options_.store.history = {4, 1, 1ns};
+    open();
+    ASSERT_TRUE(service_);
+    const auto created = service_->create_task(config_, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto wait_terminal = [&](rodaq::OperationId operation) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        do {
+            const auto actual = service_->get_operation(id, operation);
+            if (actual.ok() && actual.value().state == rodaq::OperationState::Succeeded) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    std::vector<rodaq::OperationId> operations;
+    std::string old_cursor;
+    auto changed = service_->get_active_config(id).value();
+    for (unsigned i = 0; i < 4; ++i) {
+        changed.name = "configured-" + std::to_string(i);
+        const auto accepted =
+            service_->configure(id, changed, {"configure-" + std::to_string(i)}, {true, i + 1});
+        ASSERT_TRUE(accepted.ok());
+        ASSERT_TRUE(wait_terminal(accepted.value()));
+        operations.push_back(accepted.value());
+        if (i == 1) {
+            const auto page = service_->list_operations(id, {{}, 1});
+            ASSERT_TRUE(page.ok());
+            ASSERT_TRUE(page.value().has_more);
+            old_cursor = page.value().next_cursor;
+        }
+    }
+    const auto retained = service_->list_operations(id, {});
+    ASSERT_TRUE(retained.ok());
+    ASSERT_TRUE(retained.value().history_truncated);
+    ASSERT_EQ(retained.value().items.size(), 2);
+    EXPECT_EQ(retained.value().oldest_retained_control_generation, 4);
+    EXPECT_EQ(retained.value().oldest_retained_at, retained.value().items.front().accepted_at);
+    EXPECT_EQ(
+        service_->get_operation(id, operations.front()).status().code(), StatusCode::NotFound);
+    const auto stale_cursor = service_->list_operations(id, {old_cursor, 8});
+    ASSERT_TRUE(stale_cursor.ok());
+    EXPECT_TRUE(stale_cursor.value().history_truncated);
+    EXPECT_EQ(stale_cursor.value().items.size(), 2);
+    restart();
+    ASSERT_TRUE(service_);
+    const auto restored = service_->list_operations(id, {});
+    ASSERT_TRUE(restored.ok());
+    EXPECT_TRUE(restored.value().history_truncated);
+    EXPECT_EQ(
+        restored.value().oldest_retained_control_generation,
+        retained.value().oldest_retained_control_generation);
+    EXPECT_EQ(restored.value().oldest_retained_at, retained.value().oldest_retained_at);
+    EXPECT_EQ(
+        service_->configure(id, changed, {"configure-3"}, {true, 4}).value(), operations.back());
+    changed.name = "configured-after-restart";
+    const auto next = service_->configure(id, changed, {"next"}, {true, 5});
+    ASSERT_TRUE(next.ok()) << static_cast<int>(next.status().code());
+    ASSERT_TRUE(wait_terminal(next.value()));
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 6);
+    EXPECT_LE(service_->list_operations(id, {}).value().items.size(), 3);
+}
+
+TEST_F(TaskServiceTest, TruncatedStoppedHistoryWithoutConfigurationDoesNotProveQuiescence) {
+    open();
+    ASSERT_TRUE(service_);
+    const auto created = service_->create_task(config_, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    service_.reset();
+    ASSERT_TRUE(lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    ASSERT_TRUE(control_lane_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    {
+        // Model a valid stopped authority whose older execution history expired.
+        // Stop's desired state alone carries no physical cleanup proof.
+        auto store = task::TaskStore::open(
+            options_.root / "tasks" / rodaq::to_string(id), options_.root / "control", id,
+            task::TaskStoreMode::Existing, options_.store);
+        ASSERT_TRUE(store.ok());
+        auto loaded = store.value()->load_control();
+        ASSERT_TRUE(loaded.ok());
+        auto record = std::move(loaded.value());
+        const auto previous_revision = record.record_revision++;
+        ++record.control_generation;
+        task::StoredOperation stop;
+        stop.request = {"stopped"};
+        auto digest = task::lifecycle_request_digest(id, rodaq::OperationKind::Stop, {true, 1});
+        ASSERT_TRUE(digest.ok());
+        stop.request_digest = std::move(digest.value());
+        stop.snapshot.operation_id.value[15] = 1;
+        stop.snapshot.kind = rodaq::OperationKind::Stop;
+        stop.snapshot.control_generation = record.control_generation;
+        stop.snapshot.state = rodaq::OperationState::Accepted;
+        stop.snapshot.accepted_at = rodaq::WallTime{1s};
+        record.current_operation_id = stop.snapshot.operation_id;
+        record.operation_history.entries.push_back(std::move(stop));
+        record.operation_history.history_truncated = true;
+        ASSERT_TRUE(store.value()->publish_control(record, previous_revision).ok());
+        const auto accepted_revision = record.record_revision++;
+        auto& terminal = record.operation_history.entries.back().snapshot;
+        terminal.state = rodaq::OperationState::Succeeded;
+        terminal.terminal_at = rodaq::WallTime{2s};
+        ASSERT_TRUE(store.value()->publish_control(record, accepted_revision).ok());
+    }
+    restart();
+    ASSERT_TRUE(service_);
+    auto changed = service_->get_active_config(id).value();
+    changed.name = "must-remain-guarded";
+    EXPECT_EQ(
+        service_->configure(id, changed, {"configure"}, {true, 2}).status().code(),
+        StatusCode::InvalidState);
+    EXPECT_EQ(service_->get_task(id).value().control_generation, 2);
+    EXPECT_EQ(service_->list_operations(id, {}).value().items.size(), 1);
 }
 
 TEST_F(

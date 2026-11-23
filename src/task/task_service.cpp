@@ -287,15 +287,22 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
         }
         entry->recovery = std::move(recovery.value());
     }
-    entry->quiescent =
-        !control.value().operation_history.history_truncated &&
-        control.value().desired_state == DesiredState::Stopped &&
-        std::none_of(
-            control.value().operation_history.entries.begin(),
-            control.value().operation_history.entries.end(), [](const auto& operation) {
-                return operation.snapshot.kind == OperationKind::Start ||
-                       operation.snapshot.kind == OperationKind::Resume;
-            });
+    const auto& history = control.value().operation_history;
+    // Configure is accepted only after all prior execution owners are quiescent.
+    // The current operation is retained even when older history has expired.
+    const bool configuration_boundary =
+        std::any_of(history.entries.begin(), history.entries.end(), [&](const auto& operation) {
+            return control.value().current_operation_id == operation.snapshot.operation_id &&
+                   operation.snapshot.kind == OperationKind::Configure;
+        });
+    const bool never_started =
+        !history.history_truncated &&
+        std::none_of(history.entries.begin(), history.entries.end(), [](const auto& operation) {
+            return operation.snapshot.kind == OperationKind::Start ||
+                   operation.snapshot.kind == OperationKind::Resume;
+        });
+    entry->quiescent = control.value().desired_state == DesiredState::Stopped &&
+                       !control.value().reset_intent && (configuration_boundary || never_started);
     auto active = std::make_shared<const TaskConfig>(std::move(config.value().config));
     if (entry->quiescent) {
         auto terminal = task::completed_configuration(*entry->controller->durable_record());
