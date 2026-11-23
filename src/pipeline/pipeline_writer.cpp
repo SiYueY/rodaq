@@ -105,14 +105,15 @@ Result<void> PipelineWriter::prepare_descriptor(
         }
     }
     const auto& facts = descriptor->facts;
-    const std::array<std::uint64_t, 7> sizes{
+    const std::array<std::uint64_t, 8> sizes{
         facts.channel_name.size(),
         facts.message_encoding.size(),
         facts.schema_name.size(),
         facts.schema_encoding.size(),
         facts.schema.size(),
         facts.ros2_type_description_hash.size(),
-        facts.offered_qos.size() * sizeof(rodaq_ros2_qos_profile_t)};
+        facts.offered_qos.size() * sizeof(rodaq_ros2_qos_profile_t),
+        facts.ros2_subscription ? facts.ros2_subscription->data_bytes() : 0};
     std::uint64_t bytes = 0;
     for (const auto size : sizes) {
         if (size > std::numeric_limits<std::uint64_t>::max() - bytes) {
@@ -124,6 +125,7 @@ Result<void> PipelineWriter::prepare_descriptor(
     if (!captured.ok()) {
         return captured.status();
     }
+    captured.value().ros2_subscription = facts.ros2_subscription;
     auto metadata = segment->metadata.reserve_descriptor(std::move(captured.value()));
     if (!metadata.ok()) {
         return metadata.status();

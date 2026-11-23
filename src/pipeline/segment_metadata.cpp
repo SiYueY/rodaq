@@ -289,6 +289,56 @@ Result<void> DescriptorMetadataReservation::mark_prepared() {
 SegmentMetadata::SegmentMetadata(std::shared_ptr<SegmentMetadataState> state) noexcept
 : state_(std::move(state)) {}
 
+Result<void> SegmentMetadata::bind_effective_configuration(
+    std::string identity, persistence::Json configuration) {
+    try {
+        artifact::ManifestIdentity candidate;
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            if (state_->facts.closed || state_->facts.accepted ||
+                state_->facts.pending_admissions) {
+                return Status(StatusCode::InvalidState, {});
+            }
+            candidate = state_->identity;
+        }
+        const auto previous_identity = candidate.effective_config_id;
+        const auto old_base = artifact::manifest_base_size_bound(candidate, state_->limits);
+        if (!old_base.ok()) {
+            return old_base.status();
+        }
+        candidate.effective_config_id = std::move(identity);
+        candidate.effective_configuration = std::move(configuration);
+        const auto new_base = artifact::manifest_base_size_bound(candidate, state_->limits);
+        if (!new_base.ok()) {
+            return new_base.status();
+        }
+        // Retired JSON/string backing is destroyed outside the metadata lock.
+        std::optional<persistence::Json> old_configuration;
+        std::string old_identity;
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            if (state_->facts.closed || state_->facts.accepted ||
+                state_->facts.pending_admissions ||
+                state_->identity.effective_config_id != previous_identity) {
+                return Status(StatusCode::Conflict, {});
+            }
+            const auto other_bytes = state_->facts.manifest_bytes_bound - old_base.value();
+            if (new_base.value() > state_->limits.max_bytes - other_bytes) {
+                return Status(StatusCode::ResourceExhausted, {});
+            }
+            old_configuration = std::move(state_->identity.effective_configuration);
+            old_identity = std::move(state_->identity.effective_config_id);
+            state_->identity.effective_configuration = std::move(candidate.effective_configuration);
+            state_->identity.effective_config_id = std::move(candidate.effective_config_id);
+            state_->facts.manifest_bytes_bound = other_bytes;
+            state_->charge(new_base.value());
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 Result<SegmentMetadata> SegmentMetadata::create(
     artifact::ManifestIdentity identity, std::vector<StreamId> streams,
     const storage::PrepareConfig& envelope, artifact::ManifestLimits limits) {

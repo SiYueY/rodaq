@@ -30,15 +30,15 @@ public:
     }
 
     template <typename Interface>
-    Result<typename Interface::Reference> service() {
+    Result<typename Interface::Reference> service(std::uint16_t minimum_minor = 0) {
         const auto id = Interface::kInterfaceId;
-        if (!abi::valid_identifier(id)) {
-            return Status(StatusCode::InvalidArgument, "Invalid Service ID");
+        if (!abi::valid_identifier(id) || minimum_minor > Interface::kMinor) {
+            return Status(StatusCode::InvalidArgument, "Invalid Service query");
         }
         const rodaq_interface_query_t query{
             {id.data(), static_cast<std::uint32_t>(id.size())},
             Interface::kMajor,
-            0,
+            minimum_minor,
             Interface::kMinor};
         std::array<std::uint8_t, 512> buffer{};
         rodaq_error_t error{{buffer.data(), buffer.size(), 0}};
@@ -50,7 +50,8 @@ public:
             return status;
         }
         typename Interface::Vtable table{};
-        if (!abi::copy_vtable<Interface>(reference, table)) {
+        if (reference.negotiated_version.minor < minimum_minor ||
+            !abi::copy_vtable<Interface>(reference, table)) {
             return Status(StatusCode::Internal, "Invalid Service vtable");
         }
         return

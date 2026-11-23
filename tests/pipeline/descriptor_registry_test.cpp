@@ -17,6 +17,9 @@
 #include <utility>
 
 #include <rodaq/storage/validation.hpp>
+#include <rodaq/acquisition/validation.hpp>
+#include <sys/mman.h>
+#include <unistd.h>
 
 namespace {
 
@@ -54,6 +57,68 @@ struct Proposal {
         return result;
     }
 };
+
+TEST(DescriptorRegistry, OldDescriptorPrefixAtGuardPageNeverReadsTheNewSubscriptionTail) {
+    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    auto* memory = static_cast<unsigned char*>(
+        mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    ASSERT_NE(memory, MAP_FAILED);
+    struct Mapping {
+        void* memory;
+        std::size_t bytes;
+        ~Mapping() { munmap(memory, bytes); }
+    } mapping{memory, 2 * page};
+    ASSERT_EQ(mprotect(memory + page, page, PROT_NONE), 0);
+    Proposal source;
+    auto proposal = source.view();
+    constexpr auto prefix =
+        offsetof(rodaq_descriptor_proposal_t, reserved1) + sizeof(proposal.reserved1);
+    constexpr auto storage = offsetof(rodaq_descriptor_proposal_t, ros2_subscription);
+    proposal.header.struct_size = prefix;
+    std::memcpy(memory + page - storage, &proposal, prefix);
+    const auto* old = reinterpret_cast<const rodaq_descriptor_proposal_t*>(memory + page - storage);
+    ASSERT_TRUE(rodaq::acquisition::abi::valid_descriptor(old));
+    auto registry = pipeline::DescriptorRegistry::create({1}).value();
+    const auto captured = registry.capture(*old, 1);
+    ASSERT_TRUE(captured.ok());
+    EXPECT_FALSE(captured.value()->facts.ros2_subscription);
+}
+
+TEST(DescriptorRegistry, SubscriptionSnapshotIsOwnedVersionedAndChargedToExistingDescriptorQuota) {
+    Proposal source;
+    source.profile = RODAQ_DATA_PROFILE_ROS2;
+    source.encoding = "cdr";
+    source.schema_name = "std_msgs/msg/String";
+    source.schema_encoding = "ros2msg";
+    std::string distribution = "humble";
+    std::string rmw = "rmw_fastrtps_cpp";
+    rodaq_ros2_subscription_facts_t subscription{
+        {sizeof(subscription)}, text(distribution), text(rmw), {}, 1, 1, 2};
+    subscription.installed_requested_qos.history = RODAQ_ROS2_QOS_HISTORY_KEEP_LAST;
+    subscription.installed_requested_qos.depth = 16;
+    auto proposal = source.view();
+    proposal.ros2_subscription = &subscription;
+    auto registry = pipeline::DescriptorRegistry::create({1}).value();
+    auto first = registry.capture(proposal, 1);
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(first.value()->facts.ros2_subscription);
+    const auto base = source.view();
+    auto plain_registry = pipeline::DescriptorRegistry::create({1}).value();
+    const auto plain = plain_registry.capture(base, 1);
+    ASSERT_TRUE(plain.ok());
+    EXPECT_EQ(
+        registry.snapshot().owned_data_bytes - plain_registry.snapshot().owned_data_bytes,
+        sizeof(subscription) + distribution.size() + rmw.size());
+    subscription.subscription_generation = 2;
+    auto changed = registry.capture(proposal, 2);
+    ASSERT_TRUE(changed.ok());
+    EXPECT_NE(first.value()->facts.fingerprint, changed.value()->facts.fingerprint);
+    distribution.assign(64, 'x');
+    rmw.assign(128, 'x');
+    EXPECT_EQ(first.value()->facts.ros2_subscription->ros_distribution, "humble");
+    EXPECT_EQ(first.value()->facts.ros2_subscription->rmw_implementation, "rmw_fastrtps_cpp");
+    EXPECT_EQ(first.value()->facts.ros2_subscription->subscription_generation, 1);
+}
 
 TEST(DescriptorRegistry, OwnsEveryBorrowedFactAndComputesActualSchemaDigest) {
     auto created = pipeline::DescriptorRegistry::create({1});

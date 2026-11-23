@@ -125,6 +125,10 @@ public:
     SegmentMetadata& operator=(SegmentMetadata&&) noexcept = default;
 
     Result<DescriptorMetadataReservation> reserve_descriptor(artifact::ManifestDescriptor facts);
+    // Prepare only, before any accepted/candidate Record. Recharges the frozen
+    // identity input against the same existing Manifest budget before Open.
+    Result<void> bind_effective_configuration(
+        std::string identity, persistence::Json configuration);
     Result<RecordMetadataReservation> reserve_record(
         StreamId stream_id, rodaq_descriptor_id_t descriptor_id,
         const time::ClockSnapshot& received, std::uint64_t recording_ns);

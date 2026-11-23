@@ -44,6 +44,7 @@ struct PreparedPipeline {
     ControlGeneration control_generation{0};
     std::uint64_t prepared_monotonic{0};
     rodaq_system_boot_id_t boot_id{0};
+    std::string effective_config_id{};
 };
 
 // Task supplies this only after durable full-set OpenAuthorization. Borrowed

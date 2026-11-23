@@ -14,6 +14,7 @@
 #include "managed_volume.hpp"
 #include "sealed_files.hpp"
 #include "../persistence/json.hpp"
+#include "../ros2_subscription.hpp"
 #include "../time/clock.hpp"
 
 namespace rodaq::artifact {
@@ -33,6 +34,7 @@ struct ManifestDescriptor {
     std::uint32_t schema_size{0};
     std::string ros2_type_description_hash;
     std::vector<rodaq_ros2_qos_profile_t> offered_qos;
+    std::optional<canonical::Ros2SubscriptionFacts> ros2_subscription;
 };
 
 struct StreamCoverage {

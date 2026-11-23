@@ -21,6 +21,13 @@ namespace acquisition = rodaq::acquisition;
 namespace storage = rodaq::storage;
 using namespace std::chrono_literals;
 
+// The immutable G3 fixtures give their synthetic minor1 SubmitResult tail a
+// test-only meaning. This Host implements the frozen service0 prefix, not that
+// synthetic extension or the new real subscription-audit service1 contract.
+struct PrefixAcquisitionService : acquisition::Service {
+    static constexpr std::uint16_t kMinor = 0;
+};
+
 struct Host {
     rodaq::Result<acquisition::SubmitResult> submit_record(
         const acquisition::RecordAttempt& record) {
@@ -74,7 +81,7 @@ int main(int argc, char** argv) {
     plugin::ServiceRegistry services;
     auto host = std::make_shared<Host>();
     if (family == "acquisition") {
-        assert(services.add_shared<acquisition::Service>(host).ok());
+        assert(services.add_shared<PrefixAcquisitionService>(host).ok());
     }
     assert(services.freeze().ok());
     auto initialized = library.create_instance(services, {});

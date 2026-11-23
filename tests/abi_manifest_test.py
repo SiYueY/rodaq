@@ -36,6 +36,26 @@ class ManifestTest(unittest.TestCase):
         }
         self.assertEqual(compare(self.old, self.new), [])
 
+    def test_declared_interface_minor_can_advance_but_cannot_regress_or_hide_major_changes(self):
+        self.old["constants"].update(RODAQ_ACQUISITION_SERVICE_MAJOR=1,
+                                     RODAQ_ACQUISITION_SERVICE_MINOR=0)
+        self.new = copy.deepcopy(self.old)
+        self.new["constants"]["RODAQ_ACQUISITION_SERVICE_MINOR"] = 1
+        self.assertEqual(compare(self.old, self.new), [])
+        self.new["constants"]["RODAQ_ACQUISITION_SERVICE_MAJOR"] = 2
+        self.assertTrue(compare(self.old, self.new))
+        self.new = copy.deepcopy(self.old)
+        self.old["constants"]["RODAQ_ACQUISITION_SERVICE_MINOR"] = 1
+        self.assertTrue(compare(self.old, self.new))
+        self.new["constants"].pop("RODAQ_ACQUISITION_SERVICE_MINOR")
+        self.assertTrue(compare(self.old, self.new))
+
+    def test_unrelated_minor_named_constants_are_still_frozen(self):
+        self.old["constants"]["ERROR_MINOR"] = 1
+        self.new = copy.deepcopy(self.old)
+        self.new["constants"]["ERROR_MINOR"] = 2
+        self.assertTrue(compare(self.old, self.new))
+
     def test_each_forbidden_change_is_rejected(self):
         mutations = [
             lambda item: item["constants"].update(OK=1),

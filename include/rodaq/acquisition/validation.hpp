@@ -54,9 +54,28 @@ inline bool valid_record(const RecordAttempt* record) noexcept {
     return true;
 }
 
+inline const rodaq_ros2_subscription_facts_t* subscription_facts(
+    const DescriptorProposal& proposal) noexcept {
+    return plugin::abi::readable(&proposal) ? proposal.ros2_subscription : nullptr;
+}
+
+inline bool valid_subscription_facts(const rodaq_ros2_subscription_facts_t* facts) noexcept {
+    return plugin::abi::readable(facts) && canonical::valid_text(facts->ros_distribution, 64) &&
+           canonical::valid_text(facts->rmw_implementation, 128) &&
+           canonical::valid_qos(facts->installed_requested_qos) &&
+           facts->subscription_generation != 0 && facts->executor_kind == 1 &&
+           facts->executor_threads >= 1 && facts->executor_threads <= 8;
+}
+
 inline bool valid_descriptor(const DescriptorProposal* proposal) noexcept {
-    return plugin::abi::readable(proposal) && proposal->stream_id != 0 &&
-           proposal->reserved0 == 0 && proposal->reserved1 == 0 &&
+    if (!plugin::abi::readable(
+            proposal, offsetof(DescriptorProposal, reserved1) + sizeof(proposal->reserved1))) {
+        return false;
+    }
+    const auto* subscription = subscription_facts(*proposal);
+    return (subscription == nullptr || (proposal->data_profile == RODAQ_DATA_PROFILE_ROS2 &&
+                                        valid_subscription_facts(subscription))) &&
+           proposal->stream_id != 0 && proposal->reserved0 == 0 && proposal->reserved1 == 0 &&
            canonical::valid_descriptor_fields(*proposal);
 }
 

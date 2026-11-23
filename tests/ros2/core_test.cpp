@@ -103,6 +103,126 @@ TEST_F(Ros2Runtime, SeparatelyInstalledCustomMessageRecordsWithoutCompiledMessag
     EXPECT_EQ(count, artifact.value().coverage[0].written);
 }
 
+TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirOwnSettings) {
+    auto reliable = node->create_generic_publisher(
+        "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(10).reliable());
+    open_core();
+    ASSERT_TRUE(core);
+    TaskConfig task;
+    task.name = "Actual installed request audit";
+    task.segment_policy.max_duration = 60s;
+    PipelineConfig pipeline;
+    pipeline.resource_profile = "basic";
+    pipeline.output_root = "local";
+    pipeline.acquisition = {"com.rodaq.acquisition.ros2", "1.0.0", config(1, false).dump()};
+    pipeline.storage = {"com.rodaq.storage.mcap", "1.0.0", R"({"format_version":"1.0"})"};
+    pipeline.streams = {{0, "s0", {}, ReadinessPolicy::SourceReady}};
+    task.pipelines.push_back(std::move(pipeline));
+    const auto created = core->tasks().create_task(task, {"create"});
+    ASSERT_TRUE(created.ok()) << created.status().message();
+    const auto id = created.value();
+    const auto start = core->tasks().start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(completed(id, start.value()));
+    ASSERT_TRUE(connected(reliable));
+    for (unsigned i = 0; i < 10; ++i) {
+        publish(reliable);
+        std::this_thread::sleep_for(10ms);
+    }
+    auto best_effort = node->create_generic_publisher(
+        "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(10).best_effort());
+    bool rebuilt = false;
+    const auto rebuilt_by = std::chrono::steady_clock::now() + 3s;
+    do {
+        const auto readers = node->get_subscriptions_info_by_topic("/rodaq_test_0");
+        rebuilt =
+            readers.size() == 1 && readers[0].qos_profile().get_rmw_qos_profile().reliability ==
+                                       RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+        if (!rebuilt) {
+            std::this_thread::sleep_for(1ms);
+        }
+    } while (!rebuilt && std::chrono::steady_clock::now() < rebuilt_by);
+    ASSERT_TRUE(rebuilt);
+    ASSERT_TRUE(connected(best_effort));
+    const auto send_best_effort = [&] {
+        for (unsigned i = 0; i < 10; ++i) {
+            publish(best_effort);
+            std::this_thread::sleep_for(10ms);
+        }
+    };
+    send_best_effort();
+    const auto stop = core->tasks().stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(completed(id, stop.value()));
+    const auto read_manifest = [&](std::uint64_t segment) {
+        auto bytes = persistence::read_file(
+            root / "volume/.rodaq/artifacts" / std::to_string(segment), "manifest.json", 65536);
+        if (!bytes.ok()) {
+            return Result<artifact::SegmentManifest>(bytes.status());
+        }
+        return artifact::decode_manifest(bytes.value(), {});
+    };
+    const auto first_page = core->artifacts().query_artifacts({});
+    ASSERT_TRUE(first_page.ok());
+    ASSERT_EQ(first_page.value().items.size(), 1);
+    const auto first = read_manifest(first_page.value().items[0].segment_id);
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(first.value().identity.effective_configuration);
+    const auto& frozen = *first.value().identity.effective_configuration;
+    EXPECT_EQ(
+        frozen.at("prepared_streams")
+            .at(0)
+            .at("ros2_subscription")
+            .at("installed_requested_qos")
+            .at("reliability"),
+        "1");
+    bool recorded_before = false;
+    bool recorded_after = false;
+    for (const auto& descriptor : first.value().descriptors) {
+        ASSERT_TRUE(descriptor.ros2_subscription);
+        const auto& observation = *descriptor.ros2_subscription;
+        if (descriptor.accepted_records != 0) {
+            recorded_before = recorded_before || (observation.subscription_generation == 1 &&
+                                                  observation.installed_requested_qos.reliability ==
+                                                      RODAQ_ROS2_QOS_RELIABILITY_RELIABLE);
+            recorded_after = recorded_after || (observation.subscription_generation == 2 &&
+                                                observation.installed_requested_qos.reliability ==
+                                                    RODAQ_ROS2_QOS_RELIABILITY_BEST_EFFORT);
+        }
+    }
+    EXPECT_TRUE(recorded_before);
+    EXPECT_TRUE(recorded_after);
+    const auto next = core->tasks().start(id, {"next"}, {true, 3});
+    ASSERT_TRUE(next.ok());
+    ASSERT_TRUE(completed(id, next.value()));
+    ASSERT_TRUE(connected(best_effort));
+    send_best_effort();
+    const auto ended = core->tasks().stop(id, {"ended"}, {true, 4});
+    ASSERT_TRUE(ended.ok());
+    ASSERT_TRUE(completed(id, ended.value()));
+    const auto page = core->artifacts().query_artifacts({}).value();
+    ASSERT_EQ(page.items.size(), 2);
+    for (const auto& item : page.items) {
+        if (item.segment_id != first.value().identity.segment_id) {
+            const auto second = read_manifest(item.segment_id);
+            ASSERT_TRUE(second.ok());
+            EXPECT_EQ(
+                second.value().identity.config_version, first.value().identity.config_version);
+            EXPECT_NE(
+                second.value().identity.effective_config_id,
+                first.value().identity.effective_config_id);
+            EXPECT_EQ(
+                second.value()
+                    .identity.effective_configuration->at("prepared_streams")
+                    .at(0)
+                    .at("ros2_subscription")
+                    .at("installed_requested_qos")
+                    .at("reliability"),
+                "2");
+        }
+    }
+}
+
 TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     open_core();
     ASSERT_TRUE(core);
@@ -126,6 +246,16 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     auto start = composition->tasks().start(id, {"start"}, {true, 1});
     ASSERT_TRUE(start.ok()) << start.status().message();
     ASSERT_TRUE(completed(id, start.value()));
+    std::vector<rclcpp::TopicEndpointInfo> subscriptions;
+    const auto discovered_by = std::chrono::steady_clock::now() + 2s;
+    do {
+        subscriptions = node->get_subscriptions_info_by_topic("/rodaq_test_0");
+        if (subscriptions.size() != 1) {
+            std::this_thread::sleep_for(1ms);
+        }
+    } while (subscriptions.size() != 1 && std::chrono::steady_clock::now() < discovered_by);
+    ASSERT_EQ(subscriptions.size(), 1);
+    const auto initial_request = subscriptions.front().qos_profile().get_rmw_qos_profile();
     if (std::getenv("RODAQ_ROS2_EXTERNAL_PUBLISHER") != nullptr) {
         // Qualification harness supplies a real publisher from another ROS
         // distro/process. No local producer may mask that transport path.
@@ -155,6 +285,35 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {
     EXPECT_EQ(coverage.accepted, coverage.written);
     EXPECT_EQ(coverage.known_failed, 0);
     EXPECT_EQ(coverage.unknown, 0);
+    const auto manifest_path =
+        root / "volume/.rodaq/artifacts" / std::to_string(artifact.value().summary.segment_id);
+    const auto manifest_bytes = persistence::read_file(manifest_path, "manifest.json", 65536);
+    ASSERT_TRUE(manifest_bytes.ok());
+    const auto manifest = rodaq::artifact::decode_manifest(manifest_bytes.value(), {});
+    ASSERT_TRUE(manifest.ok());
+    ASSERT_TRUE(manifest.value().identity.effective_configuration);
+    const auto& effective = *manifest.value().identity.effective_configuration;
+    EXPECT_EQ(
+        persistence::semantic_digest(effective, "rodaq.effective-config.v1").value(),
+        manifest.value().identity.effective_config_id);
+    const auto& initial = effective.at("prepared_streams").at(0);
+    EXPECT_EQ(initial.at("schema_name"), "std_msgs/msg/String");
+    EXPECT_EQ(initial.at("schema_encoding"), "ros2msg");
+    EXPECT_EQ(
+        initial.at("ros2_subscription").at("rmw_implementation"),
+        rmw_get_implementation_identifier());
+    EXPECT_EQ(
+        initial.at("ros2_subscription").at("installed_requested_qos").at("reliability"),
+        std::to_string(initial_request.reliability));
+    ASSERT_FALSE(manifest.value().descriptors.empty());
+    for (const auto& descriptor : manifest.value().descriptors) {
+        ASSERT_TRUE(descriptor.ros2_subscription);
+        EXPECT_EQ(
+            descriptor.ros2_subscription->rmw_implementation, rmw_get_implementation_identifier());
+        EXPECT_EQ(
+            descriptor.ros2_subscription->installed_requested_qos.reliability,
+            initial_request.reliability);
+    }
     std::uint64_t messages = 0;
     for (const auto& file : artifact.value().files) {
         auto read = composition->artifacts().acquire_read(

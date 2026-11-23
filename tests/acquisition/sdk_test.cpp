@@ -61,7 +61,10 @@ public:
 class Reader final : public plugin::PluginBase {
 public:
     rodaq::Result<void> configure(plugin::PluginSetup& setup) override {
-        auto result = setup.service<acq::Service>();
+        const std::uint16_t minimum = setup.config() == "minor1"          ? 1
+                                      : setup.config() == "invalid-minor" ? 2
+                                                                          : 0;
+        auto result = setup.service<acq::Service>(minimum);
         if (!result.ok()) {
             return result.status();
         }
@@ -79,8 +82,14 @@ protected:
     static rodaq_status_code_t query(
         rodaq_service_registry_context_t* context, const rodaq_interface_query_t* request,
         rodaq_interface_reference_t* result, rodaq_error_t* error) noexcept {
-        return plugin::authoring::query_interface(
-            reinterpret_cast<AcquisitionSdk*>(context)->entries_, request, result, error);
+        auto& fixture = *reinterpret_cast<AcquisitionSdk*>(context);
+        ++fixture.queries_;
+        fixture.minimum_ = request->min_minor;
+        auto code = plugin::authoring::query_interface(fixture.entries_, request, result, error);
+        if (code == RODAQ_STATUS_OK && fixture.corrupt_version_) {
+            result->negotiated_version.minor = 0;
+        }
+        return code;
     }
 
     void SetUp() override {
@@ -109,6 +118,30 @@ protected:
                     ->plugin.reference;
     }
 
+    rodaq_status_code_t configure_reader(std::string_view configuration) {
+        rodaq_plugin_instance_t reader{};
+        auto created = plugin::authoring::Instance<Reader>::create(&reader, nullptr);
+        if (created != RODAQ_STATUS_OK) {
+            return created;
+        }
+        struct ActualOwner {
+            rodaq_plugin_instance_t instance;
+            ~ActualOwner() {
+                EXPECT_EQ(
+                    instance.vtable->shutdown(instance.context, {RODAQ_DEADLINE_INFINITE}, nullptr),
+                    RODAQ_STATUS_OK);
+                instance.vtable->destroy(instance.context);
+            }
+        } owner{reader};
+        const rodaq_config_t config{
+            {sizeof(config)},
+            {configuration.data(), static_cast<std::uint32_t>(configuration.size())}};
+        return reader.vtable->configure(reader.context, &registry_, &config, nullptr);
+    }
+
+    unsigned queries_{0};
+    std::uint16_t minimum_{0};
+    bool corrupt_version_{false};
     Host host_;
     std::vector<plugin::authoring::InterfaceEntry> entries_;
     rodaq_plugin_instance_t instance_{};
@@ -152,6 +185,21 @@ TEST_F(AcquisitionSdk, NonOkKeepsDefaultInvalidAndExceptionsDoNotEscape) {
     host_.failure = false;
     host_.disposition = 999;
     EXPECT_EQ(reference().submit_record(value).status().code(), rodaq::StatusCode::Internal);
+}
+
+TEST_F(AcquisitionSdk, RequiredServiceMinorNeverSilentlyDowngradesToAnOlderHost) {
+    entries_[0].reference.negotiated_version.minor = 0;
+    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_UNAVAILABLE);
+    EXPECT_EQ(minimum_, 1);
+    EXPECT_EQ(configure_reader({}), RODAQ_STATUS_OK);
+    EXPECT_EQ(minimum_, 0);
+    entries_[0].reference.negotiated_version.minor = 1;
+    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_OK);
+    const auto before = queries_;
+    EXPECT_EQ(configure_reader("invalid-minor"), RODAQ_STATUS_INVALID_ARGUMENT);
+    EXPECT_EQ(queries_, before);
+    corrupt_version_ = true;
+    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_INTERNAL);
 }
 
 TEST_F(AcquisitionSdk, CallerCapacityIsCheckedBeforeAnyOutputWrite) {

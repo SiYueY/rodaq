@@ -29,6 +29,7 @@ PipelineController::PipelineController(std::shared_ptr<State> state) noexcept
 
 bool PipelineController::matches_configuration(
     std::string_view config_version, std::string_view effective_config_id) const noexcept {
+    std::lock_guard<std::mutex> lock(state_->open_mutex);
     return state_->options.manifest.config_version == config_version &&
            state_->options.manifest.effective_config_id == effective_config_id;
 }
@@ -262,8 +263,12 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         if (!result.ok()) {
             return result.status();
         }
-        // Prepared is the completed readiness boundary, not entry into Native
-        // preparation. Task persists this actual boundary before authorizing Open.
+        auto effective = state_->freeze_effective_configuration();
+        if (!effective.ok()) {
+            return effective.status();
+        }
+        // Prepared includes the frozen effective contract and its budget, not
+        // entry into Native preparation. Persist this actual boundary before Open.
         sample = options.receive_clock();
         if (!sample.ok()) {
             return sample.status();
@@ -274,9 +279,9 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         state_->prepared_at = sample.value().monotonic_ns;
         state_->prepared = true;
         return PreparedPipeline{
-            options.identity.pipeline_id, options.identity.instance_id,
+            options.identity.pipeline_id,        options.identity.instance_id,
             options.identity.control_generation, sample.value().monotonic_ns,
-            options.clock->anchor().boot_id};
+            options.clock->anchor().boot_id,     options.manifest.effective_config_id};
     } catch (const std::bad_alloc&) {
         (void)state_->output->instance->establish_control_fence();
         return Status(StatusCode::ResourceExhausted, {});
@@ -284,6 +289,7 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
 }
 
 GateOpenResult PipelineController::open_admission(const OpenAuthorization& authorization) {
+    std::lock_guard<std::mutex> lock(state_->open_mutex);
     const auto& identity = state_->options.identity;
     if (!state_->prepared.load() || !(authorization.task_id == identity.task_id) ||
         authorization.pipeline_id != identity.pipeline_id ||
@@ -295,7 +301,6 @@ GateOpenResult PipelineController::open_admission(const OpenAuthorization& autho
         authorization.opened_monotonic < authorization.prepared_monotonic) {
         return GateOpenResult::Obsolete;
     }
-    std::lock_guard<std::mutex> lock(state_->open_mutex);
     if (!state_->options.clock->snapshot().ok()) {
         return GateOpenResult::Obsolete;
     }

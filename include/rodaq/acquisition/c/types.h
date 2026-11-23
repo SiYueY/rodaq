@@ -105,6 +105,22 @@ typedef struct rodaq_acquisition_event {
 } rodaq_acquisition_event_t;
 
 /**
+ * EXTENSIBLE_STRUCT, pointer-only subscription observation. Strings are borrowed for the actual
+ * proposal call, nonempty UTF-8 without NUL (distribution <=64, RMW <=128 bytes). The request is
+ * from an actually installed subscription, never an adapt candidate. Nonzero generation does not
+ * wrap. executor_kind=1 is rclcpp MultiThreadedExecutor; actual thread count is 1..8.
+ */
+typedef struct rodaq_ros2_subscription_facts {
+    rodaq_struct_header_t header;
+    rodaq_string_t ros_distribution;
+    rodaq_string_t rmw_implementation;
+    rodaq_ros2_qos_profile_t installed_requested_qos;
+    uint64_t subscription_generation;
+    uint32_t executor_kind;
+    uint32_t executor_threads;
+} rodaq_ros2_subscription_facts_t;
+
+/**
  * EXTENSIBLE_STRUCT. Borrowed immutable proposal during the call; strings/schema/QoS arrays must be
  * copied for retention. Generic profile has no ROS2 hash/QoS. ROS2 requires cdr plus supported
  * ros2msg/ros2idl schema. Provider never supplies a schema digest.
@@ -123,6 +139,8 @@ typedef struct rodaq_descriptor_proposal {
     const rodaq_ros2_qos_profile_t* ros2_offered_qos_profiles;
     uint32_t ros2_offered_qos_profile_count;
     uint32_t reserved1;
+    // Service minor 1 tail. Absent for an older complete prefix or NULL pointer.
+    const rodaq_ros2_subscription_facts_t* ros2_subscription;
 } rodaq_descriptor_proposal_t;
 
 /**

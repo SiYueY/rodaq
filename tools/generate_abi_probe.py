@@ -20,6 +20,7 @@ EXTENSIBLE = {
     "rodaq_submit_result_t": "reserved0",
     "rodaq_acquisition_event_t": "reserved",
     "rodaq_descriptor_proposal_t": "reserved1",
+    "rodaq_ros2_subscription_facts_t": "executor_threads",
     "rodaq_source_event_t": "reserved",
     "rodaq_record_attempt_t": "reserved",
     "rodaq_storage_prepare_config_t": "playback_anchor_realtime",

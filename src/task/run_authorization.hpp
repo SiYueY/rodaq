@@ -21,6 +21,7 @@ struct RunPipeline {
 struct RunPrepareResult {
     bool barrier_passed{false};
     std::vector<StatusCode> pipelines;
+    std::vector<std::string> effective_config_ids;
 };
 
 // One accepted Start/Resume's actual work owner. Native preparation and Recovery

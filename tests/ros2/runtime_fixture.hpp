@@ -49,6 +49,13 @@ inline plugin::Deadline soon() { return plugin::Deadline::after(5s).value(); }
 
 class Receiver {
 public:
+    struct Subscription {
+        std::string distribution;
+        std::string rmw;
+        rodaq_ros2_qos_profile_t requested;
+        std::uint64_t generation;
+        std::uint32_t threads;
+    };
     struct Call {
         explicit Call(std::atomic<unsigned>& count) : count_(count) {
             EXPECT_EQ(count_.fetch_add(1), 0u);
@@ -74,6 +81,16 @@ public:
             return rodaq::Status(StatusCode::ResourceExhausted, "Test Core rejected descriptor");
         }
         EXPECT_EQ(descriptor.data_profile, RODAQ_DATA_PROFILE_ROS2);
+        const auto* subscription = acquisition::abi::subscription_facts(descriptor);
+        if (subscription == nullptr) {
+            return Status(StatusCode::InvalidArgument, "Missing actual subscription audit");
+        }
+        subscriptions.push_back(
+            {{subscription->ros_distribution.data, subscription->ros_distribution.size},
+             {subscription->rmw_implementation.data, subscription->rmw_implementation.size},
+             subscription->installed_requested_qos,
+             subscription->subscription_generation,
+             subscription->executor_threads});
         EXPECT_EQ(
             std::string_view(descriptor.message_encoding.data, descriptor.message_encoding.size),
             "cdr");
@@ -172,6 +189,7 @@ public:
     std::array<unsigned, 11> events{};
     std::array<unsigned, 7> sources{};
     std::vector<std::string> schemas;
+    std::vector<Subscription> subscriptions;
     std::vector<std::vector<std::uint8_t>> payloads;
 };
 

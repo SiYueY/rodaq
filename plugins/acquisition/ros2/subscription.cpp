@@ -5,6 +5,7 @@
 #include <limits>
 
 #include <rclcpp/version.h>
+#include <rmw/rmw.h>
 
 #include "../../../src/ros2_qos.hpp"
 
@@ -204,6 +205,36 @@ Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadli
             stream.subscription.reset();
         }
 
+        if (rebuild) {
+            stream.subscription = subscribe(stream, *next);
+            next->actual_request =
+                project(stream.subscription->get_actual_qos().get_rmw_qos_profile());
+        } else {
+            next->actual_request = old->actual_request;
+        }
+        const auto* rmw = rmw_get_implementation_identifier();
+        if (rmw == nullptr) {
+            return Status(StatusCode::Unavailable, "ROS 2 runtime identity unavailable");
+        }
+        const auto actual_threads = executor->get_number_of_threads();
+        if (actual_threads == 0 || actual_threads > 8) {
+            return Status(StatusCode::InvalidState, "ROS 2 executor outside qualified bounds");
+        }
+#if RCLCPP_VERSION_MAJOR == 16
+        constexpr rodaq_string_t distribution{"humble", 6};
+#elif RCLCPP_VERSION_MAJOR == 28
+        constexpr rodaq_string_t distribution{"jazzy", 5};
+#else
+#error Unsupported ROS 2 distribution for the qualified backend
+#endif
+        const rodaq_ros2_subscription_facts_t subscription{
+            {sizeof(rodaq_ros2_subscription_facts_t)},
+            distribution,
+            {rmw, static_cast<std::uint32_t>(std::strlen(rmw))},
+            next->actual_request,
+            next->generation,
+            1,
+            static_cast<std::uint32_t>(actual_threads)};
         acquisition::DescriptorProposal proposal{};
         proposal.header.struct_size = sizeof(proposal);
         proposal.stream_id = stream.id;
@@ -219,6 +250,7 @@ Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadli
             next->facts.offers.empty() ? nullptr : next->facts.offers.data();
         proposal.ros2_offered_qos_profile_count =
             static_cast<std::uint32_t>(next->facts.offers.size());
+        proposal.ros2_subscription = &subscription;
         auto token = service->propose_descriptor(proposal, deadline);
         if (!token.ok()) {
             return token.status();
@@ -230,9 +262,6 @@ Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadli
             }
         }
         next->token = token.value();
-        if (rebuild) {
-            stream.subscription = subscribe(stream, *next);
-        }
         auto source_result = sources(stream, old ? &old->facts : nullptr, next->facts);
         if (!source_result.ok()) {
             return source_result;

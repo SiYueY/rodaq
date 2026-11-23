@@ -3,11 +3,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <rodaq/acquisition/types.hpp>
 #include <rodaq/storage/types.hpp>
+#include "../ros2_subscription.hpp"
 
 namespace rodaq::pipeline {
 
@@ -45,6 +47,7 @@ struct DescriptorFacts {
     std::string ros2_type_description_hash;
     std::vector<rodaq_ros2_qos_profile_t> offered_qos;
     std::string schema_digest;
+    std::optional<canonical::Ros2SubscriptionFacts> ros2_subscription;
     // Private normalized-fact fingerprint; never used as persistent ID.
     std::string fingerprint;
 };

@@ -55,6 +55,9 @@ Result<DescriptorFacts> copy_facts(const acquisition::DescriptorProposal& propos
         return std::move(schema_digest).status();
     }
     facts.schema_digest = std::move(schema_digest).value();
+    if (const auto* subscription = acquisition::abi::subscription_facts(proposal)) {
+        facts.ros2_subscription = canonical::copy_subscription_facts(*subscription);
+    }
     Json qos_set = Json::array();
     for (const auto& qos : facts.offered_qos) {
         qos_set.push_back(
@@ -71,7 +74,7 @@ Result<DescriptorFacts> copy_facts(const acquisition::DescriptorProposal& propos
              {"lease_nsec", std::to_string(qos.liveliness_lease_duration.nsec)},
              {"avoid_ros_namespace_conventions", qos.avoid_ros_namespace_conventions}});
     }
-    const Json document{
+    Json document{
         {"data_profile", facts.data_profile},
         {"channel_name", facts.channel_name},
         {"message_encoding", facts.message_encoding},
@@ -80,6 +83,9 @@ Result<DescriptorFacts> copy_facts(const acquisition::DescriptorProposal& propos
         {"schema_digest", facts.schema_digest},
         {"ros2_type_description_hash", facts.ros2_type_description_hash},
         {"offered_qos", std::move(qos_set)}};
+    if (facts.ros2_subscription) {
+        document["ros2_subscription"] = canonical::subscription_document(*facts.ros2_subscription);
+    }
     persistence::JsonLimits limits{1024 * 1024, 4, 1024, 16, 256, 4096};
     auto fingerprint = persistence::semantic_digest(document, "rodaq.descriptor-facts.v1", limits);
     if (!fingerprint.ok()) {
@@ -91,7 +97,8 @@ Result<DescriptorFacts> copy_facts(const acquisition::DescriptorProposal& propos
 
 Result<std::size_t> input_bytes(
     const acquisition::DescriptorProposal& proposal, std::size_t budget) {
-    const std::array<std::size_t, 7> dimensions{
+    const auto* subscription = acquisition::abi::subscription_facts(proposal);
+    const std::array<std::size_t, 8> dimensions{
         proposal.schema.size,
         proposal.channel_name.size,
         proposal.message_encoding.size,
@@ -99,7 +106,10 @@ Result<std::size_t> input_bytes(
         proposal.schema_encoding.size,
         proposal.ros2_type_description_hash.size,
         static_cast<std::size_t>(proposal.ros2_offered_qos_profile_count) *
-            sizeof(rodaq_ros2_qos_profile_t)};
+            sizeof(rodaq_ros2_qos_profile_t),
+        subscription ? sizeof(*subscription) + subscription->ros_distribution.size +
+                           subscription->rmw_implementation.size
+                     : 0};
     std::size_t charge = 0;
     for (const auto dimension : dimensions) {
         if (dimension > budget - charge) {
@@ -192,7 +202,9 @@ Result<DescriptorRef> DescriptorRegistry::capture(
         return Status(StatusCode::InvalidState, {});
     }
     // Count/size bounds precede the SDK's deep validation or any borrowed copy.
-    if (!plugin::abi::readable(&proposal) ||
+    if (!plugin::abi::readable(
+            &proposal,
+            offsetof(acquisition::DescriptorProposal, reserved1) + sizeof(proposal.reserved1)) ||
         proposal.schema.size > state_->options.max_schema_bytes ||
         proposal.ros2_offered_qos_profile_count > state_->options.max_offered_qos_profiles ||
         durable_descriptor_id == 0 || !acquisition::abi::valid_descriptor(&proposal)) {
@@ -291,7 +303,10 @@ Result<DescriptorRef> DescriptorRegistry::lookup(
 
 Result<bool> DescriptorRegistry::equivalent(
     const Descriptor& descriptor, const acquisition::DescriptorProposal& proposal) const {
-    if (!state_ || !plugin::abi::readable(&proposal) ||
+    if (!state_ ||
+        !plugin::abi::readable(
+            &proposal,
+            offsetof(acquisition::DescriptorProposal, reserved1) + sizeof(proposal.reserved1)) ||
         proposal.schema.size > state_->options.max_schema_bytes ||
         proposal.ros2_offered_qos_profile_count > state_->options.max_offered_qos_profiles ||
         !acquisition::abi::valid_descriptor(&proposal)) {

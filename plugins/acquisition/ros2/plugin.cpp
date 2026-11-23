@@ -8,7 +8,7 @@ namespace rodaq::ros2_acquisition {
 class Ros2Plugin final : public plugin::PluginBase {
 public:
     Result<void> configure(plugin::PluginSetup& setup) override {
-        auto service = setup.service<acquisition::Service>();
+        auto service = setup.service<acquisition::Service>(1);
         if (!service.ok()) {
             return service.status();
         }

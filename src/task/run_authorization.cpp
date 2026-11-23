@@ -106,6 +106,7 @@ Result<RunPrepareResult> RunAuthorization::prepare(plugin::Deadline deadline) {
     try {
         RunPrepareResult result;
         result.pipelines.resize(pipelines_.size(), StatusCode::InvalidState);
+        result.effective_config_ids.resize(pipelines_.size());
         bool required_ready = true;
         bool any_ready = false;
         for (std::size_t i = 0; i < pipelines_.size(); ++i) {
@@ -113,6 +114,8 @@ Result<RunPrepareResult> RunAuthorization::prepare(plugin::Deadline deadline) {
             result.pipelines[i] = actual.ok() ? StatusCode::Ok : actual.status().code();
             if (actual.ok()) {
                 prepared_[i] = actual.value();
+                pipelines_[i].effective_config_id = actual.value().effective_config_id;
+                result.effective_config_ids[i] = actual.value().effective_config_id;
                 any_ready = true;
             } else if (pipelines_[i].required) {
                 required_ready = false;

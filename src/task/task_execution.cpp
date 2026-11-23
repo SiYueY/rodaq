@@ -262,6 +262,10 @@ void TaskService::State::PrepareJob::run() noexcept {
                             for (std::size_t i = 0; i < execution->pipelines.size(); ++i) {
                                 execution->pipelines[i].prepare_status =
                                     prepared.value().pipelines[i];
+                                if (prepared.value().pipelines[i] == StatusCode::Ok) {
+                                    execution->pipelines[i].effective_config_id =
+                                        prepared.value().effective_config_ids[i];
+                                }
                             }
                         }
                         std::lock_guard<std::mutex> recovery(entry->recovery_execution);

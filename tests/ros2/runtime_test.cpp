@@ -2,6 +2,12 @@
 
 namespace rodaq::test::ros2_backend {
 
+namespace {
+struct PrefixService : acquisition::Service {
+    static constexpr std::uint16_t kMinor = 0;
+};
+}  // namespace
+
 TEST_F(Ros2Runtime, ActualContextReleaseBreaksNativeSubcontextOwnershipAfterShutdown) {
     auto owned = std::make_shared<ros2_acquisition::Context>();
     rclcpp::InitOptions options;
@@ -123,6 +129,27 @@ TEST_F(Ros2Runtime, LocalDescriptorCutReportsDiscardedNativeCallbacksAsCoverageE
     EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
 }
 
+TEST_F(Ros2Runtime, AuditBackendRejectsServiceZeroBeforeCreatingNativeSubscriptions) {
+    plugin::ServiceRegistry prefix;
+    ASSERT_TRUE(prefix.add_shared<PrefixService>(receiver).ok());
+    ASSERT_TRUE(prefix.freeze().ok());
+    const auto rejected = library->create_instance(prefix, config().dump());
+    ASSERT_FALSE(rejected.ok());
+    EXPECT_EQ(rejected.status().code(), StatusCode::Unavailable);
+    const auto settled_by = std::chrono::steady_clock::now() + 2s;
+    while (!manager->initialization_cleanup_settled() &&
+           std::chrono::steady_clock::now() < settled_by) {
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(manager->initialization_cleanup_settled());
+    EXPECT_TRUE(node->get_subscriptions_info_by_topic("/rodaq_test_0").empty());
+    create(config());
+    ASSERT_TRUE(handle);
+    ASSERT_TRUE(prepare().ok());
+    std::lock_guard<std::mutex> lock(receiver->mutex);
+    ASSERT_EQ(receiver->subscriptions.size(), 1);
+}
+
 TEST_F(Ros2Runtime, IdleExplicitTypeIsLocallyReadyAndPrivateShutdownPreservesOtherContext) {
     create(config());
     ASSERT_TRUE(handle);
@@ -206,6 +233,7 @@ TEST_F(Ros2Runtime, LatePublisherDeliversExactBorrowedCdrAndCompatibleRequestSta
     ASSERT_TRUE(publish_until(publisher, [&] { return !receiver->payloads.empty(); }));
     ASSERT_TRUE(
         receiver->wait([&] { return receiver->sources[RODAQ_SOURCE_EVENT_DISCOVERED] != 0; }));
+    ASSERT_TRUE(receiver->wait([&] { return receiver->subscriptions.size() >= 2; }));
     const auto endpoints = node->get_subscriptions_info_by_topic("/rodaq_test_0");
     ASSERT_EQ(endpoints.size(), 1);
     EXPECT_EQ(
@@ -213,6 +241,18 @@ TEST_F(Ros2Runtime, LatePublisherDeliversExactBorrowedCdrAndCompatibleRequestSta
         RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
     ASSERT_TRUE(handle->quiesce(soon()).ok());
     std::lock_guard<std::mutex> lock(receiver->mutex);
+    ASSERT_GE(receiver->subscriptions.size(), 2);
+    for (const auto& observation : receiver->subscriptions) {
+        EXPECT_EQ(observation.rmw, rmw_get_implementation_identifier());
+        EXPECT_EQ(observation.requested.reliability, RODAQ_ROS2_QOS_RELIABILITY_BEST_EFFORT);
+        EXPECT_EQ(observation.generation, 1);
+        EXPECT_EQ(observation.threads, config().at("executor_threads").get<unsigned>());
+#if RCLCPP_VERSION_MAJOR == 16
+        EXPECT_EQ(observation.distribution, "humble");
+#else
+        EXPECT_EQ(observation.distribution, "jazzy");
+#endif
+    }
     ASSERT_FALSE(receiver->payloads.empty());
     for (const auto& payload : receiver->payloads) {
         EXPECT_EQ(payload, received_cdr(bytes()));
@@ -294,6 +334,14 @@ TEST_F(Ros2Runtime, DiscoveryAndIncompatibleOfferRebuildUsePreparedTokensAndRepo
     std::lock_guard<std::mutex> lock(receiver->mutex);
     EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE], 0);
     EXPECT_EQ(receiver->events[RODAQ_ACQUISITION_EVENT_RECOVERABLE_FAILURE], 0);
+    ASSERT_GE(receiver->subscriptions.size(), 2);
+    EXPECT_EQ(receiver->subscriptions.front().generation, 1);
+    EXPECT_EQ(
+        receiver->subscriptions.front().requested.reliability, RODAQ_ROS2_QOS_RELIABILITY_RELIABLE);
+    EXPECT_EQ(receiver->subscriptions.back().generation, 2);
+    EXPECT_EQ(
+        receiver->subscriptions.back().requested.reliability,
+        RODAQ_ROS2_QOS_RELIABILITY_BEST_EFFORT);
 }
 
 }  // namespace rodaq::test::ros2_backend

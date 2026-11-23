@@ -30,6 +30,7 @@ struct Backend::State {
         ros2::Schema schema;
         Facts facts;
         ros2::RequestedQos installed;
+        rodaq_ros2_qos_profile_t actual_request{};
         acquisition::DescriptorToken token{};
         std::uint64_t generation{0};
     };

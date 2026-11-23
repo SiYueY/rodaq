@@ -35,7 +35,7 @@ typedef struct rodaq_acquisition_interface_vtable {
 
 #define RODAQ_ACQUISITION_SERVICE_ID "com.rodaq.acquisition.service"
 #define RODAQ_ACQUISITION_SERVICE_MAJOR 1u
-#define RODAQ_ACQUISITION_SERVICE_MINOR 0u
+#define RODAQ_ACQUISITION_SERVICE_MINOR 1u
 
 /**
  * EXTENSIBLE_STRUCT; all four slots required. Non-NULL contexts and input/output pointers.

@@ -4,6 +4,10 @@ import argparse
 import json
 import pathlib
 
+INTERFACE_VERSIONS = (
+    "RODAQ_ACQUISITION_INTERFACE", "RODAQ_ACQUISITION_SERVICE", "RODAQ_STORAGE_INTERFACE",
+)
+
 
 def compare(old, new):
     errors = []
@@ -15,6 +19,14 @@ def compare(old, new):
     if new["abi"]["minor"] < old["abi"]["minor"]:
         errors.append("ABI minor regressed")
     for name, value in old["constants"].items():
+        if name in {prefix + "_MINOR" for prefix in INTERFACE_VERSIONS}:
+            prefix = name.removesuffix("_MINOR")
+            current = new["constants"].get(name)
+            if (type(current) is not int or current < value or current > 65535
+                    or old["constants"].get(prefix + "_MAJOR") is None
+                    or old["constants"][prefix + "_MAJOR"] != new["constants"].get(prefix + "_MAJOR")):
+                errors.append(f"interface version {prefix} regressed or changed major")
+            continue
         if new["constants"].get(name) != value:
             errors.append(f"constant {name} changed or disappeared")
     for name, previous in old["types"].items():

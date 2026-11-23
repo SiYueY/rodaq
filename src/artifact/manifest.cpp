@@ -10,6 +10,7 @@
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
 #include <rodaq/storage/validation.hpp>
+#include <rodaq/acquisition/validation.hpp>
 
 #include "../persistence/decimal.hpp"
 #include "../persistence/digest.hpp"
@@ -63,7 +64,7 @@ persistence::JsonLimits json_limits(const ManifestLimits& limits) {
         256 + 2 * persistence::JsonLimits{}.max_nodes +
             static_cast<std::size_t>(limits.max_files) * 4 +
             static_cast<std::size_t>(limits.max_descriptors) *
-                (16 + static_cast<std::size_t>(limits.max_qos_profiles) * 13) +
+                (48 + static_cast<std::size_t>(limits.max_qos_profiles) * 13) +
             static_cast<std::size_t>(limits.max_streams) * 9 +
             static_cast<std::size_t>(limits.max_epochs) * 14};
 }
@@ -123,6 +124,12 @@ void validate_plugin(const plugin::PluginBinaryInfo& identity) {
 }
 
 void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
+    if (descriptor.ros2_subscription) {
+        const auto view = descriptor.ros2_subscription->view();
+        require(
+            descriptor.data_profile == RODAQ_DATA_PROFILE_ROS2 &&
+            acquisition::abi::valid_subscription_facts(&view));
+    }
     require(
         descriptor.stream_id != 0 && descriptor.descriptor_id != 0 &&
         valid_text(descriptor.channel_name, 1024) && valid_text(descriptor.message_encoding, 64) &&
@@ -294,22 +301,6 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
         last_receive == manifest.last_receive_monotonic);
 }
 
-Json qos_document(const rodaq_ros2_qos_profile_t& qos) {
-    return {
-        {"history", std::to_string(qos.history)},
-        {"reliability", std::to_string(qos.reliability)},
-        {"durability", std::to_string(qos.durability)},
-        {"liveliness", std::to_string(qos.liveliness)},
-        {"depth", std::to_string(qos.depth)},
-        {"deadline_sec", std::to_string(qos.deadline.sec)},
-        {"deadline_nsec", std::to_string(qos.deadline.nsec)},
-        {"lifespan_sec", std::to_string(qos.lifespan.sec)},
-        {"lifespan_nsec", std::to_string(qos.lifespan.nsec)},
-        {"lease_sec", std::to_string(qos.liveliness_lease_duration.sec)},
-        {"lease_nsec", std::to_string(qos.liveliness_lease_duration.nsec)},
-        {"avoid_ros_namespace_conventions", std::to_string(qos.avoid_ros_namespace_conventions)}};
-}
-
 rodaq_ros2_qos_profile_t read_qos(const Json& value) {
     fields(
         value, {"history", "reliability", "durability", "liveliness", "depth", "deadline_sec",
@@ -347,9 +338,9 @@ plugin::PluginBinaryInfo read_plugin(const Json& value) {
 Json descriptor_document(const ManifestDescriptor& value) {
     Json qos = Json::array();
     for (const auto& profile : value.offered_qos) {
-        qos.push_back(qos_document(profile));
+        qos.push_back(canonical::qos_document(profile));
     }
-    return {
+    Json result{
         {"stream_id", std::to_string(value.stream_id)},
         {"descriptor_id", std::to_string(value.descriptor_id)},
         {"accepted_records", std::to_string(value.accepted_records)},
@@ -362,13 +353,19 @@ Json descriptor_document(const ManifestDescriptor& value) {
         {"schema_size", std::to_string(value.schema_size)},
         {"ros2_type_description_hash", value.ros2_type_description_hash},
         {"offered_qos", std::move(qos)}};
+    if (value.ros2_subscription) {
+        result["ros2_subscription"] = canonical::subscription_document(*value.ros2_subscription);
+    }
+    return result;
 }
 
 ManifestDescriptor read_descriptor(const Json& value, const ManifestLimits& limits) {
     fields(
-        value, {"stream_id", "descriptor_id", "accepted_records", "data_profile", "channel_name",
-                "message_encoding", "schema_name", "schema_encoding", "schema_digest",
-                "schema_size", "ros2_type_description_hash", "offered_qos"});
+        value,
+        {"stream_id", "descriptor_id", "accepted_records", "data_profile", "channel_name",
+         "message_encoding", "schema_name", "schema_encoding", "schema_digest", "schema_size",
+         "ros2_type_description_hash", "offered_qos"},
+        {"ros2_subscription"});
     ManifestDescriptor result;
     result.stream_id = number(value, "stream_id");
     result.descriptor_id = number(value, "descriptor_id");
@@ -381,6 +378,19 @@ ManifestDescriptor read_descriptor(const Json& value, const ManifestLimits& limi
     result.schema_digest = text(value, "schema_digest");
     result.schema_size = narrow(value, "schema_size");
     result.ros2_type_description_hash = text(value, "ros2_type_description_hash");
+    if (value.contains("ros2_subscription")) {
+        const auto& observed = value.at("ros2_subscription");
+        fields(
+            observed, {"ros_distribution", "rmw_implementation", "installed_requested_qos",
+                       "subscription_generation", "executor_kind", "executor_threads"});
+        result.ros2_subscription = canonical::Ros2SubscriptionFacts{
+            text(observed, "ros_distribution"),
+            text(observed, "rmw_implementation"),
+            read_qos(observed.at("installed_requested_qos")),
+            number(observed, "subscription_generation"),
+            narrow(observed, "executor_kind"),
+            narrow(observed, "executor_threads")};
+    }
     require(
         value.at("offered_qos").is_array() &&
         value.at("offered_qos").size() <= limits.max_qos_profiles);

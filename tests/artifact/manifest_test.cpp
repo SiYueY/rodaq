@@ -259,6 +259,8 @@ TEST(SegmentManifest, Ros2QosUsesNormalizedTypedSetAndPreservesExactDepthAndDura
     ASSERT_EQ(captured.value().offered_qos.size(), 2);
     auto value = manifest();
     value.descriptors[0] = std::move(captured.value());
+    value.descriptors[0].ros2_subscription = rodaq::canonical::Ros2SubscriptionFacts{
+        "humble", "rmw_fastrtps_cpp", qos[1], std::numeric_limits<std::uint64_t>::max(), 1, 2};
     auto encoded = artifact::encode_manifest(value, {});
     ASSERT_TRUE(encoded.ok());
     auto decoded = artifact::decode_manifest(encoded.value(), {});
@@ -267,6 +269,19 @@ TEST(SegmentManifest, Ros2QosUsesNormalizedTypedSetAndPreservesExactDepthAndDura
         decoded.value().descriptors[0].offered_qos[0].depth,
         std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(decoded.value().descriptors[0].offered_qos[0].deadline.nsec, 854775807);
+    ASSERT_TRUE(decoded.value().descriptors[0].ros2_subscription);
+    EXPECT_EQ(
+        decoded.value().descriptors[0].ros2_subscription->subscription_generation,
+        std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(
+        decoded.value().descriptors[0].ros2_subscription->installed_requested_qos.depth,
+        std::numeric_limits<std::uint64_t>::max());
+    auto altered = persistence::parse_json(encoded.value()).value();
+    altered["descriptors"][0]["ros2_subscription"]["executor_threads"] = "0";
+    auto resealed = persistence::encode_integrity(altered, "rodaq.segment-manifest.v1");
+    ASSERT_TRUE(resealed.ok());
+    EXPECT_EQ(
+        artifact::decode_manifest(resealed.value(), {}).status().code(), StatusCode::DataLoss);
 }
 
 TEST(SegmentManifest, ResourceLimitsAndReservedPathsApplyBeforePersistence) {

@@ -225,6 +225,7 @@ Result<void> add_segment_records(
 
 struct PipelineController::State {
     explicit State(PipelineOptions value) : options(std::move(value)) {}
+    Result<void> freeze_effective_configuration();
 
     PipelineOptions options;
     std::shared_ptr<WriterDomain> output;

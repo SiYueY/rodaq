@@ -1,5 +1,6 @@
 #include "pipeline/segment_metadata.hpp"
 #include "../artifact/manifest_fixture.hpp"
+#include "persistence/json.hpp"
 
 #include <gtest/gtest.h>
 
@@ -55,6 +56,38 @@ void prepare(
     ASSERT_TRUE(reserved.ok());
     reserved.value().transfer();
     ASSERT_TRUE(reserved.value().mark_prepared().ok());
+}
+
+TEST(SegmentMetadata, EffectiveBindingIsBudgetedBeforeAdmissionAndCannotRewriteAnAcceptedInstance) {
+    auto created = pipeline::SegmentMetadata::create(
+        rodaq::test::manifest_identity(), {1}, envelope(), limits());
+    ASSERT_TRUE(created.ok());
+    auto& metadata = created.value();
+    const auto baseline = metadata.snapshot().manifest_bytes_bound;
+    rodaq::persistence::Json oversized{{"settings", std::string(9000, 'x')}};
+    const auto too_large =
+        rodaq::persistence::semantic_digest(oversized, "rodaq.effective-config.v1").value();
+    EXPECT_EQ(
+        metadata.bind_effective_configuration(too_large, oversized).status().code(),
+        StatusCode::ResourceExhausted);
+    EXPECT_EQ(metadata.snapshot().manifest_bytes_bound, baseline);
+    rodaq::persistence::Json frozen{{"settings", "actual installed settings"}};
+    const auto identity =
+        rodaq::persistence::semantic_digest(frozen, "rodaq.effective-config.v1").value();
+    ASSERT_TRUE(metadata.bind_effective_configuration(identity, frozen).ok());
+    prepare(metadata);
+    auto candidate = metadata.reserve_record(1, 1, received(), 0);
+    ASSERT_TRUE(candidate.ok());
+    EXPECT_FALSE(metadata.bind_effective_configuration(identity, frozen).ok());
+    auto accepted = candidate.value().accept(1);
+    ASSERT_TRUE(accepted.mark_native_entered().ok());
+    ASSERT_TRUE(accepted.finish(RecordSettlementKind::Written, 3).ok());
+    EXPECT_FALSE(metadata.bind_effective_configuration(identity, frozen).ok());
+    metadata.close_admission();
+    auto captured = metadata.capture_manifest(files());
+    ASSERT_TRUE(captured.ok());
+    EXPECT_EQ(captured.value().identity.effective_config_id, identity);
+    EXPECT_EQ(*captured.value().identity.effective_configuration, frozen);
 }
 
 TEST(SegmentMetadata, DescriptorAndRecordRollbackReleaseOnlyTheirOwnPreallocatedMetadataCapacity) {

@@ -77,7 +77,8 @@ add_library(rodaq_daq SHARED
     src/persistence/atomic_file.cpp
     src/persistence/strict_json.cpp
     src/persistence/canonical_json.cpp
-    src/persistence/digest.cpp)
+    src/persistence/digest.cpp
+    src/ros2_subscription.cpp)
 target_sources(rodaq_daq PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/task/task_maintenance.cpp
     src/task/task_rotation.cpp
@@ -94,7 +95,7 @@ target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/t
 target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp
     src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
     src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp
-    src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp src/pipeline/pipeline_controller.cpp src/pipeline/pipeline_rotation.cpp)
+    src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp src/pipeline/pipeline_controller.cpp src/pipeline/pipeline_configuration.cpp src/pipeline/pipeline_rotation.cpp)
 target_sources(rodaq_daq PRIVATE
     src/artifact/volume_capacity.cpp
     src/artifact/segment_id_store.cpp
