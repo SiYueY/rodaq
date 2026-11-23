@@ -68,7 +68,7 @@ protected:
     }
 
     int fault(persistence::FileStep step) {
-        if (delay_ && step == persistence::FileStep::SyncFile) {
+        if (delay_ && step == delayed_step_) {
             std::unique_lock<std::mutex> lock(mutex_);
             entered_ = true;
             condition_.notify_all();
@@ -90,7 +90,12 @@ protected:
     }
 
     auto actual_publish(const std::shared_ptr<const task::ControlWork>& work) {
-        return store_->publish_control(*work->candidate, work->expected_revision);
+        auto result = store_->publish_control(*work->candidate, work->expected_revision);
+        // Complete is an observation boundary, after the Store's actual I/O.
+        if (delayed_step_ == persistence::FileStep::Complete) {
+            (void)fault(persistence::FileStep::Complete);
+        }
+        return result;
     }
 
     task::ControlCompletion publish(const std::shared_ptr<const task::ControlWork>& work) {
@@ -123,6 +128,7 @@ protected:
     std::atomic<bool> delay_{false};
     std::atomic<bool> one_shot_{false};
     persistence::FileStep failed_step_{persistence::FileStep::Publish};
+    persistence::FileStep delayed_step_{persistence::FileStep::SyncFile};
     std::mutex mutex_;
     std::condition_variable condition_;
     bool entered_{false};
@@ -158,13 +164,17 @@ TEST_F(
     EXPECT_EQ(controller_->durable_record()->operation_history.entries.size(), 1);
 }
 
-TEST_F(
-    TaskControllerTest,
+class SupersedingPublicationTest : public TaskControllerTest,
+                                   public testing::WithParamInterface<persistence::FileStep> {};
+
+TEST_P(
+    SupersedingPublicationTest,
     SupersedingStopFencesBeforeBlockedOldPublishActuallyReturnsAndUsesItsDurableResult) {
     auto start = request(OperationKind::Start, "start").value();
     rodaq::pipeline::InstanceId instance;
     instance.value[0] = 1;
     rodaq::pipeline::AdmissionGate gate(instance, 2);
+    delayed_step_ = GetParam();
     delay_ = true;
     auto persistence = std::async(std::launch::async, [&] { return actual_publish(start.work); });
     {
@@ -213,7 +223,29 @@ TEST_F(
     EXPECT_TRUE(accepted.resolved->durable);
     EXPECT_EQ(controller_->durable_record()->desired_state, DesiredState::Stopped);
     EXPECT_EQ(current().operation_id, stop.value().operation_id);
+    store_.reset();
+    auto reopened = task::TaskStore::open(
+        root_ / "task", root_ / "control", id_, task::TaskStoreMode::Existing);
+    ASSERT_TRUE(reopened.ok());
+    store_ = std::move(reopened.value());
+    const auto stopped = store_->load_control();
+    ASSERT_TRUE(stopped.ok());
+    auto recovered = task::TaskController::create(stopped.value());
+    ASSERT_TRUE(recovered.ok());
+    auto retry = recovered.value()->request_lifecycle(
+        OperationKind::Stop, {"stop"}, {true, 1}, rodaq::WallTime{2s}, {false, false});
+    ASSERT_TRUE(retry.ok());
+    EXPECT_TRUE(retry.value().durably_accepted);
+    EXPECT_EQ(retry.value().operation_id, stop.value().operation_id);
+    EXPECT_EQ(recovered.value()->durable_record()->control_generation, 3);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    ActualPublicationBoundaries, SupersedingPublicationTest,
+    testing::Values(
+        persistence::FileStep::WriteTemporary, persistence::FileStep::SyncFile,
+        persistence::FileStep::Publish, persistence::FileStep::SyncDirectory,
+        persistence::FileStep::Complete));
 
 TEST_F(
     TaskControllerTest,

@@ -1325,6 +1325,70 @@ TEST_F(PipelineControllerTest, CompositionShutdownPreservesRunIntentGenerationAn
     EXPECT_TRUE(recovery.value().run_operation->authorized_pipelines[0].ended_boundary);
 }
 
+TEST_F(PipelineControllerTest, ShutdownPreservesIndependentRunningAndPausedControlAuthorities) {
+    open_composition(&receive_clock, 5s, 2);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    std::array<rodaq::TaskId, 2> ids;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto created = service.create_task(formal_config(), {"create-" + std::to_string(i)});
+        ASSERT_TRUE(created.ok());
+        ids[i] = created.value();
+        const auto started = service.start(ids[i], {"start"}, {true, 1});
+        ASSERT_TRUE(started.ok());
+        ASSERT_TRUE(wait_composed(ids[i], started.value()));
+    }
+    const auto pause = service.pause(ids[1], {"pause"}, {true, 2});
+    ASSERT_TRUE(pause.ok());
+    ASSERT_TRUE(wait_composed(ids[1], pause.value()));
+
+    std::array<std::string, 2> controls;
+    std::array<rodaq::TaskSnapshot, 2> snapshots;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto bytes = rodaq::persistence::read_file(
+            root_ / "service/control", rodaq::to_string(ids[i]) + ".json",
+            rodaq::task::control_record_max_bytes({}));
+        ASSERT_TRUE(bytes.ok());
+        controls[i] = bytes.value();
+        snapshots[i] = service.get_task(ids[i]).value();
+    }
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto bytes = rodaq::persistence::read_file(
+            root_ / "service/control", rodaq::to_string(ids[i]) + ".json",
+            rodaq::task::control_record_max_bytes({}));
+        ASSERT_TRUE(bytes.ok());
+        EXPECT_EQ(bytes.value(), controls[i]);
+        const auto after = service.get_task(ids[i]);
+        ASSERT_TRUE(after.ok());
+        EXPECT_EQ(after.value().desired_state, snapshots[i].desired_state);
+        EXPECT_EQ(after.value().control_generation, snapshots[i].control_generation);
+        ASSERT_TRUE(after.value().current_operation);
+        EXPECT_EQ(
+            after.value().current_operation->operation_id,
+            snapshots[i].current_operation->operation_id);
+        const auto history = service.list_operations(ids[i], {});
+        ASSERT_TRUE(history.ok());
+        EXPECT_EQ(history.value().items.size(), i == 0 ? 1 : 2);
+        EXPECT_EQ(
+            service.start(ids[i], {"after-shutdown"}, {}).status().code(),
+            StatusCode::InvalidState);
+    }
+    const auto bytes = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(ids[0]) + ".json", 262144);
+    ASSERT_TRUE(bytes.ok());
+    const auto recovery = rodaq::task::decode_recovery_record(bytes.value(), {});
+    ASSERT_TRUE(recovery.ok());
+    ASSERT_TRUE(recovery.value().run_operation);
+    EXPECT_EQ(recovery.value().run_operation->phase, rodaq::task::RunPhase::Ended);
+    ASSERT_EQ(recovery.value().run_operation->authorized_pipelines.size(), 1);
+    EXPECT_TRUE(recovery.value().run_operation->authorized_pipelines[0].continuation_permission);
+    EXPECT_TRUE(recovery.value().run_operation->authorized_pipelines[0].ended_boundary);
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    EXPECT_EQ(artifacts.value().items.size(), 2);
+}
+
 TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAndAllProfileLimits) {
     fs::create_directory(root_ / "segment-ids");
     segment_ids_ = artifact::SegmentIdStore::open(
