@@ -12,6 +12,14 @@
 namespace rodaq {
 namespace {
 
+struct ArtifactMaintenanceFlight {
+    task::TaskEntry& entry;
+    ~ArtifactMaintenanceFlight() {
+        std::lock_guard<std::mutex> control(entry.control_mutex);
+        entry.artifact_maintenance_active = false;
+    }
+};
+
 Result<task::TaskRecoveryRecord> retention_recovery(task::TaskEntry& entry) {
     auto record = entry.recovery->load();
     if (!record.ok() && record.status().code() == StatusCode::Unavailable) {
@@ -25,17 +33,17 @@ Result<task::TaskRecoveryRecord> retention_recovery(task::TaskEntry& entry) {
     return record;
 }
 
-Result<std::uint64_t> committed_floor(task::TaskEntry& entry) {
+Result<std::optional<std::uint64_t>> committed_floor(task::TaskEntry& entry) {
     std::lock_guard<std::mutex> recovery(entry.recovery_execution);
     auto record = retention_recovery(entry);
     if (!record.ok()) {
         return record.status().code() == StatusCode::NotFound
-                   ? Result<std::uint64_t>(0)
-                   : Result<std::uint64_t>(record.status());
+                   ? Result<std::optional<std::uint64_t>>(std::optional<std::uint64_t>{})
+                   : Result<std::optional<std::uint64_t>>(record.status());
     }
     // A missing legacy checkpoint is a conservative lower bound, never silent
     // Open time or permission to infer an unverified committed tail.
-    return record.value().committed_recording_end_ns.value_or(0);
+    return record.value().committed_recording_end_ns;
 }
 
 Result<void> checkpoint_committed(task::TaskEntry& entry, std::uint64_t boundary) {
@@ -118,7 +126,8 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                     continue;
                 }
                 auto selected = catalog.select_retention(
-                    entry->id, current->config->retention_policy, eligible, floor.value());
+                    entry->id, current->config->retention_policy, eligible,
+                    floor.value().value_or(0));
                 if (!selected.ok()) {
                     if (first_failure.ok()) {
                         first_failure = selected.status();
@@ -148,15 +157,9 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                 if (!state_->accepting.load(std::memory_order_acquire)) {
                     break;
                 }
-                entry->retention_active = true;
+                entry->artifact_maintenance_active = true;
             }
-            struct ActualFlight {
-                task::TaskEntry& entry;
-                ~ActualFlight() {
-                    std::lock_guard<std::mutex> control(entry.control_mutex);
-                    entry.retention_active = false;
-                }
-            } flight{*entry};
+            ArtifactMaintenanceFlight flight{*entry};
             // Maintenance owns the actual call. A deadline only bounds observing
             // leases; it never discards the retained intent or releases disk charge.
             auto checkpoint = checkpoint_committed(*entry, work->committed_recording_end_ns);
@@ -174,6 +177,51 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                 entry->retention_work.reset();
             } else if (first_failure.ok()) {
                 first_failure = deleted.status();
+            }
+        }
+        return first_failure.ok() ? Result<void>{} : Result<void>(first_failure);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> TaskService::collect_artifacts(
+    artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window) {
+    try {
+        std::vector<std::shared_ptr<task::TaskEntry>> entries;
+        {
+            std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+            entries = state_->entries;
+        }
+        Status first_failure;
+        for (const auto& entry : entries) {
+            {
+                std::lock_guard<std::mutex> control(entry->control_mutex);
+                if (!state_->accepting.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (entry->artifact_maintenance_active) {
+                    continue;
+                }
+                entry->artifact_maintenance_active = true;
+            }
+            ArtifactMaintenanceFlight flight{*entry};
+            auto floor = committed_floor(*entry);
+            if (!floor.ok()) {
+                if (first_failure.ok()) {
+                    first_failure = floor.status();
+                }
+                continue;
+            }
+            if (!floor.value()) {
+                // Retention selection may use a conservative zero lower bound;
+                // GC must have an actual durable checkpoint, including known zero.
+                continue;
+            }
+            auto collected = catalog.collect_deleted(
+                entry->id, *floor.value(), task::control_wall_now(), audit_window);
+            if (!collected.ok() && first_failure.ok()) {
+                first_failure = collected.status();
             }
         }
         return first_failure.ok() ? Result<void>{} : Result<void>(first_failure);

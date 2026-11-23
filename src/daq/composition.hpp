@@ -53,6 +53,7 @@ struct DeploymentSettings {
     std::size_t max_tasks{1};
     std::size_t create_recovery_slots{8};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
+    std::chrono::nanoseconds artifact_audit_window{std::chrono::hours{24}};
 };
 
 struct CompositionOptions {

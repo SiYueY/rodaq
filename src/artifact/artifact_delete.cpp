@@ -181,7 +181,8 @@ Result<void> ArtifactCatalog::delete_artifact(
             return Status(StatusCode::NotFound, {});
         }
         auto& slot = state->slots[at];
-        if (state->rebuilding || slot.work != CatalogWork::None || slot.frame) {
+        if (state->rebuilding || slot.work != CatalogWork::None || slot.frame ||
+            slot.collection_pending) {
             return Status(StatusCode::Conflict, {});
         }
         slot.work = CatalogWork::Delete;

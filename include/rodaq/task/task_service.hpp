@@ -83,6 +83,8 @@ private:
     Result<void> refresh_execution_facts(bool protect = false);
     Result<void> schedule_rotation(std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
+    Result<void> collect_artifacts(
+        artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);
     bool shutdown_settled() const;
     struct State;
     explicit TaskService(std::shared_ptr<State> state) noexcept;

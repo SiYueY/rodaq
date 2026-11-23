@@ -164,9 +164,9 @@ protected:
         volume_ = std::move(volume.value());
         auto ledger = artifact::LedgerStore::open(
             root_ / "ledger", artifact::LedgerOpenMode::Initialize, 8,
-            [fault = ledger_fault_, control = ledger_control_](auto step) {
-                if (step == rodaq::persistence::FileStep::SyncFile &&
-                    control->block.exchange(false)) {
+            [fault = ledger_fault_, control = ledger_control_,
+             target = ledger_blocked_step_](auto step) {
+                if (step == target->load() && control->block.exchange(false)) {
                     std::unique_lock<std::mutex> lock(control->mutex);
                     control->entered = true;
                     control->changed.notify_all();
@@ -424,14 +424,14 @@ protected:
         ASSERT_TRUE(owner->acknowledge_artifact(sealed.work_id, id).ok());
     }
 
-    void record_committed() {
+    void record_committed(std::uint64_t recording_base = 0) {
         create();
         ASSERT_TRUE(controller_);
         auto prepared = controller_->prepare(soon());
         ASSERT_TRUE(prepared.ok());
-        ASSERT_EQ(
-            controller_->open_admission(authorize(prepared.value())),
-            pipeline::GateOpenResult::Opened);
+        auto authorization = authorize(prepared.value());
+        authorization.recording_base = recording_base;
+        ASSERT_EQ(controller_->open_admission(authorization), pipeline::GateOpenResult::Opened);
         ASSERT_TRUE(wait_written(4));
         ASSERT_TRUE(controller_->establish_control_fence().ok());
         ASSERT_TRUE(controller_->close_admission(8).ok());
@@ -567,7 +567,8 @@ protected:
 
     void open_composition(
         pipeline::ReceiveClock clock = &receive_clock, std::chrono::nanoseconds native_timeout = 5s,
-        std::size_t max_tasks = 1, std::size_t max_pipelines = 1) {
+        std::size_t max_tasks = 1, std::size_t max_pipelines = 1,
+        std::chrono::nanoseconds audit_window = 24h) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -578,6 +579,7 @@ protected:
         options.sample = clock;
         options.settings.native_timeout = native_timeout;
         options.settings.max_tasks = max_tasks;
+        options.settings.artifact_audit_window = audit_window;
         options.settings.tasks.config.max_pipelines = max_pipelines;
         auto composition = rodaq::daq::Composition::create(std::move(options));
         ASSERT_TRUE(composition.ok());
@@ -756,6 +758,9 @@ protected:
     std::shared_ptr<artifact::LedgerStore> ledger_;
     std::shared_ptr<std::atomic<bool>> ledger_fault_{std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<ReadControl> ledger_control_{std::make_shared<ReadControl>()};
+    std::shared_ptr<std::atomic<rodaq::persistence::FileStep>> ledger_blocked_step_{
+        std::make_shared<std::atomic<rodaq::persistence::FileStep>>(
+            rodaq::persistence::FileStep::SyncFile)};
     std::shared_ptr<pipeline::PipelineController> controller_;
     std::shared_ptr<pipeline::PipelineController> second_;
     std::shared_ptr<rodaq::ExecutionLane> second_lane_;
@@ -1248,6 +1253,13 @@ TEST_F(PipelineControllerTest, CompositionRejectsUnboundedTaskAndWriterDeploymen
         rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
     options.settings.max_tasks = 1;
     options.settings.tasks.config.max_pipelines = 1;
+    options.settings.artifact_audit_window = 0ns;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.artifact_audit_window = -1ns;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.artifact_audit_window = 24h;
     auto valid = rodaq::daq::Composition::create(std::move(options));
     ASSERT_TRUE(valid.ok());
     EXPECT_TRUE(valid.value()->shutdown(std::chrono::steady_clock::now() + 3s).ok());
@@ -1617,6 +1629,10 @@ TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAn
     EXPECT_NE(
         identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
     --deployment.settings.deployment_generation;
+    deployment.settings.artifact_audit_window += 1ns;
+    EXPECT_NE(
+        identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
+    deployment.settings.artifact_audit_window -= 1ns;
     deployment.settings.qualified_runtime_profile_id += ".changed";
     EXPECT_NE(
         identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
@@ -3813,6 +3829,290 @@ TEST_F(PipelineControllerTest, RunAuthorizationPreservesInterleavedCommittedChec
     ASSERT_TRUE(run.value()->fence().ok());
     ASSERT_TRUE(controller_->close_admission(8).ok());
     ASSERT_TRUE(controller_->quiesce(soon()).ok());
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionRequiresAuditExpiryAndDurableCommittedProgress) {
+    record_committed(50);
+    const auto task = options_.identity.task_id;
+    ASSERT_EQ(artifacts_->get_artifact({7}).value().summary.recording_range.end_ns, 50);
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    ASSERT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_FALSE(catalog_->collect_deleted(task, 50, rodaq::WallTime{999ms}, 1s).value());
+    EXPECT_FALSE(catalog_->collect_deleted(task, 50, rodaq::WallTime{1999999999ns}, 1s).value());
+    EXPECT_FALSE(catalog_->collect_deleted(task, 49, rodaq::WallTime{2s}, 1s).value());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_TRUE(catalog_->collect_deleted(task, 50, rodaq::WallTime{2s}, 1s).value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_FALSE(catalog_->collect_deleted(task, 50, rodaq::WallTime{3s}, 1s).value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionWaitsForUnknownQuarantineReferences) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    const auto unknown = volume_->artifacts_directory().parent_path() / "quarantine/unknown";
+    ASSERT_TRUE(fs::create_directory(unknown));
+    EXPECT_EQ(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    ASSERT_TRUE(fs::remove(unknown));
+    EXPECT_TRUE(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s).value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+}
+
+class CatalogCollectionResurrectionTest : public PipelineControllerTest,
+                                          public testing::WithParamInterface<bool> {};
+
+TEST_P(CatalogCollectionResurrectionTest, ReappearedFinalOrStagingCannotEraseTheTombstone) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    const auto path = volume_->artifacts_directory() / (GetParam() ? "7" : "7.tmp");
+    ASSERT_TRUE(fs::create_directory(path));
+    EXPECT_EQ(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s)
+            .status()
+            .code(),
+        StatusCode::DataLoss);
+    EXPECT_TRUE(fs::exists(path));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(capacity_->snapshot().protection, StatusCode::DataLoss);
+}
+
+INSTANTIATE_TEST_SUITE_P(UnknownNames, CatalogCollectionResurrectionTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, CatalogCollectionCannotTreatUnexpectedLedgerAbsenceAsPriorGC) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    ASSERT_TRUE(fs::remove(root_ / "ledger/07/7.json"));
+    const auto attempted =
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s);
+    EXPECT_EQ(attempted.status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(capacity_->snapshot().protection, StatusCode::DataLoss);
+    EXPECT_EQ(catalog_->snapshot().protection, StatusCode::DataLoss);
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionDoesNotCreditCapacityBeforeEitherDirectorySync) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::SyncParent);
+    EXPECT_FALSE(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s).ok());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    *delete_failed_step_ = -1;
+    *ledger_fault_ = true;
+    EXPECT_FALSE(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s).ok());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(catalog_->snapshot().pending, 0);
+    *ledger_fault_ = false;
+    // A prior admitted collection keeps its ownership despite a wall-clock jump.
+    EXPECT_TRUE(
+        catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{0s}, 1s).value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionRetainsActualFlightUntilParentSyncReturns) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    delete_control_->block = true;
+    auto actual = std::async(std::launch::async, [&] {
+        return catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s);
+    });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(delete_control_->mutex);
+        entered =
+            delete_control_->changed.wait_for(lock, 2s, [&] { return delete_control_->entered; });
+    }
+    if (entered) {
+        EXPECT_EQ(actual.wait_for(1ms), std::future_status::timeout);
+        EXPECT_EQ(catalog_->snapshot().collect_inflight, 1);
+        EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+        EXPECT_FALSE(
+            catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s)
+                .value());
+        EXPECT_TRUE(artifacts_->query_artifacts({}).ok());
+        EXPECT_EQ(
+            catalog_
+                ->delete_artifact(
+                    {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{2s},
+                    std::chrono::steady_clock::now())
+                .status()
+                .code(),
+            StatusCode::Conflict);
+    }
+    {
+        std::lock_guard<std::mutex> lock(delete_control_->mutex);
+        delete_control_->released = true;
+    }
+    delete_control_->changed.notify_all();
+    const auto completed = actual.get();
+    EXPECT_TRUE(entered);
+    ASSERT_TRUE(completed.ok());
+    EXPECT_TRUE(completed.value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+    EXPECT_EQ(catalog_->snapshot().collect_inflight, 0);
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionRechecksNamesAfterActualParentSyncReturns) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    delete_control_->block = true;
+    auto actual = std::async(std::launch::async, [&] {
+        return catalog_->collect_deleted(options_.identity.task_id, 0, rodaq::WallTime{2s}, 1s);
+    });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(delete_control_->mutex);
+        entered =
+            delete_control_->changed.wait_for(lock, 2s, [&] { return delete_control_->entered; });
+    }
+    const auto reappeared = volume_->artifacts_directory() / "7.tmp";
+    const bool created = entered && fs::create_directory(reappeared);
+    {
+        std::lock_guard<std::mutex> lock(delete_control_->mutex);
+        delete_control_->released = true;
+    }
+    delete_control_->changed.notify_all();
+    const auto completed = actual.get();
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(created);
+    EXPECT_EQ(completed.status().code(), StatusCode::DataLoss);
+    EXPECT_TRUE(fs::exists(reappeared));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+}
+
+TEST_F(PipelineControllerTest, CatalogCollectionAuditArithmeticHandlesOppositeWallTimeExtremes) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention,
+                        rodaq::WallTime{std::chrono::nanoseconds::min()},
+                        std::chrono::steady_clock::now())
+                    .ok());
+    const auto collected = catalog_->collect_deleted(
+        options_.identity.task_id, 0, rodaq::WallTime{std::chrono::nanoseconds::max()},
+        std::chrono::nanoseconds::max());
+    ASSERT_TRUE(collected.ok());
+    EXPECT_TRUE(collected.value());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+}
+
+TEST_F(PipelineControllerTest, ShutdownRetainsActualCollectionUntilLedgerUnlinkReturns) {
+    open_composition(&receive_clock, 5s, 1, 1, 1ns);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1};
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    *ledger_blocked_step_ = rodaq::persistence::FileStep::RemoveAuthority;
+    ledger_control_->block = true;
+    auto maintenance = std::async(std::launch::async, [&] { return composition_->observe(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(ledger_control_->mutex);
+        entered =
+            ledger_control_->changed.wait_for(lock, 2s, [&] { return ledger_control_->entered; });
+    }
+    const auto observed = composition_->shutdown(std::chrono::steady_clock::now() + 10ms);
+    if (entered) {
+        EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+        EXPECT_EQ(maintenance.wait_for(1ms), std::future_status::timeout);
+    }
+    {
+        std::lock_guard<std::mutex> lock(ledger_control_->mutex);
+        ledger_control_->released = true;
+    }
+    ledger_control_->changed.notify_all();
+    const auto returned = maintenance.get();
+    ASSERT_TRUE(entered);
+    EXPECT_FALSE(observed.ok());
+    EXPECT_TRUE(returned.ok());
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+    EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(service.get_task(id).value().control_generation, 3);
+}
+
+TEST_F(PipelineControllerTest, AutomaticCollectionReusesCapacityWithoutReusingSegmentIdentity) {
+    open_composition(&receive_clock, 5s, 1, 1, 1ns);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1};
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    std::uint64_t previous_segment = 0;
+    for (std::uint64_t i = 0; i < 24; ++i) {
+        const auto start = service.start(id, {"start-" + std::to_string(i)}, {true, 1 + i * 2});
+        ASSERT_TRUE(start.ok());
+        ASSERT_TRUE(wait_composed(id, start.value()));
+        ASSERT_TRUE(wait_composed_records(id));
+        const auto stop = service.stop(id, {"stop-" + std::to_string(i)}, {true, 2 + i * 2});
+        ASSERT_TRUE(stop.ok());
+        ASSERT_TRUE(wait_composed(id, stop.value()));
+        const auto artifacts = composition_->artifacts().query_artifacts({});
+        ASSERT_TRUE(artifacts.ok());
+        ASSERT_EQ(artifacts.value().items.size(), 1);
+        const auto segment = artifacts.value().items[0].segment_id;
+        EXPECT_GT(segment, previous_segment);
+        previous_segment = segment;
+        ASSERT_TRUE(composition_->observe().ok());
+        EXPECT_EQ(ledger_->get(segment).status().code(), StatusCode::NotFound);
+        EXPECT_EQ(capacity_->snapshot().artifact_slots, 0);
+        EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
+        // Exercise three times the deployment's eight artifact/ledger slots,
+        // while respecting the existing Recovery publication rate contract.
+        std::this_thread::sleep_for(250ms);
+    }
 }
 
 class RecordingTimelineTest : public PipelineControllerTest,

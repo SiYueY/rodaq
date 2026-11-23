@@ -43,6 +43,7 @@ struct CatalogSnapshot {
     std::uint32_t pending{0};
     std::uint32_t commit_inflight{0};
     std::uint32_t delete_inflight{0};
+    std::uint32_t collect_inflight{0};
     std::uint32_t read_leases{0};
     std::uint32_t reads_inflight{0};
 };
@@ -86,6 +87,11 @@ public:
         const std::vector<std::string>& eligible_config_versions,
         std::uint64_t committed_recording_floor_ns = 0) const;
     Result<std::vector<std::string>> retention_versions(TaskId task) const;
+    // One eligible live tombstone per maintenance pass. The Task supplies a
+    // durable committed checkpoint before its source artifact proof is removed.
+    Result<bool> collect_deleted(
+        TaskId task, std::uint64_t committed_recording_floor_ns, WallTime now,
+        std::chrono::nanoseconds audit_window);
     CatalogSnapshot snapshot() const;
 
 private:

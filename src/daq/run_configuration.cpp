@@ -101,6 +101,8 @@ Result<Json> effective_configuration(
             {"resolved_storage", std::move(output.value())},
             {"effective_pipeline_limits", limits(profile)},
             {"native_timeout_ns", std::to_string(deployment.settings.native_timeout.count())},
+            {"artifact_audit_window_ns",
+             std::to_string(deployment.settings.artifact_audit_window.count())},
             // V1 supplies no secret-handoff ABI. No credential references or
             // Deployment overrides are admitted by this S2 composition.
             {"credential_reference_versions", Json::object()}};

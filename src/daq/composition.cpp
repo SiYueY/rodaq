@@ -31,7 +31,8 @@ bool valid(const CompositionOptions& o) {
         o.settings.max_tasks == 0 || o.settings.max_tasks > 16 ||
         o.settings.create_recovery_slots > 1024 ||
         o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
-        o.settings.native_timeout <= std::chrono::nanoseconds::zero()) {
+        o.settings.native_timeout <= std::chrono::nanoseconds::zero() ||
+        o.settings.artifact_audit_window <= std::chrono::nanoseconds::zero()) {
         return false;
     }
     for (auto i = o.settings.profiles.begin(); i != o.settings.profiles.end(); ++i) {
@@ -300,7 +301,10 @@ Result<void> Composition::observe() {
     if (!rotated.ok()) {
         return rotated.status();
     }
-    return state_->tasks->apply_retention(*state_->catalog);
+    auto retained = state_->tasks->apply_retention(*state_->catalog);
+    auto collected =
+        state_->tasks->collect_artifacts(*state_->catalog, o.settings.artifact_audit_window);
+    return !retained.ok() ? retained : collected;
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {

@@ -103,7 +103,8 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
             at = state->find(id);
             if (at != state->slots.size()) {
                 const auto& existing = state->slots[at];
-                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None) {
+                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None ||
+                    existing.collection_pending) {
                     return Status(StatusCode::Conflict, {});
                 }
                 if (state->options.volume->protection() != StatusCode::Ok) {
@@ -273,14 +274,15 @@ CatalogSnapshot ArtifactCatalog::snapshot() const {
             result.protection = slot.failure;
         }
         result.visible += normal ? 1 : 0;
-        bool deleted = false;
+        bool deleted = slot.collection_pending;
         if (slot.segment_id != 0 && !normal) {
             auto record = state->options.ledger->get(slot.segment_id);
-            deleted = record.ok() && record.value().state == LedgerState::Deleted;
+            deleted = deleted || (record.ok() && record.value().state == LedgerState::Deleted);
         }
         result.pending += slot.segment_id != 0 && !normal && !deleted ? 1 : 0;
         result.commit_inflight += slot.work == CatalogWork::Commit ? 1 : 0;
         result.delete_inflight += slot.work == CatalogWork::Delete ? 1 : 0;
+        result.collect_inflight += slot.work == CatalogWork::Collect ? 1 : 0;
     }
     result.read_leases = state->read_leases;
     result.reads_inflight = state->active_reads.load();

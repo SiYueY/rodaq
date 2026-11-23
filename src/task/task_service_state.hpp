@@ -116,7 +116,7 @@ struct TaskEntry {
     // Retained until actual deletion settles, including uncertain publication.
     // Configure cannot change policy while this original-generation work exists.
     std::optional<RetentionWork> retention_work;
-    bool retention_active{false};
+    bool artifact_maintenance_active{false};
     // Failed dispatch only; an actual ended result is replayed, never re-issued.
     bool ready_to_submit{false};
     std::uint32_t closing{0};

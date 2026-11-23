@@ -44,7 +44,7 @@ struct CommitFrame {
     std::unique_ptr<SegmentCommitter> committer;
 };
 
-enum class CatalogWork { None, Commit, Delete };
+enum class CatalogWork { None, Commit, Delete, Collect };
 
 struct CatalogSlot {
     std::uint64_t segment_id{0};
@@ -53,6 +53,7 @@ struct CatalogSlot {
     std::shared_ptr<CommitFrame> frame;
     CatalogWork work{CatalogWork::None};
     bool visible{false};
+    bool collection_pending{false};
     StatusCode failure{StatusCode::Ok};
 };
 
