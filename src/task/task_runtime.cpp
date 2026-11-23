@@ -97,6 +97,9 @@ Result<TaskRuntimeSnapshot> capture_task_runtime(
                 facts.instance_id = pipeline::to_string(source.identity.instance_id);
                 facts.control_generation = source.identity.control_generation;
                 facts.prepare_status = observed[at].prepare_status;
+                if (facts.prepare_status == StatusCode::Ok) {
+                    facts.effective_config_id = observed[at].effective_config_id;
+                }
                 facts.admission_open = source.gate.open && !source.gate.control_fence;
                 facts.quiescent = source.quiescence.settled;
                 facts.writer_failure = source.failure;

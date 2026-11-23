@@ -865,6 +865,8 @@ TEST_P(CompositionPolicyTest, FormalPrepareBarrierUsesRequiredAndBestEffortPolic
     EXPECT_EQ(
         runtime.pipelines[1].facts->prepare_status,
         std::optional<StatusCode>{StatusCode::InvalidState});
+    EXPECT_TRUE(runtime.pipelines[0].facts->effective_config_id);
+    EXPECT_FALSE(runtime.pipelines[1].facts->effective_config_id);
     EXPECT_EQ(runtime.pipelines[0].facts->admission_open, allowed);
     EXPECT_FALSE(runtime.pipelines[1].facts->admission_open);
     EXPECT_EQ(runtime.pipelines[1].facts->accepted_records, 0);

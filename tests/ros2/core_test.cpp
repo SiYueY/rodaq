@@ -125,6 +125,10 @@ TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirO
     ASSERT_TRUE(start.ok());
     ASSERT_TRUE(completed(id, start.value()));
     ASSERT_TRUE(connected(reliable));
+    const auto initial_runtime = core->tasks().get_runtime_snapshot(id).value();
+    ASSERT_TRUE(initial_runtime.pipelines[0].facts);
+    const auto initial_identity = initial_runtime.pipelines[0].facts->effective_config_id;
+    ASSERT_TRUE(initial_identity);
     for (unsigned i = 0; i < 10; ++i) {
         publish(reliable);
         std::this_thread::sleep_for(10ms);
@@ -151,6 +155,10 @@ TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirO
         }
     };
     send_best_effort();
+    ASSERT_TRUE(core->observe().ok());
+    EXPECT_EQ(
+        core->tasks().get_runtime_snapshot(id).value().pipelines[0].facts->effective_config_id,
+        initial_identity);
     const auto stop = core->tasks().stop(id, {"stop"}, {true, 2});
     ASSERT_TRUE(stop.ok());
     ASSERT_TRUE(completed(id, stop.value()));
@@ -168,6 +176,7 @@ TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirO
     const auto first = read_manifest(first_page.value().items[0].segment_id);
     ASSERT_TRUE(first.ok());
     ASSERT_TRUE(first.value().identity.effective_configuration);
+    EXPECT_EQ(first.value().identity.effective_config_id, *initial_identity);
     const auto& frozen = *first.value().identity.effective_configuration;
     EXPECT_EQ(
         frozen.at("prepared_streams")
@@ -195,6 +204,10 @@ TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirO
     const auto next = core->tasks().start(id, {"next"}, {true, 3});
     ASSERT_TRUE(next.ok());
     ASSERT_TRUE(completed(id, next.value()));
+    const auto next_runtime = core->tasks().get_runtime_snapshot(id).value();
+    ASSERT_TRUE(next_runtime.pipelines[0].facts);
+    ASSERT_TRUE(next_runtime.pipelines[0].facts->effective_config_id);
+    EXPECT_NE(next_runtime.pipelines[0].facts->effective_config_id, initial_identity);
     ASSERT_TRUE(connected(best_effort));
     send_best_effort();
     const auto ended = core->tasks().stop(id, {"ended"}, {true, 4});
