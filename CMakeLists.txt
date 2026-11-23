@@ -105,6 +105,7 @@ target_sources(rodaq_daq PRIVATE
     src/artifact/artifact_catalog.cpp src/artifact/artifact_service.cpp
     src/artifact/artifact_query.cpp src/artifact/artifact_reader.cpp src/artifact/artifact_verification.cpp
     src/artifact/artifact_delete.cpp
+    src/artifact/artifact_retention.cpp
     src/artifact/manifest.cpp
     src/artifact/ledger_record.cpp
     src/artifact/ledger_store.cpp

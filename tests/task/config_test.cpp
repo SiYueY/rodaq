@@ -47,6 +47,44 @@ TEST(TaskConfig, PortableRoundTripAndIndependentCanonicalIdentityGolden) {
     EXPECT_EQ(rodaq::task::config_version(equivalent.value(), {}).value(), identity.value());
 }
 
+TEST(TaskConfig, PreviousContinuousHistoryRequiresExplicitOptInAndFalsePreservesOldIdentity) {
+    auto document = portable();
+    const auto original = rodaq::parse_task_config(document.dump());
+    ASSERT_TRUE(original.ok());
+    const auto old_identity = rodaq::task::config_version(original.value(), {}).value();
+    document["retention_policy"]["include_previous_continuous"] = false;
+    auto explicit_false = rodaq::parse_task_config(document.dump());
+    ASSERT_TRUE(explicit_false.ok());
+    EXPECT_EQ(rodaq::task::config_version(explicit_false.value(), {}).value(), old_identity);
+    EXPECT_EQ(
+        rodaq::export_task_config(explicit_false.value()).value(),
+        rodaq::export_task_config(original.value()).value());
+    document["retention_policy"]["include_previous_continuous"] = true;
+    EXPECT_FALSE(rodaq::parse_task_config(document.dump()).ok());
+    document["recording_mode"] = "rolling";
+    document["retention_policy"]["mode"] = "rolling";
+    document["retention_policy"]["max_physical_bytes"] = "1000";
+    auto enabled = rodaq::parse_task_config(document.dump());
+    ASSERT_TRUE(enabled.ok());
+    EXPECT_TRUE(enabled.value().retention_policy.include_previous_continuous);
+    const auto exported = rodaq::export_task_config(enabled.value());
+    ASSERT_TRUE(exported.ok());
+    EXPECT_TRUE(Json::parse(exported.value())["retention_policy"]["include_previous_continuous"]);
+    const auto restored = rodaq::parse_task_config(exported.value());
+    ASSERT_TRUE(restored.ok());
+    EXPECT_EQ(
+        rodaq::task::config_version(restored.value(), {}).value(),
+        rodaq::task::config_version(enabled.value(), {}).value());
+    enabled.value().retention_policy.include_previous_continuous = false;
+    EXPECT_NE(
+        rodaq::task::config_version(enabled.value(), {}).value(),
+        rodaq::task::config_version(restored.value(), {}).value());
+    for (const auto& invalid : {Json(nullptr), Json(1), Json("true")}) {
+        document["retention_policy"]["include_previous_continuous"] = invalid;
+        EXPECT_FALSE(rodaq::parse_task_config(document.dump()).ok());
+    }
+}
+
 TEST(TaskConfig, CreateMayOmitIdentitiesButConfigVersionRequiresIdCompleteModel) {
     auto value = portable();
     value["pipelines"][0].erase("pipeline_id");

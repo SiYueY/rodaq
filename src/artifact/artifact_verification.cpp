@@ -164,6 +164,7 @@ Result<std::shared_ptr<CatalogEntry>> verify_committed(
             identity.reset_generation_at_commit != record.reset_generation_at_commit) {
             return Status(StatusCode::DataLoss, {});
         }
+        entry->config_version = identity.config_version;
         auto& summary = entry->info.summary;
         summary.artifact_id = {record.segment_id};
         summary.segment_id = record.segment_id;

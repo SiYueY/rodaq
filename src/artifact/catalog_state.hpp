@@ -26,6 +26,7 @@ struct CatalogFile {
 
 struct CatalogEntry {
     ArtifactInfo info;
+    std::string config_version;
     std::vector<CatalogFile> files;
     struct stat directory {};
     struct stat manifest {};

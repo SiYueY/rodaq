@@ -16,6 +16,12 @@ def main(args):
     continuous = json.loads((args.fixtures / "continuous.json").read_text())
     rolling = json.loads((args.fixtures / "rolling.json").read_text())
     cases = [("continuous", continuous, True), ("rolling", rolling, True)]
+    for template, mode in ((continuous, "continuous"), (rolling, "rolling")):
+        for flag in (False, True, None, 1, "true"):
+            value = copy.deepcopy(template)
+            value["retention_policy"]["include_previous_continuous"] = flag
+            expected = type(flag) is bool and (mode == "rolling" or not flag)
+            cases.append((f"previous continuous {mode} {flag!r}", value, expected))
     for field in ("format_version", "recovery_policy", "start_policy", "segment_policy", "retention_policy"):
         missing = copy.deepcopy(continuous)
         del missing[field]

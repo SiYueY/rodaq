@@ -6,8 +6,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <rodaq/artifact/artifact_service.hpp>
+#include <rodaq/task/config.hpp>
 
 #include "ledger_store.hpp"
 #include "manifest.hpp"
@@ -46,6 +49,13 @@ struct CatalogSnapshot {
 
 struct CatalogState;
 
+struct RetentionSelection {
+    std::optional<ArtifactId> candidate;
+    std::uint64_t committed_recording_end_ns{0};
+    std::uint64_t retained_physical_bytes{0};
+    bool byte_target_satisfied{true};
+};
+
 // Rebuildable index and retained actual handoff/read owners, not a second
 // durable authority. Ledger/Committer own publication; Catalog exposes only
 // verified committed evidence and never releases disk charges by eviction.
@@ -68,6 +78,11 @@ public:
     Result<void> delete_artifact(
         ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,
         std::chrono::steady_clock::time_point deadline);
+    // Task resolves historical immutable configuration modes into this bounded
+    // version set. Selection is a read-only hint; revalidate policy before intent.
+    Result<RetentionSelection> select_retention(
+        TaskId task, const RetentionPolicy& policy,
+        const std::vector<std::string>& eligible_config_versions) const;
     CatalogSnapshot snapshot() const;
 
 private:

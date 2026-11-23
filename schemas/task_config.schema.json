@@ -236,6 +236,10 @@
               "$ref": "#/$defs/positive_uint64"
             }
           ]
+        },
+        "include_previous_continuous": {
+          "type": "boolean",
+          "default": false
         }
       }
     },
@@ -356,6 +360,9 @@
               },
               "max_physical_bytes": {
                 "type": "null"
+              },
+              "include_previous_continuous": {
+                "const": false
               }
             }
           }

@@ -48,6 +48,13 @@ rodaq::Result<rodaq::time::ClockSample> receive_clock() {
     return rodaq::time::ClockSample{200, 1100, 1};
 }
 
+std::atomic<std::uint64_t> retention_monotonic{200};
+
+rodaq::Result<rodaq::time::ClockSample> retention_clock() {
+    const auto monotonic = retention_monotonic.load();
+    return rodaq::time::ClockSample{monotonic, static_cast<std::int64_t>(monotonic + 900), 1};
+}
+
 struct ClockBlocker {
     std::mutex mutex;
     std::condition_variable changed;
@@ -3455,6 +3462,114 @@ TEST_F(PipelineControllerTest, ActualDeletionRetainsOneOwnerWhileParentSyncObser
     EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
     EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
     EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+}
+
+TEST_F(PipelineControllerTest, RetentionUsesTaskWideCommittedTimeAndPreservesTheLeftBoundary) {
+    retention_monotonic = 200;
+    options_.receive_clock = &retention_clock;
+    create();
+    second(false);
+    ASSERT_TRUE(controller_);
+    ASSERT_TRUE(second_);
+    auto control = accepted_run();
+    const auto selected = rodaq::task::RunAuthorization::create(
+        control, rodaq::StartPolicyMode::AllRequired,
+        {{controller_, options_.manifest.effective_config_id, true},
+         {second_, options_.manifest.effective_config_id, true}},
+        recovery(), boot(), &retention_clock);
+    ASSERT_TRUE(selected.ok());
+    const auto prepared = selected.value()->prepare(soon());
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_TRUE(prepared.value().barrier_passed);
+    ASSERT_TRUE(selected.value()->publish_authorization(0).ok());
+    ASSERT_TRUE(selected.value()->open(control).ok());
+    const auto wait_receive = [&](const auto& pipeline, std::int64_t realtime) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        do {
+            const auto facts = pipeline->callback_facts();
+            if (facts.ok() && facts.value().streams[0].last_receive_realtime_ns == realtime) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    retention_monotonic = 500;
+    ASSERT_TRUE(wait_receive(controller_, 1400));
+    ASSERT_TRUE(controller_->establish_control_fence().ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    auto first = controller_->drain(soon());
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(first.value());
+    commit(std::move(*first.value()));
+    ASSERT_TRUE(controller_->quiesce(soon()).ok());
+    retention_monotonic = 1200;
+    ASSERT_TRUE(wait_receive(second_, 2100));
+    ASSERT_TRUE(second_->establish_control_fence().ok());
+    ASSERT_TRUE(second_->close_admission(8).ok());
+    auto later = second_->drain(soon());
+    ASSERT_TRUE(later.ok());
+    ASSERT_TRUE(later.value());
+    commit(std::move(*later.value()));
+    ASSERT_TRUE(second_->quiesce(soon()).ok());
+    const auto old = artifacts_->get_artifact({7}).value().summary;
+    const auto recent = artifacts_->get_artifact({8}).value().summary;
+    ASSERT_EQ(old.recording_range.end_ns, 300);
+    ASSERT_EQ(recent.recording_range.end_ns, 1000);
+    const std::vector<std::string> versions{options_.manifest.config_version};
+    rodaq::RetentionPolicy policy{rodaq::RetentionMode::Rolling, 700ns, {}};
+    auto choice = catalog_->select_retention(control.task_id, policy, versions);
+    ASSERT_TRUE(choice.ok());
+    EXPECT_EQ(choice.value().committed_recording_end_ns, 1000);
+    EXPECT_FALSE(choice.value().candidate);
+    policy.max_duration = 699ns;
+    choice = catalog_->select_retention(control.task_id, policy, versions);
+    ASSERT_TRUE(choice.ok());
+    ASSERT_TRUE(choice.value().candidate);
+    EXPECT_EQ(choice.value().candidate->value, 7);
+    const auto excluded = catalog_->select_retention(control.task_id, policy, {});
+    ASSERT_TRUE(excluded.ok());
+    EXPECT_EQ(excluded.value().committed_recording_end_ns, 1000);
+    EXPECT_EQ(excluded.value().retained_physical_bytes, 0);
+    EXPECT_FALSE(excluded.value().candidate);
+    auto other = control.task_id;
+    other.value[0] ^= 1;
+    EXPECT_FALSE(catalog_->select_retention(other, policy, versions).value().candidate);
+    // Advancing host time without a new durable commit never moves the window.
+    retention_monotonic = 100000;
+    EXPECT_EQ(
+        catalog_->select_retention(control.task_id, policy, versions)
+            .value()
+            .committed_recording_end_ns,
+        1000);
+}
+
+TEST_F(
+    PipelineControllerTest, RetentionByteTargetCannotOverrideDurationProtectionOrActiveReadLease) {
+    record_committed();
+    const std::vector<std::string> versions{options_.manifest.config_version};
+    rodaq::RetentionPolicy policy{rodaq::RetentionMode::Rolling, 1ns, 1};
+    auto choice = catalog_->select_retention(options_.identity.task_id, policy, versions);
+    ASSERT_TRUE(choice.ok());
+    EXPECT_FALSE(choice.value().byte_target_satisfied);
+    EXPECT_FALSE(choice.value().candidate);
+    policy.max_duration.reset();
+    {
+        const auto info = artifacts_->get_artifact({7}).value();
+        auto reader = artifacts_->acquire_read({7}, info.files[0].file_id);
+        ASSERT_TRUE(reader.ok());
+        choice = catalog_->select_retention(options_.identity.task_id, policy, versions);
+        ASSERT_TRUE(choice.ok());
+        EXPECT_FALSE(choice.value().candidate);
+        EXPECT_GT(choice.value().retained_physical_bytes, 1);
+    }
+    choice = catalog_->select_retention(options_.identity.task_id, policy, versions);
+    ASSERT_TRUE(choice.ok());
+    ASSERT_TRUE(choice.value().candidate);
+    EXPECT_EQ(choice.value().candidate->value, 7);
+    policy = {};
+    EXPECT_FALSE(
+        catalog_->select_retention(options_.identity.task_id, policy, versions).value().candidate);
 }
 
 }  // namespace

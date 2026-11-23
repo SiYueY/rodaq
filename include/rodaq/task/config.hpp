@@ -31,6 +31,7 @@ struct RetentionPolicy {
     RetentionMode mode{RetentionMode::KeepAll};
     std::optional<std::chrono::nanoseconds> max_duration;
     std::optional<std::uint64_t> max_physical_bytes;
+    bool include_previous_continuous{false};
 };
 
 struct PluginConfig {

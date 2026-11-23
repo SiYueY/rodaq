@@ -155,13 +155,19 @@ TaskConfig from_document(const Json& value, const TaskConfigLimits& limits) {
     config.segment_policy = {
         duration_bound(segment.at("max_duration")), bytes_bound(segment.at("max_physical_bytes"))};
     const auto& retention = value.at("retention_policy");
-    fields(retention, {"mode", "max_duration", "max_physical_bytes"});
+    fields(
+        retention, {"mode", "max_duration", "max_physical_bytes"}, {"include_previous_continuous"});
     const auto retain_mode = text(retention.at("mode"));
     require(retain_mode == "keep_all" || retain_mode == "rolling");
     config.retention_policy = {
         retain_mode == "keep_all" ? RetentionMode::KeepAll : RetentionMode::Rolling,
         duration_bound(retention.at("max_duration")),
         bytes_bound(retention.at("max_physical_bytes"))};
+    if (retention.contains("include_previous_continuous")) {
+        require(retention.at("include_previous_continuous").is_boolean());
+        config.retention_policy.include_previous_continuous =
+            retention.at("include_previous_continuous").get<bool>();
+    }
     const auto& pipelines = value.at("pipelines");
     require(pipelines.is_array() && !pipelines.empty() && pipelines.size() <= limits.max_pipelines);
     config.pipelines.reserve(pipelines.size());
@@ -271,7 +277,8 @@ Result<TaskConfig> normalize_config(const TaskConfig& config, const TaskConfigLi
             require(
                 config.retention_policy.mode == RetentionMode::KeepAll &&
                 !config.retention_policy.max_duration &&
-                !config.retention_policy.max_physical_bytes);
+                !config.retention_policy.max_physical_bytes &&
+                !config.retention_policy.include_previous_continuous);
         } else {
             require(
                 config.retention_policy.mode == RetentionMode::Rolling &&
@@ -386,6 +393,9 @@ Result<Json> config_document(const TaskConfig& config, const TaskConfigLimits& l
               {"max_duration", duration(value.retention_policy.max_duration)},
               {"max_physical_bytes", bytes(value.retention_policy.max_physical_bytes)}}},
             {"pipelines", Json::array()}};
+        if (value.retention_policy.include_previous_continuous) {
+            root["retention_policy"]["include_previous_continuous"] = true;
+        }
         if (!value.name.empty()) {
             root["name"] = value.name;
         }
