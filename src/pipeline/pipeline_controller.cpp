@@ -139,6 +139,10 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         if (!sample.ok()) {
             return sample.status();
         }
+        auto capacity = options.capacity->admit_recording(sample.value().monotonic_ns);
+        if (!capacity.ok()) {
+            return capacity.status();
+        }
         auto storage = options.plugins->load(
             options.definition.storage.plugin_id, options.definition.storage.plugin_version);
         if (!storage.ok()) {
@@ -315,6 +319,9 @@ GateOpenResult PipelineController::open_admission(const OpenAuthorization& autho
         }
         return state_->output->instance->gate.open_admission(
             identity.instance_id, identity.control_generation);
+    }
+    if (!state_->options.capacity->admit_recording(authorization.opened_monotonic).ok()) {
+        return GateOpenResult::Obsolete;
     }
     if (!state_->output->instance->ready(state_->policies)) {
         return GateOpenResult::Obsolete;

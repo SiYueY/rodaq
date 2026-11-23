@@ -285,9 +285,15 @@ Result<void> Composition::observe() {
     auto updated = o.capacity->finish_space_sample(
         probe.value(), free.value(), completed.value().monotonic_ns);
     if (!updated.ok()) {
+        o.capacity->invalidate_space_sample();
+        (void)state_->tasks->refresh_execution_facts(true, completed.value().monotonic_ns);
         return updated.status();
     }
-    auto refreshed = state_->tasks->refresh_execution_facts();
+    const auto space = o.capacity->space_snapshot(completed.value().monotonic_ns);
+    const bool protect = space.condition != artifact::VolumeSpaceCondition::Normal &&
+                         space.condition != artifact::VolumeSpaceCondition::Low;
+    auto refreshed =
+        state_->tasks->refresh_execution_facts(protect, completed.value().monotonic_ns);
     if (!refreshed.ok()) {
         return refreshed.status();
     }

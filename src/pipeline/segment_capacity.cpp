@@ -161,6 +161,12 @@ Result<SegmentCandidate> SegmentCapacity::reserve(
     }
     auto grown = state_->volume.grow(bound.value(), now);
     if (!grown.ok()) {
+        const auto space = state_->volume.space_snapshot(now);
+        if (space.condition != artifact::VolumeSpaceCondition::Normal &&
+            space.condition != artifact::VolumeSpaceCondition::Low) {
+            facts.admission_failure = grown.status().code();
+            facts.writable = false;
+        }
         return grown.status();
     }
     ++facts.candidates;

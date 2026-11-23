@@ -309,4 +309,23 @@ TEST_F(SegmentCapacityTest, AllCommitOwnershipTransfersOnceOnlyAfterSeal) {
     EXPECT_TRUE(handoff.value().volume.settle_retained().ok());
 }
 
+TEST_F(SegmentCapacityTest, TemporaryCommitBudgetRejectionDoesNotFenceAnOtherwiseWritableSegment) {
+    auto volume = artifact::VolumeCapacity::create({100000, 500, 100, 100, 8, 8, 16}).value();
+    auto probe = volume.begin_space_sample(100).value();
+    ASSERT_TRUE(volume.finish_space_sample(probe, 100000, 100).ok());
+    auto created = create_segment(1, limits(), model(), 200, volume, 100);
+    ASSERT_TRUE(created.ok());
+    auto& segment = created.value();
+    {
+        auto other = volume.reserve(150, 100);
+        ASSERT_TRUE(other.ok());
+        EXPECT_EQ(segment.reserve_record(50, 100).status().code(), StatusCode::ResourceExhausted);
+        EXPECT_TRUE(segment.snapshot().writable);
+        EXPECT_EQ(segment.snapshot().admission_failure, StatusCode::Ok);
+    }
+    auto retry = segment.reserve_record(50, 100);
+    EXPECT_TRUE(retry.ok());
+    EXPECT_TRUE(segment.snapshot().writable);
+}
+
 }  // namespace

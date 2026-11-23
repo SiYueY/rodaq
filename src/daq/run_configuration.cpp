@@ -21,6 +21,20 @@ Json binary(const plugin::PluginBinaryInfo& value) {
         {"sha256", value.sha256}};
 }
 
+Json volume_limits(const artifact::VolumeCapacityOptions& value) {
+    return {
+        {"max_managed_bytes", std::to_string(value.max_managed_bytes)},
+        {"max_commit_bytes", std::to_string(value.max_commit_bytes)},
+        {"max_segments", std::to_string(value.max_segments)},
+        {"max_commit_slots", std::to_string(value.max_commit_slots)},
+        {"max_artifact_slots", std::to_string(value.max_artifact_slots)},
+        {"space_sample_max_age_ns", std::to_string(value.space_sample_max_age_ns)},
+        {"stop_free_bytes", std::to_string(value.stop_free_bytes)},
+        {"low_free_bytes", std::to_string(value.low_free_bytes)},
+        {"recovery_free_bytes", std::to_string(value.recovery_free_bytes)},
+        {"recovery_stable_ns", std::to_string(value.recovery_stable_ns)}};
+}
+
 Json limits(const ResourceProfile& profile) {
     const auto& i = profile.instance;
     const auto& s = profile.storage;
@@ -88,6 +102,10 @@ Result<Json> effective_configuration(
         if (format == deployment.settings.storage.end()) {
             return Status(StatusCode::PermissionDenied, {});
         }
+        auto volume_policy = deployment.capacity->policy();
+        if (!volume_policy.ok()) {
+            return volume_policy.status();
+        }
         return Json{
             {"config_version", control.active_config_version},
             {"pipeline_id", std::to_string(definition.pipeline_id)},
@@ -100,6 +118,7 @@ Result<Json> effective_configuration(
             {"resolved_acquisition", std::move(source.value())},
             {"resolved_storage", std::move(output.value())},
             {"effective_pipeline_limits", limits(profile)},
+            {"volume_admission_limits", volume_limits(volume_policy.value())},
             {"native_timeout_ns", std::to_string(deployment.settings.native_timeout.count())},
             {"artifact_audit_window_ns",
              std::to_string(deployment.settings.artifact_audit_window.count())},

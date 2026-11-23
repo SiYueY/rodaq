@@ -80,7 +80,8 @@ private:
     friend class daq::Composition;
     Result<void> close_admission();
     Result<void> drain_shutdown(bool pending_only = false);
-    Result<void> refresh_execution_facts(bool protect = false);
+    Result<void> refresh_execution_facts(
+        bool protect = false, std::optional<std::uint64_t> fence_monotonic_ns = {});
     Result<void> schedule_rotation(std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
     Result<void> collect_artifacts(

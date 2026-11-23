@@ -178,7 +178,8 @@ protected:
         ASSERT_TRUE(ledger.ok());
         ledger_ = std::shared_ptr<artifact::LedgerStore>(std::move(ledger.value()));
         capacity_ = std::make_shared<artifact::VolumeCapacity>(std::move(
-            artifact::VolumeCapacity::create({1000000, 1000000, 100, 10000, 8, 8, 16}).value()));
+            artifact::VolumeCapacity::create({1000000, 1000000, 100, 10000, 8, 8, 16, 200, 300, 10})
+                .value()));
         auto probe = capacity_->begin_space_sample(100).value();
         ASSERT_TRUE(capacity_->finish_space_sample(probe, 1000000, 100).ok());
         auto lane = rodaq::ExecutionLane::create(1, 8);
@@ -1611,6 +1612,13 @@ TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAn
     };
     const auto baseline =
         identity(deployment, control, deployment.settings.profiles[0], source, storage);
+    auto volume_policy = capacity_->policy().value();
+    ++volume_policy.low_free_bytes;
+    deployment.capacity = std::make_shared<artifact::VolumeCapacity>(
+        artifact::VolumeCapacity::create(volume_policy).value());
+    EXPECT_NE(
+        identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
+    deployment.capacity = capacity_;
     auto same = control;
     ++same.control_generation;
     same.current_operation_id.reset();
@@ -1644,6 +1652,9 @@ TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAn
                       .value();
     EXPECT_EQ(frozen["acquisition"]["sha256"], source.sha256);
     EXPECT_EQ(frozen["volume_id"], artifact::to_string(volume_->identity()));
+    EXPECT_EQ(frozen["volume_admission_limits"]["low_free_bytes"], "200");
+    EXPECT_EQ(frozen["volume_admission_limits"]["recovery_free_bytes"], "300");
+    EXPECT_EQ(frozen["volume_admission_limits"]["recovery_stable_ns"], "10");
 }
 
 TEST_F(PipelineControllerTest, CompositionShutdownDeadlineRetainsLatePreparationAndCanBeRetried) {
@@ -3830,6 +3841,128 @@ TEST_F(PipelineControllerTest, RunAuthorizationPreservesInterleavedCommittedChec
     ASSERT_TRUE(controller_->close_admission(8).ok());
     ASSERT_TRUE(controller_->quiesce(soon()).ok());
 }
+
+TEST_F(PipelineControllerTest, LowVolumeRejectsNewPreparationBeforeAnyNativeResourcesAreCreated) {
+    auto probe = capacity_->begin_space_sample(200).value();
+    ASSERT_TRUE(capacity_->finish_space_sample(probe, 150, 200).ok());
+    create();
+    const auto prepared = controller_->prepare(soon());
+    EXPECT_EQ(prepared.status().code(), StatusCode::ResourceExhausted);
+    EXPECT_FALSE(controller_->snapshot().value().prepared);
+    EXPECT_TRUE(ledger_->recovery_snapshot().value().empty());
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+    EXPECT_EQ(capacity_->snapshot().segment_slots, 0);
+    ASSERT_TRUE(controller_->establish_control_fence(200).ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    EXPECT_TRUE(controller_->quiesce(soon()).ok());
+}
+
+TEST_F(PipelineControllerTest, NewGateRevalidatesLowWatermarkAfterActualPreparation) {
+    create();
+    const auto prepared = controller_->prepare(soon());
+    ASSERT_TRUE(prepared.ok());
+    auto authorization = authorize(prepared.value());
+    auto probe = capacity_->begin_space_sample(200).value();
+    const auto promised = capacity_->snapshot().future_bytes;
+    ASSERT_TRUE(capacity_->finish_space_sample(probe, promised + 150, 200).ok());
+    EXPECT_EQ(controller_->open_admission(authorization), pipeline::GateOpenResult::Obsolete);
+    EXPECT_FALSE(controller_->snapshot().value().gate.ever_opened);
+    ASSERT_TRUE(controller_->establish_control_fence(200).ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    EXPECT_TRUE(controller_->quiesce(soon()).ok());
+}
+
+class VolumeAdmissionProtectionTest : public PipelineControllerTest,
+                                      public testing::WithParamInterface<bool> {};
+
+TEST_P(VolumeAdmissionProtectionTest, LocalCapacityFailureFencesWithoutLosingCoveredAcceptedData) {
+    create();
+    const auto prepared = controller_->prepare(soon());
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_EQ(
+        controller_->open_admission(authorize(prepared.value())), pipeline::GateOpenResult::Opened);
+    ASSERT_TRUE(wait_written(4));
+    if (GetParam()) {
+        capacity_->invalidate_space_sample();
+    } else {
+        auto probe = capacity_->begin_space_sample(200).value();
+        ASSERT_TRUE(capacity_->finish_space_sample(probe, 0, 200).ok());
+    }
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    bool fenced = false;
+    do {
+        const auto snapshot = controller_->snapshot();
+        fenced = snapshot.ok() && snapshot.value().gate.control_fence;
+        if (fenced) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    ASSERT_TRUE(fenced);
+    EXPECT_NE(controller_->snapshot().value().capacity.admission_failure, StatusCode::Ok);
+    EXPECT_EQ(controller_->snapshot().value().capacity.protection, StatusCode::Ok);
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    const auto accepted = controller_->snapshot().value().gate.accepted_records;
+    auto sealed = controller_->drain(soon());
+    ASSERT_TRUE(sealed.ok());
+    ASSERT_TRUE(sealed.value());
+    const auto metadata = sealed.value()->segment->metadata.snapshot();
+    EXPECT_EQ(metadata.accepted, accepted);
+    EXPECT_EQ(metadata.written, accepted);
+    EXPECT_EQ(metadata.known_failed, 0);
+    EXPECT_EQ(metadata.unknown, 0);
+    commit(std::move(*sealed.value()));
+    ASSERT_TRUE(controller_->quiesce(soon()).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+}
+
+INSTANTIATE_TEST_SUITE_P(StopOrUnknownSpace, VolumeAdmissionProtectionTest, testing::Bool());
+
+class TaskVolumeProtectionTest : public PipelineControllerTest,
+                                 public testing::WithParamInterface<bool> {};
+
+TEST_P(TaskVolumeProtectionTest, MaintenanceDrainsProtectedRunWithoutInventingAUserOperation) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    if (GetParam()) {
+        config.pipelines[0].acquisition.json = R"({"streams":["first","second"],"mode":"silent"})";
+    }
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    if (!GetParam()) {
+        ASSERT_TRUE(wait_composed_records(id));
+    }
+    const auto operations_before = service.list_operations(id, {}).value().items.size();
+    auto probe = capacity_->begin_space_sample(200).value();
+    ASSERT_TRUE(capacity_->finish_space_sample(probe, 0, 200).ok());
+    ASSERT_TRUE(composition_->observe().ok());
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    const auto current = service.get_task(id).value();
+    EXPECT_EQ(current.desired_state, rodaq::DesiredState::Running);
+    EXPECT_EQ(current.control_generation, 2);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state, rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), operations_before);
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    EXPECT_FALSE(runtime.pipelines[0].facts->admission_open);
+    EXPECT_TRUE(runtime.pipelines[0].facts->quiescent);
+    EXPECT_EQ(
+        runtime.pipelines[0].facts->accepted_records, runtime.pipelines[0].facts->written_records);
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    EXPECT_EQ(artifacts.value().items.size(), GetParam() ? 0 : 1);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Stopped);
+}
+
+INSTANTIATE_TEST_SUITE_P(ActiveOrSilentSource, TaskVolumeProtectionTest, testing::Bool());
 
 TEST_F(PipelineControllerTest, CatalogCollectionRequiresAuditExpiryAndDurableCommittedProgress) {
     record_committed(50);

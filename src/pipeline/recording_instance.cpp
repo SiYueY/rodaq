@@ -239,6 +239,9 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
         opened_monotonic_};
     auto submitted = pipeline::submit_record(
         domain, *streams.find(attempt.stream_id), attempt, received.value());
+    if (gate.admission_fenced()) {
+        (void)establish_control_fence(sample.value().monotonic_ns);
+    }
     if (submitted.ok()) {
         submission(index, submitted.value().disposition);
         if (submitted.value().disposition == RODAQ_SUBMIT_ACCEPTED && attempt.has_source_id) {
@@ -346,6 +349,9 @@ Result<acquisition::DescriptorToken> RecordingInstance::propose_descriptor(
         }
         auto prepared = prepare_(segment, next, sample.value().monotonic_ns, deadline);
         if (!prepared.ok()) {
+            if (segment->capacity.snapshot().admission_failure != StatusCode::Ok) {
+                (void)establish_control_fence(sample.value().monotonic_ns);
+            }
             return prepared.status();
         }
     }

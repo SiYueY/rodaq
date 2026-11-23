@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <rodaq/result.hpp>
 
@@ -15,6 +16,18 @@ struct VolumeCapacityOptions {
     std::uint32_t max_segments{64};
     std::uint32_t max_commit_slots{16};
     std::uint32_t max_artifact_slots{4096};
+    std::uint64_t low_free_bytes{128ull * 1024 * 1024};
+    std::uint64_t recovery_free_bytes{256ull * 1024 * 1024};
+    std::uint64_t recovery_stable_ns{1000000000};
+};
+
+enum class VolumeSpaceCondition { Unknown, Normal, Low, Stopped, Recovering };
+
+struct VolumeSpaceSnapshot {
+    VolumeSpaceCondition condition{VolumeSpaceCondition::Unknown};
+    std::uint64_t effective_free_bytes{0};
+    std::optional<std::uint64_t> recovery_started_monotonic_ns;
+    StatusCode protection{StatusCode::Ok};
 };
 
 struct VolumeCapacitySnapshot {
@@ -87,6 +100,7 @@ public:
     ~VolumeReservation() noexcept;
 
     Result<void> grow(std::uint64_t future_bytes, std::uint64_t now_monotonic_ns);
+    VolumeSpaceSnapshot space_snapshot(std::uint64_t now_monotonic_ns) const;
     // Rolls back unused candidate exposure; never releases actual usage.
     Result<void> release_future(std::uint64_t bytes);
     // Actual growth converts previously reserved exposure; total cannot grow.
@@ -135,6 +149,11 @@ public:
     void invalidate_space_sample();
     Result<VolumeReservation> reserve(
         std::uint64_t initial_future_bytes, std::uint64_t now_monotonic_ns);
+    // Bounded cached facts only. Unknown/stopped observations latch recovery;
+    // only subsequent successful samples can prove the stable recovery window.
+    VolumeSpaceSnapshot space_snapshot(std::uint64_t now_monotonic_ns) const;
+    Result<void> admit_recording(std::uint64_t now_monotonic_ns) const;
+    Result<VolumeCapacityOptions> policy() const;
     void protect(StatusCode failure);
     VolumeCapacitySnapshot snapshot() const;
 

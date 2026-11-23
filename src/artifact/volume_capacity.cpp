@@ -20,14 +20,60 @@ struct VolumeCapacityState {
     std::uint64_t unclaimed_initial_bytes{0};
     std::uint32_t unclaimed_initial_slots{0};
 
-    Status growth_status(std::uint64_t bytes, std::uint64_t now) const {
+    bool space_stopped{false};
+    std::optional<std::uint64_t> recovery_started;
+
+    std::uint64_t effective_free() const noexcept {
+        const auto debt = consumed_total - sample_consumed_baseline;
+        if (debt >= counters.sampled_free_bytes ||
+            counters.future_bytes >= counters.sampled_free_bytes - debt) {
+            return 0;
+        }
+        return counters.sampled_free_bytes - debt - counters.future_bytes;
+    }
+
+    VolumeSpaceSnapshot observe_space(std::uint64_t now) {
+        VolumeSpaceSnapshot result;
+        result.protection = counters.protection;
+        if (!counters.has_space_sample || now < counters.sampled_monotonic_ns ||
+            now - counters.sampled_monotonic_ns > options.space_sample_max_age_ns) {
+            // Cold startup has no previously admitted work to resume. Once a
+            // sample existed, unknown evidence must follow the recovery gate.
+            space_stopped = space_stopped || last_published_probe != 0;
+            recovery_started.reset();
+            return result;
+        }
+        result.effective_free_bytes = effective_free();
+        if (counters.protection != StatusCode::Ok || !counters.actual_usage_complete ||
+            result.effective_free_bytes <= options.stop_free_bytes) {
+            space_stopped = true;
+            recovery_started.reset();
+            result.condition = VolumeSpaceCondition::Stopped;
+        } else if (space_stopped) {
+            if (result.effective_free_bytes < options.recovery_free_bytes) {
+                recovery_started.reset();
+            }
+            result.condition = VolumeSpaceCondition::Recovering;
+        } else {
+            result.condition = result.effective_free_bytes < options.low_free_bytes
+                                   ? VolumeSpaceCondition::Low
+                                   : VolumeSpaceCondition::Normal;
+        }
+        result.recovery_started_monotonic_ns = recovery_started;
+        return result;
+    }
+
+    Status growth_status(std::uint64_t bytes, std::uint64_t now) {
         if (counters.protection != StatusCode::Ok) {
             return Status(counters.protection, {});
         }
-        if (!counters.has_space_sample ||
-            (now >= counters.sampled_monotonic_ns &&
-             now - counters.sampled_monotonic_ns > options.space_sample_max_age_ns)) {
+        const auto space = observe_space(now);
+        if (space.condition == VolumeSpaceCondition::Unknown ||
+            space.condition == VolumeSpaceCondition::Recovering) {
             return Status(StatusCode::Unavailable, {});
+        }
+        if (space.condition == VolumeSpaceCondition::Stopped) {
+            return Status(StatusCode::ResourceExhausted, {});
         }
         if (counters.actual_bytes > options.max_managed_bytes ||
             counters.future_bytes > options.max_managed_bytes - counters.actual_bytes ||
@@ -133,6 +179,14 @@ Result<void> VolumeReservation::grow(std::uint64_t bytes, std::uint64_t now_mono
     return {};
 }
 
+VolumeSpaceSnapshot VolumeReservation::space_snapshot(std::uint64_t now_monotonic_ns) const {
+    if (!state_) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->observe_space(now_monotonic_ns);
+}
+
 Result<void> VolumeReservation::release_future(std::uint64_t bytes) {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});
@@ -230,6 +284,8 @@ Result<VolumeCapacity> VolumeCapacity::create(
     std::uint32_t initial_artifact_slots) {
     if (options.max_managed_bytes == 0 || options.max_commit_bytes == 0 ||
         options.space_sample_max_age_ns == 0 || options.max_segments == 0 ||
+        options.low_free_bytes <= options.stop_free_bytes ||
+        options.recovery_free_bytes <= options.low_free_bytes || options.recovery_stable_ns == 0 ||
         options.max_segments > 65536 || options.max_commit_slots == 0 ||
         options.max_commit_slots > 65536 || options.max_artifact_slots == 0 ||
         options.max_artifact_slots > 65536 || initial_artifact_slots > 65536 ||
@@ -283,12 +339,20 @@ Result<void> VolumeCapacity::finish_space_sample(
     std::lock_guard<std::mutex> lock(state_->mutex);
     if (probe.id_ <= state_->last_published_probe || probe.consumed_ > state_->consumed_total ||
         finished_monotonic_ns < probe.started_ ||
-        (state_->counters.has_space_sample &&
-         finished_monotonic_ns < state_->counters.sampled_monotonic_ns)) {
+        (state_->last_published_probe != 0 &&
+         (finished_monotonic_ns < state_->counters.sampled_monotonic_ns ||
+          probe.started_ < state_->counters.sampled_monotonic_ns))) {
         return Status(StatusCode::Conflict, {});
     }
     if (finished_monotonic_ns - probe.started_ > state_->options.space_sample_max_age_ns) {
         return Status(StatusCode::Unavailable, {});
+    }
+    const bool gap = state_->counters.has_space_sample &&
+                     probe.started_ - state_->counters.sampled_monotonic_ns >
+                         state_->options.space_sample_max_age_ns;
+    if (gap) {
+        state_->space_stopped = true;
+        state_->recovery_started.reset();
     }
     state_->last_published_probe = probe.id_;
     state_->sample_consumed_baseline = probe.consumed_;
@@ -297,6 +361,19 @@ Result<void> VolumeCapacity::finish_space_sample(
     // Use its start as the conservative freshness boundary, not a late return.
     state_->counters.sampled_monotonic_ns = probe.started_;
     state_->counters.has_space_sample = true;
+    (void)state_->observe_space(finished_monotonic_ns);
+    if (state_->space_stopped && state_->counters.protection == StatusCode::Ok &&
+        state_->counters.actual_usage_complete &&
+        state_->effective_free() >= state_->options.recovery_free_bytes) {
+        if (!state_->recovery_started) {
+            state_->recovery_started = finished_monotonic_ns;
+        } else if (
+            probe.started_ >= *state_->recovery_started &&
+            probe.started_ - *state_->recovery_started >= state_->options.recovery_stable_ns) {
+            state_->space_stopped = false;
+            state_->recovery_started.reset();
+        }
+    }
     return {};
 }
 
@@ -304,6 +381,8 @@ void VolumeCapacity::invalidate_space_sample() {
     if (state_) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         state_->counters.has_space_sample = false;
+        state_->space_stopped = true;
+        state_->recovery_started.reset();
         state_->last_published_probe = state_->next_probe - 1;
     }
 }
@@ -332,6 +411,40 @@ Result<VolumeReservation> VolumeCapacity::reserve(
     counters.high_water_commit_bytes =
         std::max(counters.high_water_commit_bytes, counters.commit_bytes);
     return VolumeReservation(state_, initial_future_bytes);
+}
+
+VolumeSpaceSnapshot VolumeCapacity::space_snapshot(std::uint64_t now_monotonic_ns) const {
+    if (!state_) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->observe_space(now_monotonic_ns);
+}
+
+Result<void> VolumeCapacity::admit_recording(std::uint64_t now_monotonic_ns) const {
+    const auto space = space_snapshot(now_monotonic_ns);
+    if (space.protection != StatusCode::Ok) {
+        return Status(space.protection, {});
+    }
+    switch (space.condition) {
+        case VolumeSpaceCondition::Normal:
+            return {};
+        case VolumeSpaceCondition::Low:
+        case VolumeSpaceCondition::Stopped:
+            return Status(StatusCode::ResourceExhausted, {});
+        case VolumeSpaceCondition::Unknown:
+        case VolumeSpaceCondition::Recovering:
+            return Status(StatusCode::Unavailable, {});
+    }
+    return Status(StatusCode::Internal, {});
+}
+
+Result<VolumeCapacityOptions> VolumeCapacity::policy() const {
+    if (!state_) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    // Immutable after factory publication; live counters are excluded.
+    return state_->options;
 }
 
 void VolumeCapacity::protect(StatusCode failure) {

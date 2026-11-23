@@ -51,6 +51,8 @@ struct SegmentCapacitySnapshot {
     bool writable{true};
     bool sealed{false};
     StatusCode protection{StatusCode::Ok};
+    // Further admission is stopped; existing accepted exposure may still Seal.
+    StatusCode admission_failure{StatusCode::Ok};
 };
 
 // One retained owner per Segment; Records bind its immutable numeric ID.

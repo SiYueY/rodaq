@@ -116,7 +116,8 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
     }
 }
 
-Result<void> TaskService::refresh_execution_facts(bool protect) {
+Result<void> TaskService::refresh_execution_facts(
+    bool protect, std::optional<std::uint64_t> fence_monotonic_ns) {
     try {
         std::vector<std::shared_ptr<task::TaskEntry>> entries;
         {
@@ -126,7 +127,7 @@ Result<void> TaskService::refresh_execution_facts(bool protect) {
         for (const auto& entry : entries) {
             std::lock_guard<std::mutex> control(entry->control_mutex);
             if (protect && entry->execution) {
-                entry->execution->fence();
+                entry->execution->fence(fence_monotonic_ns);
             }
             auto old = std::atomic_load(&entry->published);
             if (old->snapshot.snapshot_sequence == std::numeric_limits<std::uint64_t>::max()) {

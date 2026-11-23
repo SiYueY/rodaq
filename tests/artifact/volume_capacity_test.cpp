@@ -15,7 +15,9 @@ namespace {
 namespace artifact = rodaq::artifact;
 using rodaq::StatusCode;
 
-artifact::VolumeCapacityOptions options() { return {10000, 10000, 100, 10, 8, 8, 16}; }
+artifact::VolumeCapacityOptions options() {
+    return {10000, 10000, 100, 10, 8, 8, 16, 200, 300, 10};
+}
 
 void sample(
     artifact::VolumeCapacity& capacity, std::uint64_t free_bytes = 1000,
@@ -260,8 +262,137 @@ TEST(VolumeCapacity, SampleFailureInvalidatesOldAndOutstandingEvidenceButAllowsF
     EXPECT_EQ(
         volume.finish_space_sample(old.value(), 1000, 102).status().code(), StatusCode::Conflict);
     sample(volume, 1000, 103);
-    EXPECT_TRUE(volume.reserve(1, 103).ok());
+    EXPECT_EQ(volume.reserve(1, 103).status().code(), StatusCode::Unavailable);
+    sample(volume, 1000, 113);
+    EXPECT_TRUE(volume.reserve(1, 113).ok());
     EXPECT_EQ(volume.snapshot().protection, StatusCode::Ok);
+}
+
+TEST(VolumeWatermarks, ThresholdsAreStrictlyOrderedAndRecoveryWindowIsPositive) {
+    auto policy = options();
+    policy.low_free_bytes = policy.stop_free_bytes;
+    EXPECT_EQ(
+        artifact::VolumeCapacity::create(policy).status().code(), StatusCode::InvalidArgument);
+    policy = options();
+    policy.recovery_free_bytes = policy.low_free_bytes;
+    EXPECT_EQ(
+        artifact::VolumeCapacity::create(policy).status().code(), StatusCode::InvalidArgument);
+    policy = options();
+    policy.recovery_stable_ns = 0;
+    EXPECT_EQ(
+        artifact::VolumeCapacity::create(policy).status().code(), StatusCode::InvalidArgument);
+}
+
+TEST(VolumeWatermarks, LowRejectsNewRecordingWhileCoveredActiveGrowthContinuesUntilStop) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume, 150);
+    EXPECT_EQ(volume.space_snapshot(100).condition, artifact::VolumeSpaceCondition::Low);
+    EXPECT_EQ(volume.admit_recording(100).status().code(), StatusCode::ResourceExhausted);
+    auto active = volume.reserve(10, 100);
+    ASSERT_TRUE(active.ok());
+    ASSERT_TRUE(active.value().grow(5, 100).ok());
+    sample(volume, 110, 101);
+    EXPECT_EQ(volume.space_snapshot(101).effective_free_bytes, 95);
+    EXPECT_EQ(volume.space_snapshot(101).condition, artifact::VolumeSpaceCondition::Stopped);
+    EXPECT_EQ(active.value().grow(1, 101).status().code(), StatusCode::ResourceExhausted);
+    // Accepted exposure is still available for normal Writer/Seal settlement.
+    EXPECT_TRUE(active.value().record_usage(10, 5).ok());
+    EXPECT_TRUE(active.value().settle_aborted_after_cleanup().ok());
+}
+
+TEST(VolumeWatermarks, RecoveryRequiresFreshHighSamplesAcrossTheFullStableWindow) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume, 100);
+    EXPECT_EQ(volume.space_snapshot(100).condition, artifact::VolumeSpaceCondition::Stopped);
+    sample(volume, 299, 105);
+    EXPECT_EQ(volume.admit_recording(105).status().code(), StatusCode::Unavailable);
+    sample(volume, 300, 110);
+    EXPECT_EQ(volume.space_snapshot(110).recovery_started_monotonic_ns, 110);
+    // Reading the same fresh sample at a later time is not a second observation.
+    EXPECT_EQ(volume.admit_recording(120).status().code(), StatusCode::Unavailable);
+    sample(volume, 300, 120);
+    EXPECT_TRUE(volume.admit_recording(120).ok());
+    EXPECT_EQ(volume.space_snapshot(120).condition, artifact::VolumeSpaceCondition::Normal);
+    EXPECT_FALSE(volume.space_snapshot(120).recovery_started_monotonic_ns);
+}
+
+TEST(VolumeWatermarks, GapsAndInterveningBelowHighSamplesRestartRecoveryEvidence) {
+    auto policy = options();
+    policy.recovery_stable_ns = 15;
+    auto volume = artifact::VolumeCapacity::create(policy).value();
+    sample(volume, 100);
+    sample(volume, 500, 105);
+    sample(volume, 500, 110);
+    sample(volume, 500, 125);
+    EXPECT_EQ(volume.space_snapshot(125).recovery_started_monotonic_ns, 125);
+    sample(volume, 299, 130);
+    EXPECT_FALSE(volume.space_snapshot(130).recovery_started_monotonic_ns);
+    sample(volume, 500, 135);
+    sample(volume, 500, 145);
+    EXPECT_FALSE(volume.admit_recording(145).ok());
+    sample(volume, 500, 150);
+    EXPECT_TRUE(volume.admit_recording(150).ok());
+}
+
+TEST(VolumeWatermarks, WrittenDebtAndFuturePromisesAreSubtractedBeforeClassifyingSpace) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume, 1000);
+    auto active = volume.reserve(600, 100);
+    ASSERT_TRUE(active.ok());
+    auto probe = volume.begin_space_sample(101).value();
+    ASSERT_TRUE(active.value().record_usage(500, 100).ok());
+    ASSERT_TRUE(volume.finish_space_sample(probe, 750, 102).ok());
+    EXPECT_EQ(volume.space_snapshot(102).effective_free_bytes, 150);
+    EXPECT_EQ(volume.space_snapshot(102).condition, artifact::VolumeSpaceCondition::Low);
+    EXPECT_FALSE(volume.admit_recording(102).ok());
+    ASSERT_TRUE(active.value().settle_aborted_after_cleanup().ok());
+    // Logical deletion/cleanup does not invent a new physical free-space sample.
+    EXPECT_EQ(volume.space_snapshot(102).effective_free_bytes, 250);
+}
+
+TEST(VolumeWatermarks, ExpiredOrBackwardTimeCannotAuthorizeAndOldProbeCannotUndoInvalidation) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume);
+    auto old = volume.begin_space_sample(101).value();
+    EXPECT_EQ(volume.space_snapshot(99).condition, artifact::VolumeSpaceCondition::Unknown);
+    EXPECT_FALSE(volume.admit_recording(100).ok());
+    volume.invalidate_space_sample();
+    EXPECT_EQ(volume.finish_space_sample(old, 1000, 102).status().code(), StatusCode::Conflict);
+    auto backward = volume.begin_space_sample(99).value();
+    EXPECT_EQ(
+        volume.finish_space_sample(backward, 1000, 102).status().code(), StatusCode::Conflict);
+    sample(volume, 1000, 103);
+    sample(volume, 1000, 113);
+    EXPECT_TRUE(volume.admit_recording(113).ok());
+    EXPECT_EQ(volume.space_snapshot(124).condition, artifact::VolumeSpaceCondition::Unknown);
+    EXPECT_FALSE(volume.reserve(1, 124).ok());
+}
+
+TEST(VolumeWatermarks, HealthySamplesNeverClearIntegrityProtectionOrCreateRecoveryPermission) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume);
+    volume.protect(StatusCode::DataLoss);
+    sample(volume, 1000, 105);
+    sample(volume, 1000, 115);
+    EXPECT_EQ(volume.admit_recording(115).status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(volume.space_snapshot(115).condition, artifact::VolumeSpaceCondition::Stopped);
+    EXPECT_FALSE(volume.space_snapshot(115).recovery_started_monotonic_ns);
+    EXPECT_EQ(volume.snapshot().protection, StatusCode::DataLoss);
+}
+
+TEST(VolumeWatermarks, SlowObservationCompletionCannotInventAStableRecoveryInterval) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume, 100);
+    auto first = volume.begin_space_sample(110).value();
+    ASSERT_TRUE(volume.finish_space_sample(first, 500, 119).ok());
+    EXPECT_EQ(volume.space_snapshot(119).recovery_started_monotonic_ns, 119);
+    auto overlapping = volume.begin_space_sample(119).value();
+    ASSERT_TRUE(volume.finish_space_sample(overlapping, 500, 129).ok());
+    // The second measurement may have happened immediately at its start.
+    // Time spent blocked in its syscall proves no sustained high-space interval.
+    EXPECT_EQ(volume.admit_recording(129).status().code(), StatusCode::Unavailable);
+    sample(volume, 500, 129);
+    EXPECT_TRUE(volume.admit_recording(129).ok());
 }
 
 }  // namespace

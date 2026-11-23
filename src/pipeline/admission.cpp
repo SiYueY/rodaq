@@ -64,6 +64,9 @@ Result<acquisition::SubmitResult> submit_record(
     auto candidate = segment->capacity.reserve_record(
         attempt.payload.logical_size, received.sample.monotonic_ns);
     if (!candidate.ok()) {
+        if (segment->capacity.snapshot().admission_failure != StatusCode::Ok) {
+            (void)domain.gate.establish_control_fence(domain.instance_id);
+        }
         return disposition(RODAQ_SUBMIT_RESOURCE_EXHAUSTED);
     }
     auto metadata = segment->metadata.reserve_record(
