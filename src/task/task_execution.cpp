@@ -17,12 +17,6 @@ void RunExecution::fence() noexcept {
 
 ExecutionCondition RunExecution::condition(DesiredState desired) {
     std::lock_guard<std::mutex> lock(registration);
-    if (draining) {
-        return ExecutionCondition::Draining;
-    }
-    if (preparing) {
-        return ExecutionCondition::Preparing;
-    }
     bool all_settled = preparation_returned && !rotating;
     bool any_open = false;
     bool all_open = !pipelines.empty();
@@ -30,10 +24,16 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
     bool failed_pipeline_pending = false;
     bool required_configuration_rejected = false;
     bool recoverable_pipeline = false;
+    bool snapshot_unavailable = false;
     for (const auto& selected : pipelines) {
         auto actual = selected.controller->snapshot();
         if (!actual.ok()) {
-            return ExecutionCondition::Protected;
+            snapshot_unavailable = true;
+            all_settled = false;
+            failed_pipeline_pending =
+                failed_pipeline_pending ||
+                (selected.prepare_status && *selected.prepare_status != StatusCode::Ok);
+            continue;
         }
         all_settled = all_settled && actual.value().quiescence.settled;
         failed_pipeline_pending =
@@ -52,6 +52,15 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
     }
     if (failed_pipeline_pending) {
         return ExecutionCondition::PendingCleanup;
+    }
+    if (draining) {
+        return ExecutionCondition::Draining;
+    }
+    if (preparing) {
+        return ExecutionCondition::Preparing;
+    }
+    if (snapshot_unavailable) {
+        return ExecutionCondition::Protected;
     }
     if (any_open) {
         if (!required_open && config->start_policy == StartPolicyMode::AllRequired) {

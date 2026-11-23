@@ -822,6 +822,7 @@ TEST_F(CleanupSchedulingTest, SupersedingStopSerializesCleanupWhileSiblingTaskSt
     });
     EXPECT_EQ(sibling_stop.wait_for(2s), std::future_status::ready);
     const auto pending = service_->get_task(first).value();
+    EXPECT_EQ(pending.execution_condition, rodaq::ExecutionCondition::PendingCleanup);
     EXPECT_TRUE(pending.current_operation);
     if (pending.current_operation) {
         EXPECT_FALSE(rodaq::task::terminal(pending.current_operation->state));
