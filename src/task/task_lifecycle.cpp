@@ -43,6 +43,14 @@ Result<OperationId> TaskService::lifecycle(
         if (!entry) {
             return Status(StatusCode::NotFound, {});
         }
+        std::optional<std::uint64_t> cut;
+        if ((kind == OperationKind::Pause || kind == OperationKind::Stop) &&
+            state_->options->execution) {
+            const auto sample = state_->options->execution->sample();
+            if (sample.ok()) {
+                cut = sample.value().monotonic_ns;
+            }
+        }
         auto reply = std::make_shared<task::Reply<OperationId>>();
         auto job = std::make_shared<State::ControlJob>();
         job->owner = state_;
@@ -65,7 +73,7 @@ Result<OperationId> TaskService::lifecycle(
                 return decision.status();
             }
             if (decision.value().fence_required && entry->execution) {
-                entry->execution->fence();
+                entry->execution->fence(cut);
             }
             if (decision.value().durably_accepted) {
                 accepted = decision.value().operation_id;

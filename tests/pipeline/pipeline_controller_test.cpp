@@ -521,6 +521,7 @@ protected:
             }
             return resolved;
         };
+        execution->sample = &receive_clock;
         execution->commit = [this](const auto& sealed) { return artifact_commit(sealed); };
         execution->reserve_segment = [this]() -> rodaq::Result<std::uint64_t> {
             auto ids = segment_ids_->reserve(1);
@@ -2490,7 +2491,7 @@ TEST_F(PipelineControllerTest, TaskAllRequiredBarrierFailureNeverOpensAnyPrepare
     EXPECT_EQ(result.value().pipelines[0], StatusCode::Ok);
     EXPECT_NE(result.value().pipelines[1], StatusCode::Ok);
     EXPECT_FALSE(run->publish_authorization(0).ok());
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
     EXPECT_EQ(second_->snapshot().value().records.accepted, 0);
     EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
@@ -2508,7 +2509,7 @@ TEST_F(PipelineControllerTest, TaskBestEffortPublishesWholeEligibleSetBeforeOpen
                    store, boot(), &receive_clock)
                    .value();
     ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
     ASSERT_TRUE(run->publish_authorization(0).ok());
     auto durable = store->load().value();
@@ -2517,12 +2518,12 @@ TEST_F(PipelineControllerTest, TaskBestEffortPublishesWholeEligibleSetBeforeOpen
     ASSERT_EQ(durable.run_operation->authorized_pipelines.size(), 1);
     EXPECT_EQ(durable.run_operation->authorized_pipelines[0].pipeline_id, 3);
     EXPECT_FALSE(durable.run_operation->authorized_pipelines[0].opened_observed);
-    ASSERT_TRUE(run->open(control).ok());
+    ASSERT_TRUE(run->open(control, 200).ok());
     ASSERT_TRUE(wait_written(2));
     EXPECT_FALSE(second_->snapshot().value().gate.open);
     EXPECT_EQ(second_->snapshot().value().records.accepted, 0);
     ASSERT_TRUE(run->fence().ok());
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
 }
 
 TEST_F(PipelineControllerTest, TaskFullAuthorizationAtomicallyContainsBothReadyInstances) {
@@ -2543,7 +2544,7 @@ TEST_F(PipelineControllerTest, TaskFullAuthorizationAtomicallyContainsBothReadyI
     const auto durable = store->load().value();
     ASSERT_EQ(durable.run_operation->authorized_pipelines.size(), 2);
     EXPECT_EQ(durable.run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
-    ASSERT_TRUE(run->open(control).ok());
+    ASSERT_TRUE(run->open(control, 200).ok());
     EXPECT_TRUE(controller_->snapshot().value().gate.open);
     EXPECT_TRUE(second_->snapshot().value().gate.open);
     ASSERT_TRUE(wait_written(1));
@@ -2562,10 +2563,10 @@ TEST_F(PipelineControllerTest, TaskRunRejectsWrongOperationAndLateOpenAfterActua
     ASSERT_TRUE(run->publish_authorization(0).ok());
     auto stale = control;
     stale.current_operation_id->value[0] ^= 1;
-    EXPECT_FALSE(run->open(stale).ok());
+    EXPECT_FALSE(run->open(stale, 200).ok());
     EXPECT_FALSE(controller_->snapshot().value().gate.open);
     ASSERT_TRUE(run->fence().ok());
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
 }
 
@@ -2587,7 +2588,7 @@ TEST_F(PipelineControllerTest, UncertainRecoveryAuthorizationCannotGrantGatePerm
     ASSERT_TRUE(run->prepare(soon()).value().barrier_passed);
     armed = true;
     EXPECT_FALSE(run->publish_authorization(0).ok());
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
 }
 
@@ -2630,7 +2631,7 @@ TEST_F(PipelineControllerTest, FenceDuringActualAuthorizationPublishDefeatsLateS
     changed.notify_all();
     EXPECT_FALSE(actual.get().ok());
     EXPECT_EQ(store->load().value().run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
-    EXPECT_FALSE(run->open(control).ok());
+    EXPECT_FALSE(run->open(control, 200).ok());
     EXPECT_EQ(controller_->snapshot().value().records.accepted, 0);
 }
 
@@ -3482,7 +3483,7 @@ TEST_F(PipelineControllerTest, RetentionUsesTaskWideCommittedTimeAndPreservesThe
     ASSERT_TRUE(prepared.ok());
     ASSERT_TRUE(prepared.value().barrier_passed);
     ASSERT_TRUE(selected.value()->publish_authorization(0).ok());
-    ASSERT_TRUE(selected.value()->open(control).ok());
+    ASSERT_TRUE(selected.value()->open(control, 200).ok());
     const auto wait_receive = [&](const auto& pipeline, std::int64_t realtime) {
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         do {
@@ -3570,6 +3571,176 @@ TEST_F(
     policy = {};
     EXPECT_FALSE(
         catalog_->select_retention(options_.identity.task_id, policy, versions).value().candidate);
+}
+
+class RecordingTimelineTest : public PipelineControllerTest,
+                              public testing::WithParamInterface<bool> {};
+
+TEST_P(RecordingTimelineTest, FormalResumeKeepsTaskRecordingTimeAcrossPausedHostTimeAndDrain) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, GetParam() ? 2 : 1);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    if (GetParam()) {
+        config.pipelines.push_back(config.pipelines.front());
+    }
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    const auto wait_receive = [&](std::int64_t realtime, const auto& before) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        do {
+            if (!composition_->observe().ok()) {
+                return false;
+            }
+            const auto runtime = service.get_runtime_snapshot(id);
+            bool ready =
+                runtime.ok() && runtime.value().pipelines.size() == before.pipelines.size();
+            for (std::size_t i = 0; ready && i < before.pipelines.size(); ++i) {
+                const auto& pipeline = runtime.value().pipelines[i];
+                ready = pipeline.facts && before.pipelines[i].facts &&
+                        pipeline.facts->accepted_records >=
+                            before.pipelines[i].facts->accepted_records + 4;
+                for (const auto& stream : pipeline.streams) {
+                    ready = ready && stream.facts &&
+                            stream.facts->last_receive_at ==
+                                rodaq::WallTime{std::chrono::nanoseconds{realtime}};
+                }
+            }
+            if (ready) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    ASSERT_TRUE(composition_->observe().ok());
+    auto before = service.get_runtime_snapshot(id).value();
+    retention_monotonic = 500;
+    ASSERT_TRUE(wait_receive(1400, before));
+    ledger_control_->block = true;
+    const auto pause = service.pause(id, {"pause"}, {true, 2});
+    bool entered = false;
+    if (pause.ok()) {
+        std::unique_lock<std::mutex> lock(ledger_control_->mutex);
+        entered =
+            ledger_control_->changed.wait_for(lock, 2s, [&] { return ledger_control_->entered; });
+    }
+    retention_monotonic = 8000;
+    {
+        std::lock_guard<std::mutex> lock(ledger_control_->mutex);
+        ledger_control_->released = true;
+    }
+    ledger_control_->changed.notify_all();
+    ASSERT_TRUE(pause.ok());
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(wait_composed(id, pause.value()));
+    const auto first = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(first.ok());
+    ASSERT_EQ(first.value().items.size(), GetParam() ? 2 : 1);
+    for (const auto& artifact : first.value().items) {
+        EXPECT_EQ(artifact.recording_range.end_ns, 300);
+    }
+    const auto saved = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+    ASSERT_TRUE(saved.ok());
+    EXPECT_EQ(
+        rodaq::task::decode_recovery_record(saved.value(), {}).value().recording_time_ns, 300);
+    retention_monotonic = 10000;
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto resume = service.resume(id, {"resume"}, {true, 3});
+    ASSERT_TRUE(resume.ok());
+    ASSERT_TRUE(wait_composed(id, resume.value()));
+    ASSERT_TRUE(composition_->observe().ok());
+    before = service.get_runtime_snapshot(id).value();
+    retention_monotonic = 10300;
+    ASSERT_TRUE(wait_receive(11200, before));
+    const auto stop = service.stop(id, {"stop"}, {true, 4});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), GetParam() ? 4 : 2);
+    for (const auto& artifact : artifacts.value().items) {
+        const bool previous = std::any_of(
+            first.value().items.begin(), first.value().items.end(),
+            [&](const auto& old) { return old.artifact_id == artifact.artifact_id; });
+        if (!previous) {
+            EXPECT_GE(artifact.recording_range.begin_ns, 300);
+            EXPECT_EQ(artifact.recording_range.end_ns, 600);
+        }
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(SharedTaskTime, RecordingTimelineTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, SilentOpenTimeIsPersistedWithoutCreatingCommittedProgress) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock);
+    ASSERT_TRUE(composition_);
+    auto config = formal_config();
+    config.pipelines[0].acquisition.json = R"({"streams":["first","second"],"mode":"silent"})";
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    retention_monotonic = 500;
+    const auto pause = service.pause(id, {"pause"}, {true, 2});
+    ASSERT_TRUE(pause.ok());
+    ASSERT_TRUE(wait_composed(id, pause.value()));
+    auto bytes = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+    ASSERT_TRUE(bytes.ok());
+    auto recovered = rodaq::task::decode_recovery_record(bytes.value(), {});
+    ASSERT_TRUE(recovered.ok());
+    EXPECT_EQ(recovered.value().recording_time_ns, 300);
+    retention_monotonic = 10000;
+    const auto resume = service.resume(id, {"resume"}, {true, 3});
+    ASSERT_TRUE(resume.ok());
+    ASSERT_TRUE(wait_composed(id, resume.value()));
+    retention_monotonic = 10300;
+    const auto stop = service.stop(id, {"stop"}, {true, 4});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    bytes = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+    ASSERT_TRUE(bytes.ok());
+    recovered = rodaq::task::decode_recovery_record(bytes.value(), {});
+    ASSERT_TRUE(recovered.ok());
+    EXPECT_EQ(recovered.value().recording_time_ns, 600);
+    EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
+    EXPECT_TRUE(fs::is_empty(volume_->artifacts_directory()));
+}
+
+TEST_F(PipelineControllerTest, SampledCutCannotRegressBelowAnActuallyAcceptedRecord) {
+    retention_monotonic = 200;
+    options_.receive_clock = &retention_clock;
+    create();
+    ASSERT_TRUE(controller_);
+    const auto prepared = controller_->prepare(soon());
+    ASSERT_TRUE(prepared.ok());
+    const auto authorization = authorize(prepared.value());
+    retention_monotonic = 1200;
+    ASSERT_EQ(controller_->open_admission(authorization), pipeline::GateOpenResult::Opened);
+    ASSERT_TRUE(wait_written(4));
+    // The control caller sampled 500 before a later candidate committed at
+    // 1200. Its fence must preserve the record's already accepted Task time.
+    ASSERT_TRUE(controller_->establish_control_fence(500).ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    auto sealed = controller_->drain(soon());
+    ASSERT_TRUE(sealed.ok());
+    ASSERT_TRUE(sealed.value());
+    commit(std::move(*sealed.value()));
+    ASSERT_TRUE(controller_->quiesce(soon()).ok());
+    const auto boundary = controller_->recording_time_boundary();
+    ASSERT_TRUE(boundary.ok());
+    ASSERT_TRUE(boundary.value());
+    EXPECT_EQ(*boundary.value(), 1000);
 }
 
 }  // namespace

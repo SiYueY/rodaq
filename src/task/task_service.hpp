@@ -38,11 +38,10 @@ enum class MaterializationStep { Allocated, Materializing, Config, Identity, Con
 struct RunInputs {
     std::vector<RunPipeline> pipelines;
     time::BootIdentity boot;
-    pipeline::ReceiveClock sample{&time::sample_clocks};
-    std::uint64_t recording_base{0};
 };
 
 struct RunExecutionOptions {
+    pipeline::ReceiveClock sample{&time::sample_clocks};
     // Separate bounded Native domains, each with at least max_tasks workers
     // and queue slots. A blocked Task cannot consume another Task's capacity.
     // The resolver must supply independent actual Writer ownership per run.

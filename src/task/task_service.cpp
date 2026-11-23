@@ -483,9 +483,9 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         }
         if (options.execution) {
             const auto& execution = *options.execution;
-            if (!execution.resolve || !execution.commit || !execution.reserve_segment ||
-                !execution.preparation_lane || !execution.cleanup_lane ||
-                execution.preparation_lane == execution.cleanup_lane ||
+            if (!execution.sample || !execution.resolve || !execution.commit ||
+                !execution.reserve_segment || !execution.preparation_lane ||
+                !execution.cleanup_lane || execution.preparation_lane == execution.cleanup_lane ||
                 execution.preparation_lane == options.control_lane ||
                 execution.preparation_lane == options.create_lane ||
                 execution.cleanup_lane == options.control_lane ||

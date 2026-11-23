@@ -71,6 +71,9 @@ struct TaskRecoveryRecord {
     std::uint64_t record_revision{1};
     ControlGeneration observed_control_generation{0};
     std::string active_config_version;
+    // Proven cumulative Task recording floor. A failed clock cannot add its
+    // unknown tail. Missing legacy evidence is not zero and needs reconciliation.
+    std::optional<std::uint64_t> recording_time_ns;
     std::optional<RunRecovery> run_operation;
     std::vector<PipelineRecovery> pipelines;
     std::optional<ResetProgress> reset_progress;

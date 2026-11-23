@@ -111,6 +111,54 @@ TEST_F(TaskRecoveryTest, ClosedSchemaRejectsDuplicateFieldsTamperForeignDomainAn
     EXPECT_FALSE(task::decode_recovery_record(encoded, {}).ok());
 }
 
+TEST_F(TaskRecoveryTest, RecordingBoundaryKeepsExactPersistentValueAndNeverRegressesOrDisappears) {
+    const auto legacy = task::encode_recovery_record(record_, {});
+    ASSERT_TRUE(legacy.ok());
+    EXPECT_FALSE(task::decode_recovery_record(legacy.value(), {}).value().recording_time_ns);
+    record_.recording_time_ns = 9007199254740993ULL;
+    auto store = open();
+    ASSERT_TRUE(store.ok());
+    ASSERT_TRUE(store.value()->publish(record_, 0).ok());
+    store.value().reset();
+    store = open();
+    ASSERT_TRUE(store.ok());
+    const auto recovered = store.value()->load();
+    ASSERT_TRUE(recovered.ok());
+    EXPECT_EQ(recovered.value().recording_time_ns, 9007199254740993ULL);
+    auto next = recovered.value();
+    ++next.record_revision;
+    next.recording_time_ns.reset();
+    EXPECT_EQ(store.value()->publish(next, 1).status().code(), StatusCode::Conflict);
+    next.recording_time_ns = 0;
+    EXPECT_EQ(store.value()->publish(next, 1).status().code(), StatusCode::Conflict);
+    next.recording_time_ns = std::numeric_limits<std::uint64_t>::max();
+    ASSERT_TRUE(store.value()->publish(next, 1).ok());
+    EXPECT_EQ(store.value()->load().value().recording_time_ns, next.recording_time_ns);
+    auto document = persistence::parse_json(task::encode_recovery_record(next, {}).value()).value();
+    document["recording_time_ns"] = 1;
+    auto malformed = persistence::encode_integrity(document, "rodaq.task-recovery.v1");
+    ASSERT_TRUE(malformed.ok());
+    EXPECT_FALSE(task::decode_recovery_record(malformed.value(), {}).ok());
+}
+
+TEST_F(TaskRecoveryTest, UncertainRecordingBoundaryCannotBeUsedBeforeDurableReconciliation) {
+    std::atomic<bool> fail{false};
+    auto store = open(
+        [&](auto step) { return fail && step == persistence::FileStep::SyncDirectory ? EIO : 0; });
+    ASSERT_TRUE(store.ok());
+    record_.recording_time_ns = 0;
+    ASSERT_TRUE(store.value()->publish(record_, 0).ok());
+    auto next = record_;
+    ++next.record_revision;
+    next.recording_time_ns = 300;
+    fail = true;
+    EXPECT_FALSE(store.value()->publish(next, 1).ok());
+    EXPECT_EQ(store.value()->load().status().code(), StatusCode::Unavailable);
+    fail = false;
+    ASSERT_TRUE(store.value()->reconcile().ok());
+    EXPECT_EQ(store.value()->load().value().recording_time_ns, 300);
+}
+
 TEST_F(TaskRecoveryTest, IntegrityMatchesIndependentCanonicalAsciiGoldenVector) {
     auto encoded = task::encode_recovery_record(record_, {});
     ASSERT_TRUE(encoded.ok());

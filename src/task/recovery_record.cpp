@@ -41,10 +41,20 @@ persistence::JsonLimits json_limits(const RecoveryLimits& limits) {
             limits.max_reset_volumes * 8};
 }
 
-void fields(const Json& value, std::initializer_list<const char*> names) {
-    require(value.is_object() && value.size() == names.size());
+void fields(
+    const Json& value, std::initializer_list<const char*> names,
+    std::initializer_list<const char*> optional = {}) {
+    require(
+        value.is_object() && value.size() >= names.size() &&
+        value.size() <= names.size() + optional.size());
     for (const auto* name : names) {
         require(value.contains(name));
+    }
+    for (const auto& item : value.items()) {
+        const auto matches = [&](const char* name) { return item.key() == name; };
+        require(
+            std::any_of(names.begin(), names.end(), matches) ||
+            std::any_of(optional.begin(), optional.end(), matches));
     }
 }
 
@@ -323,17 +333,20 @@ Result<std::string> encode_recovery_record(
                 {"reset_generation", std::to_string(value.reset_generation)},
                 {"volumes", std::move(volumes)}};
         }
-        return persistence::encode_integrity(
-            {{"format_version", "1.0"},
-             {"task_id", to_string(record.task_id)},
-             {"record_revision", std::to_string(record.record_revision)},
-             {"observed_control_generation", std::to_string(record.observed_control_generation)},
-             {"active_config_version", record.active_config_version},
-             {"run_operation", std::move(run)},
-             {"pipelines", std::move(pipelines)},
-             {"reset_progress", std::move(reset)},
-             {"cleanup_intents", std::move(cleanup)}},
-            kDomain, json_limits(limits));
+        Json document{
+            {"format_version", "1.0"},
+            {"task_id", to_string(record.task_id)},
+            {"record_revision", std::to_string(record.record_revision)},
+            {"observed_control_generation", std::to_string(record.observed_control_generation)},
+            {"active_config_version", record.active_config_version},
+            {"run_operation", std::move(run)},
+            {"pipelines", std::move(pipelines)},
+            {"reset_progress", std::move(reset)},
+            {"cleanup_intents", std::move(cleanup)}};
+        if (record.recording_time_ns) {
+            document["recording_time_ns"] = std::to_string(*record.recording_time_ns);
+        }
+        return persistence::encode_integrity(document, kDomain, json_limits(limits));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -353,15 +366,20 @@ Result<TaskRecoveryRecord> decode_recovery_record(
     try {
         const auto& doc = parsed.value();
         fields(
-            doc, {"format_version", "task_id", "record_revision", "observed_control_generation",
-                  "active_config_version", "run_operation", "pipelines", "reset_progress",
-                  "cleanup_intents", "content_digest"});
+            doc,
+            {"format_version", "task_id", "record_revision", "observed_control_generation",
+             "active_config_version", "run_operation", "pipelines", "reset_progress",
+             "cleanup_intents", "content_digest"},
+            {"recording_time_ns"});
         require(text(doc, "format_version") == "1.0");
         TaskRecoveryRecord record;
         record.task_id = take(parse_task_id(text(doc, "task_id")));
         record.record_revision = number(doc, "record_revision");
         record.observed_control_generation = number(doc, "observed_control_generation");
         record.active_config_version = text(doc, "active_config_version");
+        if (doc.contains("recording_time_ns")) {
+            record.recording_time_ns = number(doc, "recording_time_ns");
+        }
         const auto& run = doc.at("run_operation");
         if (!run.is_null()) {
             fields(
@@ -428,6 +446,10 @@ Result<void> recovery_successor(
         next.observed_control_generation < previous.observed_control_generation ||
         (next.observed_control_generation == previous.observed_control_generation &&
          next.active_config_version != previous.active_config_version)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (previous.recording_time_ns &&
+        (!next.recording_time_ns || *next.recording_time_ns < *previous.recording_time_ns)) {
         return Status(StatusCode::Conflict, {});
     }
     const bool higher_control =

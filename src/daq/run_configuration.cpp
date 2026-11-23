@@ -136,7 +136,6 @@ Result<task::RunInputs> resolve_run(
         }
         task::RunInputs result;
         result.boot = options.boot;
-        result.sample = options.sample;
         result.pipelines.reserve(config.pipelines.size());
         for (const auto& definition : config.pipelines) {
             const auto profile = std::find_if(

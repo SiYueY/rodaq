@@ -42,8 +42,8 @@ public:
     Result<void> publish_authorization(std::uint64_t recording_base);
     // Caller supplies its actual current durable Control on the serial control
     // turn; mere generation equality never substitutes for operation identity.
-    Result<void> open(const TaskControlRecord& current);
-    Result<void> fence() noexcept;
+    Result<void> open(const TaskControlRecord& current, std::uint64_t opened_monotonic);
+    Result<void> fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
 
 private:
     RunAuthorization() = default;

@@ -7,11 +7,11 @@
 
 namespace rodaq::task {
 
-void RunExecution::fence() noexcept {
+void RunExecution::fence(std::optional<std::uint64_t> monotonic_ns) noexcept {
     std::lock_guard<std::mutex> lock(registration);
     fenced = true;
     if (authorization) {
-        (void)authorization->fence();
+        (void)authorization->fence(monotonic_ns);
     }
 }
 
@@ -227,6 +227,7 @@ void TaskService::State::finish_execution(
 void TaskService::State::PrepareJob::run() noexcept {
     StatusCode failure = StatusCode::Ok;
     bool partial = false;
+    std::uint64_t recording_base = 0;
     try {
         auto inputs = owner->options->execution->resolve(
             *execution->control, *execution->config, *entry->identities);
@@ -241,6 +242,16 @@ void TaskService::State::PrepareJob::run() noexcept {
             failure = inputs.status().code();
         } else {
             auto& selected = inputs.value();
+            auto recovered_time = entry->recovery->load();
+            if (recovered_time.ok()) {
+                if (!recovered_time.value().recording_time_ns) {
+                    failure = StatusCode::Unavailable;
+                } else {
+                    recording_base = *recovered_time.value().recording_time_ns;
+                }
+            } else if (recovered_time.status().code() != StatusCode::NotFound) {
+                failure = recovered_time.status().code();
+            }
             if (selected.pipelines.size() != execution->config->pipelines.size()) {
                 failure = StatusCode::InvalidArgument;
             }
@@ -270,7 +281,7 @@ void TaskService::State::PrepareJob::run() noexcept {
                 auto authorization = task::RunAuthorization::create(
                     *execution->control, execution->config->start_policy,
                     std::move(selected.pipelines), entry->recovery, std::move(selected.boot),
-                    selected.sample);
+                    owner->options->execution->sample);
                 if (!authorization.ok()) {
                     failure = authorization.status().code();
                 } else {
@@ -279,7 +290,7 @@ void TaskService::State::PrepareJob::run() noexcept {
                         std::lock_guard<std::mutex> lock(execution->registration);
                         execution->pipelines = std::move(pipelines);
                         execution->boot = std::move(boot);
-                        execution->sample = selected.sample;
+                        execution->sample = owner->options->execution->sample;
                         execution->authorization = run;
                         if (execution->fenced) {
                             (void)run->fence();
@@ -319,11 +330,12 @@ void TaskService::State::PrepareJob::run() noexcept {
                         Result<void> authorized;
                         {
                             std::lock_guard<std::mutex> recovery(entry->recovery_execution);
-                            authorized = run->publish_authorization(selected.recording_base);
+                            authorized = run->publish_authorization(recording_base);
                         }
                         if (!authorized.ok()) {
                             failure = authorized.status().code();
                         } else {
+                            const auto opening = execution->sample();
                             std::lock_guard<std::mutex> control(entry->control_mutex);
                             const auto current = entry->controller->durable_record();
                             if (!owner->accepting.load(std::memory_order_acquire) ||
@@ -332,8 +344,10 @@ void TaskService::State::PrepareJob::run() noexcept {
                                     execution->control->control_generation)) {
                                 (void)run->fence();
                                 failure = StatusCode::Conflict;
+                            } else if (!opening.ok()) {
+                                failure = opening.status().code();
                             } else {
-                                auto opened = run->open(*current);
+                                auto opened = run->open(*current, opening.value().monotonic_ns);
                                 failure = opened.ok() ? StatusCode::Ok : opened.status().code();
                             }
                         }

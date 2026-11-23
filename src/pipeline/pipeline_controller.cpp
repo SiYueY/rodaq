@@ -335,8 +335,13 @@ GateOpenResult PipelineController::open_admission(const OpenAuthorization& autho
     return result;
 }
 
-Result<void> PipelineController::establish_control_fence() noexcept {
-    return state_->output->instance->establish_control_fence();
+Result<void> PipelineController::establish_control_fence(
+    std::optional<std::uint64_t> monotonic_ns) noexcept {
+    return state_->output->instance->establish_control_fence(monotonic_ns);
+}
+
+Result<std::optional<std::uint64_t>> PipelineController::recording_time_boundary() const {
+    return state_->output->instance->recording_time_boundary();
 }
 
 Result<GateSnapshot> PipelineController::close_admission(ControlGeneration generation) {

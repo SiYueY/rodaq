@@ -87,7 +87,7 @@ struct RunExecution {
     std::shared_ptr<const TaskConfig> config;
     StatusCode failure{StatusCode::Ok};
 
-    void fence() noexcept;
+    void fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
     ExecutionCondition condition(DesiredState desired);
 };
 

@@ -19,6 +19,7 @@ struct GateSnapshot {
     bool control_fence{true};
     std::uint32_t commit_inflight{0};
     std::uint64_t accepted_records{0};
+    bool ever_opened{false};
 };
 
 class AdmissionGate;
@@ -77,6 +78,7 @@ public:
     Result<GateSnapshot> close_and_capture(InstanceId instance_id);
     GateSnapshot snapshot() const;
     InstanceId instance_id() const noexcept { return instance_id_; }
+    bool ever_opened() const noexcept { return ever_opened_.load(std::memory_order_acquire); }
 
     bool admission_fenced() const noexcept {
         return !valid_ || control_fence_.load(std::memory_order_acquire);
@@ -91,6 +93,7 @@ private:
     mutable std::mutex mutex_;
     ControlGeneration authority_generation_;
     bool open_{false};
+    std::atomic<bool> ever_opened_{false};
     std::atomic<bool> control_fence_{false};
     std::uint32_t commit_inflight_{0};
     std::uint64_t accepted_records_{0};

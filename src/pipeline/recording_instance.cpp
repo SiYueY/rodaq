@@ -212,7 +212,9 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
         // failed sampler/authority cannot keep advertising a recording Gate.
         const bool authority_failed = !sample.ok() || !clock_->snapshot().ok();
         if (authority_failed) {
-            (void)establish_control_fence();
+            (void)establish_control_fence(
+                sample.ok() ? std::optional<std::uint64_t>(sample.value().monotonic_ns)
+                            : std::nullopt);
         }
         std::lock_guard<std::mutex> lock(facts_mutex_);
         increment(facts_.clock_rejections);
@@ -244,13 +246,24 @@ Result<acquisition::SubmitResult> RecordingInstance::submit_record(
             observe_source(index, attempt.source_id, std::nullopt);
         }
     }
+    if (submitted.ok() && submitted.value().disposition == RODAQ_SUBMIT_ACCEPTED) {
+        // Admission checked this exact arithmetic before committing the record.
+        // A candidate may receive its timestamp after the control caller sampled
+        // a cut but still commit before the fence. Never regress below that fact.
+        const auto recorded =
+            recording_base_ + (received.value().sample.monotonic_ns - opened_monotonic_);
+        auto old = accepted_recording_high_water_.load(std::memory_order_relaxed);
+        while (old < recorded && !accepted_recording_high_water_.compare_exchange_weak(
+                                     old, recorded, std::memory_order_relaxed)) {
+        }
+    }
     if (submitted.ok() && submitted.value().disposition == RODAQ_SUBMIT_ACCEPTED && accepted_) {
         // The accepted set is already published. Scheduling failure must never
         // rewrite Accepted into a pre-admission rejection or release its owner.
         try {
             accepted_();
         } catch (...) {
-            (void)establish_control_fence();
+            (void)establish_control_fence(received.value().sample.monotonic_ns);
             std::lock_guard<std::mutex> lock(facts_mutex_);
             facts_.terminal_failure = true;
         }
@@ -466,7 +479,9 @@ Result<void> RecordingInstance::report_acquisition_event(
         }
     }
     if (event.kind == RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE) {
-        (void)establish_control_fence();
+        const auto sample = sample_();
+        (void)establish_control_fence(
+            sample.ok() ? std::optional<std::uint64_t>(sample.value().monotonic_ns) : std::nullopt);
     }
     return {};
 }
@@ -525,8 +540,18 @@ Result<void> RecordingInstance::wait_ready(
                : Result<void>(Status(StatusCode::InvalidState, {}));
 }
 
-Result<void> RecordingInstance::establish_control_fence() noexcept {
-    auto result = gate.establish_control_fence(identity.instance_id);
+Result<void> RecordingInstance::establish_control_fence(
+    std::optional<std::uint64_t> monotonic_ns) noexcept {
+    Result<void> result;
+    {
+        std::lock_guard<std::mutex> timeline(timeline_mutex_);
+        const bool fenced = gate.admission_fenced();
+        result = gate.establish_control_fence(identity.instance_id);
+        if (!fenced && result.ok() && timeline_frozen_.load(std::memory_order_acquire) &&
+            gate.ever_opened()) {
+            fenced_monotonic_ = monotonic_ns;
+        }
+    }
     for (const auto& binding : streams.bindings()) {
         auto* stream = streams.find(binding.stream_id);
         std::lock_guard<std::mutex> lock(stream->mutex);
@@ -535,6 +560,29 @@ Result<void> RecordingInstance::establish_control_fence() noexcept {
     std::lock_guard<std::mutex> lock(facts_mutex_);
     readiness_changed_.notify_all();
     return result;
+}
+
+Result<std::optional<std::uint64_t>> RecordingInstance::recording_time_boundary() const {
+    std::lock_guard<std::mutex> timeline(timeline_mutex_);
+    const auto state = gate.snapshot();
+    if (!state.ever_opened) {
+        return std::optional<std::uint64_t>{};
+    }
+    if (!state.control_fence) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    if (fenced_monotonic_ && *fenced_monotonic_ < opened_monotonic_) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    // A clock/Writer failure may fence without a trustworthy timestamp. Keep
+    // the already proven floor; neither cleanup time nor an unknown tail can
+    // advance retention. Physical quiescence still permits Stop/shutdown.
+    const auto elapsed = fenced_monotonic_ ? *fenced_monotonic_ - opened_monotonic_ : 0;
+    if (elapsed > std::numeric_limits<std::uint64_t>::max() - recording_base_) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    return std::optional<std::uint64_t>{std::max(
+        recording_base_ + elapsed, accepted_recording_high_water_.load(std::memory_order_relaxed))};
 }
 
 }  // namespace rodaq::pipeline

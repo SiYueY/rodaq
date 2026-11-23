@@ -108,7 +108,8 @@ public:
     // capacity. A caller observation timeout must retain their actual frame.
     Result<PreparedPipeline> prepare(plugin::Deadline deadline);
     GateOpenResult open_admission(const OpenAuthorization& authorization);
-    Result<void> establish_control_fence() noexcept;
+    Result<void> establish_control_fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
+    Result<std::optional<std::uint64_t>> recording_time_boundary() const;
     Result<GateSnapshot> close_admission(ControlGeneration generation);
     Result<std::optional<SealedPipelineSegment>> drain(plugin::Deadline deadline);
     // Caller reserves a deployment-wide durable ID before entering. Repeating

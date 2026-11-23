@@ -142,6 +142,7 @@ Result<void> RunAuthorization::checkpoint_prepared() {
             return previous.status();
         }
         TaskRecoveryRecord record;
+        record.recording_time_ns = 0;
         std::uint64_t expected = 0;
         if (previous.ok()) {
             record = std::move(previous.value());
@@ -211,6 +212,10 @@ Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_bas
             return Status(StatusCode::InvalidState, {});
         }
         auto record = *prepared_record_;
+        if (record.recording_time_ns && recording_base < *record.recording_time_ns) {
+            return Status(StatusCode::Conflict, {});
+        }
+        record.recording_time_ns = recording_base;
         auto boundary = sample_();
         if (!boundary.ok()) {
             return boundary.status();
@@ -242,9 +247,10 @@ Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_bas
     }
 }
 
-Result<void> RunAuthorization::open(const TaskControlRecord& control) {
+Result<void> RunAuthorization::open(
+    const TaskControlRecord& control, std::uint64_t opened_monotonic) {
     std::lock_guard<std::mutex> lock(opening_);
-    if (fenced_ || !authorized_ || !current(control)) {
+    if (fenced_ || !authorized_ || !current(control) || opened_monotonic < opened_at_) {
         return Status(StatusCode::Conflict, {});
     }
     for (std::size_t i = 0; i < pipelines_.size(); ++i) {
@@ -260,13 +266,13 @@ Result<void> RunAuthorization::open(const TaskControlRecord& control) {
             pipelines_[i].effective_config_id,
             prepared.prepared_monotonic,
             boot_.id,
-            opened_at_,
+            opened_monotonic,
             recording_base_};
         if (pipelines_[i].controller->open_admission(authorization) !=
             pipeline::GateOpenResult::Opened) {
             fenced_ = true;
             for (const auto& pipeline : pipelines_) {
-                (void)pipeline.controller->establish_control_fence();
+                (void)pipeline.controller->establish_control_fence(opened_monotonic);
             }
             return Status(StatusCode::Conflict, {});
         }
@@ -274,11 +280,11 @@ Result<void> RunAuthorization::open(const TaskControlRecord& control) {
     return {};
 }
 
-Result<void> RunAuthorization::fence() noexcept {
+Result<void> RunAuthorization::fence(std::optional<std::uint64_t> monotonic_ns) noexcept {
     std::lock_guard<std::mutex> lock(opening_);
     fenced_ = true;
     for (const auto& pipeline : pipelines_) {
-        (void)pipeline.controller->establish_control_fence();
+        (void)pipeline.controller->establish_control_fence(monotonic_ns);
     }
     return {};
 }

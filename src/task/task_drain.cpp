@@ -97,6 +97,17 @@ Result<void> record_ended(task::TaskEntry& entry, const task::RunExecution& exec
         }
     }
     record.run_operation->phase = task::RunPhase::Ended;
+    auto recording_time = record.recording_time_ns.value_or(0);
+    for (const auto& pipeline : execution.pipelines) {
+        auto boundary = pipeline.controller->recording_time_boundary();
+        if (!boundary.ok()) {
+            return boundary.status();
+        }
+        if (boundary.value()) {
+            recording_time = std::max(recording_time, *boundary.value());
+        }
+    }
+    record.recording_time_ns = recording_time;
     const auto expected = record.record_revision++;
     return entry.recovery->publish(record, expected);
 }

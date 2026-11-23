@@ -58,6 +58,7 @@ GateOpenResult AdmissionGate::open_admission(InstanceId instance_id, ControlGene
         return GateOpenResult::Obsolete;
     }
     open_ = true;
+    ever_opened_.store(true, std::memory_order_release);
     return GateOpenResult::Opened;
 }
 
@@ -146,7 +147,8 @@ Result<void> AdmissionGate::advance_authority(
 GateSnapshot AdmissionGate::snapshot_locked() const noexcept {
     const auto fenced = control_fence_.load(std::memory_order_acquire);
     return {instance_id_,      authority_generation_, valid_ && open_ && !fenced,
-            !valid_ || fenced, commit_inflight_,      accepted_records_};
+            !valid_ || fenced, commit_inflight_,      accepted_records_,
+            ever_opened()};
 }
 
 Result<GateSnapshot> AdmissionGate::close_and_capture(InstanceId instance_id) {

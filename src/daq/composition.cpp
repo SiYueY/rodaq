@@ -190,6 +190,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 {profile.name, profile.storage.max_segment_physical_bytes});
         }
         auto execution = std::make_shared<task::RunExecutionOptions>();
+        execution->sample = o.sample;
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
         execution->native_timeout = o.settings.native_timeout;

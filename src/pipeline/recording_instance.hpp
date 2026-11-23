@@ -99,7 +99,8 @@ public:
     bool ready(const std::vector<ReadinessPolicy>& policies) const;
     Result<void> wait_ready(
         const std::vector<ReadinessPolicy>& policies, plugin::Deadline deadline);
-    Result<void> establish_control_fence() noexcept;
+    Result<void> establish_control_fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
+    Result<std::optional<std::uint64_t>> recording_time_boundary() const;
 
     const RecordingIdentity identity;
     AdmissionGate gate;
@@ -110,6 +111,8 @@ public:
     RecordQueue queue;
 
 private:
+    std::optional<std::uint64_t> fenced_monotonic_;
+    std::atomic<std::uint64_t> accepted_recording_high_water_{0};
     struct Source {
         rodaq_source_id_t id{};
         bool occupied{false};
@@ -148,7 +151,7 @@ private:
     CallbackFacts facts_;
     std::vector<std::vector<Source>> sources_;
     std::atomic<bool> timeline_frozen_{false};
-    std::mutex timeline_mutex_;
+    mutable std::mutex timeline_mutex_;
     std::uint64_t opened_monotonic_{0};
     std::uint64_t recording_base_{0};
 };

@@ -12,13 +12,28 @@ namespace rodaq {
 
 Result<void> TaskService::close_admission() {
     state_->accepting.store(false, std::memory_order_release);
+    bool needs_clock = false;
+    {
+        std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
+        for (const auto& entry : state_->entries) {
+            std::lock_guard<std::mutex> control(entry->control_mutex);
+            needs_clock = needs_clock || static_cast<bool>(entry->execution);
+        }
+    }
+    std::optional<std::uint64_t> cut;
+    if (needs_clock && state_->options->execution) {
+        const auto sample = state_->options->execution->sample();
+        if (sample.ok()) {
+            cut = sample.value().monotonic_ns;
+        }
+    }
     // Registry then Task is the same order as registry publication. No I/O,
     // Native operation or wait is performed under either structural lock.
     std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
     for (const auto& entry : state_->entries) {
         std::lock_guard<std::mutex> control(entry->control_mutex);
         if (entry->execution) {
-            entry->execution->fence();
+            entry->execution->fence(cut);
         }
     }
     return {};
