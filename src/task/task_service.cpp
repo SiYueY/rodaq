@@ -354,6 +354,20 @@ Result<TaskId> TaskService::State::create(
         if (!allowed.ok()) {
             return allowed.status();
         }
+        auto retained = creates->retained_receipts();
+        if (!retained.ok()) {
+            reconcile_creates = true;
+            return retained.status();
+        }
+        // Completed authority can exist before ordinary catalog publication,
+        // including after an uncertain Completed write. It still owns a Task
+        // slot. Never admit another Task merely because that entry is invisible.
+        const auto completed = std::count_if(
+            retained.value().begin(), retained.value().end(),
+            [](const auto& receipt) { return receipt.phase == task::CreatePhase::Completed; });
+        if (static_cast<std::size_t>(completed) >= options->max_tasks) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
     }
     if (!known.value()) {
         auto candidate = task::new_task_id();
@@ -443,7 +457,8 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
     if (!options.plugin_manager || !options.create_lane || !options.control_lane ||
         options.create_lane == options.control_lane || options.max_tasks == 0 ||
         options.max_tasks > 1024 || options.max_requests == 0 || options.max_requests > 4096 ||
-        options.max_stream_identities == 0 || options.max_stream_identities > 65536 ||
+        options.create_recovery_slots > 1024 || options.max_stream_identities == 0 ||
+        options.max_stream_identities > 65536 ||
         options.request_wait <= std::chrono::nanoseconds::zero() ||
         options.request_wait > std::chrono::hours{24} || options.resource_profiles.empty() ||
         options.runtime_snapshot_max_age <= std::chrono::nanoseconds::zero() ||
@@ -536,7 +551,8 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             }
         }
         auto creates = task::TaskCreateStore::open(
-            state->options->root / "create", state->options->max_tasks,
+            state->options->root / "create",
+            state->options->max_tasks + state->options->create_recovery_slots,
             state->file_hook(task::ServiceFileDomain::CreateReceipts));
         if (!creates.ok()) {
             return creates.status();

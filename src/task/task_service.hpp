@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -77,6 +78,10 @@ struct ServiceOptions {
     std::vector<ResourceProfileAdmission> resource_profiles;
     std::vector<std::string> output_roots;
     std::size_t max_tasks{8};
+    // Additional retained receipt capacity beyond active Task capacity. Pending
+    // materialization never consumes an active catalog slot; total receipts
+    // remain bounded by max_tasks + create_recovery_slots, including failures.
+    std::size_t create_recovery_slots{8};
     std::size_t max_requests{32};
     std::size_t max_stream_identities{1024};
     TaskStorePolicy store;

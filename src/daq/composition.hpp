@@ -51,6 +51,7 @@ struct DeploymentSettings {
     // Registered Task capacity: 1..16; total preallocated Writer lanes <=256.
     // Each Task owns a full max_pipelines slice, including while it is idle.
     std::size_t max_tasks{1};
+    std::size_t create_recovery_slots{8};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
 };
 

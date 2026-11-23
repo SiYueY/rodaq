@@ -272,6 +272,93 @@ TEST_F(TaskServiceTest, ConcurrentSameKeyCreateReturnsOneTaskAndBoundedCapacityS
     EXPECT_EQ(task_directories(), 1);
 }
 
+TEST_F(TaskServiceTest, IncompleteCreateUsesRecoveryCapacityWithoutConsumingAnActiveTaskSlot) {
+    options_.max_tasks = 1;
+    options_.create_recovery_slots = 1;
+    std::atomic<bool> fail{true};
+    options_.materialization_faults = [&](auto step) {
+        return fail && step == task::MaterializationStep::Allocated ? EIO : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_FALSE(service_->create_task(config_, {"interrupted"}).ok());
+    EXPECT_TRUE(service_->list_tasks({}).value().items.empty());
+    fail = false;
+    const auto created = service_->create_task(config_, {"healthy"});
+    ASSERT_TRUE(created.ok()) << static_cast<int>(created.status().code());
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(service_->create_task(config_, {"healthy"}).value(), created.value());
+    EXPECT_EQ(
+        service_->create_task(config_, {"interrupted"}).status().code(),
+        StatusCode::ResourceExhausted);
+    EXPECT_EQ(task_directories(), 1);
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(service_->create_task(config_, {"healthy"}).value(), created.value());
+}
+
+TEST_F(TaskServiceTest, CreateRecoveryReceiptsHaveAFixedBoundAndSameKeyCanFinishAtThatBound) {
+    options_.max_tasks = 1;
+    options_.create_recovery_slots = 1;
+    std::atomic<bool> fail{true};
+    options_.materialization_faults = [&](auto step) {
+        return fail && step == task::MaterializationStep::Allocated ? EIO : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_FALSE(service_->create_task(config_, {"first"}).ok());
+    EXPECT_FALSE(service_->create_task(config_, {"second"}).ok());
+    EXPECT_EQ(
+        service_->create_task(config_, {"overflow"}).status().code(),
+        StatusCode::ResourceExhausted);
+    EXPECT_EQ(task_directories(), 0);
+    fail = false;
+    const auto completed = service_->create_task(config_, {"first"});
+    ASSERT_TRUE(completed.ok());
+    EXPECT_EQ(service_->create_task(config_, {"first"}).value(), completed.value());
+    EXPECT_EQ(
+        service_->create_task(config_, {"second"}).status().code(), StatusCode::ResourceExhausted);
+    auto different = config_;
+    different.name = "Conflicting input at capacity";
+    EXPECT_EQ(service_->create_task(different, {"first"}).status().code(), StatusCode::Conflict);
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(task_directories(), 1);
+}
+
+TEST_F(TaskServiceTest, UncertainCompletedAuthorityOwnsCapacityBeforeCatalogVisibility) {
+    options_.max_tasks = 1;
+    options_.create_recovery_slots = 1;
+    std::atomic<bool> fail{false};
+    options_.materialization_faults = [&](auto step) {
+        if (step == task::MaterializationStep::Control) {
+            fail = true;
+        }
+        return 0;
+    };
+    options_.file_faults = [&](auto domain, auto step) {
+        return fail && domain == task::ServiceFileDomain::CreateReceipts &&
+                       step == rodaq::persistence::FileStep::SyncDirectory
+                   ? EIO
+                   : 0;
+    };
+    open();
+    ASSERT_TRUE(service_);
+    EXPECT_FALSE(service_->create_task(config_, {"original"}).ok());
+    EXPECT_TRUE(service_->list_tasks({}).value().items.empty());
+    options_.materialization_faults = {};
+    fail = false;
+    EXPECT_EQ(
+        service_->create_task(config_, {"other"}).status().code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(task_directories(), 1);
+    const auto original = service_->create_task(config_, {"original"});
+    ASSERT_TRUE(original.ok());
+    restart();
+    ASSERT_TRUE(service_);
+    EXPECT_EQ(service_->list_tasks({}).value().items.size(), 1);
+    EXPECT_EQ(service_->create_task(config_, {"original"}).value(), original.value());
+}
+
 TEST_F(TaskServiceTest, CompletedCreateRetryPrecedesChangedDeploymentAdmission) {
     open();
     ASSERT_TRUE(service_);

@@ -29,6 +29,7 @@ bool valid(const CompositionOptions& o) {
         o.settings.storage.empty() || o.settings.storage.size() > 64 ||
         o.settings.tasks.config.max_pipelines == 0 || o.settings.tasks.config.max_pipelines > 64 ||
         o.settings.max_tasks == 0 || o.settings.max_tasks > 16 ||
+        o.settings.create_recovery_slots > 1024 ||
         o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
         o.settings.native_timeout <= std::chrono::nanoseconds::zero()) {
         return false;
@@ -180,6 +181,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         service.create_lane = state->lanes[0];
         service.control_lane = state->lanes[1];
         service.max_tasks = o.settings.max_tasks;
+        service.create_recovery_slots = o.settings.create_recovery_slots;
         service.store = o.settings.tasks;
         service.allowed_plugins = o.settings.allowed_plugins;
         service.output_roots = {o.settings.output_root};
