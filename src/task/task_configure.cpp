@@ -66,8 +66,9 @@ Result<OperationId> TaskService::configure(
             const auto allowed = state_->validate_deployment(normalized.value());
             task::ConfigureFacts facts{
                 *current->config, entry->identity,
-                entry->quiescent && current->snapshot.snapshot_sequence !=
-                                        std::numeric_limits<std::uint64_t>::max(),
+                entry->quiescent && !entry->retention_work &&
+                    current->snapshot.snapshot_sequence !=
+                        std::numeric_limits<std::uint64_t>::max(),
                 allowed.ok()};
             auto decision = entry->controller->request_configure(
                 normalized.value(), request, precondition, task::control_wall_now(), facts,

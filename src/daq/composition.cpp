@@ -296,7 +296,11 @@ Result<void> Composition::observe() {
     if (!cleanup.ok()) {
         return cleanup.status();
     }
-    return state_->tasks->schedule_rotation(completed.value().monotonic_ns);
+    auto rotated = state_->tasks->schedule_rotation(completed.value().monotonic_ns);
+    if (!rotated.ok()) {
+        return rotated.status();
+    }
+    return state_->tasks->apply_retention(*state_->catalog);
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {

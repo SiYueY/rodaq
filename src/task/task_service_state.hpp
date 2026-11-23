@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/artifact/artifact_service.hpp>
+
 #include "task_service.hpp"
 #include "task_controller.hpp"
 #include "create_store.hpp"
@@ -91,6 +93,11 @@ struct RunExecution {
     ExecutionCondition condition(DesiredState desired);
 };
 
+struct RetentionWork {
+    ArtifactId artifact;
+    ControlGeneration generation;
+};
+
 struct TaskEntry {
     TaskId id;
     std::mutex control_mutex;
@@ -105,6 +112,10 @@ struct TaskEntry {
     std::shared_ptr<const PublishedTask> published;
     bool quiescent{false};
     bool persisting{false};
+    // Retained until actual deletion settles, including uncertain publication.
+    // Configure cannot change policy while this original-generation work exists.
+    std::optional<RetentionWork> retention_work;
+    bool retention_active{false};
     // Failed dispatch only; an actual ended result is replayed, never re-issued.
     bool ready_to_submit{false};
     std::uint32_t closing{0};

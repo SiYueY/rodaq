@@ -83,6 +83,7 @@ public:
     Result<RetentionSelection> select_retention(
         TaskId task, const RetentionPolicy& policy,
         const std::vector<std::string>& eligible_config_versions) const;
+    Result<std::vector<std::string>> retention_versions(TaskId task) const;
     CatalogSnapshot snapshot() const;
 
 private:

@@ -3485,10 +3485,14 @@ TEST_F(PipelineControllerTest, RetentionUsesTaskWideCommittedTimeAndPreservesThe
     ASSERT_TRUE(selected.value()->publish_authorization(0).ok());
     ASSERT_TRUE(selected.value()->open(control, 200).ok());
     const auto wait_receive = [&](const auto& pipeline, std::int64_t realtime) {
+        const auto before = pipeline->snapshot().value().gate.accepted_records;
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         do {
             const auto facts = pipeline->callback_facts();
-            if (facts.ok() && facts.value().streams[0].last_receive_realtime_ns == realtime) {
+            const auto admitted = pipeline->snapshot();
+            if (facts.ok() && admitted.ok() &&
+                admitted.value().gate.accepted_records >= before + 4 &&
+                facts.value().streams[0].last_receive_realtime_ns == realtime) {
                 return true;
             }
             std::this_thread::sleep_for(1ms);
@@ -3571,6 +3575,155 @@ TEST_F(
     policy = {};
     EXPECT_FALSE(
         catalog_->select_retention(options_.identity.task_id, policy, versions).value().candidate);
+}
+
+class AutomaticRetentionTest : public PipelineControllerTest,
+                               public testing::WithParamInterface<bool> {};
+
+TEST_P(AutomaticRetentionTest, ResolvesContinuousHistoryFromItsImmutableConfig) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 1);
+    const auto previous = artifacts.value().items[0];
+    config = service.get_active_config(id).value();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1, GetParam()};
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto configure = service.configure(id, config, {"rolling"}, {true, 3});
+    ASSERT_TRUE(configure.ok());
+    ASSERT_TRUE(wait_composed(id, configure.value()));
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto ledger = ledger_->get(previous.segment_id);
+    ASSERT_TRUE(ledger.ok());
+    EXPECT_EQ(
+        ledger.value().state,
+        GetParam() ? artifact::LedgerState::Deleted : artifact::LedgerState::Committed);
+    artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    EXPECT_EQ(artifacts.value().items.size(), GetParam() ? 0 : 1);
+    // New Rolling artifacts participate even when old Continuous history is excluded.
+    const auto rolling_start = service.start(id, {"rolling-start"}, {true, 4});
+    ASSERT_TRUE(rolling_start.ok());
+    ASSERT_TRUE(wait_composed(id, rolling_start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto rolling_stop = service.stop(id, {"rolling-stop"}, {true, 5});
+    ASSERT_TRUE(rolling_stop.ok());
+    ASSERT_TRUE(wait_composed(id, rolling_stop.value()));
+    artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    const auto rolling = std::find_if(
+        artifacts.value().items.begin(), artifacts.value().items.end(),
+        [&](const auto& row) { return !(row.artifact_id == previous.artifact_id); });
+    ASSERT_NE(rolling, artifacts.value().items.end());
+    const auto info = composition_->artifacts().get_artifact(rolling->artifact_id).value();
+    {
+        auto reader =
+            composition_->artifacts().acquire_read(rolling->artifact_id, info.files[0].file_id);
+        ASSERT_TRUE(reader.ok());
+        ASSERT_TRUE(composition_->observe().ok());
+        EXPECT_EQ(
+            ledger_->get(rolling->segment_id).value().state, artifact::LedgerState::Committed);
+    }
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(ledger_->get(rolling->segment_id).value().state, artifact::LedgerState::Deleted);
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(service.get_task(id).value().control_generation, 6);
+}
+
+INSTANTIATE_TEST_SUITE_P(ContinuousHistory, AutomaticRetentionTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, AutomaticRetentionRetainsUncertainIntentAndOrdersConfigure) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1};
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 1);
+    const auto artifact = artifacts.value().items[0];
+    *ledger_fault_ = true;
+    const auto uncertain = composition_->observe();
+    EXPECT_FALSE(uncertain.ok());
+    EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / std::to_string(artifact.segment_id)));
+    config = service.get_active_config(id).value();
+    config.recording_mode = rodaq::RecordingMode::Continuous;
+    config.retention_policy = {};
+    const auto conflict = service.configure(id, config, {"keep"}, {true, 3});
+    EXPECT_FALSE(conflict.ok());
+    *ledger_fault_ = false;
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto deleted = ledger_->get(artifact.segment_id);
+    ASSERT_TRUE(deleted.ok());
+    EXPECT_EQ(deleted.value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(deleted.value().delete_generation, 3);
+    const auto configure = service.configure(id, config, {"keep"}, {true, 3});
+    ASSERT_TRUE(configure.ok());
+    ASSERT_TRUE(wait_composed(id, configure.value()));
+    EXPECT_EQ(service.get_task(id).value().control_generation, 4);
+}
+
+TEST_F(PipelineControllerTest, ShutdownCannotDeclareActualRetentionPublicationSettled) {
+    open_composition();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1};
+    const auto created = service.create_task(config, {"create"});
+    ASSERT_TRUE(created.ok());
+    const auto id = created.value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    ledger_control_->block = true;
+    auto maintenance = std::async(std::launch::async, [&] { return composition_->observe(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(ledger_control_->mutex);
+        entered =
+            ledger_control_->changed.wait_for(lock, 2s, [&] { return ledger_control_->entered; });
+    }
+    const auto shutdown = composition_->shutdown(std::chrono::steady_clock::now() + 10ms);
+    {
+        std::lock_guard<std::mutex> lock(ledger_control_->mutex);
+        ledger_control_->released = true;
+    }
+    ledger_control_->changed.notify_all();
+    const auto actual = maintenance.get();
+    ASSERT_TRUE(entered);
+    EXPECT_FALSE(shutdown.ok());
+    EXPECT_TRUE(actual.ok());
+    EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
 }
 
 class RecordingTimelineTest : public PipelineControllerTest,

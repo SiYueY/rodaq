@@ -9,6 +9,30 @@
 
 namespace rodaq::artifact {
 
+Result<std::vector<std::string>> ArtifactCatalog::retention_versions(TaskId task) const {
+    try {
+        std::vector<std::string> versions;
+        std::lock_guard<std::mutex> lock(state_->index);
+        for (const auto& slot : state_->slots) {
+            if (!slot.entry || !(slot.entry->info.summary.task_id == task)) {
+                continue;
+            }
+            auto visible = state_->public_entry(slot);
+            if (!visible.ok()) {
+                return visible.status();
+            }
+            if (visible.value() &&
+                std::find(versions.begin(), versions.end(), slot.entry->config_version) ==
+                    versions.end()) {
+                versions.push_back(slot.entry->config_version);
+            }
+        }
+        return versions;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 Result<RetentionSelection> ArtifactCatalog::select_retention(
     TaskId task, const RetentionPolicy& policy,
     const std::vector<std::string>& eligible_config_versions) const {
