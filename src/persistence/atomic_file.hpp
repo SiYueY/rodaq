@@ -20,7 +20,8 @@ enum class FileStep {
     Publish,
     SyncDirectory,
     RemoveTemporary,
-    Complete
+    Complete,
+    RemoveAuthority
 };
 
 // Private test seam. Return an errno before the named syscall, or zero.

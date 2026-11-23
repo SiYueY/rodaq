@@ -57,6 +57,10 @@ public:
     // Caller already owns actual filesystem/integrity/fence/delete proof.
     // This Store enforces durable state monotonicity, not that business proof.
     Result<void> advance(const LedgerRecord& record, LedgerState expected_state);
+    // Maintenance caller proves audit expiry, artifact absence/parent durability
+    // and absence of publication/recovery references before each attempt.
+    // An uncertain unlink retains capacity until this same operation settles.
+    Result<void> collect_deleted(std::uint64_t segment_id);
     Result<void> reconcile(std::uint64_t segment_id);
     Result<LedgerRecord> get(std::uint64_t segment_id) const;
     Result<std::vector<LedgerRecord>> recovery_snapshot() const;

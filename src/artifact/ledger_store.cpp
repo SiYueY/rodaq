@@ -24,7 +24,7 @@ namespace {
 using persistence::FileDescriptor;
 static_assert(std::is_nothrow_move_constructible_v<LedgerRecord>);
 static_assert(std::is_nothrow_move_assignable_v<LedgerRecord>);
-enum class SlotPhase { Empty, Reserved, Occupied, Uncertain };
+enum class SlotPhase { Empty, Reserved, Occupied, Uncertain, Collecting };
 
 struct LedgerSlot {
     std::uint64_t identity{0};
@@ -356,7 +356,7 @@ Result<void> LedgerStore::create_committing(
                 !slot.token_present) {
                 return Status(StatusCode::Conflict, {});
             }
-            if (slot.phase == SlotPhase::Uncertain) {
+            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
                 return Status(StatusCode::Unavailable, {});
             }
             existing = slot.current;
@@ -515,6 +515,84 @@ Result<void> LedgerStore::advance(const LedgerRecord& record, LedgerState expect
     }
 }
 
+Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
+    std::unique_lock<std::mutex> flight(state_->execution, std::try_to_lock);
+    if (!flight.owns_lock()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    try {
+        std::size_t index = 0;
+        std::optional<LedgerRecord> expected;
+        bool retry = false;
+        {
+            std::lock_guard<std::mutex> lock(state_->projection);
+            index = state_->find(segment_id);
+            if (index == state_->slots.size()) {
+                return Status(StatusCode::NotFound, {});
+            }
+            const auto& slot = state_->slots[index];
+            if ((slot.phase != SlotPhase::Occupied && slot.phase != SlotPhase::Collecting) ||
+                !slot.current || slot.current->state != LedgerState::Deleted ||
+                slot.token_present || slot.pending || !slot.retained_temporary.empty()) {
+                return Status(StatusCode::Conflict, {});
+            }
+            retry = slot.phase == SlotPhase::Collecting;
+            expected = slot.current;
+        }
+        auto valid = state_->verify_namespace(segment_id);
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        const auto parent = state_->directory / shard_name(segment_id);
+        auto actual = read_record(parent, segment_id);
+        if (actual.ok()) {
+            auto same = same_record(actual.value(), *expected);
+            if (!same.ok()) {
+                return same.status();
+            }
+            if (!same.value()) {
+                return Status(StatusCode::DataLoss, {});
+            }
+        } else if (!retry || actual.status().code() != StatusCode::NotFound) {
+            return actual.status().code() == StatusCode::NotFound ? Status(StatusCode::DataLoss, {})
+                                                                  : actual.status();
+        }
+        {
+            std::lock_guard<std::mutex> lock(state_->projection);
+            state_->slots[index].phase = SlotPhase::Collecting;
+        }
+        if (actual.ok()) {
+            if ((state_->faults && state_->faults(persistence::FileStep::RemoveAuthority) != 0) ||
+                unlink((parent / file_name(segment_id)).c_str()) != 0) {
+                return Status(StatusCode::Unavailable, {});
+            }
+        }
+        valid = persistence::sync_directory(parent, state_->faults);
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        valid = state_->verify_namespace(segment_id);
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        {
+            std::lock_guard<std::mutex> lock(state_->projection);
+            auto& slot = state_->slots[index];
+            slot.current.reset();
+            slot.phase = SlotPhase::Empty;
+            slot.identity = 0;
+            // Preserve the registration generation across slot reuse.
+            --state_->slots_in_use;
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    } catch (const std::filesystem::filesystem_error&) {
+        state_->protection.store(StatusCode::Unavailable);
+        return Status(StatusCode::Unavailable, {});
+    }
+}
+
 Result<void> LedgerStore::reconcile(std::uint64_t segment_id) {
     std::unique_lock<std::mutex> flight(state_->execution, std::try_to_lock);
     if (!flight.owns_lock()) {
@@ -532,6 +610,11 @@ Result<void> LedgerStore::reconcile(std::uint64_t segment_id) {
                 return Status(StatusCode::NotFound, {});
             }
             const auto& slot = state_->slots[index];
+            if (slot.phase == SlotPhase::Collecting) {
+                // Only the maintenance owner can renew artifact absence proof
+                // and retry GC. Generic reconciliation cannot authorize it.
+                return Status(StatusCode::Unavailable, {});
+            }
             if (slot.phase != SlotPhase::Uncertain) {
                 return {};
             }
@@ -614,7 +697,7 @@ Result<LedgerRecord> LedgerStore::get(std::uint64_t segment_id) const {
             return Status(StatusCode::NotFound, {});
         }
         const auto& slot = state_->slots[index];
-        if (slot.phase == SlotPhase::Uncertain) {
+        if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
             return Status(StatusCode::Unavailable, {});
         }
         if (!slot.current) {
@@ -635,7 +718,7 @@ Result<std::vector<LedgerRecord>> LedgerStore::recovery_snapshot() const {
         std::vector<LedgerRecord> records;
         records.reserve(state_->slots_in_use);
         for (const auto& slot : state_->slots) {
-            if (slot.phase == SlotPhase::Uncertain) {
+            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
                 return Status(StatusCode::Unavailable, {});
             }
             if (slot.current) {

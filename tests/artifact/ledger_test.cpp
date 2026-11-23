@@ -395,3 +395,134 @@ TEST_F(
 }
 
 }  // namespace
+
+namespace {
+
+void make_deleted(LedgerStore& owner, std::uint64_t id = 1) {
+    auto value = committed(record(id));
+    ASSERT_TRUE(owner.advance(value, LedgerState::Committing).ok());
+    value.state = LedgerState::Deleting;
+    value.delete_generation = 7;
+    value.delete_reason = "retention";
+    ASSERT_TRUE(owner.advance(value, LedgerState::Committed).ok());
+    value.state = LedgerState::Deleted;
+    value.deleted_at = rodaq::time::WallTime(std::chrono::seconds{10});
+    ASSERT_TRUE(owner.advance(value, LedgerState::Deleting).ok());
+}
+
+TEST_F(LedgerStoreTest, TombstoneCollectionReleasesOnlyDurablyDeletedRegistrationCapacity) {
+    auto owner = open(1);
+    ASSERT_TRUE(owner.ok());
+    create(*owner.value());
+    EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::Conflict);
+    make_deleted(*owner.value());
+    ASSERT_TRUE(owner.value()->collect_deleted(1).ok());
+    EXPECT_EQ(owner.value()->get(1).status().code(), StatusCode::NotFound);
+    EXPECT_TRUE(owner.value()->recovery_snapshot().value().empty());
+    EXPECT_FALSE(fs::exists(root_ / "01/1.json"));
+    create(*owner.value(), 2);
+    EXPECT_EQ(owner.value()->get(2).value().state, LedgerState::Committing);
+    owner.value().reset();
+    owner = open(1, {}, LedgerOpenMode::Existing);
+    ASSERT_TRUE(owner.ok());
+    EXPECT_EQ(owner.value()->recovery_snapshot().value().size(), 1);
+    EXPECT_EQ(owner.value()->get(2).value().segment_id, 2);
+}
+
+TEST_F(LedgerStoreTest, TombstoneCollectionCannotInvalidateALiveRegistrationToken) {
+    bool armed = false;
+    auto owner = open(1, [&](auto step) {
+        return armed && step == persistence::FileStep::SyncDirectory ? EIO : 0;
+    });
+    ASSERT_TRUE(owner.ok());
+    {
+        auto token = owner.value()->reserve_registration(1);
+        ASSERT_TRUE(token.ok());
+        // A failed publication retains the original registration wrapper even
+        // after reconciliation discovers its durable committing record.
+        armed = true;
+        ASSERT_FALSE(owner.value()->create_committing(token.value(), record()).ok());
+        armed = false;
+        ASSERT_TRUE(owner.value()->reconcile(1).ok());
+        make_deleted(*owner.value());
+        EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::Conflict);
+        EXPECT_TRUE(fs::exists(root_ / "01/1.json"));
+    }
+    ASSERT_TRUE(owner.value()->collect_deleted(1).ok());
+    create(*owner.value(), 2);
+    EXPECT_EQ(owner.value()->get(2).value().segment_id, 2);
+}
+
+class LedgerCollectionFaultTest : public LedgerStoreTest,
+                                  public testing::WithParamInterface<persistence::FileStep> {};
+
+TEST_P(LedgerCollectionFaultTest, UncertainRemovalRetainsCapacityUntilExplicitMaintenanceRetry) {
+    bool armed = false;
+    auto owner = open(1, [&](auto step) { return armed && step == GetParam() ? EIO : 0; });
+    ASSERT_TRUE(owner.ok());
+    create(*owner.value());
+    make_deleted(*owner.value());
+    armed = true;
+    EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(
+        fs::exists(root_ / "01/1.json"), GetParam() == persistence::FileStep::RemoveAuthority);
+    EXPECT_EQ(owner.value()->get(1).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(owner.value()->recovery_snapshot().status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(owner.value()->reconcile(1).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(
+        owner.value()->reserve_registration(2).status().code(), StatusCode::ResourceExhausted);
+    armed = false;
+    ASSERT_TRUE(owner.value()->collect_deleted(1).ok());
+    create(*owner.value(), 2);
+    EXPECT_EQ(owner.value()->get(2).value().segment_id, 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RemovalBoundaries, LedgerCollectionFaultTest,
+    testing::Values(persistence::FileStep::RemoveAuthority, persistence::FileStep::SyncDirectory));
+
+TEST_F(LedgerStoreTest, FirstCollectionCannotReinterpretAnUnexpectedMissingTombstoneAsLegalGC) {
+    auto owner = open(1);
+    ASSERT_TRUE(owner.ok());
+    create(*owner.value());
+    make_deleted(*owner.value());
+    ASSERT_TRUE(fs::remove(root_ / "01/1.json"));
+    EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(
+        owner.value()->reserve_registration(2).status().code(), StatusCode::ResourceExhausted);
+}
+
+TEST_F(LedgerStoreTest, BlockedCollectionNeverHoldsTheProjectionLockOrCreditsCapacityEarly) {
+    bool armed = false;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto allowed = release.get_future().share();
+    auto owner = open(1, [&](auto step) {
+        if (armed && step == persistence::FileStep::SyncDirectory) {
+            entered.set_value();
+            allowed.wait();
+        }
+        return 0;
+    });
+    ASSERT_TRUE(owner.ok());
+    create(*owner.value());
+    make_deleted(*owner.value());
+    armed = true;
+    auto collecting =
+        std::async(std::launch::async, [&] { return owner.value()->collect_deleted(1); });
+    const auto observed = entered.get_future().wait_for(std::chrono::seconds{2});
+    if (observed == std::future_status::ready) {
+        EXPECT_EQ(owner.value()->get(1).status().code(), StatusCode::Unavailable);
+        EXPECT_EQ(
+            owner.value()->reserve_registration(2).status().code(), StatusCode::ResourceExhausted);
+        EXPECT_EQ(owner.value()->collect_deleted(1).status().code(), StatusCode::Conflict);
+    }
+    release.set_value();
+    EXPECT_EQ(observed, std::future_status::ready);
+    EXPECT_TRUE(collecting.get().ok());
+    armed = false;
+    create(*owner.value(), 2);
+}
+
+}  // namespace
