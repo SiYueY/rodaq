@@ -141,6 +141,36 @@ TEST_F(TaskRecoveryTest, RecordingBoundaryKeepsExactPersistentValueAndNeverRegre
     EXPECT_FALSE(task::decode_recovery_record(malformed.value(), {}).ok());
 }
 
+TEST_F(TaskRecoveryTest, CommittedProgressIsExactMonotonicAndIndependentOfOpenTime) {
+    const auto legacy = task::encode_recovery_record(record_, {});
+    ASSERT_TRUE(legacy.ok());
+    EXPECT_FALSE(
+        task::decode_recovery_record(legacy.value(), {}).value().committed_recording_end_ns);
+    record_.recording_time_ns = 10000;
+    record_.committed_recording_end_ns = 9007199254740993ULL;
+    auto store = open();
+    ASSERT_TRUE(store.ok());
+    ASSERT_TRUE(store.value()->publish(record_, 0).ok());
+    store.value().reset();
+    store = open();
+    ASSERT_TRUE(store.ok());
+    auto next = store.value()->load().value();
+    EXPECT_EQ(next.committed_recording_end_ns, 9007199254740993ULL);
+    EXPECT_EQ(next.recording_time_ns, 10000);
+    ++next.record_revision;
+    next.committed_recording_end_ns.reset();
+    EXPECT_EQ(store.value()->publish(next, 1).status().code(), StatusCode::Conflict);
+    next.committed_recording_end_ns = 0;
+    EXPECT_EQ(store.value()->publish(next, 1).status().code(), StatusCode::Conflict);
+    next.committed_recording_end_ns = std::numeric_limits<std::uint64_t>::max();
+    ASSERT_TRUE(store.value()->publish(next, 1).ok());
+    auto document = persistence::parse_json(task::encode_recovery_record(next, {}).value()).value();
+    document["committed_recording_end_ns"] = 1;
+    const auto malformed = persistence::encode_integrity(document, "rodaq.task-recovery.v1");
+    ASSERT_TRUE(malformed.ok());
+    EXPECT_FALSE(task::decode_recovery_record(malformed.value(), {}).ok());
+}
+
 TEST_F(TaskRecoveryTest, UncertainRecordingBoundaryCannotBeUsedBeforeDurableReconciliation) {
     std::atomic<bool> fail{false};
     auto store = open(

@@ -1,12 +1,63 @@
 #include "task_service_state.hpp"
 
 #include <chrono>
+#include <limits>
+#include <mutex>
 #include <new>
+#include <utility>
 #include <vector>
 
 #include "../artifact/artifact_catalog.hpp"
 
 namespace rodaq {
+namespace {
+
+Result<task::TaskRecoveryRecord> retention_recovery(task::TaskEntry& entry) {
+    auto record = entry.recovery->load();
+    if (!record.ok() && record.status().code() == StatusCode::Unavailable) {
+        auto actual = entry.recovery->reconcile();
+        if (!actual.ok()) {
+            return actual.status();
+        }
+        return actual.value() ? Result<task::TaskRecoveryRecord>(std::move(*actual.value()))
+                              : Result<task::TaskRecoveryRecord>(Status(StatusCode::NotFound, {}));
+    }
+    return record;
+}
+
+Result<std::uint64_t> committed_floor(task::TaskEntry& entry) {
+    std::lock_guard<std::mutex> recovery(entry.recovery_execution);
+    auto record = retention_recovery(entry);
+    if (!record.ok()) {
+        return record.status().code() == StatusCode::NotFound
+                   ? Result<std::uint64_t>(0)
+                   : Result<std::uint64_t>(record.status());
+    }
+    // A missing legacy checkpoint is a conservative lower bound, never silent
+    // Open time or permission to infer an unverified committed tail.
+    return record.value().committed_recording_end_ns.value_or(0);
+}
+
+Result<void> checkpoint_committed(task::TaskEntry& entry, std::uint64_t boundary) {
+    std::lock_guard<std::mutex> recovery(entry.recovery_execution);
+    auto record = retention_recovery(entry);
+    if (!record.ok()) {
+        return record.status().code() == StatusCode::NotFound ? Status(StatusCode::DataLoss, {})
+                                                              : record.status();
+    }
+    if (record.value().committed_recording_end_ns &&
+        *record.value().committed_recording_end_ns >= boundary) {
+        return {};
+    }
+    if (record.value().record_revision == std::numeric_limits<std::uint64_t>::max()) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    const auto expected = record.value().record_revision++;
+    record.value().committed_recording_end_ns = boundary;
+    return entry.recovery->publish(record.value(), expected);
+}
+
+}  // namespace
 
 Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
     if (!state_->accepting.load(std::memory_order_acquire)) {
@@ -59,8 +110,15 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                 if (!resolved) {
                     continue;
                 }
+                auto floor = committed_floor(*entry);
+                if (!floor.ok()) {
+                    if (first_failure.ok()) {
+                        first_failure = floor.status();
+                    }
+                    continue;
+                }
                 auto selected = catalog.select_retention(
-                    entry->id, current->config->retention_policy, eligible);
+                    entry->id, current->config->retention_policy, eligible, floor.value());
                 if (!selected.ok()) {
                     if (first_failure.ok()) {
                         first_failure = selected.status();
@@ -80,7 +138,8 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                         continue;
                     }
                     work = task::RetentionWork{
-                        *selected.value().candidate, current->snapshot.control_generation};
+                        *selected.value().candidate, current->snapshot.control_generation,
+                        selected.value().committed_recording_end_ns};
                     entry->retention_work = work;
                 }
             }
@@ -100,6 +159,13 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
             } flight{*entry};
             // Maintenance owns the actual call. A deadline only bounds observing
             // leases; it never discards the retained intent or releases disk charge.
+            auto checkpoint = checkpoint_committed(*entry, work->committed_recording_end_ns);
+            if (!checkpoint.ok()) {
+                if (first_failure.ok()) {
+                    first_failure = checkpoint.status();
+                }
+                continue;
+            }
             auto deleted = catalog.delete_artifact(
                 work->artifact, work->generation, artifact::DeleteReason::Retention,
                 task::control_wall_now(), std::chrono::steady_clock::now());

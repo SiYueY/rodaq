@@ -79,10 +79,12 @@ public:
         ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,
         std::chrono::steady_clock::time_point deadline);
     // Task resolves historical immutable configuration modes into this bounded
-    // version set. Selection is a read-only hint; revalidate policy before intent.
+    // version set. The time floor comes only from verified committed checkpoints,
+    // never from Task Open time. Revalidate current policy before delete intent.
     Result<RetentionSelection> select_retention(
         TaskId task, const RetentionPolicy& policy,
-        const std::vector<std::string>& eligible_config_versions) const;
+        const std::vector<std::string>& eligible_config_versions,
+        std::uint64_t committed_recording_floor_ns = 0) const;
     Result<std::vector<std::string>> retention_versions(TaskId task) const;
     CatalogSnapshot snapshot() const;
 

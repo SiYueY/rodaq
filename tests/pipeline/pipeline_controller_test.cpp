@@ -3726,6 +3726,95 @@ TEST_F(PipelineControllerTest, ShutdownCannotDeclareActualRetentionPublicationSe
     EXPECT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
 }
 
+TEST_F(PipelineControllerTest, CommittedProgressSurvivesDeletionOfItsNewestArtifact) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto record_run = [&](const char* key, std::uint64_t generation, std::uint64_t begin,
+                                std::uint64_t end) {
+        retention_monotonic = begin;
+        const auto start = service.start(id, {std::string(key) + "-start"}, {true, generation});
+        if (!start.ok() || !wait_composed(id, start.value()) || !composition_->observe().ok()) {
+            return false;
+        }
+        const auto before =
+            service.get_runtime_snapshot(id).value().pipelines[0].facts->accepted_records;
+        retention_monotonic = end;
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        bool accepted = false;
+        do {
+            if (!composition_->observe().ok()) {
+                return false;
+            }
+            const auto runtime = service.get_runtime_snapshot(id);
+            accepted = runtime.ok() && runtime.value().pipelines[0].facts &&
+                       runtime.value().pipelines[0].facts->accepted_records >= before + 4;
+            if (accepted) {
+                break;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        const auto stop = service.stop(id, {std::string(key) + "-stop"}, {true, generation + 1});
+        return accepted && stop.ok() && wait_composed(id, stop.value());
+    };
+    ASSERT_TRUE(record_run("continuous", 1, 200, 500));
+    ASSERT_TRUE(composition_->observe().ok());
+    config = service.get_active_config(id).value();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1};
+    const auto rolling = service.configure(id, config, {"rolling"}, {true, 3});
+    ASSERT_TRUE(rolling.ok());
+    ASSERT_TRUE(wait_composed(id, rolling.value()));
+    ASSERT_TRUE(record_run("rolling", 4, 1000, 1300));
+    ASSERT_TRUE(composition_->observe().ok());
+    auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 1);
+    EXPECT_EQ(artifacts.value().items[0].recording_range.end_ns, 300);
+    config = service.get_active_config(id).value();
+    config.retention_policy = {rodaq::RetentionMode::Rolling, 100ns, {}, true};
+    const auto include = service.configure(id, config, {"include"}, {true, 6});
+    ASSERT_TRUE(include.ok());
+    ASSERT_TRUE(wait_composed(id, include.value()));
+    retention_monotonic = 10000;
+    ASSERT_TRUE(composition_->observe().ok());
+    artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    EXPECT_TRUE(artifacts.value().items.empty());
+    const auto bytes = rodaq::persistence::read_file(
+        root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+    ASSERT_TRUE(bytes.ok());
+    const auto checkpoint = rodaq::task::decode_recovery_record(bytes.value(), {});
+    ASSERT_TRUE(checkpoint.ok());
+    EXPECT_EQ(checkpoint.value().committed_recording_end_ns, 600);
+    EXPECT_EQ(checkpoint.value().recording_time_ns, 600);
+}
+
+TEST_F(PipelineControllerTest, RunAuthorizationPreservesInterleavedCommittedCheckpoint) {
+    create();
+    auto control = accepted_run();
+    auto store = recovery();
+    auto run = rodaq::task::RunAuthorization::create(
+        control, rodaq::StartPolicyMode::AllRequired,
+        {{controller_, options_.manifest.effective_config_id, true}}, store, boot(),
+        &receive_clock);
+    ASSERT_TRUE(run.ok());
+    ASSERT_TRUE(run.value()->prepare(soon()).value().barrier_passed);
+    ASSERT_TRUE(run.value()->checkpoint_prepared().ok());
+    auto checkpoint = store->load().value();
+    const auto expected = checkpoint.record_revision++;
+    checkpoint.committed_recording_end_ns = 123;
+    ASSERT_TRUE(store->publish(checkpoint, expected).ok());
+    ASSERT_TRUE(run.value()->publish_authorization(0).ok());
+    EXPECT_EQ(store->load().value().committed_recording_end_ns, 123);
+    ASSERT_TRUE(run.value()->fence().ok());
+    ASSERT_TRUE(controller_->close_admission(8).ok());
+    ASSERT_TRUE(controller_->quiesce(soon()).ok());
+}
+
 class RecordingTimelineTest : public PipelineControllerTest,
                               public testing::WithParamInterface<bool> {};
 

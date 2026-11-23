@@ -346,6 +346,10 @@ Result<std::string> encode_recovery_record(
         if (record.recording_time_ns) {
             document["recording_time_ns"] = std::to_string(*record.recording_time_ns);
         }
+        if (record.committed_recording_end_ns) {
+            document["committed_recording_end_ns"] =
+                std::to_string(*record.committed_recording_end_ns);
+        }
         return persistence::encode_integrity(document, kDomain, json_limits(limits));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
@@ -370,7 +374,7 @@ Result<TaskRecoveryRecord> decode_recovery_record(
             {"format_version", "task_id", "record_revision", "observed_control_generation",
              "active_config_version", "run_operation", "pipelines", "reset_progress",
              "cleanup_intents", "content_digest"},
-            {"recording_time_ns"});
+            {"recording_time_ns", "committed_recording_end_ns"});
         require(text(doc, "format_version") == "1.0");
         TaskRecoveryRecord record;
         record.task_id = take(parse_task_id(text(doc, "task_id")));
@@ -379,6 +383,9 @@ Result<TaskRecoveryRecord> decode_recovery_record(
         record.active_config_version = text(doc, "active_config_version");
         if (doc.contains("recording_time_ns")) {
             record.recording_time_ns = number(doc, "recording_time_ns");
+        }
+        if (doc.contains("committed_recording_end_ns")) {
+            record.committed_recording_end_ns = number(doc, "committed_recording_end_ns");
         }
         const auto& run = doc.at("run_operation");
         if (!run.is_null()) {
@@ -450,6 +457,11 @@ Result<void> recovery_successor(
     }
     if (previous.recording_time_ns &&
         (!next.recording_time_ns || *next.recording_time_ns < *previous.recording_time_ns)) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (previous.committed_recording_end_ns &&
+        (!next.committed_recording_end_ns ||
+         *next.committed_recording_end_ns < *previous.committed_recording_end_ns)) {
         return Status(StatusCode::Conflict, {});
     }
     const bool higher_control =

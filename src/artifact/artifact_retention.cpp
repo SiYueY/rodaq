@@ -35,7 +35,8 @@ Result<std::vector<std::string>> ArtifactCatalog::retention_versions(TaskId task
 
 Result<RetentionSelection> ArtifactCatalog::select_retention(
     TaskId task, const RetentionPolicy& policy,
-    const std::vector<std::string>& eligible_config_versions) const {
+    const std::vector<std::string>& eligible_config_versions,
+    std::uint64_t committed_recording_floor_ns) const {
     if (!uuid::nonzero(task.value) ||
         eligible_config_versions.size() > state_->options.max_artifacts ||
         (policy.max_duration && policy.max_duration->count() <= 0) ||
@@ -57,6 +58,7 @@ Result<RetentionSelection> ArtifactCatalog::select_retention(
     }
     try {
         RetentionSelection result;
+        result.committed_recording_end_ns = committed_recording_floor_ns;
         std::vector<std::shared_ptr<CatalogEntry>> selected;
         selected.reserve(state_->slots.size());
         std::lock_guard<std::mutex> lock(state_->index);

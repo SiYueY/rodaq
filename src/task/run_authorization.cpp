@@ -211,7 +211,23 @@ Result<void> RunAuthorization::publish_authorization(std::uint64_t recording_bas
         if (!prepared_record_) {
             return Status(StatusCode::InvalidState, {});
         }
-        auto record = *prepared_record_;
+        // Maintenance may checkpoint committed progress after Prepared. Rebase
+        // on the same Run's actual durable record, preserving independent facts.
+        auto loaded = recovery_->load();
+        if (!loaded.ok()) {
+            return loaded.status();
+        }
+        auto record = std::move(loaded.value());
+        if (record.observed_control_generation != generation_ ||
+            record.active_config_version != config_version_ || !record.run_operation ||
+            !(record.run_operation->operation_id == operation_id_) ||
+            record.run_operation->control_generation != generation_ ||
+            record.run_operation->phase != RunPhase::Prepared) {
+            return Status(StatusCode::Conflict, {});
+        }
+        if (record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
         if (record.recording_time_ns && recording_base < *record.recording_time_ns) {
             return Status(StatusCode::Conflict, {});
         }

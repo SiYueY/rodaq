@@ -74,6 +74,9 @@ struct TaskRecoveryRecord {
     // Proven cumulative Task recording floor. A failed clock cannot add its
     // unknown tail. Missing legacy evidence is not zero and needs reconciliation.
     std::optional<std::uint64_t> recording_time_ns;
+    // Verified committed progress retained before deleting its artifact proof.
+    // This is independent of silent Open time and unknown crash tails.
+    std::optional<std::uint64_t> committed_recording_end_ns;
     std::optional<RunRecovery> run_operation;
     std::vector<PipelineRecovery> pipelines;
     std::optional<ResetProgress> reset_progress;

@@ -96,6 +96,7 @@ struct RunExecution {
 struct RetentionWork {
     ArtifactId artifact;
     ControlGeneration generation;
+    std::uint64_t committed_recording_end_ns{0};
 };
 
 struct TaskEntry {
