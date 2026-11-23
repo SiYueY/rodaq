@@ -227,6 +227,20 @@ protected:
         artifacts.max_read_leases = 4;
         artifacts.max_read_bytes = 64;
         artifacts.manifest = options_.manifest_limits;
+        artifacts.delete_faults = [control = delete_failed_step_, arm = fail_deleted_publication_,
+                                   failure = ledger_fault_,
+                                   blocking = delete_control_](artifact::DeleteStep step) {
+            if (step == artifact::DeleteStep::SyncParent && blocking->block.load()) {
+                std::unique_lock<std::mutex> lock(blocking->mutex);
+                blocking->entered = true;
+                blocking->changed.notify_all();
+                blocking->changed.wait(lock, [&] { return blocking->released; });
+            }
+            if (step == artifact::DeleteStep::SyncParent && arm->exchange(false)) {
+                *failure = true;
+            }
+            return control->load() == static_cast<int>(step) ? EIO : 0;
+        };
         artifacts.read_faults = [control = read_control_](artifact::ReadStep step) {
             if (step == artifact::ReadStep::Reading && control->block.load()) {
                 std::unique_lock<std::mutex> lock(control->mutex);
@@ -740,6 +754,10 @@ protected:
     std::shared_ptr<artifact::ArtifactCatalog> catalog_;
     std::unique_ptr<rodaq::ArtifactService> artifacts_;
     std::shared_ptr<ReadControl> read_control_{std::make_shared<ReadControl>()};
+    std::shared_ptr<ReadControl> delete_control_{std::make_shared<ReadControl>()};
+    std::shared_ptr<std::atomic<int>> delete_failed_step_{std::make_shared<std::atomic<int>>(-1)};
+    std::shared_ptr<std::atomic<bool>> fail_deleted_publication_{
+        std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<artifact::SegmentIdStore> segment_ids_;
     std::unique_ptr<rodaq::daq::Composition> composition_;
     std::vector<std::shared_ptr<rodaq::ExecutionLane>> service_lanes_;
@@ -3029,6 +3047,15 @@ TEST_F(
         EXPECT_EQ(
             catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1ms).status().code(),
             StatusCode::DeadlineExceeded);
+        EXPECT_EQ(
+            catalog_
+                ->delete_artifact(
+                    {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                    std::chrono::steady_clock::now() + 1ms)
+                .status()
+                .code(),
+            StatusCode::DeadlineExceeded);
+        EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
     }
     {
         std::lock_guard<std::mutex> lock(read_control_->mutex);
@@ -3042,6 +3069,12 @@ TEST_F(
     EXPECT_TRUE(catalog_->wait_readers({7}, std::chrono::steady_clock::now() + 1s).ok());
     EXPECT_EQ(catalog_->snapshot().read_leases, 0);
     EXPECT_EQ(catalog_->snapshot().reads_inflight, 0);
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
 }
 
 TEST_F(
@@ -3201,6 +3234,227 @@ TEST_F(PipelineControllerTest, ArtifactUncertainLedgerIsUnavailableUntilActualRe
     EXPECT_EQ(catalog_->snapshot().protection, StatusCode::Ok);
     EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "7"));
     EXPECT_EQ(capacity_->snapshot().artifact_slots, 1);
+}
+
+TEST_F(PipelineControllerTest, ArtifactDeletionWaitsForReadLeaseAndRetainsTombstoneCapacity) {
+    record_committed();
+    const auto info = artifacts_->get_artifact({7}).value();
+    const auto before = capacity_->snapshot();
+    {
+        auto reader = artifacts_->acquire_read({7}, info.files[0].file_id);
+        ASSERT_TRUE(reader.ok());
+        EXPECT_EQ(
+            catalog_
+                ->delete_artifact(
+                    {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                    std::chrono::steady_clock::now() + 1ms)
+                .status()
+                .code(),
+            StatusCode::DeadlineExceeded);
+        EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+        EXPECT_FALSE(artifacts_->acquire_read({7}, info.files[0].file_id).ok());
+        std::array<std::byte, 1> bytes{};
+        EXPECT_TRUE(reader.value().read_at(0, {bytes.data(), bytes.size()}).ok());
+        EXPECT_TRUE(fs::exists(volume_->artifacts_directory() / "7"));
+    }
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    const auto deleted = ledger_->get(7);
+    ASSERT_TRUE(deleted.ok());
+    EXPECT_EQ(deleted.value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(deleted.value().deleted_at, rodaq::WallTime{1s});
+    EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7"));
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    EXPECT_EQ(artifacts_->get_artifact({7}).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+    EXPECT_EQ(catalog_->snapshot().pending, 0);
+    EXPECT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{2s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    EXPECT_EQ(ledger_->get(7).value().deleted_at, rodaq::WallTime{1s});
+}
+
+class ArtifactDeleteFailureTest : public PipelineControllerTest,
+                                  public testing::WithParamInterface<artifact::DeleteStep> {};
+
+TEST_P(ArtifactDeleteFailureTest, ActualFilesystemFailureRetainsIntentAndChargeUntilRetry) {
+    record_committed();
+    const auto before = capacity_->snapshot();
+    *delete_failed_step_ = static_cast<int>(GetParam());
+    const auto failed = catalog_->delete_artifact(
+        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+        std::chrono::steady_clock::now() + 1s);
+    ASSERT_FALSE(failed.ok());
+    EXPECT_EQ(failed.status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, before.actual_bytes);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+    EXPECT_EQ(
+        catalog_
+            ->delete_artifact(
+                {7}, 2, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                std::chrono::steady_clock::now() + 1s)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    *delete_failed_step_ = -1;
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{2s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+    EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DeleteFilesystemBoundaries, ArtifactDeleteFailureTest,
+    testing::Values(
+        artifact::DeleteStep::UnlinkFile, artifact::DeleteStep::SyncDirectory,
+        artifact::DeleteStep::UnlinkManifest, artifact::DeleteStep::RemoveDirectory,
+        artifact::DeleteStep::SyncParent));
+
+TEST_F(PipelineControllerTest, ArtifactDeletionDoesNotRelabelMissingHistoryAsLegalDeletion) {
+    record_committed();
+    const auto before = capacity_->snapshot();
+    fs::remove_all(volume_->artifacts_directory() / "7");
+    const auto deleted = catalog_->delete_artifact(
+        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+        std::chrono::steady_clock::now() + 1s);
+    EXPECT_EQ(deleted.status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, before.actual_bytes);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+}
+
+TEST_F(PipelineControllerTest, ArtifactDeleteIntentDoesNotAuthorizeUnknownFileRemoval) {
+    record_committed();
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::UnlinkFile);
+    ASSERT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    const auto foreign = volume_->artifacts_directory() / "7/foreign";
+    std::ofstream(foreign) << "foreign";
+    *delete_failed_step_ = -1;
+    const auto retried = catalog_->delete_artifact(
+        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+        std::chrono::steady_clock::now() + 1s);
+    EXPECT_EQ(retried.status().code(), StatusCode::DataLoss);
+    EXPECT_TRUE(fs::exists(foreign));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    EXPECT_GT(capacity_->snapshot().actual_bytes, 0);
+    EXPECT_EQ(capacity_->snapshot().protection, StatusCode::DataLoss);
+}
+
+class ArtifactDeletePublicationTest : public PipelineControllerTest,
+                                      public testing::WithParamInterface<bool> {};
+
+TEST_P(ArtifactDeletePublicationTest, UncertainPublicationMustReconcileBeforeReleasingCharge) {
+    record_committed();
+    const auto before = capacity_->snapshot();
+    if (GetParam()) {
+        *fail_deleted_publication_ = true;
+    } else {
+        *ledger_fault_ = true;
+    }
+    const auto first = catalog_->delete_artifact(
+        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+        std::chrono::steady_clock::now() + 1s);
+    ASSERT_FALSE(first.ok());
+    EXPECT_EQ(first.status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(fs::exists(volume_->artifacts_directory() / "7"), !GetParam());
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, before.actual_bytes);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+    *ledger_fault_ = false;
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{2s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
+    EXPECT_EQ(catalog_->snapshot().pending, 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DeletePublicationBoundaries, ArtifactDeletePublicationTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, DeletedArtifactReappearanceIsProtectedWithoutDeletingForeignData) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    ASSERT_TRUE(fs::create_directory(volume_->artifacts_directory() / "7"));
+    const auto foreign = volume_->artifacts_directory() / "7/foreign";
+    std::ofstream(foreign) << "foreign";
+    const auto retried = catalog_->delete_artifact(
+        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{2s},
+        std::chrono::steady_clock::now() + 1s);
+    EXPECT_EQ(retried.status().code(), StatusCode::DataLoss);
+    EXPECT_TRUE(fs::exists(foreign));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().protection, StatusCode::DataLoss);
+    EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+}
+
+TEST_F(PipelineControllerTest, ActualDeletionRetainsOneOwnerWhileParentSyncObservationTimesOut) {
+    record_committed();
+    const auto before = capacity_->snapshot();
+    delete_control_->block = true;
+    auto deleting = std::async(std::launch::async, [&] {
+        return catalog_->delete_artifact(
+            {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+            std::chrono::steady_clock::now() + 1s);
+    });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(delete_control_->mutex);
+        entered =
+            delete_control_->changed.wait_for(lock, 2s, [&] { return delete_control_->entered; });
+    }
+    if (entered) {
+        EXPECT_EQ(deleting.wait_for(1ms), std::future_status::timeout);
+        EXPECT_EQ(catalog_->snapshot().delete_inflight, 1);
+        EXPECT_EQ(catalog_->snapshot().commit_inflight, 0);
+        EXPECT_TRUE(artifacts_->query_artifacts({}).value().items.empty());
+        EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+        EXPECT_EQ(capacity_->snapshot().actual_bytes, before.actual_bytes);
+        EXPECT_EQ(
+            catalog_
+                ->delete_artifact(
+                    {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                    std::chrono::steady_clock::now() + 1ms)
+                .status()
+                .code(),
+            StatusCode::Conflict);
+    }
+    {
+        std::lock_guard<std::mutex> lock(delete_control_->mutex);
+        delete_control_->released = true;
+    }
+    delete_control_->changed.notify_all();
+    const auto completed = deleting.get();
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(completed.ok());
+    EXPECT_EQ(catalog_->snapshot().delete_inflight, 0);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(capacity_->snapshot().actual_bytes, 0);
+    EXPECT_EQ(capacity_->snapshot().artifact_slots, before.artifact_slots);
 }
 
 }  // namespace

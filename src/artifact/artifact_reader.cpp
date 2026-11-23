@@ -154,7 +154,7 @@ Result<void> ArtifactCatalog::block_reads(ArtifactId id) {
     if (at == state->slots.size() || !state->slots[at].entry) {
         return Status(StatusCode::NotFound, {});
     }
-    if (state->slots[at].working) {
+    if (state->slots[at].work != CatalogWork::None) {
         return Status(StatusCode::Conflict, {});
     }
     state->slots[at].entry->read_blocked = true;

@@ -89,7 +89,7 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
     bool claimed = false;
     const auto finish = [&](StatusCode failure) -> Result<void> {
         std::lock_guard<std::mutex> lock(state->index);
-        state->slots[at].working = false;
+        state->slots[at].work = CatalogWork::None;
         state->slots[at].failure = failure;
         return failure == StatusCode::Ok ? Result<void>{} : Result<void>(Status(failure, {}));
     };
@@ -103,7 +103,7 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
             at = state->find(id);
             if (at != state->slots.size()) {
                 const auto& existing = state->slots[at];
-                if (existing.work_id != sealed.work_id || existing.working) {
+                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None) {
                     return Status(StatusCode::Conflict, {});
                 }
                 if (state->options.volume->protection() != StatusCode::Ok) {
@@ -128,7 +128,7 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
             empty->segment_id = id;
             empty->work_id = sealed.work_id;
             empty->frame = frame;
-            empty->working = true;
+            empty->work = CatalogWork::Commit;
             claimed = true;
         }
         const auto& input = frame->sealed;
@@ -273,8 +273,14 @@ CatalogSnapshot ArtifactCatalog::snapshot() const {
             result.protection = slot.failure;
         }
         result.visible += normal ? 1 : 0;
-        result.pending += slot.segment_id != 0 && !normal ? 1 : 0;
-        result.commit_inflight += slot.working ? 1 : 0;
+        bool deleted = false;
+        if (slot.segment_id != 0 && !normal) {
+            auto record = state->options.ledger->get(slot.segment_id);
+            deleted = record.ok() && record.value().state == LedgerState::Deleted;
+        }
+        result.pending += slot.segment_id != 0 && !normal && !deleted ? 1 : 0;
+        result.commit_inflight += slot.work == CatalogWork::Commit ? 1 : 0;
+        result.delete_inflight += slot.work == CatalogWork::Delete ? 1 : 0;
     }
     result.read_leases = state->read_leases;
     result.reads_inflight = state->active_reads.load();

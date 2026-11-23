@@ -43,12 +43,14 @@ struct CommitFrame {
     std::unique_ptr<SegmentCommitter> committer;
 };
 
+enum class CatalogWork { None, Commit, Delete };
+
 struct CatalogSlot {
     std::uint64_t segment_id{0};
     std::uint64_t work_id{0};
     std::shared_ptr<CatalogEntry> entry;
     std::shared_ptr<CommitFrame> frame;
-    bool working{false};
+    CatalogWork work{CatalogWork::None};
     bool visible{false};
     StatusCode failure{StatusCode::Ok};
 };

@@ -17,6 +17,8 @@
 namespace rodaq::artifact {
 
 enum class ReadStep { Opening, Reading };
+enum class DeleteReason { Retention, Reset, ManualRecovery };
+enum class DeleteStep { UnlinkFile, SyncDirectory, UnlinkManifest, RemoveDirectory, SyncParent };
 
 struct CatalogOptions {
     std::shared_ptr<ManagedVolume> volume;
@@ -29,6 +31,7 @@ struct CatalogOptions {
     std::chrono::nanoseconds read_lease_duration{std::chrono::seconds{30}};
     // Private deterministic fault seam, executed outside the index lock.
     std::function<int(ReadStep)> read_faults;
+    std::function<int(DeleteStep)> delete_faults;
 };
 
 struct CatalogSnapshot {
@@ -36,6 +39,7 @@ struct CatalogSnapshot {
     std::uint32_t visible{0};
     std::uint32_t pending{0};
     std::uint32_t commit_inflight{0};
+    std::uint32_t delete_inflight{0};
     std::uint32_t read_leases{0};
     std::uint32_t reads_inflight{0};
 };
@@ -58,6 +62,12 @@ public:
     Result<void> block_reads(ArtifactId id);
     void cancel_readers(std::optional<ArtifactId> id = {});
     Result<void> wait_readers(ArtifactId id, std::chrono::steady_clock::time_point deadline);
+    // Maintenance actual execution only. Caller owns policy/generation selection;
+    // the Ledger owns durable intent, and the retained entry owns disk charges.
+    // Deadline bounds lease observation, never an already-entered syscall.
+    Result<void> delete_artifact(
+        ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,
+        std::chrono::steady_clock::time_point deadline);
     CatalogSnapshot snapshot() const;
 
 private:
