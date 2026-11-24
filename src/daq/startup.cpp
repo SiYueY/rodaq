@@ -14,6 +14,8 @@
 
 #include "../persistence/atomic_file.hpp"
 #include "../persistence/json.hpp"
+#include "../artifact/recovery_scan.hpp"
+#include "run_configuration.hpp"
 
 namespace rodaq::daq {
 namespace {
@@ -183,17 +185,10 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return ledger.status();
         }
         options.ledger = std::move(ledger.value());
-        auto facts = options.ledger->recovery_snapshot();
-        if (!facts.ok()) {
-            return facts.status();
-        }
-        // S2 startup handles proved-empty recording state only. Existing
-        // retained/staging/quarantine data requires S4C's full scanner and
-        // verified capacity totals, never inferred zero usage or adoption.
-        if (!facts.value().empty() ||
-            !std::filesystem::is_empty(options.volume->artifacts_directory()) ||
-            !std::filesystem::is_empty(startup.volume_root / ".rodaq/quarantine")) {
-            return Status(StatusCode::Unavailable, {});
+        auto usage = artifact::inspect_committed_volume(
+            options.volume, *options.ledger, catalog_manifest_limits(options.settings));
+        if (!usage.ok()) {
+            return usage.status();
         }
         auto ids = artifact::SegmentIdStore::open(
             startup.state_root / "segment-ids", initialize
@@ -203,7 +198,8 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return ids.status();
         }
         options.segment_ids = std::move(ids.value());
-        auto capacity = artifact::VolumeCapacity::create(startup.capacity);
+        auto capacity = artifact::VolumeCapacity::create(
+            startup.capacity, usage.value().physical_bytes, usage.value().artifact_slots);
         if (!capacity.ok()) {
             return capacity.status();
         }

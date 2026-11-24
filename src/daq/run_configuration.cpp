@@ -83,6 +83,23 @@ Json limits(const ResourceProfile& profile) {
 
 }  // namespace
 
+artifact::ManifestLimits catalog_manifest_limits(const DeploymentSettings& settings) {
+    if (settings.profiles.empty()) {
+        return {};
+    }
+    auto limits = settings.profiles.front().manifest;
+    for (const auto& profile : settings.profiles) {
+        const auto& selected = profile.manifest;
+        limits.max_bytes = std::max(limits.max_bytes, selected.max_bytes);
+        limits.max_files = std::max(limits.max_files, selected.max_files);
+        limits.max_descriptors = std::max(limits.max_descriptors, selected.max_descriptors);
+        limits.max_streams = std::max(limits.max_streams, selected.max_streams);
+        limits.max_epochs = std::max(limits.max_epochs, selected.max_epochs);
+        limits.max_qos_profiles = std::max(limits.max_qos_profiles, selected.max_qos_profiles);
+    }
+    return limits;
+}
+
 Result<Json> effective_configuration(
     const CompositionOptions& deployment, const task::TaskControlRecord& control,
     const PipelineConfig& definition, const ResourceProfile& profile,

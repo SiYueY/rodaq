@@ -150,19 +150,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         catalog.capacity = o.capacity;
         catalog.ledger = o.ledger;
         catalog.max_artifacts = o.ledger->capacity();
-        catalog.manifest = o.settings.profiles.front().manifest;
-        for (const auto& p : o.settings.profiles) {
-            catalog.manifest.max_bytes = std::max(catalog.manifest.max_bytes, p.manifest.max_bytes);
-            catalog.manifest.max_files = std::max(catalog.manifest.max_files, p.manifest.max_files);
-            catalog.manifest.max_descriptors =
-                std::max(catalog.manifest.max_descriptors, p.manifest.max_descriptors);
-            catalog.manifest.max_streams =
-                std::max(catalog.manifest.max_streams, p.manifest.max_streams);
-            catalog.manifest.max_epochs =
-                std::max(catalog.manifest.max_epochs, p.manifest.max_epochs);
-            catalog.manifest.max_qos_profiles =
-                std::max(catalog.manifest.max_qos_profiles, p.manifest.max_qos_profiles);
-        }
+        catalog.manifest = catalog_manifest_limits(o.settings);
         auto index = artifact::ArtifactCatalog::create(std::move(catalog));
         if (!index.ok()) {
             return index.status();

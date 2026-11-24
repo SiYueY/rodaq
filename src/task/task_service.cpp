@@ -303,6 +303,27 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
         });
     entry->quiescent = control.value().desired_state == DesiredState::Stopped &&
                        !control.value().reset_intent && (configuration_boundary || never_started);
+    if (!entry->quiescent && entry->recovery &&
+        control.value().desired_state == DesiredState::Stopped && !control.value().reset_intent) {
+        const bool stopped =
+            std::any_of(history.entries.begin(), history.entries.end(), [&](const auto& operation) {
+                return control.value().current_operation_id == operation.snapshot.operation_id &&
+                       operation.snapshot.kind == OperationKind::Stop &&
+                       operation.snapshot.state == OperationState::Succeeded;
+            });
+        auto recovered = entry->recovery->load();
+        if (stopped && recovered.ok()) {
+            const auto& record = recovered.value();
+            entry->quiescent =
+                record.observed_control_generation == control.value().control_generation &&
+                record.active_config_version == control.value().active_config_version &&
+                !record.reset_progress && record.cleanup_intents.empty() && record.run_operation &&
+                record.run_operation->phase == task::RunPhase::Ended &&
+                std::all_of(
+                    record.pipelines.begin(), record.pipelines.end(),
+                    [](const auto& recent) { return recent.instance.ended_boundary.has_value(); });
+        }
+    }
     auto active = std::make_shared<const TaskConfig>(std::move(config.value().config));
     if (entry->quiescent) {
         auto terminal = task::completed_configuration(*entry->controller->durable_record());

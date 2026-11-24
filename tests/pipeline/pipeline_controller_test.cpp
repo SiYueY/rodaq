@@ -36,6 +36,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "artifact/recovery_scan.hpp"
+
 namespace {
 namespace pipeline = rodaq::pipeline;
 namespace artifact = rodaq::artifact;
@@ -1901,12 +1903,30 @@ TEST_F(PipelineControllerTest, StartupInitializesActualAuthoritiesAndRecordsWith
     ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
     EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
     composition_.reset();
-    // Until S4C supplies verified recovery totals/scanning, retained data is an
-    // explicit diagnostic, never a zero-capacity projection or file adoption.
     auto reopened =
         rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
-    EXPECT_FALSE(reopened.ok());
-    EXPECT_EQ(reopened.status().code(), StatusCode::Unavailable);
+    ASSERT_TRUE(reopened.ok()) << static_cast<int>(reopened.status().code());
+    composition_ = std::move(reopened.value());
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 1);
+    const auto retained =
+        composition_->artifacts().get_artifact(artifacts.value().items[0].artifact_id);
+    ASSERT_TRUE(retained.ok());
+    ASSERT_FALSE(retained.value().files.empty());
+    auto reader = composition_->artifacts().acquire_read(
+        retained.value().summary.artifact_id, retained.value().files[0].file_id);
+    ASSERT_TRUE(reader.ok());
+    std::array<std::byte, 8> header{};
+    EXPECT_EQ(reader.value().read_at(0, {header.data(), header.size()}).value(), header.size());
+    const auto restarted = composition_->tasks().start(id, {"restart"}, {true, 3});
+    ASSERT_TRUE(restarted.ok());
+    ASSERT_TRUE(wait_composed(id, restarted.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stopped = composition_->tasks().stop(id, {"restop"}, {true, 4});
+    ASSERT_TRUE(stopped.ok());
+    ASSERT_TRUE(wait_composed(id, stopped.value()));
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 2);
     EXPECT_TRUE(fs::is_directory(root_ / "startup-volume/.rodaq/artifacts/1"));
 }
 
@@ -3220,6 +3240,61 @@ TEST_F(
     EXPECT_EQ(rebuilt.files[0].etag, original.files[0].etag);
     EXPECT_EQ(service->get_artifact({999}).status().code(), StatusCode::NotFound);
     EXPECT_FALSE(restored->rebuild().ok());
+}
+
+TEST_F(PipelineControllerTest, StartupVolumeInspectionCountsOnlyFullyVerifiedCommittedBytes) {
+    record_committed();
+    const auto expected = artifacts_->get_artifact({7}).value().summary.physical_bytes;
+    auto usage = artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits);
+    ASSERT_TRUE(usage.ok());
+    EXPECT_EQ(usage.value().physical_bytes, expected);
+    EXPECT_EQ(usage.value().artifact_slots, 1);
+    const auto path = volume_->artifacts_directory() / "7";
+    fs::rename(path, volume_->artifacts_directory() / "missing");
+    EXPECT_FALSE(
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits).ok());
+    fs::rename(volume_->artifacts_directory() / "missing", path);
+    std::ofstream(path / "records.fake", std::ios::binary | std::ios::app) << "corrupt";
+    EXPECT_EQ(
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits)
+            .status()
+            .code(),
+        StatusCode::DataLoss);
+}
+
+TEST_F(PipelineControllerTest, StartupVolumeInspectionNeverAdoptsOrErasesUnregisteredFacts) {
+    for (const auto& path :
+         {volume_->artifacts_directory() / "999", volume_->artifacts_directory() / "999.tmp",
+          volume_->root() / ".rodaq/quarantine/unknown"}) {
+        ASSERT_TRUE(fs::create_directory(path));
+        EXPECT_EQ(
+            artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits)
+                .status()
+                .code(),
+            StatusCode::Unavailable);
+        EXPECT_TRUE(fs::is_directory(path));
+        EXPECT_TRUE(ledger_->recovery_snapshot().value().empty());
+        ASSERT_TRUE(fs::remove(path));
+    }
+    ASSERT_TRUE(
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits).ok());
+}
+
+TEST_F(
+    PipelineControllerTest, StartupVolumeInspectionRetainsDeleteStatesForExplicitReconciliation) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits)
+            .status()
+            .code(),
+        StatusCode::Unavailable);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
 }
 
 TEST_F(PipelineControllerTest, ArtifactChangedCommittedFileIsHiddenAndRebuildReportsDataLoss) {

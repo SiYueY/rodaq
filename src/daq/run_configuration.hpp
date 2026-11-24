@@ -20,6 +20,8 @@ struct RunResources {
     std::mutex commit_execution;
 };
 
+artifact::ManifestLimits catalog_manifest_limits(const DeploymentSettings& settings);
+
 // Identity excludes volatile Instance/Operation/Segment IDs and clock readings.
 // All exact quantities use decimal strings before entering the JCS pipeline.
 Result<persistence::Json> effective_configuration(
