@@ -24,6 +24,26 @@ constexpr auto kLock = ".daq.lock";
 constexpr auto kMarker = "bootstrap.json";
 constexpr auto kDomain = "rodaq.deployment-bootstrap.v1";
 
+struct StartupPlugins {
+    std::shared_ptr<plugin::PluginManager> owner;
+    plugin::DeadlineDuration timeout;
+
+    ~StartupPlugins() noexcept {
+        if (!owner) {
+            return;
+        }
+        try {
+            const auto deadline = plugin::Deadline::after(timeout);
+            if (deadline.ok()) {
+                (void)owner->shutdown(deadline.value());
+            }
+        } catch (...) {
+            // Preserve the startup error. PluginManager still owns its actual
+            // framework state and retains its abandoned-owner drain fallback.
+        }
+    }
+};
+
 Result<std::shared_ptr<DeploymentLease>> acquire(
     const std::filesystem::path& root, DeploymentOpenMode mode) {
     persistence::FileDescriptor directory(
@@ -217,11 +237,13 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return clock.status();
         }
         options.clock = std::move(clock.value());
+        const auto plugin_timeout = startup.plugins.shutdown_timeout;
         auto plugins = plugin::PluginManager::create(std::move(startup.plugins));
         if (!plugins.ok()) {
             return plugins.status();
         }
         options.plugins = std::make_shared<plugin::PluginManager>(std::move(plugins.value()));
+        StartupPlugins pending_plugins{options.plugins, plugin_timeout};
         auto checked = lease.value()->verify();
         if (!checked.ok()) {
             return checked.status();
@@ -246,6 +268,7 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return composition.status();
         }
         composition.value()->retain_lease(std::move(lease.value()));
+        pending_plugins.owner.reset();
         return composition;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});

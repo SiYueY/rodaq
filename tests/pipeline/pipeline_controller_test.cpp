@@ -1930,6 +1930,39 @@ TEST_F(PipelineControllerTest, StartupInitializesActualAuthoritiesAndRecordsWith
     EXPECT_TRUE(fs::is_directory(root_ / "startup-volume/.rodaq/artifacts/1"));
 }
 
+TEST_F(PipelineControllerTest, SuccessfulStopHistoryCannotReplaceMissingEndedRecoveryOnRestart) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(formal_config(), {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    composition_.reset();
+    const auto recovery =
+        root_ / "startup-state/service/recovery" / (rodaq::to_string(id) + ".json");
+    const auto held = root_ / "held-recovery.json";
+    fs::rename(recovery, held);
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto reopened = rodaq::daq::Composition::open(
+            startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+        EXPECT_FALSE(reopened.ok());
+        EXPECT_EQ(reopened.status().code(), StatusCode::Unavailable);
+        EXPECT_FALSE(fs::exists(recovery));
+    }
+    fs::rename(held, recovery);
+    auto restored =
+        rodaq::daq::Composition::open(startup_options(rodaq::daq::DeploymentOpenMode::Existing));
+    ASSERT_TRUE(restored.ok());
+    composition_ = std::move(restored.value());
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), 1);
+}
+
 TEST_F(PipelineControllerTest, MaintenanceSettlesLateCloseWithoutRewritingFailedPauseOrIntent) {
     open_composition(&receive_clock, 30ms);
     ASSERT_TRUE(composition_);
