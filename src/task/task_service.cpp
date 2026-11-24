@@ -491,7 +491,8 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
                 execution.cleanup_lane == options.control_lane ||
                 execution.cleanup_lane == options.create_lane ||
                 execution.native_timeout <= std::chrono::nanoseconds::zero() ||
-                execution.native_timeout > std::chrono::hours{1}) {
+                execution.native_timeout > std::chrono::hours{1} ||
+                !task::valid_runtime_recovery_policy(execution.runtime_recovery)) {
                 return Status(StatusCode::InvalidArgument, {});
             }
             for (const auto& domain : {execution.preparation_lane, execution.cleanup_lane}) {

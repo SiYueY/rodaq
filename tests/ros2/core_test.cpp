@@ -3,6 +3,12 @@
 #ifdef RODAQ_MCAP_PACKAGE
 #include <map>
 #include <set>
+#include <fcntl.h>
+#include <linux/magic.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
+
+#include "persistence/file_descriptor.hpp"
 
 #include "rodaqmeta.hpp"
 
@@ -234,6 +240,157 @@ TEST_F(Ros2Runtime, ActualSubscriptionChangesRemainAuditedAndNewRunsFreezeTheirO
                 "2");
         }
     }
+}
+
+TEST_F(Ros2Runtime, RealBoundedVolumeProtectionRecoversRos2McapWithoutAnotherUserStart) {
+    const auto* selected = std::getenv("RODAQ_ROS2_RECOVERY_VOLUME");
+    if (!selected) {
+        GTEST_SKIP() << "Requires a dedicated tmpfs <=64MiB via RODAQ_ROS2_RECOVERY_VOLUME";
+    }
+    const fs::path mount(selected);
+    ASSERT_TRUE(mount.is_absolute());
+    ASSERT_TRUE(fs::is_directory(mount));
+    ASSERT_TRUE(fs::is_empty(mount));
+    struct statfs filesystem {};
+    ASSERT_EQ(statfs(mount.c_str(), &filesystem), 0);
+    ASSERT_EQ(filesystem.f_type, TMPFS_MAGIC);
+    struct statvfs available {};
+    ASSERT_EQ(statvfs(mount.c_str(), &available), 0);
+    ASSERT_GT(available.f_frsize, 0u);
+    ASSERT_LE(available.f_blocks, (64u * 1024 * 1024) / available.f_frsize);
+    const auto total = static_cast<std::uint64_t>(available.f_blocks) * available.f_frsize;
+    ASSERT_LE(total, 64u * 1024 * 1024);
+    ASSERT_GE(total, 16u * 1024 * 1024);
+    const auto volume = mount / root.filename();
+    ASSERT_TRUE(fs::create_directory(volume));
+    open_core(false, volume);
+    ASSERT_TRUE(core);
+    TaskConfig task;
+    task.name = "Real bounded-volume automatic recovery";
+    task.recovery_policy = RecoveryPolicyMode::Resume;
+    task.segment_policy.max_duration = 60s;
+    PipelineConfig pipeline;
+    pipeline.resource_profile = "basic";
+    pipeline.output_root = "local";
+    pipeline.acquisition = {"com.rodaq.acquisition.ros2", "1.0.0", config().dump()};
+    pipeline.storage = {"com.rodaq.storage.mcap", "1.0.0", R"({"format_version":"1.0"})"};
+    pipeline.streams = {{0, "s0", {}, ReadinessPolicy::EntryReady}};
+    task.pipelines.push_back(std::move(pipeline));
+    const auto id = core->tasks().create_task(task, {"create"}).value();
+    const auto start = core->tasks().start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(completed(id, start.value()));
+    auto publisher = node->create_generic_publisher(
+        "/rodaq_test_0", "std_msgs/msg/String", rclcpp::QoS(100).reliable());
+    const auto record = [&] {
+        const auto deadline = std::chrono::steady_clock::now() + 4s;
+        do {
+            publish(publisher);
+            if (!core->observe().ok()) {
+                return false;
+            }
+            const auto runtime = core->tasks().get_runtime_snapshot(id);
+            if (runtime.ok() && runtime.value().pipelines[0].facts &&
+                runtime.value().pipelines[0].facts->accepted_records >= 10) {
+                return true;
+            }
+            std::this_thread::sleep_for(10ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    const auto condition = [&](ExecutionCondition expected) {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        do {
+            if (!core->observe().ok()) {
+                return false;
+            }
+            const auto actual = core->tasks().get_task(id);
+            if (actual.ok() && actual.value().execution_condition == expected) {
+                return true;
+            }
+            std::this_thread::sleep_for(10ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    ASSERT_TRUE(record());
+    const auto previous =
+        core->tasks().get_runtime_snapshot(id).value().pipelines[0].facts->instance_id;
+    ASSERT_EQ(statvfs(volume.c_str(), &available), 0);
+    ASSERT_LE(available.f_bavail, available.f_blocks);
+    const auto free = static_cast<std::uint64_t>(available.f_bavail) * available.f_frsize;
+    constexpr std::uint64_t kRemaining = 512 * 1024;
+    ASSERT_GT(free, kRemaining);
+    const auto filler = volume / "bounded-test-filler";
+    {
+        persistence::FileDescriptor file(
+            open(filler.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        ASSERT_GE(file.get(), 0);
+        ASSERT_EQ(posix_fallocate(file.get(), 0, static_cast<off_t>(free - kRemaining)), 0);
+        ASSERT_EQ(fsync(file.get()), 0);
+    }
+    ASSERT_TRUE(condition(ExecutionCondition::Protected));
+    const auto protected_task = core->tasks().get_task(id).value();
+    EXPECT_EQ(protected_task.desired_state, DesiredState::Running);
+    EXPECT_EQ(protected_task.control_generation, 2);
+    EXPECT_EQ(
+        core->tasks().get_operation(id, start.value()).value().state, OperationState::Succeeded);
+    auto artifacts = core->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 1);
+    const auto historical =
+        core->artifacts().get_artifact(artifacts.value().items[0].artifact_id).value();
+    EXPECT_EQ(historical.coverage[0].accepted, historical.coverage[0].written);
+    EXPECT_TRUE(read_file(historical.summary.artifact_id, historical.files[0].file_id).ok());
+    ASSERT_TRUE(fs::remove(filler));
+    ASSERT_TRUE(condition(ExecutionCondition::Active));
+    const auto recovered = core->tasks().get_runtime_snapshot(id).value();
+    ASSERT_TRUE(recovered.pipelines[0].facts);
+    EXPECT_NE(recovered.pipelines[0].facts->instance_id, previous);
+    ASSERT_TRUE(record());
+    const auto stop = core->tasks().stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(completed(id, stop.value()));
+    ASSERT_TRUE(core->observe().ok());
+    artifacts = core->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    ASSERT_EQ(artifacts.value().items.size(), 2);
+    for (const auto& summary : artifacts.value().items) {
+        const auto artifact = core->artifacts().get_artifact(summary.artifact_id).value();
+        ASSERT_EQ(artifact.coverage.size(), 1);
+        EXPECT_GT(artifact.coverage[0].written, 0);
+        EXPECT_EQ(artifact.coverage[0].accepted, artifact.coverage[0].written);
+        for (const auto& file : artifact.files) {
+            if (file.display_name.find(".mcap") == std::string::npos) {
+                continue;
+            }
+            const auto contents = read_file(summary.artifact_id, file.file_id);
+            ASSERT_TRUE(contents.ok());
+            const auto exported = root / (std::to_string(summary.segment_id) + "-recovery.mcap");
+            {
+                std::ofstream output(exported, std::ios::binary);
+                output.write(
+                    reinterpret_cast<const char*>(contents.value().data()),
+                    static_cast<std::streamsize>(contents.value().size()));
+                ASSERT_TRUE(output.good());
+            }
+            mcap::McapReader reader;
+            ASSERT_TRUE(reader.open(exported.string()).ok());
+            std::uint64_t count = 0;
+            const auto expected = received_cdr(bytes());
+            for (const auto& message : reader.readMessages()) {
+                EXPECT_EQ(message.channel->topic, "/rodaq_test_0");
+                EXPECT_EQ(message.schema->name, "std_msgs/msg/String");
+                ASSERT_EQ(message.message.dataSize, expected.size());
+                EXPECT_EQ(std::memcmp(message.message.data, expected.data(), expected.size()), 0);
+                ++count;
+            }
+            EXPECT_EQ(count, artifact.coverage[0].written);
+        }
+    }
+    EXPECT_EQ(core->tasks().list_operations(id, {}).value().items.size(), 2);
+    EXPECT_TRUE(core->shutdown(std::chrono::steady_clock::now() + 5s).ok());
+    core.reset();
+    fs::remove_all(volume);
 }
 
 TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead) {

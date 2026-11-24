@@ -15,6 +15,20 @@ void RunExecution::fence(std::optional<std::uint64_t> monotonic_ns) noexcept {
     }
 }
 
+bool RunExecution::resources_settled() {
+    std::lock_guard<std::mutex> lock(registration);
+    if (!preparation_returned || preparing || rotating) {
+        return false;
+    }
+    for (const auto& selected : pipelines) {
+        auto facts = selected.controller->snapshot();
+        if (!facts.ok() || !facts.value().quiescence.settled) {
+            return false;
+        }
+    }
+    return true;
+}
+
 ExecutionCondition RunExecution::condition(DesiredState desired) {
     std::lock_guard<std::mutex> lock(registration);
     bool all_settled = preparation_returned && !rotating;
@@ -50,6 +64,9 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
             (selected.required && actual.value().configuration_rejected);
         recoverable_pipeline = recoverable_pipeline || !actual.value().configuration_rejected;
     }
+    if (ended_pending) {
+        return ExecutionCondition::PendingCleanup;
+    }
     if (failed_pipeline_pending) {
         return ExecutionCondition::PendingCleanup;
     }
@@ -80,8 +97,8 @@ ExecutionCondition RunExecution::condition(DesiredState desired) {
         !pipelines.empty() &&
         (!recoverable_pipeline ||
          (config->start_policy == StartPolicyMode::AllRequired && required_configuration_rejected));
-    return configuration_blocks_recovery ? ExecutionCondition::Failed
-                                         : ExecutionCondition::Protected;
+    return (configuration_blocks_recovery || recovery_exhausted) ? ExecutionCondition::Failed
+                                                                 : ExecutionCondition::Protected;
 }
 
 }  // namespace rodaq::task
@@ -99,9 +116,63 @@ const OperationSnapshot* current_operation(const task::TaskControlRecord& contro
     return nullptr;
 }
 
+std::uint64_t recovery_backoff(const task::RuntimeRecoveryPolicy& policy, std::uint32_t attempt) {
+    auto delay = static_cast<std::uint64_t>(policy.initial_backoff.count());
+    const auto maximum = static_cast<std::uint64_t>(policy.max_backoff.count());
+    for (std::uint32_t i = 1; i < attempt && delay < maximum; ++i) {
+        delay = delay > maximum / 2 ? maximum : delay * 2;
+    }
+    return delay;
+}
+
+Result<void> compact_ended_authorization(
+    task::TaskEntry& entry, const task::TaskControlRecord& control) {
+    auto loaded = entry.recovery->load();
+    if (!loaded.ok()) {
+        return loaded.status();
+    }
+    auto record = std::move(loaded.value());
+    if (record.observed_control_generation != control.control_generation ||
+        record.active_config_version != control.active_config_version || record.reset_progress ||
+        !record.cleanup_intents.empty()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (!record.run_operation) {
+        return {};
+    }
+    if (!control.current_operation_id ||
+        !(record.run_operation->operation_id == *control.current_operation_id) ||
+        record.run_operation->phase != task::RunPhase::Ended) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    // Existing Store compaction is legal only after all old instances Ended.
+    // Keep recording/committed floors and the immutable user Operation result.
+    for (const auto& instance : record.run_operation->authorized_pipelines) {
+        const auto recent = std::find_if(
+            record.pipelines.begin(), record.pipelines.end(),
+            [&](const auto& value) { return value.instance.pipeline_id == instance.pipeline_id; });
+        if (recent != record.pipelines.end()) {
+            if (!recent->instance.ended_boundary) {
+                return Status(StatusCode::Conflict, {});
+            }
+            *recent = {record.run_operation->control_generation, instance};
+        } else {
+            record.pipelines.push_back({record.run_operation->control_generation, instance});
+        }
+    }
+    record.run_operation.reset();
+    const auto expected = record.record_revision++;
+    return entry.recovery->publish(record, expected);
+}
+
 }  // namespace
 
-void TaskService::State::start_execution(const std::shared_ptr<task::TaskEntry>& entry) noexcept {
+void TaskService::State::start_execution(
+    const std::shared_ptr<task::TaskEntry>& entry, task::RunPurpose purpose,
+    std::uint64_t now_monotonic) noexcept {
     try {
         auto job = std::make_shared<PrepareJob>();
         auto execution = std::make_shared<task::RunExecution>();
@@ -112,14 +183,36 @@ void TaskService::State::start_execution(const std::shared_ptr<task::TaskEntry>&
             if (!accepting.load(std::memory_order_acquire) || !operation ||
                 !entry->controller->run_is_current(
                     operation->operation_id, current->control_generation) ||
-                !options->execution || task::terminal(operation->state)) {
+                !options->execution ||
+                (purpose == task::RunPurpose::Operation && task::terminal(operation->state))) {
                 return;
             }
             if (std::atomic_load(&entry->published)->snapshot.snapshot_sequence ==
                 std::numeric_limits<std::uint64_t>::max()) {
                 return;
             }
-            if (entry->execution &&
+            if (purpose == task::RunPurpose::VolumeRecovery) {
+                const auto config = std::atomic_load(&entry->published)->config;
+                const auto& policy = options->execution->runtime_recovery;
+                if (!entry->volume_recovery ||
+                    entry->volume_recovery->generation != current->control_generation ||
+                    entry->volume_recovery->attempts >= policy.max_attempts ||
+                    now_monotonic < entry->volume_recovery->not_before || !entry->quiescent ||
+                    entry->persisting || entry->control_work || entry->closing ||
+                    entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
+                    entry->cleanup_pending.frame || !task::terminal(operation->state) ||
+                    config->recovery_policy != RecoveryPolicyMode::Resume ||
+                    (entry->execution && entry->execution->condition(DesiredState::Running) ==
+                                             ExecutionCondition::Failed)) {
+                    return;
+                }
+                auto& retry = *entry->volume_recovery;
+                const auto delay = recovery_backoff(policy, ++retry.attempts);
+                retry.not_before = delay > std::numeric_limits<std::uint64_t>::max() - now_monotonic
+                                       ? std::numeric_limits<std::uint64_t>::max()
+                                       : now_monotonic + delay;
+            }
+            if (purpose == task::RunPurpose::Operation && entry->execution &&
                 entry->execution->control->current_operation_id == current->current_operation_id) {
                 const auto existing = entry->execution;
                 bool ready = false;
@@ -144,6 +237,7 @@ void TaskService::State::start_execution(const std::shared_ptr<task::TaskEntry>&
             if (entry->execution && !entry->quiescent) {
                 return;
             }
+            execution->purpose = purpose;
             execution->control = current;
             execution->config = std::atomic_load(&entry->published)->config;
             job->owner = shared_from_this();
@@ -168,9 +262,21 @@ void TaskService::State::start_execution(const std::shared_ptr<task::TaskEntry>&
                 execution->result_ready = true;
                 execution->returned.notify_all();
             }
-            finish_execution(
-                entry, *execution->control->current_operation_id,
-                execution->control->control_generation, queued.status().code());
+            if (purpose == task::RunPurpose::VolumeRecovery) {
+                std::lock_guard<std::mutex> control(entry->control_mutex);
+                if (entry->execution == execution) {
+                    entry->quiescent = true;  // No actual work or Native owner was admitted.
+                    std::lock_guard<std::mutex> registered(execution->registration);
+                    execution->recovery_exhausted =
+                        entry->volume_recovery &&
+                        entry->volume_recovery->attempts >=
+                            options->execution->runtime_recovery.max_attempts;
+                }
+            } else {
+                finish_execution(
+                    entry, *execution->control->current_operation_id,
+                    execution->control->control_generation, queued.status().code());
+            }
         }
     } catch (...) {
         // Durable intent remains visible; a later same-key retry may dispatch
@@ -242,7 +348,10 @@ void TaskService::State::PrepareJob::run() noexcept {
             failure = inputs.status().code();
         } else {
             auto& selected = inputs.value();
-            auto recovered_time = entry->recovery->load();
+            auto recovered_time = [&] {
+                std::lock_guard<std::mutex> recovery(entry->recovery_execution);
+                return entry->recovery->load();
+            }();
             if (recovered_time.ok()) {
                 if (!recovered_time.value().recording_time_ns) {
                     failure = StatusCode::Unavailable;
@@ -314,7 +423,13 @@ void TaskService::State::PrepareJob::run() noexcept {
                             }
                         }
                         std::lock_guard<std::mutex> recovery(entry->recovery_execution);
-                        auto checkpoint = run->checkpoint_prepared();
+                        auto checkpoint =
+                            execution->purpose == task::RunPurpose::VolumeRecovery
+                                ? compact_ended_authorization(*entry, *execution->control)
+                                : Result<void>{};
+                        if (checkpoint.ok()) {
+                            checkpoint = run->checkpoint_prepared();
+                        }
                         if (!checkpoint.ok()) {
                             prepared = checkpoint.status();
                         }
@@ -339,6 +454,7 @@ void TaskService::State::PrepareJob::run() noexcept {
                             std::lock_guard<std::mutex> control(entry->control_mutex);
                             const auto current = entry->controller->durable_record();
                             if (!owner->accepting.load(std::memory_order_acquire) ||
+                                entry->execution != execution ||
                                 !entry->controller->run_is_current(
                                     *execution->control->current_operation_id,
                                     execution->control->control_generation)) {
@@ -349,6 +465,10 @@ void TaskService::State::PrepareJob::run() noexcept {
                             } else {
                                 auto opened = run->open(*current, opening.value().monotonic_ns);
                                 failure = opened.ok() ? StatusCode::Ok : opened.status().code();
+                                if (opened.ok() &&
+                                    execution->purpose == task::RunPurpose::VolumeRecovery) {
+                                    entry->volume_recovery.reset();
+                                }
                             }
                         }
                     }
@@ -360,8 +480,16 @@ void TaskService::State::PrepareJob::run() noexcept {
     } catch (...) {
         failure = StatusCode::Internal;
     }
+    bool exhausted = false;
+    if (execution->purpose == task::RunPurpose::VolumeRecovery && failure != StatusCode::Ok) {
+        std::lock_guard<std::mutex> control(entry->control_mutex);
+        exhausted =
+            entry->volume_recovery && entry->volume_recovery->attempts >=
+                                          owner->options->execution->runtime_recovery.max_attempts;
+    }
     {
         std::lock_guard<std::mutex> lock(execution->registration);
+        execution->recovery_exhausted = exhausted;
         execution->failure = failure;
         execution->result_partial = partial;
         execution->preparing = false;
@@ -377,10 +505,12 @@ void TaskService::State::PrepareJob::run() noexcept {
         execution->result_impact =
             failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly;
     }
-    owner->finish_execution(
-        entry, *execution->control->current_operation_id, execution->control->control_generation,
-        failure, partial,
-        failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly);
+    if (execution->purpose == task::RunPurpose::Operation) {
+        owner->finish_execution(
+            entry, *execution->control->current_operation_id,
+            execution->control->control_generation, failure, partial,
+            failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly);
+    }
 }
 
 }  // namespace rodaq

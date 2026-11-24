@@ -70,6 +70,15 @@ Result<void> revoke_continuation(task::TaskEntry& entry, const task::TaskControl
 Result<void> record_ended(task::TaskEntry& entry, const task::RunExecution& execution) {
     std::lock_guard<std::mutex> recovery(entry.recovery_execution);
     auto loaded = entry.recovery->load();
+    if (!loaded.ok() && loaded.status().code() == StatusCode::Unavailable) {
+        auto actual = entry.recovery->reconcile();
+        if (!actual.ok()) {
+            return actual.status();
+        }
+        loaded = actual.value()
+                     ? Result<task::TaskRecoveryRecord>(*actual.value())
+                     : Result<task::TaskRecoveryRecord>(Status(StatusCode::NotFound, {}));
+    }
     if (!loaded.ok()) {
         return loaded.status().code() == StatusCode::NotFound ? Result<void>{}
                                                               : Result<void>(loaded.status());
@@ -85,6 +94,20 @@ Result<void> record_ended(task::TaskEntry& entry, const task::RunExecution& exec
         !(record.run_operation->operation_id == *execution.control->current_operation_id) ||
         record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
         return Status(StatusCode::Conflict, {});
+    }
+    for (const auto& authorized : record.run_operation->authorized_pipelines) {
+        bool owned = false;
+        for (const auto& selected : execution.pipelines) {
+            auto facts = selected.controller->snapshot();
+            if (!facts.ok()) {
+                return facts.status();
+            }
+            owned = owned || (facts.value().identity.pipeline_id == authorized.pipeline_id &&
+                              facts.value().identity.instance_id == authorized.instance_id);
+        }
+        if (!owned) {
+            return Status(StatusCode::Conflict, {});
+        }
     }
     auto sample = execution.sample();
     if (!sample.ok()) {
@@ -128,9 +151,10 @@ bool TaskService::State::cleanup_failed_prepare(
         job->preparation_failure = failure;
         {
             std::lock_guard<std::mutex> control(entry->control_mutex);
-            if (entry->closing || !entry->controller->run_is_current(
-                                      *execution->control->current_operation_id,
-                                      execution->control->control_generation)) {
+            if (entry->execution != execution || entry->closing ||
+                !entry->controller->run_is_current(
+                    *execution->control->current_operation_id,
+                    execution->control->control_generation)) {
                 return false;
             }
             ++entry->closing;
@@ -309,15 +333,20 @@ void TaskService::State::CloseJob::run() noexcept {
                 execution->draining = false;
                 execution->failure = failure;
             }
-            const bool settled =
-                execution->condition(DesiredState::Stopped) == ExecutionCondition::Idle;
+            const bool settled = execution->resources_settled();
             auto ended = settled ? record_ended(*entry, *execution)
                                  : Result<void>(Status(StatusCode::InvalidState, {}));
+            {
+                std::lock_guard<std::mutex> registered(execution->registration);
+                execution->ended_pending = settled && !ended.ok();
+            }
             if (!ended.ok()) {
                 fail(ended.status().code());
             }
             std::lock_guard<std::mutex> lock(entry->control_mutex);
-            entry->quiescent = settled && ended.ok();
+            if (entry->execution == execution) {
+                entry->quiescent = settled && ended.ok();
+            }
         }
         if (internal_cleanup) {
             if (impact == DataImpact::None && accepted == 0) {
@@ -331,6 +360,9 @@ void TaskService::State::CloseJob::run() noexcept {
         release.finish();
         if (process_drain) {
             reply->complete(OperationId{});
+            return;
+        }
+        if (internal_cleanup && execution->purpose == task::RunPurpose::VolumeRecovery) {
             return;
         }
         owner->finish_execution(

@@ -549,6 +549,7 @@ protected:
         options.settings.qualified_runtime_profile_id = "behavioral-fake.v1";
         options.settings.output_root = "local";
         options.sample = &receive_clock;
+        options.task_file_faults = composed_file_faults_;
         options.settings.tasks.config.max_pipelines = 1;
         rodaq::daq::ResourceProfile profile;
         profile.name = "basic";
@@ -569,7 +570,8 @@ protected:
     void open_composition(
         pipeline::ReceiveClock clock = &receive_clock, std::chrono::nanoseconds native_timeout = 5s,
         std::size_t max_tasks = 1, std::size_t max_pipelines = 1,
-        std::chrono::nanoseconds audit_window = 24h) {
+        std::chrono::nanoseconds audit_window = 24h,
+        rodaq::task::RuntimeRecoveryPolicy recovery_policy = {}) {
         fs::create_directory(root_ / "service");
         fs::create_directory(root_ / "segment-ids");
         auto ids = artifact::SegmentIdStore::open(
@@ -581,10 +583,59 @@ protected:
         options.settings.native_timeout = native_timeout;
         options.settings.max_tasks = max_tasks;
         options.settings.artifact_audit_window = audit_window;
+        options.settings.runtime_recovery = recovery_policy;
         options.settings.tasks.config.max_pipelines = max_pipelines;
         auto composition = rodaq::daq::Composition::create(std::move(options));
         ASSERT_TRUE(composition.ok());
         composition_ = std::move(composition.value());
+    }
+
+    rodaq::Result<rodaq::task::TaskRecoveryRecord> composed_recovery(rodaq::TaskId id) {
+        auto bytes = rodaq::persistence::read_file(
+            root_ / "service/recovery", rodaq::to_string(id) + ".json", 262144);
+        return bytes.ok() ? rodaq::task::decode_recovery_record(bytes.value(), {})
+                          : rodaq::Result<rodaq::task::TaskRecoveryRecord>(bytes.status());
+    }
+
+    bool wait_composed_receive(rodaq::TaskId id, std::uint64_t monotonic) {
+        if (!composition_->observe().ok()) {
+            return false;
+        }
+        const auto before = composition_->tasks().get_runtime_snapshot(id).value();
+        retention_monotonic = monotonic;
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        do {
+            if (!composition_->observe().ok()) {
+                return false;
+            }
+            const auto current = composition_->tasks().get_runtime_snapshot(id);
+            bool ready =
+                current.ok() && current.value().pipelines.size() == before.pipelines.size();
+            for (std::size_t i = 0; ready && i < before.pipelines.size(); ++i) {
+                const auto& row = current.value().pipelines[i];
+                ready =
+                    row.facts && before.pipelines[i].facts &&
+                    row.facts->accepted_records >= before.pipelines[i].facts->accepted_records + 4;
+                for (const auto& stream : row.streams) {
+                    ready = ready && stream.facts &&
+                            stream.facts->last_receive_at ==
+                                rodaq::WallTime{std::chrono::nanoseconds{
+                                    static_cast<std::int64_t>(monotonic + 900)}};
+                }
+            }
+            if (ready) {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    void protect_composed_volume(std::uint64_t monotonic) {
+        auto probe = capacity_->begin_space_sample(monotonic);
+        ASSERT_TRUE(probe.ok());
+        ASSERT_TRUE(capacity_->finish_space_sample(probe.value(), 0, monotonic).ok());
+        ASSERT_TRUE(composition_->observe().ok());
     }
 
     rodaq::Result<rodaq::OperationSnapshot> wait_composed_operation(
@@ -754,6 +805,8 @@ protected:
     std::shared_ptr<plugin::PluginManager> manager_;
     std::shared_ptr<rodaq::ExecutionLane> lane_;
     std::shared_ptr<rodaq::time::ClockCorrelation> clock_;
+    std::function<int(rodaq::task::ServiceFileDomain, rodaq::persistence::FileStep)>
+        composed_file_faults_;
     std::shared_ptr<artifact::ManagedVolume> volume_;
     std::shared_ptr<artifact::VolumeCapacity> capacity_;
     std::shared_ptr<artifact::LedgerStore> ledger_;
@@ -1261,6 +1314,26 @@ TEST_F(PipelineControllerTest, CompositionRejectsUnboundedTaskAndWriterDeploymen
     EXPECT_EQ(
         rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
     options.settings.artifact_audit_window = 24h;
+    const auto recovery_policy = options.settings.runtime_recovery;
+    options.settings.runtime_recovery.max_attempts = 0;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.runtime_recovery.max_attempts = 1025;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.runtime_recovery = recovery_policy;
+    options.settings.runtime_recovery.initial_backoff = 0ns;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.runtime_recovery = recovery_policy;
+    options.settings.runtime_recovery.max_backoff = recovery_policy.initial_backoff - 1ns;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.runtime_recovery = recovery_policy;
+    options.settings.runtime_recovery.max_backoff = 25h;
+    EXPECT_EQ(
+        rodaq::daq::Composition::create(options).status().code(), StatusCode::InvalidArgument);
+    options.settings.runtime_recovery = recovery_policy;
     auto valid = rodaq::daq::Composition::create(std::move(options));
     ASSERT_TRUE(valid.ok());
     EXPECT_TRUE(valid.value()->shutdown(std::chrono::steady_clock::now() + 3s).ok());
@@ -1641,6 +1714,10 @@ TEST_F(PipelineControllerTest, CompositionEffectiveIdentityBindsActualBinariesAn
     EXPECT_NE(
         identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
     deployment.settings.artifact_audit_window -= 1ns;
+    ++deployment.settings.runtime_recovery.max_attempts;
+    EXPECT_NE(
+        identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
+    --deployment.settings.runtime_recovery.max_attempts;
     deployment.settings.qualified_runtime_profile_id += ".changed";
     EXPECT_NE(
         identity(deployment, control, deployment.settings.profiles[0], source, storage), baseline);
@@ -3963,6 +4040,403 @@ TEST_P(TaskVolumeProtectionTest, MaintenanceDrainsProtectedRunWithoutInventingAU
 }
 
 INSTANTIATE_TEST_SUITE_P(ActiveOrSilentSource, TaskVolumeProtectionTest, testing::Bool());
+
+class AutomaticVolumeRecoveryTest : public PipelineControllerTest,
+                                    public testing::WithParamInterface<bool> {};
+
+TEST_P(
+    AutomaticVolumeRecoveryTest, ReauthorizesNewInstancesWithoutChangingUserOperationOrTaskTime) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, GetParam() ? 2 : 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    if (GetParam()) {
+        config.pipelines.push_back(config.pipelines.front());
+    }
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    const auto previous = composed_recovery(id);
+    ASSERT_TRUE(previous.ok());
+    ASSERT_TRUE(previous.value().run_operation);
+    EXPECT_EQ(previous.value().run_operation->phase, rodaq::task::RunPhase::Ended);
+    EXPECT_EQ(previous.value().recording_time_ns, 300);
+    retention_monotonic = 510;
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Active));
+    const auto recovered = composed_recovery(id);
+    ASSERT_TRUE(recovered.ok());
+    ASSERT_TRUE(recovered.value().run_operation);
+    EXPECT_EQ(recovered.value().run_operation->phase, rodaq::task::RunPhase::OpenAuthorized);
+    EXPECT_EQ(recovered.value().run_operation->operation_id, start.value());
+    EXPECT_EQ(recovered.value().run_operation->control_generation, 2);
+    EXPECT_EQ(
+        recovered.value().pipelines.size(),
+        previous.value().run_operation->authorized_pipelines.size());
+    for (const auto& recent : recovered.value().pipelines) {
+        EXPECT_TRUE(recent.instance.ended_boundary);
+    }
+    for (const auto& instance : recovered.value().run_operation->authorized_pipelines) {
+        EXPECT_TRUE(std::none_of(
+            previous.value().run_operation->authorized_pipelines.begin(),
+            previous.value().run_operation->authorized_pipelines.end(),
+            [&](const auto& old) { return old.instance_id == instance.instance_id; }));
+    }
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state, rodaq::OperationState::Succeeded);
+    ASSERT_TRUE(wait_composed_receive(id, 810));
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(composed_recovery(id).value().recording_time_ns, 600);
+    const auto artifacts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(artifacts.ok());
+    EXPECT_EQ(artifacts.value().items.size(), GetParam() ? 4 : 2);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(OneOrTwoPipelines, AutomaticVolumeRecoveryTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, ManualRecoveryKeepsEndedInstancesClosedAfterSpaceBecomesHealthy) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(formal_config(), {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    const auto ended = composed_recovery(id).value();
+    retention_monotonic = 510;
+    for (unsigned i = 0; i < 8; ++i) {
+        ASSERT_TRUE(composition_->observe().ok());
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_TRUE(capacity_->admit_recording(510).ok());
+    EXPECT_EQ(composed_recovery(id).value().record_revision, ended.record_revision);
+    EXPECT_EQ(
+        service.get_task(id).value().execution_condition, rodaq::ExecutionCondition::Protected);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+class SupersededVolumeRecoveryTest : public PipelineControllerTest,
+                                     public testing::WithParamInterface<bool> {};
+
+TEST_P(SupersededVolumeRecoveryTest, PauseOrStopDefeatsARealBlockedAuthorizationPublication) {
+    auto armed = std::make_shared<std::atomic<bool>>(false);
+    auto publications = std::make_shared<std::atomic<unsigned>>(0);
+    auto blocking = std::make_shared<ReadControl>();
+    composed_file_faults_ = [armed, publications, blocking](auto domain, auto step) {
+        if (armed->load() && domain == rodaq::task::ServiceFileDomain::Recovery &&
+            step == rodaq::persistence::FileStep::SyncFile && ++*publications == 3) {
+            std::unique_lock<std::mutex> lock(blocking->mutex);
+            blocking->entered = true;
+            blocking->changed.notify_all();
+            blocking->changed.wait(lock, [&] { return blocking->released; });
+        }
+        return 0;
+    };
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    *armed = true;
+    retention_monotonic = 510;
+    auto observing = std::async(std::launch::async, [&] { return composition_->observe(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(blocking->mutex);
+        entered = blocking->changed.wait_for(lock, 2s, [&] { return blocking->entered; });
+    }
+    auto superseding = std::async(std::launch::async, [&] {
+        return GetParam() ? service.stop(id, {"supersede"}, {true, 2})
+                          : service.pause(id, {"supersede"}, {true, 2});
+    });
+    bool durable = false;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+        const auto current = service.get_task(id);
+        durable = current.ok() && current.value().control_generation == 3 &&
+                  current.value().desired_state ==
+                      (GetParam() ? rodaq::DesiredState::Stopped : rodaq::DesiredState::Paused);
+        if (durable) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    {
+        std::lock_guard<std::mutex> lock(blocking->mutex);
+        blocking->released = true;
+    }
+    blocking->changed.notify_all();
+    const auto observed = observing.get();
+    const auto accepted = superseding.get();
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(durable);
+    EXPECT_TRUE(observed.ok());
+    ASSERT_TRUE(accepted.ok());
+    ASSERT_TRUE(wait_composed(id, accepted.value()));
+    retention_monotonic = 1000;
+    ASSERT_TRUE(composition_->observe().ok());
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    EXPECT_FALSE(runtime.pipelines[0].facts->admission_open);
+    EXPECT_EQ(runtime.pipelines[0].facts->accepted_records, 0);
+    EXPECT_EQ(service.get_task(id).value().control_generation, 3);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state, rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(PauseAndStop, SupersededVolumeRecoveryTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, VolumeRecoveryBackoffAndAttemptBudgetPreserveTheOriginalUserResult) {
+    auto fail_next = std::make_shared<std::atomic<bool>>(false);
+    auto failures = std::make_shared<std::atomic<unsigned>>(0);
+    composed_file_faults_ = [fail_next, failures](auto domain, auto step) {
+        if (domain == rodaq::task::ServiceFileDomain::Recovery &&
+            step == rodaq::persistence::FileStep::SyncFile && fail_next->exchange(false)) {
+            ++*failures;
+            return EIO;
+        }
+        return 0;
+    };
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        if (attempt != 0) {
+            retention_monotonic = attempt == 1 ? 519 : 539;
+            ASSERT_TRUE(composition_->observe().ok());
+            EXPECT_EQ(failures->load(), attempt);
+        }
+        *fail_next = true;
+        retention_monotonic = attempt == 0 ? 510 : attempt == 1 ? 520 : 540;
+        ASSERT_TRUE(composition_->observe().ok());
+        ASSERT_TRUE(wait_composed_condition(
+            id, attempt == 2 ? rodaq::ExecutionCondition::Failed
+                             : rodaq::ExecutionCondition::Protected));
+        EXPECT_EQ(failures->load(), attempt + 1);
+    }
+    retention_monotonic = 1000;
+    for (unsigned i = 0; i < 4; ++i) {
+        ASSERT_TRUE(composition_->observe().ok());
+    }
+    EXPECT_EQ(failures->load(), 3);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    EXPECT_EQ(
+        service.get_operation(id, start.value()).value().state, rodaq::OperationState::Succeeded);
+    EXPECT_EQ(service.get_task(id).value().desired_state, rodaq::DesiredState::Running);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+TEST_F(
+    PipelineControllerTest, UncertainRecoveryAuthorizationNeverOpensBeforeReconciliationAndRetry) {
+    auto armed = std::make_shared<std::atomic<bool>>(false);
+    auto publications = std::make_shared<std::atomic<unsigned>>(0);
+    composed_file_faults_ = [armed, publications](auto domain, auto step) {
+        return armed->load() && domain == rodaq::task::ServiceFileDomain::Recovery &&
+                       step == rodaq::persistence::FileStep::SyncDirectory && ++*publications == 3
+                   ? EIO
+                   : 0;
+    };
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    *armed = true;
+    retention_monotonic = 510;
+    ASSERT_TRUE(composition_->observe().ok());
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    EXPECT_FALSE(runtime.pipelines[0].facts->admission_open);
+    EXPECT_EQ(runtime.pipelines[0].facts->accepted_records, 0);
+    EXPECT_EQ(composed_recovery(id).value().run_operation->phase, rodaq::task::RunPhase::Ended);
+    *armed = false;
+    retention_monotonic = 520;
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Active));
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+TEST_F(PipelineControllerTest, QuietResourcesCannotHideAnUncertainEndedCheckpointFromMaintenance) {
+    auto fail = std::make_shared<std::atomic<bool>>(false);
+    composed_file_faults_ = [fail](auto domain, auto step) {
+        return fail->load() && domain == rodaq::task::ServiceFileDomain::Recovery &&
+                       step == rodaq::persistence::FileStep::SyncDirectory
+                   ? EIO
+                   : 0;
+    };
+    retention_monotonic = 200;
+    open_composition(&retention_clock);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(formal_config(), {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    *fail = true;
+    auto probe = capacity_->begin_space_sample(500).value();
+    ASSERT_TRUE(capacity_->finish_space_sample(probe, 0, 500).ok());
+    bool pending = false;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    do {
+        const auto observed = composition_->observe();
+        if (!observed.ok()) {
+            EXPECT_EQ(observed.status().code(), StatusCode::Unavailable);
+        }
+        const auto runtime = service.get_runtime_snapshot(id);
+        const auto current = service.get_task(id);
+        pending = runtime.ok() && runtime.value().pipelines[0].facts &&
+                  runtime.value().pipelines[0].facts->quiescent && current.ok() &&
+                  current.value().execution_condition == rodaq::ExecutionCondition::PendingCleanup;
+        if (pending) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    *fail = false;
+    ASSERT_TRUE(pending);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    const auto ended = composed_recovery(id);
+    ASSERT_TRUE(ended.ok());
+    ASSERT_TRUE(ended.value().run_operation);
+    EXPECT_EQ(ended.value().run_operation->phase, rodaq::task::RunPhase::Ended);
+    EXPECT_EQ(ended.value().recording_time_ns, 300);
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+}
+
+TEST_F(
+    PipelineControllerTest, SilentVolumeRecoveryDoesNotWaitForFirstDataOrInventCommittedProgress) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    config.pipelines[0].acquisition.json = R"({"streams":["first","second"],"mode":"silent"})";
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    retention_monotonic = 500;
+    protect_composed_volume(500);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    EXPECT_EQ(composed_recovery(id).value().recording_time_ns, 300);
+    retention_monotonic = 510;
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Active));
+    const auto runtime = service.get_runtime_snapshot(id).value();
+    ASSERT_TRUE(runtime.pipelines[0].facts);
+    EXPECT_EQ(runtime.pipelines[0].facts->accepted_records, 0);
+    retention_monotonic = 810;
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto ended = composed_recovery(id).value();
+    EXPECT_EQ(ended.recording_time_ns, 600);
+    EXPECT_FALSE(ended.committed_recording_end_ns);
+    EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 2);
+}
+
+TEST_F(PipelineControllerTest, HealthySpaceCannotBypassAnActuallyBlockedOldCommitOwner) {
+    retention_monotonic = 200;
+    open_composition(&retention_clock, 5s, 1, 1, 24h, {3, 10ns, 40ns});
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    const auto original = composed_recovery(id).value();
+    ledger_control_->block = true;
+    protect_composed_volume(500);
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(ledger_control_->mutex);
+        entered =
+            ledger_control_->changed.wait_for(lock, 2s, [&] { return ledger_control_->entered; });
+    }
+    retention_monotonic = 510;
+    bool healthy = true;
+    for (unsigned i = 0; i < 4; ++i) {
+        healthy = composition_->observe().ok() && healthy;
+    }
+    const auto held = composed_recovery(id);
+    const bool admitted = capacity_->admit_recording(510).ok();
+    {
+        std::lock_guard<std::mutex> lock(ledger_control_->mutex);
+        ledger_control_->released = true;
+    }
+    ledger_control_->changed.notify_all();
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(healthy);
+    EXPECT_TRUE(admitted);
+    ASSERT_TRUE(held.ok());
+    EXPECT_EQ(held.value().record_revision, original.record_revision);
+    EXPECT_EQ(
+        held.value().run_operation->authorized_pipelines[0].instance_id,
+        original.run_operation->authorized_pipelines[0].instance_id);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Active));
+    EXPECT_EQ(composed_recovery(id).value().recording_time_ns, 300);
+    retention_monotonic = 520;
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    EXPECT_EQ(composed_recovery(id).value().recording_time_ns, 310);
+}
 
 TEST_F(PipelineControllerTest, CatalogCollectionRequiresAuditExpiryAndDurableCommittedProgress) {
     record_committed(50);

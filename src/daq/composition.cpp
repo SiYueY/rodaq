@@ -32,7 +32,8 @@ bool valid(const CompositionOptions& o) {
         o.settings.create_recovery_slots > 1024 ||
         o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
         o.settings.native_timeout <= std::chrono::nanoseconds::zero() ||
-        o.settings.artifact_audit_window <= std::chrono::nanoseconds::zero()) {
+        o.settings.artifact_audit_window <= std::chrono::nanoseconds::zero() ||
+        !task::valid_runtime_recovery_policy(o.settings.runtime_recovery)) {
         return false;
     }
     for (auto i = o.settings.profiles.begin(); i != o.settings.profiles.end(); ++i) {
@@ -184,6 +185,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         service.max_tasks = o.settings.max_tasks;
         service.create_recovery_slots = o.settings.create_recovery_slots;
         service.store = o.settings.tasks;
+        service.file_faults = o.task_file_faults;
         service.allowed_plugins = o.settings.allowed_plugins;
         service.output_roots = {o.settings.output_root};
         for (const auto& profile : o.settings.profiles) {
@@ -195,6 +197,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
         execution->native_timeout = o.settings.native_timeout;
+        execution->runtime_recovery = o.settings.runtime_recovery;
         execution->resolve = [resources = std::shared_ptr<const RunResources>(state->resources)](
                                  const auto& control, const auto& config, auto& identities) {
             return resolve_run(*resources, control, config, identities);
@@ -302,6 +305,11 @@ Result<void> Composition::observe() {
     auto cleanup = state_->tasks->drain_shutdown(true);
     if (!cleanup.ok()) {
         return cleanup.status();
+    }
+    auto recovery =
+        state_->tasks->reconcile_volume(space.condition, completed.value().monotonic_ns);
+    if (!recovery.ok()) {
+        return recovery.status();
     }
     auto rotated = state_->tasks->schedule_rotation(completed.value().monotonic_ns);
     if (!rotated.ok()) {

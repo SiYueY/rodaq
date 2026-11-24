@@ -40,6 +40,16 @@ struct RunInputs {
     time::BootIdentity boot;
 };
 
+struct RuntimeRecoveryPolicy {
+    std::uint32_t max_attempts{8};
+    std::chrono::nanoseconds initial_backoff{std::chrono::milliseconds{100}};
+    std::chrono::nanoseconds max_backoff{std::chrono::seconds{30}};
+};
+
+bool valid_runtime_recovery_policy(const RuntimeRecoveryPolicy& policy) noexcept;
+
+enum class RunPurpose { Operation, VolumeRecovery };
+
 struct RunExecutionOptions {
     pipeline::ReceiveClock sample{&time::sample_clocks};
     // Separate bounded Native domains, each with at least max_tasks workers
@@ -49,6 +59,7 @@ struct RunExecutionOptions {
     std::shared_ptr<ExecutionLane> cleanup_lane;
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
     RecoveryPolicy recovery;
+    RuntimeRecoveryPolicy runtime_recovery;
     // Composition resolves frozen Deployment/profile/Volume/Time facts and
     // durably reserves identities. It returns closed Core controllers only;
     // no Native creation, Prepare or Gate opening belongs in this resolver.

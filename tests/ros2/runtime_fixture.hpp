@@ -367,7 +367,7 @@ protected:
     }
 
 #ifdef RODAQ_MCAP_PACKAGE
-    void open_core(bool robot = false) {
+    void open_core(bool robot = false, const fs::path& recovery_volume = {}) {
         library.reset();
         ASSERT_TRUE(manager->shutdown(soon()).ok());
         manager.reset();
@@ -382,7 +382,7 @@ protected:
         fs::create_directory(root / "volume");
         rodaq::daq::StartupOptions options;
         options.state_root = root / "state";
-        options.volume_root = root / "volume";
+        options.volume_root = recovery_volume.empty() ? root / "volume" : recovery_volume;
         options.mode = rodaq::daq::DeploymentOpenMode::Initialize;
         options.plugins.search_paths = {root / "packages"};
         options.plugins.max_instances = 4;
@@ -390,9 +390,16 @@ protected:
         options.plugins.max_config_size = 16384;
         options.plugins.shutdown_timeout = 5s;
         options.capacity = {256 * 1024 * 1024, 8 * 1024 * 1024, 1024 * 1024, 5000000000, 8, 8, 16};
+        if (!recovery_volume.empty()) {
+            options.capacity.low_free_bytes = 2 * 1024 * 1024;
+            options.capacity.recovery_free_bytes = 4 * 1024 * 1024;
+            options.capacity.recovery_stable_ns = 50000000;
+        }
         options.ledger_records = 8;
         options.settings.deployment_generation = 1;
-        options.settings.qualified_runtime_profile_id = "s3.integration.evidence-only";
+        options.settings.qualified_runtime_profile_id = recovery_volume.empty()
+                                                            ? "s3.integration.evidence-only"
+                                                            : "s4b.tmpfs-recovery.semantic-only";
         options.settings.output_root = "local";
         options.settings.tasks.config.max_pipelines = 1;
         options.settings.allowed_plugins = {

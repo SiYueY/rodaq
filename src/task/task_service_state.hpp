@@ -79,6 +79,9 @@ struct RunExecution {
     bool rotating{false};
     bool rotating_native{false};
     bool result_ready{false};
+    bool ended_pending{false};
+    bool recovery_exhausted{false};
+    RunPurpose purpose{RunPurpose::Operation};
     bool result_partial{false};
     DataImpact result_impact{DataImpact::None};
     std::shared_ptr<RunAuthorization> authorization;
@@ -90,6 +93,7 @@ struct RunExecution {
     StatusCode failure{StatusCode::Ok};
 
     void fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
+    bool resources_settled();
     ExecutionCondition condition(DesiredState desired);
 };
 
@@ -97,6 +101,12 @@ struct RetentionWork {
     ArtifactId artifact;
     ControlGeneration generation;
     std::uint64_t committed_recording_end_ns{0};
+};
+
+struct VolumeRecovery {
+    ControlGeneration generation{0};
+    std::uint32_t attempts{0};
+    std::uint64_t not_before{0};
 };
 
 struct TaskEntry {
@@ -110,6 +120,7 @@ struct TaskEntry {
     // Serializes actual Recovery I/O only, never taken by Task control/Open.
     std::mutex recovery_execution;
     std::shared_ptr<RunExecution> execution;
+    std::optional<VolumeRecovery> volume_recovery;
     std::shared_ptr<const PublishedTask> published;
     bool quiescent{false};
     bool persisting{false};
@@ -172,7 +183,10 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         bool allow_defer = true);
     Result<void> retry_cleanup(const std::shared_ptr<task::TaskEntry>& entry);
     void cleanup_failed_pipelines(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
-    void start_execution(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
+    void start_execution(
+        const std::shared_ptr<task::TaskEntry>& entry,
+        task::RunPurpose purpose = task::RunPurpose::Operation,
+        std::uint64_t now_monotonic = 0) noexcept;
     bool cleanup_failed_prepare(
         const std::shared_ptr<task::TaskEntry>& entry,
         const std::shared_ptr<task::RunExecution>& execution, StatusCode failure) noexcept;

@@ -16,7 +16,8 @@ class Composition;
 }
 namespace artifact {
 class ArtifactCatalog;
-}
+enum class VolumeSpaceCondition;
+}  // namespace artifact
 namespace task {
 struct ServiceOptions;
 }
@@ -83,6 +84,8 @@ private:
     Result<void> refresh_execution_facts(
         bool protect = false, std::optional<std::uint64_t> fence_monotonic_ns = {});
     Result<void> schedule_rotation(std::uint64_t now_monotonic);
+    Result<void> reconcile_volume(
+        artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
     Result<void> collect_artifacts(
         artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);

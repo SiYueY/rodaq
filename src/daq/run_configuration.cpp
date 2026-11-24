@@ -120,6 +120,12 @@ Result<Json> effective_configuration(
             {"effective_pipeline_limits", limits(profile)},
             {"volume_admission_limits", volume_limits(volume_policy.value())},
             {"native_timeout_ns", std::to_string(deployment.settings.native_timeout.count())},
+            {"runtime_recovery_policy",
+             {{"max_attempts", std::to_string(deployment.settings.runtime_recovery.max_attempts)},
+              {"initial_backoff_ns",
+               std::to_string(deployment.settings.runtime_recovery.initial_backoff.count())},
+              {"max_backoff_ns",
+               std::to_string(deployment.settings.runtime_recovery.max_backoff.count())}}},
             {"artifact_audit_window_ns",
              std::to_string(deployment.settings.artifact_audit_window.count())},
             // V1 supplies no secret-handoff ABI. No credential references or

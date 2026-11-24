@@ -82,6 +82,7 @@ add_library(rodaq_daq SHARED
 target_sources(rodaq_daq PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/task/task_maintenance.cpp
     src/task/task_rotation.cpp
+    src/task/task_volume_recovery.cpp
     src/task/task_retention.cpp
     src/task/task_runtime.cpp
     src/task/cleanup_execution.cpp

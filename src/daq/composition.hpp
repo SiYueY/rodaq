@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,7 @@ struct DeploymentSettings {
     std::size_t create_recovery_slots{8};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
     std::chrono::nanoseconds artifact_audit_window{std::chrono::hours{24}};
+    task::RuntimeRecoveryPolicy runtime_recovery;
 };
 
 struct CompositionOptions {
@@ -70,6 +72,8 @@ struct CompositionOptions {
     std::shared_ptr<artifact::SegmentIdStore> segment_ids;
     DeploymentSettings settings;
     pipeline::ReceiveClock sample{&time::sample_clocks};
+    // Private persistence fault seam; actual calls remain outside Task control.
+    std::function<int(task::ServiceFileDomain, persistence::FileStep)> task_file_faults;
 };
 
 struct StartupOptions;
