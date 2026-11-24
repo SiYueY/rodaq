@@ -65,6 +65,12 @@ struct ClockBlocker {
 std::atomic<ClockBlocker*> clock_blocker{nullptr};
 std::atomic<bool> clock_failed{false};
 
+rodaq::Result<rodaq::time::ClockSample> recoverable_clock() {
+    return clock_failed.load()
+               ? rodaq::Result<rodaq::time::ClockSample>(rodaq::Status(StatusCode::Unavailable, {}))
+               : retention_clock();
+}
+
 rodaq::Result<rodaq::time::ClockSample> controlled_clock() {
     if (auto* control = clock_blocker.load()) {
         std::unique_lock<std::mutex> lock(control->mutex);
@@ -4102,6 +4108,38 @@ TEST_P(
 }
 
 INSTANTIATE_TEST_SUITE_P(OneOrTwoPipelines, AutomaticVolumeRecoveryTest, testing::Bool());
+
+TEST_F(PipelineControllerTest, FailedObservationStillRegistersRecoveryBeforeReturningItsError) {
+    retention_monotonic = 200;
+    open_composition(&recoverable_clock);
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    auto config = formal_config();
+    config.recovery_policy = rodaq::RecoveryPolicyMode::Resume;
+    const auto id = service.create_task(config, {"create"}).value();
+    const auto start = service.start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_receive(id, 500));
+    const auto previous = composed_recovery(id).value().run_operation->authorized_pipelines;
+    clock_failed = true;
+    const auto failed = composition_->observe();
+    clock_failed = false;
+    ASSERT_FALSE(failed.ok());
+    EXPECT_EQ(failed.status().code(), StatusCode::Unavailable);
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Protected));
+    retention_monotonic = 510;
+    ASSERT_TRUE(wait_composed_condition(id, rodaq::ExecutionCondition::Active));
+    const auto recovered = composed_recovery(id).value();
+    ASSERT_TRUE(recovered.run_operation);
+    EXPECT_FALSE(
+        recovered.run_operation->authorized_pipelines[0].instance_id == previous[0].instance_id);
+    EXPECT_EQ(recovered.run_operation->operation_id, start.value());
+    EXPECT_EQ(service.list_operations(id, {}).value().items.size(), 1);
+    const auto stop = service.stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    EXPECT_TRUE(wait_composed(id, stop.value()));
+}
 
 TEST_F(PipelineControllerTest, ManualRecoveryKeepsEndedInstancesClosedAfterSpaceBecomesHealthy) {
     retention_monotonic = 200;

@@ -262,12 +262,17 @@ Result<void> Composition::observe() {
         return Status(StatusCode::InvalidState, {});
     }
     if (!sample.ok()) {
+        o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true);
+        (void)state_->tasks->reconcile_volume(artifact::VolumeSpaceCondition::Unknown, 0);
         return sample.status();
     }
     auto observed = o.clock->observe(sample.value());
     if (!observed.ok()) {
+        o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true);
+        (void)state_->tasks->reconcile_volume(
+            artifact::VolumeSpaceCondition::Unknown, sample.value().monotonic_ns);
         return observed.status();
     }
     auto probe = o.capacity->begin_space_sample(sample.value().monotonic_ns);
@@ -283,6 +288,8 @@ Result<void> Composition::observe() {
     if (!free.ok() || !completed.ok()) {
         o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true);
+        (void)state_->tasks->reconcile_volume(
+            artifact::VolumeSpaceCondition::Unknown, sample.value().monotonic_ns);
         return !free.ok() ? free.status() : completed.status();
     }
     auto updated = o.capacity->finish_space_sample(
@@ -290,6 +297,8 @@ Result<void> Composition::observe() {
     if (!updated.ok()) {
         o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true, completed.value().monotonic_ns);
+        (void)state_->tasks->reconcile_volume(
+            artifact::VolumeSpaceCondition::Unknown, completed.value().monotonic_ns);
         return updated.status();
     }
     const auto space = o.capacity->space_snapshot(completed.value().monotonic_ns);
