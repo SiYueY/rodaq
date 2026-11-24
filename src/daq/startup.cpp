@@ -1,6 +1,7 @@
 #include "startup.hpp"
 
 #include <cerrno>
+#include <algorithm>
 #include <cstdint>
 #include <fcntl.h>
 #include <filesystem>
@@ -15,6 +16,7 @@
 #include "../persistence/atomic_file.hpp"
 #include "../persistence/json.hpp"
 #include "../artifact/recovery_scan.hpp"
+#include "../artifact/segment_committer.hpp"
 #include "run_configuration.hpp"
 
 namespace rodaq::daq {
@@ -23,6 +25,69 @@ namespace {
 constexpr auto kLock = ".daq.lock";
 constexpr auto kMarker = "bootstrap.json";
 constexpr auto kDomain = "rodaq.deployment-bootstrap.v1";
+
+}  // namespace
+
+Result<void> recover_pending_commits(const CompositionOptions& options) {
+    auto records = options.ledger->recovery_snapshot();
+    if (!records.ok()) {
+        return records.status();
+    }
+    // Deleting is reconciled first. Until that execution path is available,
+    // retain every pending publication and report the unresolved delete intent.
+    if (std::any_of(records.value().begin(), records.value().end(), [](const auto& record) {
+            return record.state == artifact::LedgerState::Deleting;
+        })) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    const auto authorize = [&](const artifact::LedgerRecord& record,
+                               const artifact::SegmentManifest& manifest) -> Result<void> {
+        auto store = task::TaskStore::open(
+            options.task_root / "tasks" / to_string(record.task_id), options.task_root / "control",
+            record.task_id, task::TaskStoreMode::Existing, options.settings.tasks);
+        if (!store.ok()) {
+            return store.status();
+        }
+        auto control = store.value()->load_control();
+        if (!control.ok()) {
+            return control.status();
+        }
+        if (record.control_generation > control.value().control_generation ||
+            record.reset_generation_at_commit != control.value().reset_generation ||
+            control.value().reset_intent) {
+            return Status(StatusCode::Conflict, {});
+        }
+        auto config = store.value()->load_config(manifest.identity.config_version);
+        if (!config.ok()) {
+            return config.status();
+        }
+        const auto pipeline = std::find_if(
+            config.value().config.pipelines.begin(), config.value().config.pipelines.end(),
+            [&](const auto& selected) { return selected.pipeline_id == record.pipeline_id; });
+        if (pipeline == config.value().config.pipelines.end() ||
+            pipeline->acquisition.plugin_id != manifest.identity.acquisition.plugin_id ||
+            pipeline->acquisition.plugin_version != manifest.identity.acquisition.plugin_version ||
+            pipeline->storage.plugin_id != manifest.identity.storage.plugin_id ||
+            pipeline->storage.plugin_version != manifest.identity.storage.plugin_version) {
+            return Status(StatusCode::DataLoss, {});
+        }
+        return {};
+    };
+    for (const auto& record : records.value()) {
+        if (record.state != artifact::LedgerState::Committing) {
+            continue;
+        }
+        auto recovered = artifact::SegmentCommitter::recover(
+            options.volume, *options.ledger, record.segment_id,
+            catalog_manifest_limits(options.settings), authorize);
+        if (!recovered.ok()) {
+            return recovered.status();
+        }
+    }
+    return {};
+}
+
+namespace {
 
 struct StartupPlugins {
     std::shared_ptr<plugin::PluginManager> owner;
@@ -179,6 +244,15 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             }
         }
         if (!initialize) {
+            const auto retired = startup.state_root / "service/retired";
+            const auto retired_type = std::filesystem::symlink_status(retired).type();
+            if (retired_type != std::filesystem::file_type::not_found &&
+                (retired_type != std::filesystem::file_type::directory ||
+                 !std::filesystem::is_empty(retired))) {
+                // No ordinary Task/artifact recovery may precede retirement
+                // authority. Retain this diagnostic until its registry opens.
+                return Status(StatusCode::Unavailable, {});
+            }
             for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
                 auto checked = directory(startup.state_root / "service" / name, startup.mode);
                 if (!checked.ok()) {
@@ -205,6 +279,10 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return ledger.status();
         }
         options.ledger = std::move(ledger.value());
+        auto pending = recover_pending_commits(options);
+        if (!pending.ok()) {
+            return pending.status();
+        }
         auto usage = artifact::inspect_committed_volume(
             options.volume, *options.ledger, catalog_manifest_limits(options.settings));
         if (!usage.ok()) {

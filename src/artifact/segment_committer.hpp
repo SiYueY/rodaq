@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <string>
 
 #include "commit_reservation.hpp"
@@ -14,6 +15,14 @@ namespace rodaq::artifact {
 // here. A failed attempt requires recovery; it cannot be retried as new work.
 class SegmentCommitter {
 public:
+    // Exclusive startup/reconciliation execution. The existing committing row
+    // is the sole publication authority; the caller supplies current Task/Reset
+    // proof twice, outside all structure locks. No Plugin or new reservation.
+    static Result<void> recover(
+        std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment_id,
+        const ManifestLimits& limits,
+        const std::function<Result<void>(const LedgerRecord&, const SegmentManifest&)>& authorize,
+        persistence::FileFaultHook faults = {});
     // Transfer only on success. Validation/allocation failure leaves both
     // actual file backing and registration/Volume capacity with the caller.
     static Result<std::unique_ptr<SegmentCommitter>> create(

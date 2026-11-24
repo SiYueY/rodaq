@@ -8,6 +8,55 @@
 
 namespace rodaq::artifact {
 
+Result<void> SegmentCommitter::recover(
+    std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment_id,
+    const ManifestLimits& limits,
+    const std::function<Result<void>(const LedgerRecord&, const SegmentManifest&)>& authorize,
+    persistence::FileFaultHook faults) {
+    if (!authorize) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        auto record = ledger.get(segment_id);
+        if (!record.ok()) {
+            return record.status();
+        }
+        if (record.value().state != LedgerState::Committing) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        auto files =
+            SealedFiles::recover(std::move(volume), record.value(), limits, std::move(faults));
+        if (!files.ok()) {
+            return files.status();
+        }
+        auto allowed = authorize(record.value(), files.value()->recovery_manifest());
+        if (!allowed.ok()) {
+            return allowed.status();
+        }
+        auto published = files.value()->finish_recovery_publication();
+        if (!published.ok()) {
+            return published.status();
+        }
+        allowed = authorize(record.value(), files.value()->recovery_manifest());
+        if (!allowed.ok()) {
+            return allowed.status();
+        }
+        auto valid = files.value()->verify_recovery_publication();
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        auto candidate = std::move(record.value());
+        candidate.state = LedgerState::Committed;
+        candidate.committed_at = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        return ledger.advance(candidate, LedgerState::Committing);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    } catch (...) {
+        return Status(StatusCode::Internal, {});
+    }
+}
+
 SegmentCommitter::SegmentCommitter(
     std::unique_ptr<SealedFiles> files, std::string encoded, LedgerRecord record,
     CommitReservation reservation) noexcept

@@ -5,6 +5,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <new>
+#include <optional>
+#include <limits>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -14,6 +16,8 @@
 
 #include "../persistence/digest.hpp"
 #include "../persistence/file_descriptor.hpp"
+#include "manifest.hpp"
+#include "ledger_record.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -55,6 +59,63 @@ struct OpenedFile {
     : descriptor(std::move(fd)), identity(attributes) {}
 };
 
+struct RecoveredManifest {
+    SegmentManifest value;
+    std::unique_ptr<OpenedFile> file;
+    std::uint64_t bytes;
+};
+
+Result<RecoveredManifest> read_recovery_manifest(
+    int directory, const std::filesystem::path& path, const LedgerRecord& record,
+    const ManifestLimits& limits) {
+    FileDescriptor manifest_fd(
+        openat(directory, "manifest.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    struct stat attributes {};
+    if (manifest_fd.get() < 0 || fstat(manifest_fd.get(), &attributes) != 0) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto bytes = persistence::read_file(path, "manifest.json", limits.max_bytes);
+    if (!bytes.ok()) {
+        return bytes.status();
+    }
+    const auto expected_bytes =
+        persistence::byte_digest(bytes.value().data(), bytes.value().size());
+    const auto actual_bytes = persistence::file_digest(manifest_fd.get(), bytes.value().size());
+    if (!expected_bytes.ok() || !actual_bytes.ok()) {
+        return !expected_bytes.ok() ? expected_bytes.status() : actual_bytes.status();
+    }
+    if (actual_bytes.value() != expected_bytes.value()) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto decoded = decode_manifest(bytes.value(), limits);
+    if (!decoded.ok()) {
+        return decoded.status();
+    }
+    const auto& manifest = decoded.value();
+    const auto& id = manifest.identity;
+    auto digest = manifest_digest(manifest, limits);
+    if (!digest.ok()) {
+        return digest.status();
+    }
+    if (digest.value() != record.manifest_digest || id.segment_id != record.segment_id ||
+        !(id.volume_id == record.volume_id) || !(id.task_id == record.task_id) ||
+        id.pipeline_id != record.pipeline_id ||
+        id.control_generation != record.control_generation ||
+        id.reset_generation_at_commit != record.reset_generation_at_commit ||
+        std::any_of(
+            manifest.coverage.begin(), manifest.coverage.end(),
+            [](const auto& item) { return item.unknown != 0; }) ||
+        std::none_of(manifest.coverage.begin(), manifest.coverage.end(), [](const auto& item) {
+            return item.written != 0;
+        })) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    return RecoveredManifest{
+        std::move(decoded.value()),
+        std::make_unique<OpenedFile>(std::move(manifest_fd), attributes),
+        static_cast<std::uint64_t>(bytes.value().size())};
+}
+
 }  // namespace
 
 struct SealedFiles::State {
@@ -77,6 +138,8 @@ struct SealedFiles::State {
     std::uint64_t manifest_limit{0};
     bool manifest_attempted{false};
     bool synced{false};
+    bool recovered_final{false};
+    std::optional<SegmentManifest> recovered_manifest;
 
     State(
         std::shared_ptr<ManagedVolume> owner, std::filesystem::path path, FileDescriptor fd,
@@ -207,6 +270,137 @@ Result<std::unique_ptr<SealedFiles>> SealedFiles::open(
     } catch (const std::filesystem::filesystem_error&) {
         return Status(StatusCode::Unavailable, {});
     }
+}
+
+Result<std::unique_ptr<SealedFiles>> SealedFiles::recover(
+    std::shared_ptr<ManagedVolume> volume, const LedgerRecord& record, const ManifestLimits& limits,
+    persistence::FileFaultHook faults) {
+    if (!volume || record.state != LedgerState::Committing ||
+        !validate_ledger_record(record).ok() || !validate_manifest_limits(limits).ok() ||
+        !(record.volume_id == volume->identity())) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    auto valid = volume->verify();
+    if (!valid.ok()) {
+        return valid.status();
+    }
+    try {
+        FileDescriptor parent(::open(
+            volume->artifacts_directory().c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        const auto final_name = std::to_string(record.segment_id);
+        const auto staging_name = final_name + ".tmp";
+        const auto exists = [&](const std::string& name) -> Result<bool> {
+            struct stat attributes {};
+            if (fstatat(parent.get(), name.c_str(), &attributes, AT_SYMLINK_NOFOLLOW) == 0) {
+                return S_ISDIR(attributes.st_mode) ? Result<bool>(true)
+                                                   : Result<bool>(Status(StatusCode::DataLoss, {}));
+            }
+            return errno == ENOENT ? Result<bool>(false)
+                                   : Result<bool>(Status(StatusCode::Unavailable, {}));
+        };
+        const auto final = exists(final_name);
+        const auto staging = exists(staging_name);
+        if (!final.ok() || !staging.ok()) {
+            return !final.ok() ? final.status() : staging.status();
+        }
+        if (final.value() == staging.value()) {
+            return Status(final.value() ? StatusCode::Conflict : StatusCode::DataLoss, {});
+        }
+        const auto path =
+            volume->artifacts_directory() / (final.value() ? final_name : staging_name);
+        FileDescriptor directory(::openat(
+            parent.get(), (final.value() ? final_name : staging_name).c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (directory.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto state = std::make_unique<State>(
+            std::move(volume), path, std::move(directory), std::move(parent));
+        state->staging = state->volume->artifacts_directory() / staging_name;
+        state->current_directory = path;
+        state->final_name = final_name;
+        state->staging_name = staging_name;
+        state->segment_id = record.segment_id;
+        state->recovered_final = final.value();
+        state->faults = std::move(faults);
+        state->manifest_limit = limits.max_bytes;
+        state->manifest_attempted = true;
+        if (fstat(state->directory.get(), &state->directory_identity) != 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto restored = read_recovery_manifest(state->directory.get(), path, record, limits);
+        if (!restored.ok()) {
+            return restored.status();
+        }
+        state->manifest = std::move(restored.value().file);
+        state->manifest_bytes = restored.value().bytes;
+        const auto& manifest = restored.value().value;
+
+        state->files.reserve(manifest.files.size());
+        state->evidence = manifest.files;
+        for (const auto& file : manifest.files) {
+            FileDescriptor fd(openat(
+                state->directory.get(), file.relative_path.c_str(),
+                O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+            struct stat identity {};
+            if (fd.get() < 0 || fstat(fd.get(), &identity) != 0) {
+                return Status(StatusCode::DataLoss, {});
+            }
+            auto actual = persistence::file_digest(fd.get(), file.physical_size);
+            if (!actual.ok()) {
+                return actual.status();
+            }
+            if (actual.value() != file.digest ||
+                file.physical_size >
+                    std::numeric_limits<std::uint64_t>::max() - state->storage_bytes) {
+                return Status(StatusCode::DataLoss, {});
+            }
+            state->storage_bytes += file.physical_size;
+            state->files.emplace_back(std::move(fd), identity);
+        }
+        state->recovered_manifest.emplace(std::move(restored.value().value));
+        auto result = std::unique_ptr<SealedFiles>(new SealedFiles(std::move(state)));
+        valid = result->verify();
+        return valid.ok() ? Result<std::unique_ptr<SealedFiles>>(std::move(result))
+                          : Result<std::unique_ptr<SealedFiles>>(valid.status());
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    } catch (const std::filesystem::filesystem_error&) {
+        return Status(StatusCode::Unavailable, {});
+    }
+}
+
+const SegmentManifest& SealedFiles::recovery_manifest() const noexcept {
+    return *state_->recovered_manifest;
+}
+
+Result<void> SealedFiles::finish_recovery_publication() {
+    auto synced = sync_tree();
+    if (!synced.ok()) {
+        return synced.status();
+    }
+    synced = state_->recovered_final
+                 ? synchronize(
+                       state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults)
+                 : publish_directory();
+    if (!synced.ok()) {
+        return synced.status();
+    }
+    return verify_recovery_publication();
+}
+
+Result<void> SealedFiles::verify_recovery_publication() const {
+    struct stat staging {};
+    if (fstatat(
+            state_->parent.get(), state_->staging_name.c_str(), &staging, AT_SYMLINK_NOFOLLOW) ==
+        0) {
+        return Status(StatusCode::Conflict, {});
+    }
+    return errno == ENOENT ? verify() : Result<void>(Status(StatusCode::Unavailable, {}));
 }
 
 const std::vector<FileEvidence>& SealedFiles::evidence() const noexcept { return state_->evidence; }

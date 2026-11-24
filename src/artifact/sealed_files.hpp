@@ -20,6 +20,9 @@ struct FileEvidence {
 };
 
 class SegmentCommitter;
+struct LedgerRecord;
+struct SegmentManifest;
+struct ManifestLimits;
 
 // Single Commit-lane owner, retained through actual filesystem calls. Opens and
 // pins the exact sealed regular-file set and computes hashes of actual bytes.
@@ -50,6 +53,12 @@ public:
 
 private:
     friend class SegmentCommitter;
+    static Result<std::unique_ptr<SealedFiles>> recover(
+        std::shared_ptr<ManagedVolume> volume, const LedgerRecord& record,
+        const ManifestLimits& limits, persistence::FileFaultHook faults);
+    const SegmentManifest& recovery_manifest() const noexcept;
+    Result<void> finish_recovery_publication();
+    Result<void> verify_recovery_publication() const;
     // Only the Commit owner may publish after durable Ledger committing.
     Result<void> publish_directory();
     struct State;

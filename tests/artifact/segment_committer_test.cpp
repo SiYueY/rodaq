@@ -1,15 +1,18 @@
 #include "artifact/segment_committer.hpp"
 #include "manifest_fixture.hpp"
 #include "persistence/atomic_file.hpp"
+#include "artifact/recovery_scan.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <tuple>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -105,6 +108,27 @@ protected:
 
     void crash_at(int boundary);
 
+    void interrupt_publication(bool final_phase) {
+        auto prepared = prepare([final_phase, publishes = 0, directories = 0](auto step) mutable {
+            if ((!final_phase && step == persistence::FileStep::Publish && ++publishes == 2) ||
+                (final_phase && step == persistence::FileStep::SyncDirectory &&
+                 ++directories == 3)) {
+                return EIO;
+            }
+            return 0;
+        });
+        ASSERT_TRUE(prepared.ok());
+        ASSERT_FALSE(prepared.value()->commit(*ledger_).ok());
+        ASSERT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+        prepared.value().reset();
+        ledger_.reset();
+        auto reopened = artifact::LedgerStore::open(
+            root_ / "ledger", artifact::LedgerOpenMode::Existing, 8,
+            [this](auto step) { return ledger_fault_ ? ledger_fault_(step) : 0; });
+        ASSERT_TRUE(reopened.ok());
+        ledger_ = std::move(reopened.value());
+    }
+
     fs::path final() const { return volume_->artifacts_directory() / "7"; }
 
     fs::path root_;
@@ -117,6 +141,193 @@ protected:
     rodaq::storage::PrepareConfig envelope_{};
     artifact::SegmentManifest manifest_;
 };
+
+class CommitRecoveryTest : public SegmentCommitterTest, public testing::WithParamInterface<bool> {};
+
+TEST_P(CommitRecoveryTest, ReopenedLedgerAndExactTreeRecoverBothPublicationPhases) {
+    interrupt_publication(GetParam());
+    unsigned checks = 0;
+    ASSERT_TRUE(
+        artifact::SegmentCommitter::recover(
+            volume_, *ledger_, 7, {},
+            [&](const auto& record, const auto& manifest) -> rodaq::Result<void> {
+                ++checks;
+                EXPECT_EQ(record.state, artifact::LedgerState::Committing);
+                EXPECT_EQ(record.task_id, manifest.identity.task_id);
+                EXPECT_EQ(record.manifest_digest, artifact::manifest_digest(manifest, {}).value());
+                return {};
+            })
+            .ok());
+    EXPECT_EQ(checks, 2);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_TRUE(fs::is_directory(final()));
+    EXPECT_EQ(persistence::read_file(final(), "data.bin", 16).value(), "abc");
+    const auto usage = artifact::inspect_committed_volume(volume_, *ledger_, {});
+    ASSERT_TRUE(usage.ok());
+    EXPECT_EQ(usage.value().artifact_slots, 1);
+    EXPECT_GT(usage.value().physical_bytes, 3);
+}
+
+TEST_P(CommitRecoveryTest, ResetFenceIsCheckedBeforeEffectsAndAgainAfterPublication) {
+    interrupt_publication(GetParam());
+    const auto denied = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {}, [](const auto&, const auto&) -> rodaq::Result<void> {
+            return rodaq::Status(StatusCode::Conflict, {});
+        });
+    EXPECT_EQ(denied.status().code(), StatusCode::Conflict);
+    EXPECT_EQ(fs::exists(final()), GetParam());
+    unsigned checks = 0;
+    const auto late = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {}, [&](const auto&, const auto&) -> rodaq::Result<void> {
+            return ++checks == 1 ? rodaq::Result<void>{}
+                                 : rodaq::Result<void>(rodaq::Status(StatusCode::Conflict, {}));
+        });
+    EXPECT_EQ(late.status().code(), StatusCode::Conflict);
+    EXPECT_EQ(checks, 2);
+    EXPECT_TRUE(fs::exists(final()));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+}
+
+TEST_P(CommitRecoveryTest, CorruptBytesNeverReachAuthorizationOrLedgerPromotion) {
+    interrupt_publication(GetParam());
+    std::ofstream((GetParam() ? final() : staging_) / "data.bin", std::ios::binary) << "bad";
+    unsigned checks = 0;
+    const auto result = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {}, [&](const auto&, const auto&) -> rodaq::Result<void> {
+            ++checks;
+            return {};
+        });
+    EXPECT_EQ(result.status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(checks, 0);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+}
+
+TEST_P(CommitRecoveryTest, BothNamesAreAConflictAndNeverAuthorizeOverwrite) {
+    interrupt_publication(GetParam());
+    ASSERT_TRUE(fs::create_directory(GetParam() ? staging_ : final()));
+    const auto result = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {}, [](const auto&, const auto&) -> rodaq::Result<void> {
+            ADD_FAILURE() << "Ambiguous filesystem phase cannot authorize publication";
+            return {};
+        });
+    EXPECT_EQ(result.status().code(), StatusCode::Conflict);
+    EXPECT_TRUE(fs::is_directory(staging_));
+    EXPECT_TRUE(fs::is_directory(final()));
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+}
+
+TEST_P(CommitRecoveryTest, UncertainLedgerCompletionRequiresActualDurableReconciliation) {
+    interrupt_publication(GetParam());
+    ledger_fault_ = [](auto step) {
+        return step == persistence::FileStep::SyncDirectory ? EIO : 0;
+    };
+    const auto result = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {},
+        [](const auto&, const auto&) -> rodaq::Result<void> { return {}; });
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_TRUE(fs::is_directory(final()));
+    ledger_fault_ = {};
+    ASSERT_TRUE(ledger_->reconcile(7).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+    EXPECT_TRUE(artifact::inspect_committed_volume(volume_, *ledger_, {}).ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(StagingOrFinal, CommitRecoveryTest, testing::Bool());
+
+TEST_F(SegmentCommitterTest, RecoveryUsesAtomicNoReplaceWhenAFinalNameAppearsDuringPublication) {
+    interrupt_publication(false);
+    auto result = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {},
+        [](const auto&, const auto&) -> rodaq::Result<void> { return {}; },
+        [&](auto step) {
+            if (step == persistence::FileStep::Publish) {
+                EXPECT_TRUE(fs::create_directory(final()));
+                std::ofstream(final() / "foreign") << "retain";
+            }
+            return 0;
+        });
+    EXPECT_EQ(result.status().code(), StatusCode::Conflict);
+    EXPECT_TRUE(fs::exists(staging_ / "data.bin"));
+    EXPECT_EQ(persistence::read_file(final(), "foreign", 16).value(), "retain");
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+}
+
+TEST_F(SegmentCommitterTest, RecoveryRechecksStagingAbsenceAfterTheActualSecondFenceCheck) {
+    interrupt_publication(true);
+    unsigned checks = 0;
+    const auto result = artifact::SegmentCommitter::recover(
+        volume_, *ledger_, 7, {}, [&](const auto&, const auto&) -> rodaq::Result<void> {
+            if (++checks == 2) {
+                EXPECT_TRUE(fs::create_directory(staging_));
+            }
+            return {};
+        });
+    EXPECT_EQ(result.status().code(), StatusCode::Conflict);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    EXPECT_TRUE(fs::is_directory(staging_));
+}
+
+TEST_F(SegmentCommitterTest, RecoveryRetainsVolumeAndPinnedFilesUntilTheActualParentSyncReturns) {
+    interrupt_publication(true);
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto owner = volume_;
+    std::weak_ptr<artifact::ManagedVolume> retained = owner;
+    auto work = std::async(std::launch::async, [&, owner = std::move(owner)] {
+        return artifact::SegmentCommitter::recover(
+            owner, *ledger_, 7, {},
+            [](const auto&, const auto&) -> rodaq::Result<void> { return {}; },
+            [&, directories = 0](auto step) mutable {
+                if (step == persistence::FileStep::SyncDirectory && ++directories == 2) {
+                    entered.set_value();
+                    released.wait();
+                }
+                return 0;
+            });
+    });
+    const bool blocked =
+        entered.get_future().wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+    if (blocked) {
+        volume_.reset();
+        EXPECT_FALSE(retained.expired());
+        EXPECT_EQ(work.wait_for(std::chrono::milliseconds{1}), std::future_status::timeout);
+        EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    }
+    release.set_value();
+    const auto completed = work.get();
+    EXPECT_TRUE(blocked);
+    EXPECT_TRUE(completed.ok());
+    EXPECT_TRUE(retained.expired());
+}
+
+class CommitRecoverySyncTest : public SegmentCommitterTest,
+                               public testing::WithParamInterface<std::tuple<bool, unsigned>> {};
+
+TEST_P(CommitRecoverySyncTest, SyncFailureRetainsAuthorityAndAFreshRecoveryCanFinish) {
+    interrupt_publication(std::get<0>(GetParam()));
+    const auto selected = std::get<1>(GetParam());
+    unsigned directories = 0;
+    auto authorize = [](const auto&, const auto&) -> rodaq::Result<void> { return {}; };
+    auto failed =
+        artifact::SegmentCommitter::recover(volume_, *ledger_, 7, {}, authorize, [&](auto step) {
+            if (selected == 0 && step == persistence::FileStep::SyncFile) {
+                return EIO;
+            }
+            return step == persistence::FileStep::SyncDirectory && ++directories == selected ? EIO
+                                                                                             : 0;
+        });
+    EXPECT_FALSE(failed.ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    EXPECT_TRUE(artifact::SegmentCommitter::recover(volume_, *ledger_, 7, {}, authorize).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committed);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PhaseAndDurabilityBoundary, CommitRecoverySyncTest,
+    testing::Combine(testing::Bool(), testing::Values(0u, 1u, 2u)));
 
 TEST_F(SegmentCommitterTest, ActualManifestTreeAndLedgerPublishInOrderAndSurviveReopen) {
     auto prepared = prepare([this, publishes = 0](auto step) mutable {

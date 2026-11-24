@@ -1930,6 +1930,45 @@ TEST_F(PipelineControllerTest, StartupInitializesActualAuthoritiesAndRecordsWith
     EXPECT_TRUE(fs::is_directory(root_ / "startup-volume/.rodaq/artifacts/1"));
 }
 
+TEST_F(PipelineControllerTest, BootCommitRecoveryUsesActualTaskConfigWithoutRewritingFailedStop) {
+    open_service();
+    ASSERT_TRUE(service_);
+    const auto id = service_->create_task(formal_config(), {"create"}).value();
+    const auto start = service_->start(id, {"start"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+    ASSERT_TRUE(wait_written(4));
+    *ledger_fault_ = true;
+    const auto stop = service_->stop(id, {"stop"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    EXPECT_FALSE(wait_operation(id, stop.value()));
+    EXPECT_EQ(
+        service_->get_operation(id, stop.value()).value().state, rodaq::OperationState::Failed);
+    const auto segment = controller_->snapshot().value().segment_id;
+    *ledger_fault_ = false;
+    ASSERT_TRUE(ledger_->reconcile(segment).ok());
+    ASSERT_EQ(ledger_->get(segment).value().state, artifact::LedgerState::Committing);
+    service_.reset();
+    for (const auto& lane : service_lanes_) {
+        ASSERT_TRUE(lane->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    }
+    const auto control_path = root_ / "service/control";
+    const auto control_name = rodaq::to_string(id) + ".json";
+    const auto before = rodaq::persistence::read_file(control_path, control_name, 1024 * 1024);
+    ASSERT_TRUE(before.ok());
+    ASSERT_TRUE(rodaq::daq::recover_pending_commits(composition_options()).ok());
+    EXPECT_EQ(ledger_->get(segment).value().state, artifact::LedgerState::Committed);
+    const auto pending = controller_->snapshot().value();
+    ASSERT_TRUE(controller_->acknowledge_artifact(pending.artifact_work_id, segment).ok());
+    EXPECT_TRUE(controller_->quiesce(soon()).ok());
+    EXPECT_TRUE(fake_footer_written(volume_->artifacts_directory() / std::to_string(segment)));
+    EXPECT_TRUE(
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits).ok());
+    const auto after = rodaq::persistence::read_file(control_path, control_name, 1024 * 1024);
+    ASSERT_TRUE(after.ok());
+    EXPECT_EQ(after.value(), before.value());
+}
+
 TEST_F(PipelineControllerTest, SuccessfulStopHistoryCannotReplaceMissingEndedRecoveryOnRestart) {
     initialize_deployment();
     ASSERT_TRUE(composition_);
