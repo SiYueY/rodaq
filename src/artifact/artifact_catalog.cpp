@@ -218,6 +218,32 @@ Result<void> ArtifactCatalog::rebuild() {
         std::size_t at = 0;
         for (const auto& record : records.value()) {
             if (record.state == LedgerState::Deleted) {
+                if (!(record.volume_id == state->options.volume->identity())) {
+                    return Status(StatusCode::DataLoss, {});
+                }
+                auto absent = prove_artifact_absence(state->options, record.segment_id);
+                if (!absent.ok()) {
+                    return absent.status();
+                }
+                auto entry = std::make_shared<CatalogEntry>();
+                entry->info.summary.artifact_id = {record.segment_id};
+                entry->info.summary.segment_id = record.segment_id;
+                entry->info.summary.task_id = record.task_id;
+                entry->info.summary.pipeline_id = record.pipeline_id;
+                entry->read_blocked = true;
+                auto charge = state->options.capacity->claim_recovered_artifact(0);
+                if (!charge.ok()) {
+                    return charge.status();
+                }
+                auto deleted = charge.value().release_after_delete();
+                if (!deleted.ok()) {
+                    return deleted.status();
+                }
+                entry->charge.emplace(std::move(charge.value()));
+                std::lock_guard<std::mutex> lock(state->index);
+                auto& slot = state->slots[at++];
+                slot.segment_id = record.segment_id;
+                slot.entry = std::move(entry);
                 continue;
             }
             if (record.state != LedgerState::Committed) {

@@ -1,4 +1,5 @@
 #include "catalog_state.hpp"
+#include "recovery_scan.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -10,6 +11,8 @@
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "../persistence/digest.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -162,7 +165,139 @@ Result<void> remove_files(
     return options.volume->verify();
 }
 
+Result<CatalogEntry> read_deleting_tree(const CatalogOptions& options, const LedgerRecord& record) {
+    CatalogEntry entry;
+    entry.info.summary.artifact_id = {record.segment_id};
+    entry.info.summary.segment_id = record.segment_id;
+    entry.info.summary.task_id = record.task_id;
+    entry.read_blocked = true;
+    const auto path = options.volume->artifacts_directory() / std::to_string(record.segment_id);
+    FileDescriptor directory(open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (directory.get() < 0) {
+        return errno == ENOENT ? Result<CatalogEntry>(std::move(entry))
+                               : Result<CatalogEntry>(Status(StatusCode::DataLoss, {}));
+    }
+    if (fstat(directory.get(), &entry.directory) != 0) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    FileDescriptor manifest_fd(
+        openat(directory.get(), "manifest.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (manifest_fd.get() < 0) {
+        // After Manifest removal, only an empty final directory is deletable.
+        // remove_files verifies that exact empty set before any further effect.
+        return errno == ENOENT ? Result<CatalogEntry>(std::move(entry))
+                               : Result<CatalogEntry>(Status(StatusCode::DataLoss, {}));
+    }
+    if (fstat(manifest_fd.get(), &entry.manifest) != 0) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    auto bytes = persistence::read_file(path, "manifest.json", options.manifest.max_bytes);
+    if (!bytes.ok()) {
+        return bytes.status();
+    }
+    auto expected = persistence::byte_digest(bytes.value().data(), bytes.value().size());
+    auto actual = persistence::file_digest(manifest_fd.get(), bytes.value().size());
+    if (!expected.ok() || !actual.ok()) {
+        return !expected.ok() ? expected.status() : actual.status();
+    }
+    if (expected.value() != actual.value()) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto manifest = decode_manifest(bytes.value(), options.manifest);
+    if (!manifest.ok()) {
+        return manifest.status();
+    }
+    auto binding = validate_manifest_ledger_binding(manifest.value(), record, options.manifest);
+    if (!binding.ok()) {
+        return binding.status();
+    }
+
+    entry.files.reserve(manifest.value().files.size());
+    for (const auto& file : manifest.value().files) {
+        CatalogFile observed;
+        observed.path = file.relative_path;
+        FileDescriptor fd(openat(
+            directory.get(), file.relative_path.c_str(),
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+        if (fd.get() < 0) {
+            if (errno != ENOENT) {
+                return Status(StatusCode::DataLoss, {});
+            }
+        } else {
+            if (fstat(fd.get(), &observed.identity) != 0) {
+                return Status(StatusCode::Unavailable, {});
+            }
+            auto digest = persistence::file_digest(fd.get(), file.physical_size);
+            if (!digest.ok()) {
+                return digest.status();
+            }
+            if (digest.value() != file.digest) {
+                return Status(StatusCode::DataLoss, {});
+            }
+        }
+        entry.files.push_back(std::move(observed));
+    }
+    return entry;
+}
+
 }  // namespace
+
+Result<void> recover_deleting_artifact(
+    std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment,
+    const ManifestLimits& limits, std::function<int(DeleteStep)> faults) {
+    if (!volume || segment == 0 || !validate_manifest_limits(limits).ok()) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        auto valid = volume->verify();
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        auto record = ledger.get(segment);
+        if (!record.ok() && record.status().code() == StatusCode::Unavailable) {
+            auto reconciled = ledger.reconcile(segment);
+            if (!reconciled.ok()) {
+                return reconciled.status();
+            }
+            record = ledger.get(segment);
+        }
+        if (!record.ok()) {
+            return record.status();
+        }
+        if (!(record.value().volume_id == volume->identity()) ||
+            (record.value().state != LedgerState::Deleting &&
+             record.value().state != LedgerState::Deleted)) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        CatalogOptions options;
+        options.volume = std::move(volume);
+        options.manifest = limits;
+        options.delete_faults = std::move(faults);
+        if (record.value().state == LedgerState::Deleted) {
+            return prove_artifact_absence(options, segment);
+        }
+        auto entry = read_deleting_tree(options, record.value());
+        if (!entry.ok()) {
+            return entry.status();
+        }
+        auto removed = remove_files(options, entry.value(), false);
+        if (!removed.ok()) {
+            return removed.status();
+        }
+        auto absent = prove_artifact_absence(options, segment);
+        if (!absent.ok()) {
+            return absent.status();
+        }
+        record.value().state = LedgerState::Deleted;
+        record.value().deleted_at = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        return ledger.advance(record.value(), LedgerState::Deleting);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    } catch (...) {
+        return Status(StatusCode::Internal, {});
+    }
+}
 
 Result<void> ArtifactCatalog::delete_artifact(
     ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,

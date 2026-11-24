@@ -152,19 +152,13 @@ Result<std::shared_ptr<CatalogEntry>> verify_committed(
             return decoded.status();
         }
         auto& manifest = decoded.value();
-        auto digest = manifest_digest(manifest, options.manifest);
-        if (!digest.ok()) {
-            return digest.status();
+        auto binding = validate_manifest_ledger_binding(manifest, record, options.manifest);
+        if (!binding.ok()) {
+            return binding.status();
         }
         const auto& identity = manifest.identity;
-        if (digest.value() != record.manifest_digest || identity.segment_id != record.segment_id ||
-            !(identity.task_id == record.task_id) || identity.pipeline_id != record.pipeline_id ||
-            !(identity.volume_id == record.volume_id) ||
-            identity.control_generation != record.control_generation ||
-            identity.reset_generation_at_commit != record.reset_generation_at_commit) {
-            return Status(StatusCode::DataLoss, {});
-        }
         entry->config_version = identity.config_version;
+        entry->committed_recording_end_ns = manifest.recording_end_ns;
         auto& summary = entry->info.summary;
         summary.artifact_id = {record.segment_id};
         summary.segment_id = record.segment_id;

@@ -49,6 +49,9 @@ Result<std::uint32_t> inspect_names(
         if (found == records.end() || found->segment_id != id.value()) {
             return Status(StatusCode::Unavailable, {});
         }
+        if (found->state == LedgerState::Deleted) {
+            return Status(StatusCode::DataLoss, {});
+        }
         ++count;
         errno = 0;
     }
@@ -77,10 +80,12 @@ Result<RecoveredVolumeUsage> inspect_committed_volume(
         std::sort(records.begin(), records.end(), [](const auto& a, const auto& b) {
             return a.segment_id < b.segment_id;
         });
+        std::uint32_t committed = 0;
         for (const auto& record : records) {
-            if (record.state != LedgerState::Committed) {
+            if (record.state != LedgerState::Committed && record.state != LedgerState::Deleted) {
                 return Status(StatusCode::Unavailable, {});
             }
+            committed += record.state == LedgerState::Committed ? 1 : 0;
         }
         auto names = inspect_names(volume->artifacts_directory(), records);
         if (!names.ok()) {
@@ -92,7 +97,7 @@ Result<RecoveredVolumeUsage> inspect_committed_volume(
         if (!quarantine.ok()) {
             return quarantine.status();
         }
-        if (names.value() != records.size()) {
+        if (names.value() != committed) {
             return Status(StatusCode::DataLoss, {});
         }
         CatalogOptions options;
@@ -100,6 +105,17 @@ Result<RecoveredVolumeUsage> inspect_committed_volume(
         options.manifest = limits;
         RecoveredVolumeUsage usage;
         for (const auto& record : records) {
+            if (record.state == LedgerState::Deleted) {
+                if (!(record.volume_id == volume->identity())) {
+                    return Status(StatusCode::DataLoss, {});
+                }
+                auto absent = prove_artifact_absence(options, record.segment_id);
+                if (!absent.ok()) {
+                    return absent.status();
+                }
+                ++usage.artifact_slots;
+                continue;
+            }
             auto verified = verify_committed(options, record);
             if (!verified.ok()) {
                 return verified.status();

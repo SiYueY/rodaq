@@ -19,6 +19,8 @@
 
 namespace rodaq::artifact {
 
+struct LedgerRecord;
+
 // Schema bytes remain in the self-decoding Storage file set; Core records its
 // own byte digest and all typed Descriptor facts, not a provider-supplied hash.
 struct ManifestDescriptor {
@@ -108,6 +110,8 @@ Result<ManifestDescriptor> capture_manifest_descriptor(
 Result<void> validate_manifest_identity(const ManifestIdentity& identity);
 Result<void> validate_manifest_limits(const ManifestLimits& limits);
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits);
+Result<void> validate_manifest_ledger_binding(
+    const SegmentManifest& manifest, const LedgerRecord& record, const ManifestLimits& limits);
 
 // Conservative sizing of the frozen header / one prepared Descriptor. These
 // never publish placeholder facts. Stream/Epoch/file bounds cover field names,

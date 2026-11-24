@@ -27,6 +27,9 @@ struct CatalogFile {
 struct CatalogEntry {
     ArtifactInfo info;
     std::string config_version;
+    // Absent after recovering a Deleted row whose Manifest no longer exists.
+    // Never manufacture a recording boundary from tombstone identity alone.
+    std::optional<std::uint64_t> committed_recording_end_ns;
     std::vector<CatalogFile> files;
     struct stat directory {};
     struct stat manifest {};
@@ -100,5 +103,6 @@ Result<persistence::FileDescriptor> open_final_directory(
     const std::shared_ptr<ManagedVolume>& volume, std::uint64_t segment);
 Result<std::shared_ptr<CatalogEntry>> verify_committed(
     const CatalogOptions& options, const LedgerRecord& record);
+Result<void> prove_artifact_absence(const CatalogOptions& options, std::uint64_t segment);
 
 }  // namespace rodaq::artifact

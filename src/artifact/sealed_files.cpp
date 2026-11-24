@@ -92,17 +92,11 @@ Result<RecoveredManifest> read_recovery_manifest(
         return decoded.status();
     }
     const auto& manifest = decoded.value();
-    const auto& id = manifest.identity;
-    auto digest = manifest_digest(manifest, limits);
-    if (!digest.ok()) {
-        return digest.status();
+    auto binding = validate_manifest_ledger_binding(manifest, record, limits);
+    if (!binding.ok()) {
+        return binding.status();
     }
-    if (digest.value() != record.manifest_digest || id.segment_id != record.segment_id ||
-        !(id.volume_id == record.volume_id) || !(id.task_id == record.task_id) ||
-        id.pipeline_id != record.pipeline_id ||
-        id.control_generation != record.control_generation ||
-        id.reset_generation_at_commit != record.reset_generation_at_commit ||
-        std::any_of(
+    if (std::any_of(
             manifest.coverage.begin(), manifest.coverage.end(),
             [](const auto& item) { return item.unknown != 0; }) ||
         std::none_of(manifest.coverage.begin(), manifest.coverage.end(), [](const auto& item) {

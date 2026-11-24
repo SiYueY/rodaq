@@ -1956,7 +1956,7 @@ TEST_F(PipelineControllerTest, BootCommitRecoveryUsesActualTaskConfigWithoutRewr
     const auto control_name = rodaq::to_string(id) + ".json";
     const auto before = rodaq::persistence::read_file(control_path, control_name, 1024 * 1024);
     ASSERT_TRUE(before.ok());
-    ASSERT_TRUE(rodaq::daq::recover_pending_commits(composition_options()).ok());
+    ASSERT_TRUE(rodaq::daq::recover_pending_artifacts(composition_options()).ok());
     EXPECT_EQ(ledger_->get(segment).value().state, artifact::LedgerState::Committed);
     const auto pending = controller_->snapshot().value();
     ASSERT_TRUE(controller_->acknowledge_artifact(pending.artifact_work_id, segment).ok());
@@ -1968,6 +1968,102 @@ TEST_F(PipelineControllerTest, BootCommitRecoveryUsesActualTaskConfigWithoutRewr
     ASSERT_TRUE(after.ok());
     EXPECT_EQ(after.value(), before.value());
 }
+
+class FormalTombstoneStartupTest : public PipelineControllerTest,
+                                   public testing::WithParamInterface<bool> {};
+
+TEST_P(
+    FormalTombstoneStartupTest,
+    FormalStartupRebuildsDeletedHistoryAndKeepsRecordingTimeAfterAuditGc) {
+    initialize_deployment();
+    ASSERT_TRUE(composition_);
+    auto& service = composition_->tasks();
+    const auto id = service.create_task(formal_config(), {"create"}).value();
+    for (unsigned run = 0; run < 2; ++run) {
+        const auto generation = service.get_task(id).value().control_generation;
+        const auto start = service.start(id, {"start-" + std::to_string(run)}, {true, generation});
+        ASSERT_TRUE(start.ok());
+        ASSERT_TRUE(wait_composed(id, start.value()));
+        ASSERT_TRUE(wait_composed_records(id));
+        const auto stop = service.stop(id, {"stop-" + std::to_string(run)}, {true, generation + 1});
+        ASSERT_TRUE(stop.ok());
+        ASSERT_TRUE(wait_composed(id, stop.value()));
+    }
+    const auto original = composition_->artifacts().query_artifacts({}).value();
+    ASSERT_EQ(original.items.size(), 2);
+    const auto latest = std::max(original.items[0].segment_id, original.items[1].segment_id);
+    auto config = service.get_active_config(id).value();
+    config.recording_mode = rodaq::RecordingMode::Rolling;
+    config.retention_policy = {rodaq::RetentionMode::Rolling, {}, 1, true};
+    if (GetParam()) {
+        config.retention_policy.max_duration = 1ns;
+        config.retention_policy.max_physical_bytes.reset();
+    }
+    const auto configured = service.configure(id, config, {"rolling"}, {true, 5});
+    ASSERT_TRUE(configured.ok());
+    ASSERT_TRUE(wait_composed(id, configured.value()));
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    const std::size_t retained = GetParam() ? 1 : 0;
+    while (composition_->artifacts().query_artifacts({}).value().items.size() != retained &&
+           std::chrono::steady_clock::now() < deadline) {
+        ASSERT_TRUE(composition_->observe().ok());
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), retained);
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    composition_.reset();
+    {
+        auto ledger = artifact::LedgerStore::open(
+            root_ / "startup-state/ledger", artifact::LedgerOpenMode::Existing, 8);
+        ASSERT_TRUE(ledger.ok());
+        const auto rows = ledger.value()->recovery_snapshot().value();
+        ASSERT_EQ(rows.size(), 2);
+        EXPECT_EQ(
+            std::count_if(
+                rows.begin(), rows.end(),
+                [](const auto& row) { return row.state == artifact::LedgerState::Committed; }),
+            retained);
+    }
+    const auto checkpoint = [&] {
+        auto bytes = rodaq::persistence::read_file(
+            root_ / "startup-state/service/recovery", rodaq::to_string(id) + ".json", 1024 * 1024);
+        return bytes.ok() ? rodaq::task::decode_recovery_record(bytes.value(), {})
+                          : rodaq::Result<rodaq::task::TaskRecoveryRecord>(bytes.status());
+    };
+    const auto previous = checkpoint();
+    ASSERT_TRUE(previous.ok());
+    ASSERT_TRUE(previous.value().committed_recording_end_ns);
+    auto options = startup_options(rodaq::daq::DeploymentOpenMode::Existing);
+    options.settings.artifact_audit_window = 1ns;
+    auto reopened = rodaq::daq::Composition::open(std::move(options));
+    ASSERT_TRUE(reopened.ok()) << static_cast<int>(reopened.status().code());
+    composition_ = std::move(reopened.value());
+    ASSERT_TRUE(composition_->observe().ok());
+    EXPECT_EQ(
+        checkpoint().value().committed_recording_end_ns,
+        previous.value().committed_recording_end_ns);
+    EXPECT_EQ(composition_->artifacts().query_artifacts({}).value().items.size(), retained);
+    auto keep = composition_->tasks().get_active_config(id).value();
+    keep.recording_mode = rodaq::RecordingMode::Continuous;
+    keep.retention_policy = {};
+    const auto keep_all = composition_->tasks().configure(id, keep, {"keep"}, {true, 6});
+    ASSERT_TRUE(keep_all.ok());
+    ASSERT_TRUE(wait_composed(id, keep_all.value()));
+    const auto start = composition_->tasks().start(id, {"restart"}, {true, 7});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_composed(id, start.value()));
+    ASSERT_TRUE(wait_composed_records(id));
+    const auto stop = composition_->tasks().stop(id, {"restop"}, {true, 8});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_composed(id, stop.value()));
+    const auto artifacts = composition_->artifacts().query_artifacts({}).value();
+    ASSERT_EQ(artifacts.items.size(), retained + 1);
+    EXPECT_GT(artifacts.items[0].segment_id, latest);
+    EXPECT_GE(
+        artifacts.items[0].recording_range.begin_ns, *previous.value().committed_recording_end_ns);
+}
+
+INSTANTIATE_TEST_SUITE_P(DeletedOnlyOrMixedCommitted, FormalTombstoneStartupTest, testing::Bool());
 
 TEST_F(PipelineControllerTest, SuccessfulStopHistoryCannotReplaceMissingEndedRecoveryOnRestart) {
     initialize_deployment();
@@ -3352,8 +3448,7 @@ TEST_F(PipelineControllerTest, StartupVolumeInspectionNeverAdoptsOrErasesUnregis
         artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits).ok());
 }
 
-TEST_F(
-    PipelineControllerTest, StartupVolumeInspectionRetainsDeleteStatesForExplicitReconciliation) {
+TEST_F(PipelineControllerTest, StartupVolumeInspectionCountsAbsentDeletedMetadataWithoutDataBytes) {
     record_committed();
     ASSERT_TRUE(catalog_
                     ->delete_artifact(
@@ -3361,12 +3456,225 @@ TEST_F(
                         std::chrono::steady_clock::now() + 1s)
                     .ok());
     EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    const auto usage =
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits);
+    ASSERT_TRUE(usage.ok());
+    EXPECT_EQ(usage.value().physical_bytes, 0);
+    EXPECT_EQ(usage.value().artifact_slots, 1);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+}
+
+class DeleteRecoveryWindowTest : public PipelineControllerTest,
+                                 public testing::WithParamInterface<artifact::DeleteStep> {
+protected:
+    void reopen_ledger_without_runtime_caches() {
+        artifacts_.reset();
+        catalog_.reset();
+        controller_.reset();
+        options_.ledger.reset();
+        ledger_.reset();
+        auto reopened =
+            artifact::LedgerStore::open(root_ / "ledger", artifact::LedgerOpenMode::Existing, 8);
+        ASSERT_TRUE(reopened.ok());
+        ledger_ = std::move(reopened.value());
+    }
+};
+
+TEST_P(DeleteRecoveryWindowTest, ReopenedDeleteIntentSettlesAndRebuildsAuditedMetadataCapacity) {
+    record_committed();
+    const auto original = artifacts_->get_artifact({7}).value();
+    {
+        auto recovery =
+            rodaq::task::TaskRecoveryStore::open(root_ / "recovery", original.summary.task_id);
+        ASSERT_TRUE(recovery.ok());
+        auto record = recovery.value()->load();
+        ASSERT_TRUE(record.ok());
+        const auto expected = record.value().record_revision++;
+        record.value().committed_recording_end_ns = original.summary.recording_range.end_ns;
+        ASSERT_TRUE(recovery.value()->publish(record.value(), expected).ok());
+    }
+    *delete_failed_step_ = static_cast<int>(GetParam());
+    EXPECT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    ASSERT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    *delete_failed_step_ = -1;
+    reopen_ledger_without_runtime_caches();
+    ASSERT_TRUE(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits).ok());
+    const auto deleted = ledger_->get(7).value();
+    EXPECT_EQ(deleted.state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(deleted.delete_generation, 1);
+    EXPECT_EQ(deleted.delete_reason, "retention");
+    EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7"));
+    const auto usage =
+        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits);
+    ASSERT_TRUE(usage.ok());
+    EXPECT_EQ(usage.value().physical_bytes, 0);
+    EXPECT_EQ(usage.value().artifact_slots, 1);
+    artifact::CatalogOptions recovered;
+    recovered.volume = volume_;
+    recovered.ledger = ledger_;
+    recovered.max_artifacts = 8;
+    recovered.manifest = options_.manifest_limits;
+    recovered.capacity = std::make_shared<artifact::VolumeCapacity>(
+        std::move(artifact::VolumeCapacity::create(capacity_->policy().value(), 0, 1).value()));
+    auto catalog = artifact::ArtifactCatalog::create(recovered);
+    ASSERT_TRUE(catalog.ok());
+    ASSERT_TRUE(catalog.value()->rebuild().ok());
+    EXPECT_TRUE(catalog.value()->query({}).value().items.empty());
+    EXPECT_EQ(catalog.value()->acquire({7}, {1}).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(recovered.capacity->snapshot().actual_bytes, 0);
+    EXPECT_EQ(recovered.capacity->snapshot().artifact_slots, 1);
+    auto checkpoint =
+        rodaq::task::TaskRecoveryStore::open(root_ / "recovery", original.summary.task_id);
+    ASSERT_TRUE(checkpoint.ok());
+    const auto floor = checkpoint.value()->load().value().committed_recording_end_ns;
+    ASSERT_TRUE(floor);
+    ASSERT_TRUE(deleted.deleted_at);
+    EXPECT_FALSE(
+        catalog.value()
+            ->collect_deleted(original.summary.task_id, *floor, *deleted.deleted_at + 1s, 2s)
+            .value());
+    EXPECT_EQ(recovered.capacity->snapshot().artifact_slots, 1);
+    EXPECT_TRUE(
+        catalog.value()
+            ->collect_deleted(original.summary.task_id, *floor, *deleted.deleted_at + 3s, 2s)
+            .value());
+    EXPECT_EQ(recovered.capacity->snapshot().artifact_slots, 0);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(checkpoint.value()->load().value().committed_recording_end_ns, floor);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PartialDeletionWindows, DeleteRecoveryWindowTest,
+    testing::Values(
+        artifact::DeleteStep::UnlinkFile, artifact::DeleteStep::UnlinkManifest,
+        artifact::DeleteStep::RemoveDirectory, artifact::DeleteStep::SyncParent));
+
+TEST_F(PipelineControllerTest, DeleteRecoveryWithoutManifestCannotEraseAnUnknownRemainingFile) {
+    record_committed();
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::RemoveDirectory);
+    ASSERT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    *delete_failed_step_ = -1;
+    const auto directory = volume_->artifacts_directory() / "7";
+    ASSERT_FALSE(fs::exists(directory / "manifest.json"));
+    std::ofstream(directory / "foreign") << "retain";
     EXPECT_EQ(
-        artifact::inspect_committed_volume(volume_, *ledger_, options_.manifest_limits)
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits)
             .status()
             .code(),
-        StatusCode::Unavailable);
+        StatusCode::DataLoss);
+    EXPECT_EQ(rodaq::persistence::read_file(directory, "foreign", 16).value(), "retain");
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+}
+
+TEST_F(
+    PipelineControllerTest, DeletedRecoveryNeverUsesTombstoneAsPermissionToEraseReappearedFiles) {
+    record_committed();
+    ASSERT_TRUE(catalog_
+                    ->delete_artifact(
+                        {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                        std::chrono::steady_clock::now() + 1s)
+                    .ok());
+    const auto directory = volume_->artifacts_directory() / "7";
+    ASSERT_TRUE(fs::create_directory(directory));
+    std::ofstream(directory / "foreign") << "retain";
+    EXPECT_EQ(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits)
+            .status()
+            .code(),
+        StatusCode::DataLoss);
+    EXPECT_EQ(rodaq::persistence::read_file(directory, "foreign", 16).value(), "retain");
     EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+}
+
+class DeleteRecoveryFaultTest : public PipelineControllerTest,
+                                public testing::WithParamInterface<artifact::DeleteStep> {};
+
+TEST_P(
+    DeleteRecoveryFaultTest, RecoveryFailureKeepsDeleteIntentAndAFreshAttemptSettlesActualEffects) {
+    record_committed();
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::UnlinkFile);
+    ASSERT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    *delete_failed_step_ = -1;
+    const auto failed = artifact::recover_deleting_artifact(
+        volume_, *ledger_, 7, options_.manifest_limits,
+        [&](auto step) { return step == GetParam() ? EIO : 0; });
+    EXPECT_FALSE(failed.ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    ASSERT_TRUE(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits).ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleted);
+    EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RecoveryIoSteps, DeleteRecoveryFaultTest,
+    testing::Values(
+        artifact::DeleteStep::UnlinkFile, artifact::DeleteStep::SyncDirectory,
+        artifact::DeleteStep::UnlinkManifest, artifact::DeleteStep::RemoveDirectory,
+        artifact::DeleteStep::SyncParent));
+
+TEST_F(PipelineControllerTest, DeleteRecoveryReconcilesUncertainDeletedPublicationWithoutRollback) {
+    record_committed();
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::UnlinkFile);
+    ASSERT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    *delete_failed_step_ = -1;
+    *ledger_fault_ = true;
+    EXPECT_FALSE(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits).ok());
+    EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "7"));
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    *ledger_fault_ = false;
+    ASSERT_TRUE(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits).ok());
+    const auto deleted = ledger_->get(7).value();
+    EXPECT_EQ(deleted.state, artifact::LedgerState::Deleted);
+    EXPECT_EQ(deleted.delete_generation, 1);
+    EXPECT_EQ(deleted.delete_reason, "retention");
+    ASSERT_TRUE(
+        artifact::recover_deleting_artifact(volume_, *ledger_, 7, options_.manifest_limits).ok());
+    EXPECT_EQ(ledger_->get(7).value().deleted_at, deleted.deleted_at);
+}
+
+TEST_F(
+    PipelineControllerTest, DeleteRecoveryRechecksNamesAfterParentDurabilityBeforeLedgerDeleted) {
+    record_committed();
+    *delete_failed_step_ = static_cast<int>(artifact::DeleteStep::UnlinkFile);
+    ASSERT_FALSE(catalog_
+                     ->delete_artifact(
+                         {7}, 1, artifact::DeleteReason::Retention, rodaq::WallTime{1s},
+                         std::chrono::steady_clock::now() + 1s)
+                     .ok());
+    *delete_failed_step_ = -1;
+    const auto directory = volume_->artifacts_directory() / "7";
+    unsigned parents = 0;
+    const auto result = artifact::recover_deleting_artifact(
+        volume_, *ledger_, 7, options_.manifest_limits, [&](auto step) {
+            if (step == artifact::DeleteStep::SyncParent && ++parents == 2) {
+                EXPECT_TRUE(fs::create_directory(directory));
+                std::ofstream(directory / "foreign") << "retain";
+            }
+            return 0;
+        });
+    EXPECT_EQ(result.status().code(), StatusCode::DataLoss);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Deleting);
+    EXPECT_EQ(rodaq::persistence::read_file(directory, "foreign", 16).value(), "retain");
 }
 
 TEST_F(PipelineControllerTest, ArtifactChangedCommittedFileIsHiddenAndRebuildReportsDataLoss) {

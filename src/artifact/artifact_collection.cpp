@@ -71,7 +71,9 @@ Result<void> absent_names(int parent, std::uint64_t segment) {
     return {};
 }
 
-Result<void> prove_absence(const CatalogOptions& options, std::uint64_t segment) {
+}  // namespace
+
+Result<void> prove_artifact_absence(const CatalogOptions& options, std::uint64_t segment) {
     auto verified = options.volume->verify();
     if (!verified.ok()) {
         return verified.status();
@@ -101,8 +103,6 @@ Result<void> prove_absence(const CatalogOptions& options, std::uint64_t segment)
     return verified.ok() ? options.volume->verify() : verified;
 }
 
-}  // namespace
-
 Result<bool> ArtifactCatalog::collect_deleted(
     TaskId task, std::uint64_t committed_recording_floor_ns, WallTime now,
     std::chrono::nanoseconds audit_window) {
@@ -128,8 +128,12 @@ Result<bool> ArtifactCatalog::collect_deleted(
         }
         for (std::size_t i = 0; i < state->slots.size(); ++i) {
             auto& slot = state->slots[i];
+            // A recovered Deleted row has no retained Manifest time proof to
+            // discard. Collection still requires the caller's durable Task HWM;
+            // it neither infers a zero boundary nor advances that checkpoint.
             if (!slot.entry || !(slot.entry->info.summary.task_id == task) ||
-                slot.entry->info.summary.recording_range.end_ns > committed_recording_floor_ns ||
+                (slot.entry->committed_recording_end_ns &&
+                 *slot.entry->committed_recording_end_ns > committed_recording_floor_ns) ||
                 slot.work != CatalogWork::None || slot.frame || slot.entry->readers != 0 ||
                 !slot.entry->read_blocked || slot.failure != StatusCode::Ok) {
                 continue;
@@ -170,7 +174,7 @@ Result<bool> ArtifactCatalog::collect_deleted(
         }
     } flight{state, at, segment};
     try {
-        auto absent = prove_absence(state->options, segment);
+        auto absent = prove_artifact_absence(state->options, segment);
         if (!absent.ok()) {
             if (absent.status().code() == StatusCode::DataLoss) {
                 state->corrupt(segment);
@@ -192,7 +196,7 @@ Result<bool> ArtifactCatalog::collect_deleted(
         }
         // If unlink settled but a subsequent proof fails, collection_pending
         // retains the actual charge until the same owner can prove absence again.
-        absent = prove_absence(state->options, segment);
+        absent = prove_artifact_absence(state->options, segment);
         if (!absent.ok()) {
             if (absent.status().code() == StatusCode::DataLoss) {
                 state->corrupt(segment);

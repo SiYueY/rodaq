@@ -28,23 +28,42 @@ constexpr auto kDomain = "rodaq.deployment-bootstrap.v1";
 
 }  // namespace
 
-Result<void> recover_pending_commits(const CompositionOptions& options) {
+Result<void> recover_pending_artifacts(const CompositionOptions& options) {
     auto records = options.ledger->recovery_snapshot();
     if (!records.ok()) {
         return records.status();
     }
-    // Deleting is reconciled first. Until that execution path is available,
-    // retain every pending publication and report the unresolved delete intent.
-    if (std::any_of(records.value().begin(), records.value().end(), [](const auto& record) {
-            return record.state == artifact::LedgerState::Deleting;
-        })) {
-        return Status(StatusCode::Unavailable, {});
+    const auto open_task = [&](TaskId id) {
+        return task::TaskStore::open(
+            options.task_root / "tasks" / to_string(id), options.task_root / "control", id,
+            task::TaskStoreMode::Existing, options.settings.tasks);
+    };
+    // Durable DeleteIntent wins before any committing publication recovery.
+    for (const auto& record : records.value()) {
+        if (record.state != artifact::LedgerState::Deleting) {
+            continue;
+        }
+        auto store = open_task(record.task_id);
+        if (!store.ok()) {
+            return store.status();
+        }
+        auto control = store.value()->load_control();
+        if (!control.ok()) {
+            return control.status();
+        }
+        if (record.control_generation > control.value().control_generation) {
+            return Status(StatusCode::Conflict, {});
+        }
+        auto deleted = artifact::recover_deleting_artifact(
+            options.volume, *options.ledger, record.segment_id,
+            catalog_manifest_limits(options.settings));
+        if (!deleted.ok()) {
+            return deleted.status();
+        }
     }
     const auto authorize = [&](const artifact::LedgerRecord& record,
                                const artifact::SegmentManifest& manifest) -> Result<void> {
-        auto store = task::TaskStore::open(
-            options.task_root / "tasks" / to_string(record.task_id), options.task_root / "control",
-            record.task_id, task::TaskStoreMode::Existing, options.settings.tasks);
+        auto store = open_task(record.task_id);
         if (!store.ok()) {
             return store.status();
         }
@@ -279,7 +298,7 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return ledger.status();
         }
         options.ledger = std::move(ledger.value());
-        auto pending = recover_pending_commits(options);
+        auto pending = recover_pending_artifacts(options);
         if (!pending.ok()) {
             return pending.status();
         }

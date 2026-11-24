@@ -17,6 +17,7 @@
 #include "../persistence/json.hpp"
 #include "../ros2_qos.hpp"
 #include "../uuid.hpp"
+#include "ledger_record.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -601,6 +602,23 @@ Result<void> validate_manifest_limits(const ManifestLimits& limits) {
     } catch (InvalidManifest& failure) {
         return std::move(failure.status);
     }
+}
+
+Result<void> validate_manifest_ledger_binding(
+    const SegmentManifest& manifest, const LedgerRecord& record, const ManifestLimits& limits) {
+    auto digest = manifest_digest(manifest, limits);
+    if (!digest.ok()) {
+        return digest.status();
+    }
+    const auto& identity = manifest.identity;
+    if (digest.value() != record.manifest_digest || identity.segment_id != record.segment_id ||
+        !(identity.task_id == record.task_id) || identity.pipeline_id != record.pipeline_id ||
+        !(identity.volume_id == record.volume_id) ||
+        identity.control_generation != record.control_generation ||
+        identity.reset_generation_at_commit != record.reset_generation_at_commit) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    return {};
 }
 
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits) {

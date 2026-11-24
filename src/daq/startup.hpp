@@ -11,7 +11,7 @@ namespace rodaq::daq {
 
 // Exclusive boot work before Catalog/capacity publication. Task/Reset authority
 // is loaded for each actual publication boundary; unresolved deletes run first.
-Result<void> recover_pending_commits(const CompositionOptions& options);
+Result<void> recover_pending_artifacts(const CompositionOptions& options);
 
 enum class DeploymentOpenMode { Initialize, Existing };
 
