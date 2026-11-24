@@ -2,6 +2,7 @@
 #include "manifest_fixture.hpp"
 #include "persistence/atomic_file.hpp"
 #include "artifact/recovery_scan.hpp"
+#include "task/control_record.hpp"
 
 #include <gtest/gtest.h>
 
@@ -141,6 +142,313 @@ protected:
     rodaq::storage::PrepareConfig envelope_{};
     artifact::SegmentManifest manifest_;
 };
+
+class CommitAbortQuarantineTest : public SegmentCommitterTest,
+                                  public testing::WithParamInterface<bool> {
+protected:
+    rodaq::task::TaskControlRecord reset_fence() {
+        const auto record = ledger_->get(7).value();
+        rodaq::task::TaskControlRecord control;
+        control.task_id = record.task_id;
+        control.control_generation = record.control_generation + 1;
+        control.reset_generation = record.reset_generation_at_commit + 1;
+        return control;
+    }
+
+    fs::path quarantined(const rodaq::task::TaskControlRecord& control) const {
+        return volume_->root() / ".rodaq/quarantine" /
+               (rodaq::to_string(control.task_id) + ".g" +
+                std::to_string(control.control_generation - 1) + ".r" +
+                std::to_string(control.reset_generation - 1) + ".s7" +
+                (GetParam() ? ".final" : ".tmp"));
+    }
+};
+
+TEST_P(
+    CommitAbortQuarantineTest,
+    ResetInvalidationPreservesOpaqueTreeAndRemovesOnlyPrecommitAuthority) {
+    interrupt_publication(GetParam());
+    const auto control = reset_fence();
+    ASSERT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_FALSE(fs::exists(final()));
+    EXPECT_EQ(persistence::read_file(quarantined(control), "data.bin", 16).value(), "abc");
+    EXPECT_TRUE(fs::is_regular_file(quarantined(control) / "manifest.json"));
+    // Quarantine is retained recovery evidence, never normal Artifact adoption
+    // or proof of zero managed usage for the next capacity projection.
+    EXPECT_EQ(
+        artifact::inspect_committed_volume(volume_, *ledger_, {}).status().code(),
+        StatusCode::Unavailable);
+}
+
+TEST_P(CommitAbortQuarantineTest, NoResetFenceLeavesBothFilesAndNormalRecoveryPermissionUnchanged) {
+    interrupt_publication(GetParam());
+    auto control = reset_fence();
+    --control.reset_generation;
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    EXPECT_EQ(fs::exists(final()), GetParam());
+    EXPECT_TRUE(fs::is_empty(volume_->root() / ".rodaq/quarantine"));
+    EXPECT_TRUE(artifact::SegmentCommitter::recover(
+                    volume_, *ledger_, 7, {},
+                    [](const auto&, const auto&) -> rodaq::Result<void> { return {}; })
+                    .ok());
+}
+
+TEST_P(CommitAbortQuarantineTest, ResetFenceCannotCrossTaskOrFixedControlScope) {
+    interrupt_publication(GetParam());
+    const auto expected = reset_fence();
+    auto wrong_task = expected;
+    wrong_task.task_id.value[0] ^= 0x80;
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, wrong_task)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    auto older_control = expected;
+    older_control.control_generation -= 2;
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, older_control)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    auto out_of_scope = expected;
+    rodaq::OperationId operation;
+    operation.value[0] = 1;
+    out_of_scope.reset_intent = rodaq::task::ResetIntent{
+        operation, expected.reset_generation, expected.control_generation - 2};
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, out_of_scope)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    EXPECT_TRUE(fs::exists((GetParam() ? final() : staging_) / "data.bin"));
+    EXPECT_TRUE(fs::is_empty(volume_->root() / ".rodaq/quarantine"));
+}
+
+TEST_P(
+    CommitAbortQuarantineTest, ExistingQuarantineTargetCannotBeOverwrittenOrCountAsAMovedSource) {
+    interrupt_publication(GetParam());
+    const auto control = reset_fence();
+    ASSERT_TRUE(fs::create_directory(quarantined(control)));
+    std::ofstream(quarantined(control) / "foreign") << "retain";
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    EXPECT_EQ(persistence::read_file(quarantined(control), "foreign", 16).value(), "retain");
+    EXPECT_TRUE(fs::exists((GetParam() ? final() : staging_) / "data.bin"));
+}
+
+TEST_P(
+    CommitAbortQuarantineTest, FailedLedgerUnlinkOrSyncRetainsAbortOwnershipUntilProofIsRenewed) {
+    interrupt_publication(GetParam());
+    const auto control = reset_fence();
+    ledger_fault_ = [](auto step) {
+        return step == persistence::FileStep::RemoveAuthority ? EIO : 0;
+    };
+    EXPECT_FALSE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(ledger_->reconcile(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(ledger_->collect_deleted(7).status().code(), StatusCode::Conflict);
+    ledger_fault_ = [](auto step) {
+        return step == persistence::FileStep::SyncDirectory ? EIO : 0;
+    };
+    EXPECT_FALSE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+    EXPECT_EQ(ledger_->recovery_snapshot().status().code(), StatusCode::Unavailable);
+    ledger_fault_ = {};
+    ASSERT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(persistence::read_file(quarantined(control), "data.bin", 16).value(), "abc");
+}
+
+TEST_P(CommitAbortQuarantineTest, ASourceReappearingDuringShardSyncCannotDischargeTheAbortOwner) {
+    interrupt_publication(GetParam());
+    const auto control = reset_fence();
+    const auto name = GetParam() ? final() : staging_;
+    ledger_fault_ = [&](auto step) {
+        if (step == persistence::FileStep::SyncDirectory) {
+            EXPECT_TRUE(fs::create_directory(name));
+            std::ofstream(name / "foreign") << "retain";
+        }
+        return 0;
+    };
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control)
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(persistence::read_file(name, "foreign", 16).value(), "retain");
+    EXPECT_EQ(persistence::read_file(quarantined(control), "data.bin", 16).value(), "abc");
+    ledger_fault_ = {};
+    fs::remove_all(name);  // Only the foreign test fixture created above.
+    EXPECT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+}
+
+TEST_P(CommitAbortQuarantineTest, TargetReplacementDuringLedgerSyncDoesNotBecomeANewBaseline) {
+    interrupt_publication(GetParam());
+    const auto control = reset_fence();
+    const auto target = quarantined(control);
+    const auto held = volume_->root() / ".rodaq/quarantine/held-original";
+    ledger_fault_ = [&](auto step) {
+        if (step == persistence::FileStep::SyncDirectory) {
+            fs::rename(target, held);
+            EXPECT_TRUE(fs::create_directory(target));
+            std::ofstream(target / "foreign") << "retain";
+        }
+        return 0;
+    };
+    EXPECT_EQ(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control)
+            .status()
+            .code(),
+        StatusCode::DataLoss);
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(persistence::read_file(held, "data.bin", 16).value(), "abc");
+    EXPECT_EQ(persistence::read_file(target, "foreign", 16).value(), "retain");
+    ledger_fault_ = {};
+    fs::remove_all(target);  // Only the replacement created by this test.
+    fs::rename(held, target);
+    EXPECT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(StagingOrFinal, CommitAbortQuarantineTest, testing::Bool());
+
+class QuarantineIoFailureTest : public SegmentCommitterTest,
+                                public testing::WithParamInterface<std::tuple<bool, unsigned>> {};
+
+TEST_P(QuarantineIoFailureTest, ANewAttemptReprovesBothParentsWithoutOverwritingRetainedData) {
+    const auto final_phase = std::get<0>(GetParam());
+    const auto selected = std::get<1>(GetParam());
+    interrupt_publication(final_phase);
+    const auto record = ledger_->get(7).value();
+    rodaq::task::TaskControlRecord control;
+    control.task_id = record.task_id;
+    control.control_generation = record.control_generation + 1;
+    control.reset_generation = record.reset_generation_at_commit + 1;
+    unsigned directories = 0;
+    const auto failed = artifact::quarantine_reset_invalidated_artifact(
+        volume_, *ledger_, 7, control, [&](auto step) {
+            if ((selected == 0 && step == persistence::FileStep::Publish) ||
+                (selected == 3 && step == persistence::FileStep::Complete)) {
+                return EIO;
+            }
+            return step == persistence::FileStep::SyncDirectory && ++directories == selected ? EIO
+                                                                                             : 0;
+        });
+    EXPECT_FALSE(failed.ok());
+    EXPECT_EQ(ledger_->get(7).value().state, artifact::LedgerState::Committing);
+    ASSERT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_EQ(
+        std::distance(
+            fs::directory_iterator(volume_->root() / ".rodaq/quarantine"),
+            fs::directory_iterator()),
+        1);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PhaseAndIoBoundary, QuarantineIoFailureTest,
+    testing::Combine(testing::Bool(), testing::Values(0u, 1u, 2u, 3u)));
+
+class QuarantineCrashTest : public SegmentCommitterTest,
+                            public testing::WithParamInterface<std::tuple<bool, unsigned>> {};
+
+TEST_P(QuarantineCrashTest, ProcessExitAtEachDurabilityBoundaryKeepsDataOutsideNormalPublication) {
+    interrupt_publication(std::get<0>(GetParam()));
+    const auto boundary = std::get<1>(GetParam());
+    const auto record = ledger_->get(7).value();
+    rodaq::task::TaskControlRecord control;
+    control.task_id = record.task_id;
+    control.control_generation = record.control_generation + 1;
+    control.record_revision = control.control_generation;
+    control.reset_generation = record.reset_generation_at_commit + 1;
+    control.active_config_version = manifest_.identity.config_version;
+    const auto encoded = rodaq::task::encode_control_record(control, {});
+    ASSERT_TRUE(encoded.ok());
+    ASSERT_TRUE(persistence::publish_file(
+                    root_, "reset-control.json", encoded.value(),
+                    persistence::FilePublishMode::Create, 65536)
+                    .status.ok());
+    ledger_fault_ = [boundary](auto step) {
+        if ((boundary == 2 && step == persistence::FileStep::RemoveAuthority) ||
+            (boundary == 3 && step == persistence::FileStep::SyncDirectory)) {
+            _exit(81 + static_cast<int>(boundary));
+        }
+        return 0;
+    };
+    // No Plugin/worker threads in this fixture. This is process-crash evidence,
+    // not filesystem power-loss qualification.
+    const auto child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        (void)artifact::quarantine_reset_invalidated_artifact(
+            volume_, *ledger_, 7, control,
+            [boundary, directories = 0u, completions = 0u](auto step) mutable {
+                if ((boundary < 2 && step == persistence::FileStep::SyncDirectory &&
+                     ++directories == boundary + 1) ||
+                    (boundary == 4 && step == persistence::FileStep::Complete &&
+                     ++completions == 2)) {
+                    _exit(81 + static_cast<int>(boundary));
+                }
+                return 0;
+            });
+        _exit(99);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 81 + static_cast<int>(boundary));
+    ledger_.reset();
+    ledger_fault_ = {};
+    auto reopened =
+        artifact::LedgerStore::open(root_ / "ledger", artifact::LedgerOpenMode::Existing, 8);
+    ASSERT_TRUE(reopened.ok());
+    ledger_ = std::move(reopened.value());
+    const auto bytes = persistence::read_file(root_, "reset-control.json", 65536);
+    ASSERT_TRUE(bytes.ok());
+    const auto durable_control = rodaq::task::decode_control_record(bytes.value(), {});
+    ASSERT_TRUE(durable_control.ok());
+    const auto actual = ledger_->get(7);
+    if (actual.ok()) {
+        ASSERT_EQ(actual.value().state, artifact::LedgerState::Committing);
+        ASSERT_TRUE(artifact::quarantine_reset_invalidated_artifact(
+                        volume_, *ledger_, 7, durable_control.value())
+                        .ok());
+    } else {
+        EXPECT_EQ(actual.status().code(), StatusCode::NotFound);
+    }
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_FALSE(fs::exists(final()));
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    const auto directory = volume_->root() / ".rodaq/quarantine";
+    ASSERT_EQ(std::distance(fs::directory_iterator(directory), fs::directory_iterator()), 1);
+    const auto retained = fs::directory_iterator(directory)->path();
+    EXPECT_EQ(persistence::read_file(retained, "data.bin", 16).value(), "abc");
+    EXPECT_EQ(
+        artifact::inspect_committed_volume(volume_, *ledger_, {}).status().code(),
+        StatusCode::Unavailable);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PhaseAndCrashBoundary, QuarantineCrashTest,
+    testing::Combine(testing::Bool(), testing::Values(0u, 1u, 2u, 3u, 4u)));
 
 class CommitRecoveryTest : public SegmentCommitterTest, public testing::WithParamInterface<bool> {};
 

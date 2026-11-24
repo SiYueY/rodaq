@@ -7,9 +7,20 @@
 #include "ledger_store.hpp"
 #include "manifest.hpp"
 
+namespace rodaq::task {
+struct TaskControlRecord;
+}
+
 namespace rodaq::artifact {
 
 enum class DeleteStep;
+
+// Caller holds exclusive boot execution and the loaded durable Task Control.
+// A greater Reset counter is irreversible invalidation, never a transient
+// authorization error. Retain opaque trees under Task/generation-scoped names.
+Result<void> quarantine_reset_invalidated_artifact(
+    std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment,
+    const task::TaskControlRecord& control, persistence::FileFaultHook faults = {});
 
 // Exclusive startup execution. Resume only a durable DeleteIntent; an existing
 // Deleted row can prove absence but never authorize deleting reappeared files.

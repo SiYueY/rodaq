@@ -96,6 +96,25 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
         if (record.state != artifact::LedgerState::Committing) {
             continue;
         }
+        auto store = open_task(record.task_id);
+        if (!store.ok()) {
+            return store.status();
+        }
+        auto control = store.value()->load_control();
+        if (!control.ok()) {
+            return control.status();
+        }
+        if (control.value().reset_generation > record.reset_generation_at_commit) {
+            auto quarantined = artifact::quarantine_reset_invalidated_artifact(
+                options.volume, *options.ledger, record.segment_id, control.value());
+            if (!quarantined.ok()) {
+                return quarantined.status();
+            }
+            continue;
+        }
+        // The normal recovery callback acquires its own short-lived authority
+        // owner at each publication boundary.
+        store.value().reset();
         auto recovered = artifact::SegmentCommitter::recover(
             options.volume, *options.ledger, record.segment_id,
             catalog_manifest_limits(options.settings), authorize);

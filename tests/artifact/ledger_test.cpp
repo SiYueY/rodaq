@@ -429,6 +429,34 @@ TEST_F(LedgerStoreTest, TombstoneCollectionReleasesOnlyDurablyDeletedRegistratio
     EXPECT_EQ(owner.value()->get(2).value().segment_id, 2);
 }
 
+TEST_F(LedgerStoreTest, ControlledAbortCannotRemoveCommittedAuthorityOrBypassCleanupFailure) {
+    auto owner = open(1);
+    ASSERT_TRUE(owner.ok());
+    create(*owner.value());
+    EXPECT_EQ(owner.value()->abort_committing(1, {}).status().code(), StatusCode::InvalidArgument);
+    const auto denied = owner.value()->abort_committing(1, [](const auto&) -> rodaq::Result<void> {
+        return rodaq::Status(StatusCode::Conflict, {});
+    });
+    EXPECT_EQ(denied.status().code(), StatusCode::Conflict);
+    EXPECT_EQ(owner.value()->get(1).value().state, LedgerState::Committing);
+    auto committed = owner.value()->get(1).value();
+    committed.state = LedgerState::Committed;
+    committed.committed_at = rodaq::WallTime{std::chrono::seconds{2}};
+    ASSERT_TRUE(owner.value()->advance(committed, LedgerState::Committing).ok());
+    EXPECT_EQ(
+        owner.value()
+            ->abort_committing(
+                1,
+                [](const auto&) -> rodaq::Result<void> {
+                    ADD_FAILURE() << "Committed authority cannot enter pre-commit abort";
+                    return {};
+                })
+            .status()
+            .code(),
+        StatusCode::Conflict);
+    EXPECT_EQ(owner.value()->get(1).value().state, LedgerState::Committed);
+}
+
 TEST_F(LedgerStoreTest, TombstoneCollectionCannotInvalidateALiveRegistrationToken) {
     bool armed = false;
     auto owner = open(1, [&](auto step) {
@@ -451,6 +479,36 @@ TEST_F(LedgerStoreTest, TombstoneCollectionCannotInvalidateALiveRegistrationToke
     ASSERT_TRUE(owner.value()->collect_deleted(1).ok());
     create(*owner.value(), 2);
     EXPECT_EQ(owner.value()->get(2).value().segment_id, 2);
+}
+
+TEST_F(LedgerStoreTest, AbortUncertaintyRetainsCapacityAndCannotInvalidateALiveRegistrationToken) {
+    bool publication_fault = false;
+    bool removal_fault = false;
+    auto owner = open(1, [&](auto step) {
+        return (publication_fault && step == persistence::FileStep::SyncDirectory) ||
+                       (removal_fault && step == persistence::FileStep::RemoveAuthority)
+                   ? EIO
+                   : 0;
+    });
+    ASSERT_TRUE(owner.ok());
+    const auto proof = [](const auto&) -> rodaq::Result<void> { return {}; };
+    {
+        auto token = owner.value()->reserve_registration(1);
+        ASSERT_TRUE(token.ok());
+        publication_fault = true;
+        ASSERT_FALSE(owner.value()->create_committing(token.value(), record()).ok());
+        publication_fault = false;
+        ASSERT_TRUE(owner.value()->reconcile(1).ok());
+        EXPECT_EQ(owner.value()->abort_committing(1, proof).status().code(), StatusCode::Conflict);
+    }
+    removal_fault = true;
+    EXPECT_EQ(owner.value()->abort_committing(1, proof).status().code(), StatusCode::Unavailable);
+    EXPECT_EQ(
+        owner.value()->reserve_registration(2).status().code(), StatusCode::ResourceExhausted);
+    EXPECT_EQ(owner.value()->reconcile(1).status().code(), StatusCode::Unavailable);
+    removal_fault = false;
+    ASSERT_TRUE(owner.value()->abort_committing(1, proof).ok());
+    EXPECT_TRUE(owner.value()->reserve_registration(2).ok());
 }
 
 class LedgerCollectionFaultTest : public LedgerStoreTest,

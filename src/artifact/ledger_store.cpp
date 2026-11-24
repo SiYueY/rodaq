@@ -24,7 +24,7 @@ namespace {
 using persistence::FileDescriptor;
 static_assert(std::is_nothrow_move_constructible_v<LedgerRecord>);
 static_assert(std::is_nothrow_move_assignable_v<LedgerRecord>);
-enum class SlotPhase { Empty, Reserved, Occupied, Uncertain, Collecting };
+enum class SlotPhase { Empty, Reserved, Occupied, Uncertain, Collecting, Aborting };
 
 struct LedgerSlot {
     std::uint64_t identity{0};
@@ -356,7 +356,8 @@ Result<void> LedgerStore::create_committing(
                 !slot.token_present) {
                 return Status(StatusCode::Conflict, {});
             }
-            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
+            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting ||
+                slot.phase == SlotPhase::Aborting) {
                 return Status(StatusCode::Unavailable, {});
             }
             existing = slot.current;
@@ -516,6 +517,22 @@ Result<void> LedgerStore::advance(const LedgerRecord& record, LedgerState expect
 }
 
 Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
+    return remove_authority(segment_id, LedgerState::Deleted);
+}
+
+Result<void> LedgerStore::abort_committing(
+    std::uint64_t segment_id, const std::function<Result<void>(const LedgerRecord&)>& cleanup) {
+    if (!cleanup) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    return remove_authority(segment_id, LedgerState::Committing, cleanup);
+}
+
+Result<void> LedgerStore::remove_authority(
+    std::uint64_t segment_id, LedgerState expected_state,
+    const std::function<Result<void>(const LedgerRecord&)>& cleanup) {
+    const auto removing =
+        expected_state == LedgerState::Deleted ? SlotPhase::Collecting : SlotPhase::Aborting;
     std::unique_lock<std::mutex> flight(state_->execution, std::try_to_lock);
     if (!flight.owns_lock()) {
         return Status(StatusCode::Conflict, {});
@@ -531,12 +548,12 @@ Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
                 return Status(StatusCode::NotFound, {});
             }
             const auto& slot = state_->slots[index];
-            if ((slot.phase != SlotPhase::Occupied && slot.phase != SlotPhase::Collecting) ||
-                !slot.current || slot.current->state != LedgerState::Deleted ||
-                slot.token_present || slot.pending || !slot.retained_temporary.empty()) {
+            if ((slot.phase != SlotPhase::Occupied && slot.phase != removing) || !slot.current ||
+                slot.current->state != expected_state || slot.token_present || slot.pending ||
+                !slot.retained_temporary.empty()) {
                 return Status(StatusCode::Conflict, {});
             }
-            retry = slot.phase == SlotPhase::Collecting;
+            retry = slot.phase == removing;
             expected = slot.current;
         }
         auto valid = state_->verify_namespace(segment_id);
@@ -557,9 +574,19 @@ Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
             return actual.status().code() == StatusCode::NotFound ? Status(StatusCode::DataLoss, {})
                                                                   : actual.status();
         }
+        if (cleanup) {
+            auto cleaned = cleanup(*expected);
+            if (!cleaned.ok()) {
+                return cleaned.status();
+            }
+            valid = state_->verify_namespace(segment_id);
+            if (!valid.ok()) {
+                return valid.status();
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(state_->projection);
-            state_->slots[index].phase = SlotPhase::Collecting;
+            state_->slots[index].phase = removing;
         }
         if (actual.ok()) {
             if ((state_->faults && state_->faults(persistence::FileStep::RemoveAuthority) != 0) ||
@@ -574,6 +601,12 @@ Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
         valid = state_->verify_namespace(segment_id);
         if (!valid.ok()) {
             return valid.status();
+        }
+        if (cleanup) {
+            auto confirmed = cleanup(*expected);
+            if (!confirmed.ok()) {
+                return confirmed.status();
+            }
         }
         {
             std::lock_guard<std::mutex> lock(state_->projection);
@@ -590,6 +623,8 @@ Result<void> LedgerStore::collect_deleted(std::uint64_t segment_id) {
     } catch (const std::filesystem::filesystem_error&) {
         state_->protection.store(StatusCode::Unavailable);
         return Status(StatusCode::Unavailable, {});
+    } catch (...) {
+        return Status(StatusCode::Internal, {});
     }
 }
 
@@ -610,9 +645,9 @@ Result<void> LedgerStore::reconcile(std::uint64_t segment_id) {
                 return Status(StatusCode::NotFound, {});
             }
             const auto& slot = state_->slots[index];
-            if (slot.phase == SlotPhase::Collecting) {
-                // Only the maintenance owner can renew artifact absence proof
-                // and retry GC. Generic reconciliation cannot authorize it.
+            if (slot.phase == SlotPhase::Collecting || slot.phase == SlotPhase::Aborting) {
+                // Only the maintenance owner can renew the filesystem proof
+                // and retry removal. Generic reconciliation cannot authorize it.
                 return Status(StatusCode::Unavailable, {});
             }
             if (slot.phase != SlotPhase::Uncertain) {
@@ -697,7 +732,8 @@ Result<LedgerRecord> LedgerStore::get(std::uint64_t segment_id) const {
             return Status(StatusCode::NotFound, {});
         }
         const auto& slot = state_->slots[index];
-        if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
+        if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting ||
+            slot.phase == SlotPhase::Aborting) {
             return Status(StatusCode::Unavailable, {});
         }
         if (!slot.current) {
@@ -718,7 +754,8 @@ Result<std::vector<LedgerRecord>> LedgerStore::recovery_snapshot() const {
         std::vector<LedgerRecord> records;
         records.reserve(state_->slots_in_use);
         for (const auto& slot : state_->slots) {
-            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting) {
+            if (slot.phase == SlotPhase::Uncertain || slot.phase == SlotPhase::Collecting ||
+                slot.phase == SlotPhase::Aborting) {
                 return Status(StatusCode::Unavailable, {});
             }
             if (slot.current) {

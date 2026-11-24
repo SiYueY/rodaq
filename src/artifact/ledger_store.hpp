@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <functional>
 #include <vector>
 
 #include "ledger_record.hpp"
@@ -61,6 +62,13 @@ public:
     // and absence of publication/recovery references before each attempt.
     // An uncertain unlink retains capacity until this same operation settles.
     Result<void> collect_deleted(std::uint64_t segment_id);
+    // Exclusive recovery caller holds a durable publication fence. Idempotent
+    // cleanup receives the known pre-commit row before and after its removal,
+    // proving file settlement and parent durability each time. It runs on this
+    // actual execution domain without projection locks. Uncertainty retains
+    // capacity; generic reconciliation cannot discharge the abort owner.
+    Result<void> abort_committing(
+        std::uint64_t segment_id, const std::function<Result<void>(const LedgerRecord&)>& cleanup);
     Result<void> reconcile(std::uint64_t segment_id);
     Result<LedgerRecord> get(std::uint64_t segment_id) const;
     Result<std::vector<LedgerRecord>> recovery_snapshot() const;
@@ -68,6 +76,9 @@ public:
     StatusCode protection() const noexcept;
 
 private:
+    Result<void> remove_authority(
+        std::uint64_t segment_id, LedgerState expected,
+        const std::function<Result<void>(const LedgerRecord&)>& cleanup = {});
     explicit LedgerStore(std::shared_ptr<LedgerStoreState> state) noexcept;
     std::shared_ptr<LedgerStoreState> state_;
 };
