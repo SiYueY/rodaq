@@ -119,6 +119,16 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
             options.volume, *options.ledger, record.segment_id,
             catalog_manifest_limits(options.settings), authorize);
         if (!recovered.ok()) {
+            const auto code = recovered.status().code();
+            if (code == StatusCode::DataLoss || code == StatusCode::Conflict ||
+                code == StatusCode::NotFound) {
+                auto quarantined = artifact::quarantine_failed_precommit_artifact(
+                    options.volume, *options.ledger, record.segment_id);
+                if (!quarantined.ok()) {
+                    return quarantined.status();
+                }
+                continue;
+            }
             return recovered.status();
         }
     }
@@ -317,14 +327,21 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return ledger.status();
         }
         options.ledger = std::move(ledger.value());
+        auto boot = time::read_boot_identity();
+        auto sample = time::sample_clocks();
+        if (!boot.ok() || !sample.ok()) {
+            return !boot.ok() ? boot.status() : sample.status();
+        }
+        options.boot = boot.value();
         auto pending = recover_pending_artifacts(options);
         if (!pending.ok()) {
             return pending.status();
         }
-        auto usage = artifact::inspect_committed_volume(
-            options.volume, *options.ledger, catalog_manifest_limits(options.settings));
-        if (!usage.ok()) {
-            return usage.status();
+        auto report = artifact::inspect_volume_recovery(
+            options.volume, *options.ledger, catalog_manifest_limits(options.settings),
+            options.boot);
+        if (!report.ok()) {
+            return report.status();
         }
         auto ids = artifact::SegmentIdStore::open(
             startup.state_root / "segment-ids", initialize
@@ -335,24 +352,26 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
         }
         options.segment_ids = std::move(ids.value());
         auto capacity = artifact::VolumeCapacity::create(
-            startup.capacity, usage.value().physical_bytes, usage.value().artifact_slots);
+            startup.capacity, report.value().total_physical_bytes(), report.value().artifact_slots);
         if (!capacity.ok()) {
             return capacity.status();
         }
         options.capacity = std::make_shared<artifact::VolumeCapacity>(std::move(capacity.value()));
-        auto boot = time::read_boot_identity();
-        auto sample = time::sample_clocks();
-        if (!boot.ok() || !sample.ok()) {
-            return !boot.ok() ? boot.status() : sample.status();
+        if (!initialize &&
+            std::filesystem::symlink_status(startup.state_root / "time/playback-anchor.json")
+                    .type() != std::filesystem::file_type::regular) {
+            return Status(StatusCode::Unavailable, {});
         }
-        options.boot = boot.value();
+        const auto boot_evidence =
+            initialize ? time::BootArtifactEvidence{time::BootArtifactState::Absent, {}}
+                       : report.value().boot_evidence;
         auto clock = time::ClockCorrelation::create(
-            startup.state_root / "time", options.boot, sample.value(),
-            {initialize ? time::BootArtifactState::Absent : time::BootArtifactState::Unknown, {}});
+            startup.state_root / "time", options.boot, sample.value(), boot_evidence);
         if (!clock.ok()) {
             return clock.status();
         }
         options.clock = std::move(clock.value());
+        options.recovery_report = std::move(report.value());
         const auto plugin_timeout = startup.plugins.shutdown_timeout;
         auto plugins = plugin::PluginManager::create(std::move(startup.plugins));
         if (!plugins.ok()) {

@@ -1,3 +1,4 @@
+#include "artifact/artifact_catalog.hpp"
 #include "artifact/segment_committer.hpp"
 #include "manifest_fixture.hpp"
 #include "persistence/atomic_file.hpp"
@@ -847,6 +848,203 @@ TEST_F(SegmentCommitterTest, ProcessExitAfterRenameNeverCreatesCommittedAuthorit
 
 TEST_F(SegmentCommitterTest, ProcessExitAfterParentSyncNeverCreatesCommittedAuthority) {
     crash_at(1);
+}
+
+TEST_F(SegmentCommitterTest, PrecommitFailureQuarantineMovesCorruptStagingAndAbortsLedgerRow) {
+    interrupt_publication(false);
+    std::ofstream(staging_ / "data.bin", std::ios::binary) << "corrupt!";
+    const auto record = ledger_->get(7).value();
+    ASSERT_TRUE(artifact::quarantine_failed_precommit_artifact(volume_, *ledger_, 7).ok());
+    EXPECT_EQ(ledger_->get(7).status().code(), StatusCode::NotFound);
+    EXPECT_FALSE(fs::exists(staging_));
+    const auto expected_name =
+        rodaq::to_string(record.task_id) + ".g" + std::to_string(record.control_generation) + ".r" +
+        std::to_string(record.reset_generation_at_commit) + ".s7.precommit.tmp";
+    const auto retained = volume_->root() / ".rodaq/quarantine" / expected_name;
+    EXPECT_TRUE(fs::is_directory(retained));
+    EXPECT_EQ(persistence::read_file(retained, "data.bin", 32).value(), "corrupt!");
+
+    const auto boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    ASSERT_TRUE(boot.ok());
+    const auto report = artifact::inspect_volume_recovery(volume_, *ledger_, {}, boot.value());
+    ASSERT_TRUE(report.ok());
+    EXPECT_EQ(report.value().committed_count, 0u);
+    EXPECT_EQ(report.value().artifact_slots, 1u);
+    ASSERT_EQ(report.value().quarantined.size(), 1u);
+    EXPECT_EQ(report.value().quarantined[0].reason, artifact::QuarantineReason::PrecommitFailure);
+    EXPECT_EQ(report.value().quarantined[0].task_id, record.task_id);
+    EXPECT_EQ(report.value().quarantined[0].control_generation, record.control_generation);
+    EXPECT_EQ(report.value().quarantined[0].segment_id, 7u);
+    EXPECT_GT(report.value().quarantined_bytes, 8u);
+    EXPECT_EQ(report.value().boot_evidence.state, rodaq::time::BootArtifactState::Unknown);
+}
+
+TEST_F(SegmentCommitterTest, VolumeRecoveryScanClassifiesLedgerAbsentAndQuarantineWithoutAdoption) {
+    auto prepared = prepare();
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_TRUE(prepared.value()->commit(*ledger_).ok());
+    ASSERT_TRUE(prepared.value()->take_committed_charge().ok());
+
+    const auto orphan_final = volume_->artifacts_directory() / "999";
+    const auto orphan_tmp = volume_->artifacts_directory() / "998.tmp";
+    const auto unknown_q = volume_->root() / ".rodaq/quarantine/foreign-entry";
+    ASSERT_TRUE(fs::create_directory(orphan_final));
+    ASSERT_TRUE(fs::create_directory(orphan_tmp));
+    ASSERT_TRUE(fs::create_directory(unknown_q));
+    std::ofstream(orphan_final / "payload.bin", std::ios::binary) << "12345";
+    std::ofstream(orphan_tmp / "partial.bin", std::ios::binary) << "6789";
+    std::ofstream(unknown_q / "opaque.bin", std::ios::binary) << "012";
+
+    const auto boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    ASSERT_TRUE(boot.ok());
+    const auto report = artifact::inspect_volume_recovery(volume_, *ledger_, {}, boot.value());
+    ASSERT_TRUE(report.ok());
+    EXPECT_EQ(report.value().committed_count, 1u);
+    EXPECT_EQ(report.value().verification_required_count, 2u);
+    EXPECT_EQ(report.value().quarantined.size(), 3u);
+    EXPECT_EQ(report.value().quarantined_bytes, 12u);
+    EXPECT_EQ(report.value().artifact_slots, 4u);
+
+    auto cap = artifact::VolumeCapacity::create(
+        {1000000, 1000000, 0, 100, 16, 16, 32}, report.value().total_physical_bytes(),
+        report.value().artifact_slots);
+    ASSERT_TRUE(cap.ok());
+    auto capacity = std::make_shared<artifact::VolumeCapacity>(std::move(cap.value()));
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = std::move(ledger_);
+    options.capacity = capacity;
+    options.max_artifacts = 16;
+    auto catalog = artifact::ArtifactCatalog::create(options);
+    ASSERT_TRUE(catalog.ok());
+    ASSERT_TRUE(catalog.value()->rebuild(report.value()).ok());
+
+    const auto page = catalog.value()->query({});
+    ASSERT_TRUE(page.ok());
+    ASSERT_EQ(page.value().items.size(), 1u);
+    EXPECT_EQ(page.value().items[0].segment_id, 7u);
+    EXPECT_EQ(catalog.value()->get({999}).status().code(), StatusCode::NotFound);
+
+    const auto snap = catalog.value()->snapshot();
+    EXPECT_EQ(snap.visible, 1u);
+    EXPECT_EQ(snap.quarantined, 3u);
+    EXPECT_EQ(snap.verification_required, 2u);
+    EXPECT_EQ(snap.quarantined_bytes, 12u);
+
+    // Unattributable quarantine entry conservatively blocks Retire for any Task.
+    rodaq::TaskId other_task{};
+    other_task.value[0] = 0x55;
+    EXPECT_FALSE(catalog.value()->retire_eligible(other_task).value());
+    EXPECT_TRUE(catalog.value()->has_task_references(other_task).value());
+}
+
+TEST_F(SegmentCommitterTest, VolumeRecoveryScanDetectsCorruptedCommittedAndReappearedDeleted) {
+    auto prepared = prepare();
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_TRUE(prepared.value()->commit(*ledger_).ok());
+    ASSERT_TRUE(prepared.value()->take_committed_charge().ok());
+
+    std::ofstream(final() / "data.bin", std::ios::binary) << "tampered";
+    const auto boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    ASSERT_TRUE(boot.ok());
+    const auto report = artifact::inspect_volume_recovery(volume_, *ledger_, {}, boot.value());
+    ASSERT_TRUE(report.ok());
+    EXPECT_EQ(report.value().corrupted_committed_count, 1u);
+    EXPECT_EQ(report.value().health, StatusCode::DataLoss);
+    EXPECT_FALSE(report.value().usage_complete);
+
+    auto cap = artifact::VolumeCapacity::create(
+        {1000000, 1000000, 0, 100, 16, 16, 32}, report.value().total_physical_bytes(),
+        report.value().artifact_slots);
+    ASSERT_TRUE(cap.ok());
+    auto capacity = std::make_shared<artifact::VolumeCapacity>(std::move(cap.value()));
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = std::move(ledger_);
+    options.capacity = capacity;
+    options.max_artifacts = 16;
+    auto catalog = artifact::ArtifactCatalog::create(options);
+    ASSERT_TRUE(catalog.ok());
+    ASSERT_TRUE(catalog.value()->rebuild(report.value()).ok());
+    EXPECT_EQ(capacity->snapshot().protection, StatusCode::DataLoss);
+    EXPECT_EQ(catalog.value()->snapshot().corrupted_committed, 1u);
+    EXPECT_FALSE(catalog.value()->retire_eligible(manifest_.identity.task_id).value());
+}
+
+TEST_F(SegmentCommitterTest, VolumeRecoveryScanComputesSameBootPresentAndNewBootAbsentEvidence) {
+    const auto same_boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    const auto next_boot = rodaq::time::parse_boot_identity("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    ASSERT_TRUE(same_boot.ok());
+    ASSERT_TRUE(next_boot.ok());
+    manifest_.identity.playback_anchor.boot_id = same_boot.value().id;
+    const auto expected_anchor = manifest_.identity.playback_anchor;
+
+    auto prepared = prepare();
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_TRUE(prepared.value()->commit(*ledger_).ok());
+    ASSERT_TRUE(prepared.value()->take_committed_charge().ok());
+
+    const auto same_report =
+        artifact::inspect_volume_recovery(volume_, *ledger_, {}, same_boot.value());
+    ASSERT_TRUE(same_report.ok());
+    EXPECT_EQ(same_report.value().boot_evidence.state, rodaq::time::BootArtifactState::Present);
+    EXPECT_EQ(same_report.value().boot_evidence.anchor.boot_id, expected_anchor.boot_id);
+    EXPECT_EQ(same_report.value().boot_evidence.anchor.monotonic_ns, expected_anchor.monotonic_ns);
+    EXPECT_EQ(same_report.value().boot_evidence.anchor.realtime_ns, expected_anchor.realtime_ns);
+
+    const auto next_report =
+        artifact::inspect_volume_recovery(volume_, *ledger_, {}, next_boot.value());
+    ASSERT_TRUE(next_report.ok());
+    EXPECT_EQ(next_report.value().boot_evidence.state, rodaq::time::BootArtifactState::Absent);
+}
+
+TEST_F(SegmentCommitterTest, CatalogPurgeQuarantinedForResetReclaimsBytesAndSlotsWithinFixedScope) {
+    interrupt_publication(false);
+    const auto record = ledger_->get(7).value();
+    rodaq::task::TaskControlRecord control;
+    control.task_id = record.task_id;
+    control.control_generation = record.control_generation + 1;
+    control.reset_generation = record.reset_generation_at_commit + 1;
+    ASSERT_TRUE(
+        artifact::quarantine_reset_invalidated_artifact(volume_, *ledger_, 7, control).ok());
+
+    const auto boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    ASSERT_TRUE(boot.ok());
+    const auto report = artifact::inspect_volume_recovery(volume_, *ledger_, {}, boot.value());
+    ASSERT_TRUE(report.ok());
+    ASSERT_EQ(report.value().quarantined.size(), 1u);
+    ASSERT_GT(report.value().quarantined_bytes, 0u);
+
+    auto cap = artifact::VolumeCapacity::create(
+        {1000000, 1000000, 0, 100, 16, 16, 32}, report.value().total_physical_bytes(),
+        report.value().artifact_slots);
+    ASSERT_TRUE(cap.ok());
+    auto capacity = std::make_shared<artifact::VolumeCapacity>(std::move(cap.value()));
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = std::move(ledger_);
+    options.capacity = capacity;
+    options.max_artifacts = 16;
+    auto catalog = artifact::ArtifactCatalog::create(options);
+    ASSERT_TRUE(catalog.ok());
+    ASSERT_TRUE(catalog.value()->rebuild(report.value()).ok());
+    EXPECT_FALSE(catalog.value()->retire_eligible(record.task_id).value());
+
+    // Out-of-scope generation does not purge the quarantined entry.
+    ASSERT_TRUE(catalog.value()
+                    ->purge_quarantined_for_reset(record.task_id, record.control_generation - 1)
+                    .ok());
+    EXPECT_EQ(catalog.value()->snapshot().quarantined, 1u);
+
+    // In-scope Reset purges the entry and reclaims both bytes and slot.
+    ASSERT_TRUE(catalog.value()
+                    ->purge_quarantined_for_reset(record.task_id, record.control_generation)
+                    .ok());
+    EXPECT_EQ(catalog.value()->snapshot().quarantined, 0u);
+    EXPECT_EQ(capacity->snapshot().actual_bytes, 0u);
+    EXPECT_EQ(capacity->snapshot().artifact_slots, 0u);
+    EXPECT_TRUE(catalog.value()->retire_eligible(record.task_id).value());
+    EXPECT_FALSE(catalog.value()->has_task_references(record.task_id).value());
 }
 
 }  // namespace

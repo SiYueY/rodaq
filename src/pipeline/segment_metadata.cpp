@@ -570,4 +570,6 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
 
 std::uint64_t SegmentMetadata::segment_id() const noexcept { return state_->identity.segment_id; }
 
+TaskId SegmentMetadata::task_id() const noexcept { return state_->identity.task_id; }
+
 }  // namespace rodaq::pipeline

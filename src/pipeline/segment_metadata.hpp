@@ -141,6 +141,7 @@ public:
     Result<artifact::SegmentManifest> capture_manifest(
         std::vector<artifact::FileEvidence> files) const;
     std::uint64_t segment_id() const noexcept;
+    TaskId task_id() const noexcept;
 
 private:
     explicit SegmentMetadata(std::shared_ptr<SegmentMetadataState> state) noexcept;

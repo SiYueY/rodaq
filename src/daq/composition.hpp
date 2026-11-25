@@ -16,6 +16,7 @@
 
 #include "../artifact/ledger_store.hpp"
 #include "../artifact/managed_volume.hpp"
+#include "../artifact/recovery_scan.hpp"
 #include "../artifact/segment_id_store.hpp"
 #include "../artifact/volume_capacity.hpp"
 #include "../pipeline/recording_instance.hpp"
@@ -70,6 +71,7 @@ struct CompositionOptions {
     std::shared_ptr<artifact::VolumeCapacity> capacity;
     std::shared_ptr<artifact::LedgerStore> ledger;
     std::shared_ptr<artifact::SegmentIdStore> segment_ids;
+    std::optional<artifact::VolumeRecoveryReport> recovery_report;
     DeploymentSettings settings;
     pipeline::ReceiveClock sample{&time::sample_clocks};
     // Private persistence fault seam; actual calls remain outside Task control.

@@ -14,6 +14,7 @@
 
 #include "ledger_store.hpp"
 #include "manifest.hpp"
+#include "recovery_scan.hpp"
 #include "volume_capacity.hpp"
 #include "../pipeline/sealed_segment.hpp"
 
@@ -46,6 +47,10 @@ struct CatalogSnapshot {
     std::uint32_t collect_inflight{0};
     std::uint32_t read_leases{0};
     std::uint32_t reads_inflight{0};
+    std::uint32_t quarantined{0};
+    std::uint32_t verification_required{0};
+    std::uint32_t corrupted_committed{0};
+    std::uint64_t quarantined_bytes{0};
 };
 
 struct CatalogState;
@@ -67,6 +72,7 @@ public:
     // Startup work only. Capacity starts from independently verified recovery
     // totals; each committed row claims its retained charge exactly once.
     Result<void> rebuild();
+    Result<void> rebuild(const VolumeRecoveryReport& report);
     Result<ArtifactPage> query(const ArtifactQuery& query) const;
     Result<ArtifactInfo> get(ArtifactId id) const;
     Result<ArtifactReadHandle> acquire(ArtifactId id, ArtifactFileId file);
@@ -79,6 +85,18 @@ public:
     Result<void> delete_artifact(
         ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,
         std::chrono::steady_clock::time_point deadline);
+    // Authoritative artifact-side predicate for Task retirement (Artifact §8.2).
+    // Read-only: never triggers implicit delete, registration, or recovery.
+    Result<bool> retire_eligible(TaskId task) const;
+    // Returns true if any Ledger row (including Deleted tombstones), active
+    // work, read lease, or quarantined/unknown artifact may reference this Task.
+    Result<bool> has_task_references(TaskId task) const;
+    // Fixed-scope Reset targets belonging to task through max_control_generation.
+    Result<std::vector<ArtifactId>> reset_targets(
+        TaskId task, ControlGeneration max_control_generation) const;
+    // Removes quarantined/staging directories provably belonging to task within
+    // the fixed Reset scope and releases their retained capacity charges.
+    Result<void> purge_quarantined_for_reset(TaskId task, ControlGeneration max_control_generation);
     // Task resolves historical immutable configuration modes into this bounded
     // version set. The time floor comes only from verified committed checkpoints,
     // never from Task Open time. Revalidate current policy before delete intent.

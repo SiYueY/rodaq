@@ -156,7 +156,8 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return index.status();
         }
         state->catalog = std::move(index.value());
-        auto rebuilt = state->catalog->rebuild();
+        auto rebuilt = o.recovery_report ? state->catalog->rebuild(*o.recovery_report)
+                                         : state->catalog->rebuild();
         if (!rebuilt.ok()) {
             return rebuilt.status();
         }

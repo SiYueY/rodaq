@@ -38,6 +38,12 @@ struct CatalogEntry {
     std::uint32_t readers{0};
 };
 
+// Content/identity proof only; no committed authority or public visibility.
+struct VerifiedArtifactTree {
+    std::shared_ptr<CatalogEntry> entry;
+    SegmentManifest manifest;
+};
+
 struct CommitFrame {
     explicit CommitFrame(pipeline::SealedPipelineSegment value) : sealed(std::move(value)) {}
 
@@ -66,16 +72,23 @@ struct ReadSlot {
     std::weak_ptr<ReadBacking> reader;
 };
 
+struct RetainedQuarantine {
+    QuarantinedArtifact info;
+    std::optional<ArtifactCharge> charge;
+};
+
 struct CatalogState {
     CatalogOptions options;
     mutable std::mutex index;
     std::condition_variable reader_changed;
     std::vector<CatalogSlot> slots;
     std::vector<ReadSlot> readers;
+    std::vector<std::shared_ptr<RetainedQuarantine>> quarantined;
     bool accepting_reads{true};
     bool rebuilding{false};
     std::uint32_t read_leases{0};
     std::atomic<std::uint32_t> active_reads{0};
+    StatusCode recovery_health{StatusCode::Ok};
 
     std::size_t find(std::uint64_t id) const noexcept;
     Result<bool> public_entry(const CatalogSlot& slot) const;
@@ -103,6 +116,8 @@ Result<persistence::FileDescriptor> open_final_directory(
     const std::shared_ptr<ManagedVolume>& volume, std::uint64_t segment);
 Result<std::shared_ptr<CatalogEntry>> verify_committed(
     const CatalogOptions& options, const LedgerRecord& record);
+Result<VerifiedArtifactTree> verify_artifact_tree(
+    const CatalogOptions& options, const std::filesystem::path& directory);
 Result<void> prove_artifact_absence(const CatalogOptions& options, std::uint64_t segment);
 
 }  // namespace rodaq::artifact

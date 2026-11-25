@@ -122,19 +122,19 @@ Result<FileDescriptor> open_final_directory(
                       : Result<FileDescriptor>(valid.status());
 }
 
-Result<std::shared_ptr<CatalogEntry>> verify_committed(
-    const CatalogOptions& options, const LedgerRecord& record) {
-    if (record.state != LedgerState::Committed || !record.committed_at ||
-        !(record.volume_id == options.volume->identity())) {
-        return Status(StatusCode::InvalidState, {});
-    }
+Result<VerifiedArtifactTree> verify_artifact_tree(
+    const CatalogOptions& options, const std::filesystem::path& path) {
     try {
-        auto opened = open_final_directory(options.volume, record.segment_id);
-        if (!opened.ok()) {
-            return opened.status();
+        auto valid = options.volume->verify();
+        if (!valid.ok()) {
+            return valid.status();
+        }
+        FileDescriptor opened(open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (opened.get() < 0) {
+            return Status(StatusCode::DataLoss, {});
         }
         auto entry = std::make_shared<CatalogEntry>();
-        const int directory = opened.value().get();
+        const int directory = opened.get();
         if (fstat(directory, &entry->directory) != 0) {
             return Status(StatusCode::DataLoss, {});
         }
@@ -152,19 +152,17 @@ Result<std::shared_ptr<CatalogEntry>> verify_committed(
             return decoded.status();
         }
         auto& manifest = decoded.value();
-        auto binding = validate_manifest_ledger_binding(manifest, record, options.manifest);
-        if (!binding.ok()) {
-            return binding.status();
+        if (!(manifest.identity.volume_id == options.volume->identity())) {
+            return Status(StatusCode::DataLoss, {});
         }
         const auto& identity = manifest.identity;
         entry->config_version = identity.config_version;
         entry->committed_recording_end_ns = manifest.recording_end_ns;
         auto& summary = entry->info.summary;
-        summary.artifact_id = {record.segment_id};
-        summary.segment_id = record.segment_id;
-        summary.task_id = record.task_id;
-        summary.pipeline_id = record.pipeline_id;
-        summary.committed_at = *record.committed_at;
+        summary.artifact_id = {identity.segment_id};
+        summary.segment_id = identity.segment_id;
+        summary.task_id = identity.task_id;
+        summary.pipeline_id = identity.pipeline_id;
         summary.recording_range = {manifest.recording_begin_ns, manifest.recording_end_ns};
         summary.receive_wall_time_range = {
             WallTime{std::chrono::nanoseconds{manifest.min_receive_realtime}},
@@ -235,11 +233,32 @@ Result<std::shared_ptr<CatalogEntry>> verify_committed(
             return Status(StatusCode::DataLoss, {});
         }
         auto volume = options.volume->verify();
-        return volume.ok() ? Result<std::shared_ptr<CatalogEntry>>(std::move(entry))
-                           : Result<std::shared_ptr<CatalogEntry>>(volume.status());
+        return volume.ok() ? Result<VerifiedArtifactTree>(
+                                 VerifiedArtifactTree{std::move(entry), std::move(decoded.value())})
+                           : Result<VerifiedArtifactTree>(volume.status());
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
+}
+
+Result<std::shared_ptr<CatalogEntry>> verify_committed(
+    const CatalogOptions& options, const LedgerRecord& record) {
+    if (record.state != LedgerState::Committed || !record.committed_at ||
+        !(record.volume_id == options.volume->identity())) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    auto tree = verify_artifact_tree(
+        options, options.volume->artifacts_directory() / std::to_string(record.segment_id));
+    if (!tree.ok()) {
+        return tree.status();
+    }
+    auto binding =
+        validate_manifest_ledger_binding(tree.value().manifest, record, options.manifest);
+    if (!binding.ok()) {
+        return binding.status();
+    }
+    tree.value().entry->info.summary.committed_at = *record.committed_at;
+    return std::move(tree.value().entry);
 }
 
 }  // namespace rodaq::artifact

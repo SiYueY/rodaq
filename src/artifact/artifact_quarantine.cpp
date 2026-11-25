@@ -51,7 +51,7 @@ struct QuarantineName {
 
 Result<void> quarantine_names(
     const std::shared_ptr<ManagedVolume>& volume, const LedgerRecord& record,
-    const persistence::FileFaultHook& faults,
+    const std::string& tag, const persistence::FileFaultHook& faults,
     std::optional<std::array<std::optional<struct stat>, 2>>& prior) {
     auto valid = volume->verify();
     if (!valid.ok()) {
@@ -70,7 +70,7 @@ Result<void> quarantine_names(
     // row. These names never authorize normal Catalog registration/adoption.
     const auto prefix = to_string(record.task_id) + ".g" +
                         std::to_string(record.control_generation) + ".r" +
-                        std::to_string(record.reset_generation_at_commit) + ".s" + segment;
+                        std::to_string(record.reset_generation_at_commit) + ".s" + segment + tag;
     std::array<QuarantineName, 2> names{
         {{segment + ".tmp", prefix + ".tmp", {}}, {segment, prefix + ".final", {}}}};
     std::size_t index = 0;
@@ -156,7 +156,22 @@ Result<void> quarantine_reset_invalidated_artifact(
              record.control_generation > control.reset_intent->target_control_generation)) {
             return Status(StatusCode::Conflict, {});
         }
-        return quarantine_names(volume, record, faults, retained);
+        return quarantine_names(volume, record, "", faults, retained);
+    });
+}
+
+Result<void> quarantine_failed_precommit_artifact(
+    std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment,
+    persistence::FileFaultHook faults) {
+    if (!volume || segment == 0) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    std::optional<std::array<std::optional<struct stat>, 2>> retained;
+    return ledger.abort_committing(segment, [&](const LedgerRecord& record) -> Result<void> {
+        if (!(record.volume_id == volume->identity())) {
+            return Status(StatusCode::DataLoss, {});
+        }
+        return quarantine_names(volume, record, ".precommit", faults, retained);
     });
 }
 
