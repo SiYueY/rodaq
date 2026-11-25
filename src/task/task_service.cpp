@@ -57,6 +57,9 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
             entry.quiescent && control->desired_state != DesiredState::Running
                 ? ExecutionCondition::Idle
                 : ExecutionCondition::Protected;
+        if (control->reset_intent || entry.resetting) {
+            snapshot.execution_condition = ExecutionCondition::Draining;
+        }
         if (entry.execution) {
             snapshot.execution_condition = entry.execution->condition(control->desired_state);
         }
@@ -301,18 +304,57 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
             return operation.snapshot.kind == OperationKind::Start ||
                    operation.snapshot.kind == OperationKind::Resume;
         });
+    const auto* current_op = [&]() -> const task::StoredOperation* {
+        if (!control.value().current_operation_id) {
+            return nullptr;
+        }
+        for (const auto& op : history.entries) {
+            if (op.snapshot.operation_id == *control.value().current_operation_id) {
+                return &op;
+            }
+        }
+        return nullptr;
+    }();
     entry->quiescent = control.value().desired_state == DesiredState::Stopped &&
                        !control.value().reset_intent && (configuration_boundary || never_started);
-    if (!entry->quiescent && entry->recovery &&
+    if (control.value().reset_intent) {
+        entry->quiescent = false;
+        entry->boot_action = task::BootAction::ResumeReset;
+    } else if (control.value().desired_state == DesiredState::Running) {
+        entry->quiescent = true;
+        if (current_op && !task::terminal(current_op->snapshot.state) &&
+            (current_op->snapshot.kind == OperationKind::Start ||
+             current_op->snapshot.kind == OperationKind::Resume)) {
+            entry->boot_action = task::BootAction::ResumeRunOperation;
+        } else if (
+            current_op &&
+            (current_op->snapshot.state == OperationState::Succeeded ||
+             current_op->snapshot.state == OperationState::PartiallySucceeded) &&
+            (current_op->snapshot.kind == OperationKind::Start ||
+             current_op->snapshot.kind == OperationKind::Resume) &&
+            config.value().config.recovery_policy == RecoveryPolicyMode::Resume &&
+            validate_deployment(config.value().config).ok()) {
+            entry->boot_action = task::BootAction::AutoResumeInterrupted;
+        }
+    } else if (
+        current_op && !task::terminal(current_op->snapshot.state) &&
+        (current_op->snapshot.kind == OperationKind::Pause ||
+         current_op->snapshot.kind == OperationKind::Stop)) {
+        entry->quiescent = false;
+        entry->boot_action = task::BootAction::SettleInterruptedClose;
+    } else if (control.value().desired_state == DesiredState::Paused) {
+        entry->quiescent = true;
+    } else if (
+        !entry->quiescent && entry->recovery &&
         control.value().desired_state == DesiredState::Stopped && !control.value().reset_intent) {
-        const bool stopped =
-            std::any_of(history.entries.begin(), history.entries.end(), [&](const auto& operation) {
-                return control.value().current_operation_id == operation.snapshot.operation_id &&
-                       operation.snapshot.kind == OperationKind::Stop &&
-                       operation.snapshot.state == OperationState::Succeeded;
-            });
+        const bool stopped = current_op != nullptr &&
+                             current_op->snapshot.kind == OperationKind::Stop &&
+                             current_op->snapshot.state == OperationState::Succeeded;
         auto recovered = entry->recovery->load();
-        if (stopped && recovered.ok()) {
+        if (stopped) {
+            if (!recovered.ok()) {
+                return Status(StatusCode::Unavailable, {});
+            }
             const auto& record = recovered.value();
             entry->quiescent =
                 record.observed_control_generation == control.value().control_generation &&
@@ -322,6 +364,9 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
                 std::all_of(
                     record.pipelines.begin(), record.pipelines.end(),
                     [](const auto& recent) { return recent.instance.ended_boundary.has_value(); });
+            if (!entry->quiescent) {
+                return Status(StatusCode::Unavailable, {});
+            }
         }
     }
     auto active = std::make_shared<const TaskConfig>(std::move(config.value().config));
@@ -391,8 +436,10 @@ Result<TaskId> TaskService::State::create(
         // including after an uncertain Completed write. It still owns a Task
         // slot. Never admit another Task merely because that entry is invisible.
         const auto completed = std::count_if(
-            retained.value().begin(), retained.value().end(),
-            [](const auto& receipt) { return receipt.phase == task::CreatePhase::Completed; });
+            retained.value().begin(), retained.value().end(), [&](const auto& receipt) {
+                return receipt.phase == task::CreatePhase::Completed &&
+                       (!retirements || !retirements->is_retired(receipt.assigned_task_id));
+            });
         if (static_cast<std::size_t>(completed) >= options->max_tasks) {
             return Status(StatusCode::ResourceExhausted, {});
         }
@@ -573,12 +620,20 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         state->options = std::make_shared<const task::ServiceOptions>(std::move(options));
         state->installed = std::move(installed.value());
         state->entries.reserve(state->options->max_tasks);
-        for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
+        for (const auto* name :
+             {"tasks", "control", "identities", "create", "recovery", "retired"}) {
             auto made = state->directory(state->options->root / name);
             if (!made.ok()) {
                 return made.status();
             }
         }
+        auto retirements = task::TaskRetirementStore::open(
+            state->options->root / "retired", 4096,
+            state->file_hook(task::ServiceFileDomain::CreateReceipts));
+        if (!retirements.ok()) {
+            return retirements.status();
+        }
+        state->retirements = std::move(retirements.value());
         auto creates = task::TaskCreateStore::open(
             state->options->root / "create",
             state->options->max_tasks + state->options->create_recovery_slots,
@@ -592,7 +647,8 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             return receipts.status();
         }
         for (const auto& receipt : receipts.value()) {
-            if (receipt.phase == task::CreatePhase::Completed) {
+            if (receipt.phase == task::CreatePhase::Completed &&
+                !state->retirements->is_retired(receipt.assigned_task_id)) {
                 auto entry = state->materialize(receipt.assigned_task_id, nullptr);
                 if (!entry.ok()) {
                     return entry.status();

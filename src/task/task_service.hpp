@@ -17,6 +17,10 @@
 #include "../execution_lane.hpp"
 #include "../pipeline/stream_identity_store.hpp"
 
+namespace rodaq::artifact {
+class ArtifactCatalog;
+}
+
 namespace rodaq::task {
 
 enum class AdmissionRole { Acquisition, Storage };
@@ -84,6 +88,7 @@ struct ServiceOptions {
     // Do not populate this domain with permanent Native Writer loops.
     std::shared_ptr<ExecutionLane> control_lane;
     std::shared_ptr<const RunExecutionOptions> execution;
+    std::shared_ptr<artifact::ArtifactCatalog> catalog;
     std::vector<AllowedPlugin> allowed_plugins;
     std::vector<ResourceProfileAdmission> resource_profiles;
     std::vector<std::string> output_roots;

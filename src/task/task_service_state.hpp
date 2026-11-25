@@ -5,6 +5,7 @@
 #include "task_service.hpp"
 #include "task_controller.hpp"
 #include "create_store.hpp"
+#include "retirement_store.hpp"
 #include "../pipeline/stream_identity_store.hpp"
 
 #include <atomic>
@@ -109,6 +110,14 @@ struct VolumeRecovery {
     std::uint64_t not_before{0};
 };
 
+enum class BootAction {
+    None,
+    ResumeReset,
+    ResumeRunOperation,
+    AutoResumeInterrupted,
+    SettleInterruptedClose
+};
+
 struct TaskEntry {
     TaskId id;
     std::mutex control_mutex;
@@ -122,7 +131,9 @@ struct TaskEntry {
     std::shared_ptr<RunExecution> execution;
     std::optional<VolumeRecovery> volume_recovery;
     std::shared_ptr<const PublishedTask> published;
+    BootAction boot_action{BootAction::None};
     bool quiescent{false};
+    bool resetting{false};
     bool persisting{false};
     // Retained until actual deletion settles, including uncertain publication.
     // Configure cannot change policy while this original-generation work exists.
@@ -163,6 +174,7 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
     std::shared_ptr<const task::ServiceOptions> options;
     std::vector<plugin::PluginInfo> installed;
     std::unique_ptr<task::TaskCreateStore> creates;
+    std::unique_ptr<task::TaskRetirementStore> retirements;
     std::mutex catalog_mutex;
     std::vector<std::shared_ptr<task::TaskEntry>> entries;
     std::atomic<std::size_t> requests{0};
@@ -198,6 +210,18 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         const std::shared_ptr<task::TaskEntry>& entry,
         std::shared_ptr<task::Reply<OperationId>> reply,
         std::shared_ptr<const task::TaskControlRecord> accepted) noexcept;
+    void execute_reset(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
+    void execute_retire(
+        const std::shared_ptr<task::TaskEntry>& entry,
+        std::shared_ptr<task::Reply<OperationId>> reply,
+        std::shared_ptr<const task::TaskControlRecord> accepted) noexcept;
+    Result<void> cleanup_retired_task_files(TaskId task_id);
+
+    struct ResetJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        void run() noexcept override;
+    };
 
     struct CreateWork final : Work {
         std::shared_ptr<State> owner;

@@ -1,5 +1,7 @@
 #include "task_service_state.hpp"
 
+#include "../artifact/artifact_catalog.hpp"
+
 #include <new>
 #include <utility>
 
@@ -51,6 +53,15 @@ Result<OperationId> TaskService::lifecycle(
                 cut = sample.value().monotonic_ns;
             }
         }
+        bool retire_eligible = false;
+        if (kind == OperationKind::Retire) {
+            if (state_->options->catalog) {
+                auto eligible = state_->options->catalog->retire_eligible(id);
+                retire_eligible = eligible.ok() && eligible.value();
+            } else {
+                retire_eligible = true;
+            }
+        }
         auto reply = std::make_shared<task::Reply<OperationId>>();
         auto job = std::make_shared<State::ControlJob>();
         job->owner = state_;
@@ -65,10 +76,14 @@ Result<OperationId> TaskService::lifecycle(
                 return Status(StatusCode::InvalidState, {});
             }
             const auto durable = entry->controller->durable_record();
+            const bool quiescent_now = entry->quiescent && entry->closing == 0 &&
+                                       !entry->resetting && !entry->retention_work &&
+                                       !entry->artifact_maintenance_active;
+            const bool exec_ready = kind == OperationKind::Reset || kind == OperationKind::Retire ||
+                                    static_cast<bool>(state_->options->execution);
             auto decision = entry->controller->request_lifecycle(
                 kind, request, precondition, task::control_wall_now(),
-                {entry->quiescent && entry->closing == 0,
-                 static_cast<bool>(state_->options->execution)});
+                {quiescent_now, exec_ready, retire_eligible});
             if (!decision.ok()) {
                 return decision.status();
             }

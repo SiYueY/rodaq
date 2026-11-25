@@ -17,6 +17,7 @@
 #include "../persistence/json.hpp"
 #include "../artifact/recovery_scan.hpp"
 #include "../artifact/segment_committer.hpp"
+#include "../task/retirement_store.hpp"
 #include "run_configuration.hpp"
 
 namespace rodaq::daq {
@@ -38,21 +39,29 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
             options.task_root / "tasks" / to_string(id), options.task_root / "control", id,
             task::TaskStoreMode::Existing, options.settings.tasks);
     };
+    const auto is_retired = [&](TaskId id) {
+        std::error_code ec;
+        return std::filesystem::symlink_status(
+                   options.task_root / "retired" / (to_string(id) + ".json"), ec)
+                   .type() == std::filesystem::file_type::regular;
+    };
     // Durable DeleteIntent wins before any committing publication recovery.
     for (const auto& record : records.value()) {
         if (record.state != artifact::LedgerState::Deleting) {
             continue;
         }
-        auto store = open_task(record.task_id);
-        if (!store.ok()) {
-            return store.status();
-        }
-        auto control = store.value()->load_control();
-        if (!control.ok()) {
-            return control.status();
-        }
-        if (record.control_generation > control.value().control_generation) {
-            return Status(StatusCode::Conflict, {});
+        if (!is_retired(record.task_id)) {
+            auto store = open_task(record.task_id);
+            if (!store.ok()) {
+                return store.status();
+            }
+            auto control = store.value()->load_control();
+            if (!control.ok()) {
+                return control.status();
+            }
+            if (record.control_generation > control.value().control_generation) {
+                return Status(StatusCode::Conflict, {});
+            }
         }
         auto deleted = artifact::recover_deleting_artifact(
             options.volume, *options.ledger, record.segment_id,
@@ -94,6 +103,14 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
     };
     for (const auto& record : records.value()) {
         if (record.state != artifact::LedgerState::Committing) {
+            continue;
+        }
+        if (is_retired(record.task_id)) {
+            auto quarantined = artifact::quarantine_failed_precommit_artifact(
+                options.volume, *options.ledger, record.segment_id);
+            if (!quarantined.ok()) {
+                return quarantined.status();
+            }
             continue;
         }
         auto store = open_task(record.task_id);
@@ -292,17 +309,21 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             }
         }
         if (!initialize) {
-            const auto retired = startup.state_root / "service/retired";
-            const auto retired_type = std::filesystem::symlink_status(retired).type();
-            if (retired_type != std::filesystem::file_type::not_found &&
-                (retired_type != std::filesystem::file_type::directory ||
-                 !std::filesystem::is_empty(retired))) {
-                // No ordinary Task/artifact recovery may precede retirement
-                // authority. Retain this diagnostic until its registry opens.
-                return Status(StatusCode::Unavailable, {});
-            }
             for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
                 auto checked = directory(startup.state_root / "service" / name, startup.mode);
+                if (!checked.ok()) {
+                    return checked.status();
+                }
+            }
+            const auto retired = startup.state_root / "service/retired";
+            if (std::filesystem::symlink_status(retired).type() ==
+                std::filesystem::file_type::not_found) {
+                auto created = directory(retired, DeploymentOpenMode::Initialize);
+                if (!created.ok()) {
+                    return created.status();
+                }
+            } else {
+                auto checked = directory(retired, startup.mode);
                 if (!checked.ok()) {
                     return checked.status();
                 }

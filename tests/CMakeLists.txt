@@ -559,4 +559,14 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_task_service_test rodaq_task_service_crash_probe rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_task_service_test)
     gtest_discover_tests(rodaq_task_service_test PROPERTIES TIMEOUT 30)
+    add_executable(rodaq_s4c_closure_test task/s4c_closure_test.cpp)
+    target_include_directories(rodaq_s4c_closure_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(rodaq_s4c_closure_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json Threads::Threads)
+    target_compile_definitions(rodaq_s4c_closure_test PRIVATE
+        RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json"
+        RODAQ_S4C_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_S4C_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_s4c_closure_test rodaq_fake_storage rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_s4c_closure_test)
+    gtest_discover_tests(rodaq_s4c_closure_test PROPERTIES TIMEOUT 30)
 endif()

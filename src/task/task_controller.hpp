@@ -34,6 +34,7 @@ struct ConfigureFacts {
 struct LifecycleFacts {
     bool quiescent{false};
     bool execution_available{false};
+    bool retire_eligible{false};
 };
 
 // Immutable frame retained by the persistence worker until actual return.
@@ -129,6 +130,7 @@ public:
     bool persistence_protected() const noexcept { return protected_; }
 
     bool run_is_current(OperationId operation, ControlGeneration generation) const noexcept;
+    void authorize_boot_run() noexcept { opening_fenced_ = false; }
 
 private:
     struct PendingStop {

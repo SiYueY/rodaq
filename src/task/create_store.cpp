@@ -507,4 +507,41 @@ Result<std::vector<CreateReceipt>> TaskCreateStore::retained_receipts() {
     }
 }
 
+Result<void> TaskCreateStore::remove_for_retired_task(TaskId task_id) {
+    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
+    if (!execution.owns_lock()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (state_->protected_state) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    try {
+        auto it = std::find_if(
+            state_->receipts.begin(), state_->receipts.end(),
+            [&](const auto& entry) { return entry.second.receipt.assigned_task_id == task_id; });
+        if (it == state_->receipts.end()) {
+            return {};
+        }
+        FileDescriptor dir_fd(
+            ::open(state_->directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (dir_fd.value < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        const auto name = file_name(it->first);
+        if (::unlinkat(dir_fd.value, name.c_str(), 0) != 0 && errno != ENOENT) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto synced =
+            sync_descriptor(dir_fd.value, persistence::FileStep::SyncDirectory, state_->faults);
+        if (!synced.ok()) {
+            state_->protected_state = true;
+            return synced.status();
+        }
+        state_->receipts.erase(it);
+        return {};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 }  // namespace rodaq::task

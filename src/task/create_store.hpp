@@ -59,6 +59,10 @@ public:
     // receipts remain excluded from the ordinary Task catalog.
     Result<std::vector<CreateReceipt>> retained_receipts();
 
+    // Post-retirement maintenance only: removes the create receipt belonging to
+    // a durably retired Task so its slot is reclaimed for future Task creation.
+    Result<void> remove_for_retired_task(TaskId task_id);
+
 private:
     struct State;
     explicit TaskCreateStore(std::unique_ptr<State> state) noexcept;

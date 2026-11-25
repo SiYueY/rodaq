@@ -15,6 +15,10 @@
 #include "startup.hpp"
 #include "../artifact/artifact_catalog.hpp"
 
+namespace rodaq::system {
+ProcessResources sample_process_resources() noexcept;
+}
+
 namespace rodaq::daq {
 namespace {
 
@@ -75,10 +79,13 @@ struct Composition::State {
     std::shared_ptr<artifact::ArtifactCatalog> catalog;
     std::unique_ptr<ArtifactService> artifacts;
     std::unique_ptr<TaskService> tasks;
+    std::unique_ptr<SystemService> system;
     std::vector<std::shared_ptr<ExecutionLane>> lanes;
     // Only serializes explicit lifecycle/maintenance calls, never Task APIs.
     std::mutex lifecycle;
     std::mutex observation;
+    std::atomic<std::uint64_t> system_sequence{0};
+    std::atomic<bool> recovery_complete{false};
     bool started{false};
     std::atomic<bool> stopping{false};
     bool stopped{false};
@@ -202,26 +209,131 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                                  : Result<std::uint64_t>(reserved.status());
         };
         service.execution = std::move(execution);
+        service.catalog = state->catalog;
         auto tasks = TaskService::open(std::move(service));
         if (!tasks.ok()) {
             return tasks.status();
         }
         state->tasks = std::move(tasks.value());
-        auto recovered = state->tasks->list_tasks({});
-        if (!recovered.ok()) {
-            return recovered.status();
+        auto* raw_state = state.get();
+        auto system = SystemService::create(
+            [raw_state]() -> Result<SystemSnapshot> {
+                const auto& opts = raw_state->resources->options;
+                SystemSnapshot snap;
+                snap.core_ready = raw_state->recovery_complete.load(std::memory_order_acquire) &&
+                                  !raw_state->stopping.load(std::memory_order_acquire);
+                snap.recovery.complete =
+                    raw_state->recovery_complete.load(std::memory_order_acquire);
+                snap.resources = system::sample_process_resources();
+                const auto cap_snap = opts.capacity->snapshot();
+                const auto cat_snap = raw_state->catalog->snapshot();
+                const auto sample = opts.sample();
+                const auto now_mono = sample.ok() ? sample.value().monotonic_ns : 0;
+                const auto space = opts.capacity->space_snapshot(now_mono);
+                VolumeStatus vol;
+                vol.name = opts.settings.output_root;
+                vol.total_bytes = opts.capacity->policy().ok()
+                                      ? opts.capacity->policy().value().max_managed_bytes
+                                      : 0;
+                vol.free_bytes = space.effective_free_bytes;
+                vol.managed_bytes = cap_snap.actual_bytes;
+                vol.quarantined_bytes = cat_snap.quarantined_bytes;
+                vol.protection =
+                    cat_snap.protection != StatusCode::Ok ? cat_snap.protection : space.protection;
+                if (vol.protection != StatusCode::Ok ||
+                    space.condition == artifact::VolumeSpaceCondition::Unknown) {
+                    vol.pressure = VolumePressure::Protected;
+                } else if (
+                    space.condition == artifact::VolumeSpaceCondition::Stopped ||
+                    space.condition == artifact::VolumeSpaceCondition::Recovering) {
+                    vol.pressure = VolumePressure::Critical;
+                } else if (space.condition == artifact::VolumeSpaceCondition::Low) {
+                    vol.pressure = VolumePressure::Low;
+                } else {
+                    vol.pressure = VolumePressure::Normal;
+                }
+                snap.volumes.push_back(std::move(vol));
+                snap.backlog.commit_items = cap_snap.commit_slots;
+                snap.backlog.commit_bytes = cap_snap.commit_bytes;
+                snap.backlog.active_downloads = cat_snap.read_leases;
+                snap.backlog.quarantined_items = cat_snap.quarantined;
+                snap.backlog.verification_required_items = cat_snap.verification_required;
+                snap.backlog.corrupted_committed_items = cat_snap.corrupted_committed;
+                snap.captured_at = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now());
+                snap.snapshot_sequence =
+                    raw_state->system_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+                snap.freshness =
+                    cap_snap.has_space_sample ? SnapshotFreshness::Fresh : SnapshotFreshness::Stale;
+                snap.age = std::chrono::nanoseconds::zero();
+                return snap;
+            },
+            [raw_state]() -> Result<SystemCapabilities> {
+                const auto& opts = raw_state->resources->options;
+                SystemCapabilities caps;
+                caps.application_version = "0.1.0";
+                caps.output_roots.push_back(opts.settings.output_root);
+                for (const auto& profile : opts.settings.profiles) {
+                    caps.resource_profiles.push_back(profile.name);
+                }
+                auto installed = opts.plugins->plugins();
+                if (!installed.ok()) {
+                    return installed.status();
+                }
+                for (const auto& allowed : opts.settings.allowed_plugins) {
+                    BackendCapability cap;
+                    cap.plugin_id = allowed.plugin_id;
+                    cap.plugin_version = allowed.plugin_version;
+                    cap.role = allowed.role == task::AdmissionRole::Acquisition
+                                   ? BackendRole::Acquisition
+                                   : BackendRole::Storage;
+                    cap.allowed = true;
+                    cap.installed = std::any_of(
+                        installed.value().begin(), installed.value().end(), [&](const auto& p) {
+                            return p.plugin_id == allowed.plugin_id &&
+                                   p.plugin_version == allowed.plugin_version;
+                        });
+                    const bool is_required = allowed.plugin_id == "rodaq.acquisition.ros2" ||
+                                             allowed.plugin_id == "rodaq.storage.mcap";
+                    cap.support_status = is_required ? BackendSupportStatus::Required
+                                                     : BackendSupportStatus::QualifiedCandidate;
+                    cap.qualification_status = BackendQualificationStatus::NotQualified;
+                    caps.backends.push_back(std::move(cap));
+                }
+                for (const auto& plugin : installed.value()) {
+                    const bool listed = std::any_of(
+                        caps.backends.begin(), caps.backends.end(), [&](const auto& existing) {
+                            return existing.plugin_id == plugin.plugin_id &&
+                                   existing.plugin_version == plugin.plugin_version;
+                        });
+                    if (!listed) {
+                        BackendCapability cap;
+                        cap.plugin_id = plugin.plugin_id;
+                        cap.plugin_version = plugin.plugin_version;
+                        cap.installed = true;
+                        cap.allowed = false;
+                        cap.support_status = BackendSupportStatus::Deferred;
+                        cap.qualification_status = BackendQualificationStatus::NotQualified;
+                        caps.backends.push_back(std::move(cap));
+                    }
+                }
+                return caps;
+            });
+        if (!system.ok()) {
+            return system.status();
         }
-        for (const auto& item : recovered.value().items) {
-            if (item.task.execution_condition != ExecutionCondition::Idle) {
-                return Status(StatusCode::Unavailable, {});
-            }
-        }
+        state->system = std::move(system.value());
         // Allocate the final facade before enabling its mandatory-shutdown rule.
         auto composition = std::unique_ptr<Composition>(new Composition(std::move(state)));
         auto observed = composition->observe();
         if (!observed.ok()) {
             return observed.status();
         }
+        auto reconciled = composition->state_->tasks->reconcile_boot(*composition->state_->catalog);
+        if (!reconciled.ok()) {
+            return reconciled.status();
+        }
+        composition->state_->recovery_complete.store(true, std::memory_order_release);
         composition->state_->started = true;
         return composition;
     } catch (const std::bad_alloc&) {
@@ -232,6 +344,8 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
 TaskService& Composition::tasks() noexcept { return *state_->tasks; }
 
 ArtifactService& Composition::artifacts() noexcept { return *state_->artifacts; }
+
+SystemService& Composition::system() noexcept { return *state_->system; }
 
 Result<void> Composition::observe() {
     std::lock_guard<std::mutex> serial(state_->observation);
@@ -316,7 +430,9 @@ Result<void> Composition::observe() {
     auto retained = state_->tasks->apply_retention(*state_->catalog);
     auto collected =
         state_->tasks->collect_artifacts(*state_->catalog, o.settings.artifact_audit_window);
-    return !retained.ok() ? retained : collected;
+    auto retired =
+        state_->tasks->collect_retired(*state_->catalog, o.settings.artifact_audit_window);
+    return !retained.ok() ? retained : (!collected.ok() ? collected : retired);
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {

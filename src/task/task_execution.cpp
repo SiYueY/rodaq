@@ -353,10 +353,18 @@ void TaskService::State::PrepareJob::run() noexcept {
                 return entry->recovery->load();
             }();
             if (recovered_time.ok()) {
-                if (!recovered_time.value().recording_time_ns) {
-                    failure = StatusCode::Unavailable;
-                } else {
+                if (recovered_time.value().recording_time_ns) {
                     recording_base = *recovered_time.value().recording_time_ns;
+                } else {
+                    const auto& rec = recovered_time.value();
+                    const bool ever_opened =
+                        (rec.run_operation && rec.run_operation->authorization_boundary) ||
+                        std::any_of(rec.pipelines.begin(), rec.pipelines.end(), [](const auto& p) {
+                            return p.instance.opened_observed;
+                        });
+                    if (ever_opened) {
+                        failure = StatusCode::Unavailable;
+                    }
                 }
             } else if (recovered_time.status().code() != StatusCode::NotFound) {
                 failure = recovered_time.status().code();
@@ -510,6 +518,16 @@ void TaskService::State::PrepareJob::run() noexcept {
             entry, *execution->control->current_operation_id,
             execution->control->control_generation, failure, partial,
             failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly);
+    } else if (execution->purpose == task::RunPurpose::VolumeRecovery) {
+        std::lock_guard<std::mutex> control(entry->control_mutex);
+        if (entry->execution == execution) {
+            const auto old = std::atomic_load(&entry->published);
+            auto fresh = task::make_task_publication(
+                *entry, old->config, old->snapshot.snapshot_sequence + 1);
+            if (fresh.ok()) {
+                std::atomic_store(&entry->published, std::move(fresh.value()));
+            }
+        }
     }
 }
 

@@ -150,7 +150,7 @@ bool TaskService::shutdown_settled() const {
     std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
     for (const auto& entry : state_->entries) {
         std::lock_guard<std::mutex> control(entry->control_mutex);
-        if (!entry->quiescent || entry->closing || entry->persisting ||
+        if (!entry->quiescent || entry->closing || entry->persisting || entry->resetting ||
             entry->artifact_maintenance_active || entry->cleanup_active_id != 0 ||
             entry->cleanup_ready.frame || entry->cleanup_pending.frame) {
             return false;

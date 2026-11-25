@@ -148,8 +148,20 @@ void TaskService::State::ControlJob::run() noexcept {
                 owner->close_execution(entry, reply, std::move(accepted));
                 return;
             }
+            if (!configuration && frame->publication == task::ControlPublicationKind::Intent &&
+                operation && operation->kind == OperationKind::Retire) {
+                auto accepted = entry->controller->durable_record();
+                control.unlock();
+                owner->execute_retire(entry, reply, std::move(accepted));
+                return;
+            }
             reply->complete(resolution.operation_id);
             if (frame->publication == task::ControlPublicationKind::OperationUpdate) {
+                return;
+            }
+            if (!configuration && operation && operation->kind == OperationKind::Reset) {
+                control.unlock();
+                owner->execute_reset(entry);
                 return;
             }
             auto terminal = task::completed_configuration(*entry->controller->durable_record());

@@ -69,6 +69,10 @@ public:
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
     Result<OperationId> stop(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
+    Result<OperationId> reset(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
+    Result<OperationId> retire(
+        TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
 
     Result<TaskSnapshot> get_task(TaskId task_id) const;
     Result<TaskRuntimeSnapshot> get_runtime_snapshot(TaskId task_id) const;
@@ -88,6 +92,9 @@ private:
         artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
     Result<void> collect_artifacts(
+        artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);
+    Result<void> reconcile_boot(artifact::ArtifactCatalog& catalog);
+    Result<void> collect_retired(
         artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);
     bool shutdown_settled() const;
     struct State;

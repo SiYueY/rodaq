@@ -472,7 +472,9 @@ TEST_F(
 TEST_F(TaskControllerTest, ExhaustedIdentityAndIllegalTransitionsDoNotPublishNewIntent) {
     EXPECT_EQ(request(OperationKind::Resume, "resume").status().code(), StatusCode::InvalidState);
     EXPECT_EQ(request(OperationKind::Stop, "stop").status().code(), StatusCode::InvalidState);
-    EXPECT_EQ(request(OperationKind::Reset, "reset").status().code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(
+        request(OperationKind::Configure, "configure").status().code(),
+        StatusCode::InvalidArgument);
     auto exhausted = initial_;
     exhausted.control_generation = std::numeric_limits<std::uint64_t>::max();
     exhausted.record_revision = exhausted.control_generation;

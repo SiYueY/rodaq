@@ -80,7 +80,7 @@ add_library(rodaq_daq SHARED
     src/persistence/digest.cpp
     src/ros2_subscription.cpp)
 target_sources(rodaq_daq PRIVATE
-    src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/task/task_maintenance.cpp
+    src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/system/system_service.cpp src/task/task_maintenance.cpp
     src/task/task_rotation.cpp
     src/task/task_volume_recovery.cpp
     src/task/task_retention.cpp
@@ -92,6 +92,7 @@ target_sources(rodaq_daq PRIVATE
     src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp
     src/time/wall_time.cpp)
 target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp
+    src/task/retirement_store.cpp src/task/task_reset_retire.cpp
     src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp src/task/config_identity.cpp
     src/task/recovery_record.cpp src/task/recovery_store.cpp src/task/task_controller.cpp src/task/control_work.cpp src/task/task_service.cpp src/task/task_query.cpp src/task/task_configure.cpp)
 target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp

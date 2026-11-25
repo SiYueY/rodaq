@@ -26,11 +26,13 @@ const StoredOperation* current_operation(const TaskControlRecord& record) noexce
 
 bool lifecycle(OperationKind kind) noexcept {
     return kind == OperationKind::Start || kind == OperationKind::Pause ||
-           kind == OperationKind::Resume || kind == OperationKind::Stop;
+           kind == OperationKind::Resume || kind == OperationKind::Stop ||
+           kind == OperationKind::Reset || kind == OperationKind::Retire;
 }
 
 bool closing(OperationKind kind) noexcept {
-    return kind == OperationKind::Pause || kind == OperationKind::Stop;
+    return kind == OperationKind::Pause || kind == OperationKind::Stop ||
+           kind == OperationKind::Reset || kind == OperationKind::Retire;
 }
 
 bool transition(DesiredState desired, OperationKind kind) noexcept {
@@ -43,6 +45,9 @@ bool transition(DesiredState desired, OperationKind kind) noexcept {
             return desired == DesiredState::Paused;
         case OperationKind::Stop:
             return desired == DesiredState::Running || desired == DesiredState::Paused;
+        case OperationKind::Reset:
+        case OperationKind::Retire:
+            return desired == DesiredState::Stopped;
         default:
             return false;
     }
@@ -52,7 +57,8 @@ DesiredState target(OperationKind kind) noexcept {
     if (kind == OperationKind::Pause) {
         return DesiredState::Paused;
     }
-    return (kind == OperationKind::Stop || kind == OperationKind::Configure)
+    return (kind == OperationKind::Stop || kind == OperationKind::Configure ||
+            kind == OperationKind::Reset || kind == OperationKind::Retire)
                ? DesiredState::Stopped
                : DesiredState::Running;
 }
@@ -142,6 +148,15 @@ Result<std::shared_ptr<const ControlWork>> TaskController::make_intent(
         candidate.operation_history = std::move(history.value());
         candidate.current_operation_id = operation.snapshot.operation_id;
         candidate.desired_state = target(operation.snapshot.kind);
+        if (operation.snapshot.kind == OperationKind::Reset) {
+            if (base.reset_generation == std::numeric_limits<std::uint64_t>::max()) {
+                return Status(StatusCode::ResourceExhausted, {});
+            }
+            ++candidate.reset_generation;
+            candidate.reset_intent = ResetIntent{
+                operation.snapshot.operation_id, candidate.reset_generation,
+                base.control_generation};
+        }
         if (config) {
             candidate.active_config_version = config->projection.config_version;
         }
@@ -181,9 +196,15 @@ Result<ControlDecision> TaskController::request_lifecycle(
         precondition.expected_control_generation != durable_->control_generation) {
         return Status(StatusCode::Conflict, {});
     }
+    const auto* active_op = current_operation(*durable_);
+    const bool has_nonterminal_op = active_op != nullptr && !terminal(active_op->snapshot.state);
     if (!facts.execution_available ||
-        ((kind == OperationKind::Start || kind == OperationKind::Resume) && !facts.quiescent) ||
-        durable_->reset_intent || (protected_ && kind != OperationKind::Stop)) {
+        ((kind == OperationKind::Start || kind == OperationKind::Resume ||
+          kind == OperationKind::Reset || kind == OperationKind::Retire) &&
+         !facts.quiescent) ||
+        ((kind == OperationKind::Reset || kind == OperationKind::Retire) && has_nonterminal_op) ||
+        (kind == OperationKind::Retire && !facts.retire_eligible) || durable_->reset_intent ||
+        (protected_ && kind != OperationKind::Stop)) {
         return Status(StatusCode::InvalidState, {});
     }
     if ((flight_ || stop_) && kind != OperationKind::Stop) {
@@ -332,6 +353,9 @@ Result<std::shared_ptr<const ControlWork>> TaskController::update_operation(
             if (entry.snapshot.operation_id == result.operation_id) {
                 entry.snapshot = result;
             }
+        }
+        if (result.kind == OperationKind::Reset && terminal(result.state)) {
+            candidate.reset_intent.reset();
         }
         auto work = make_work(
             std::move(candidate), ControlPublicationKind::OperationUpdate,

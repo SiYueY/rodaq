@@ -12,6 +12,7 @@
 #include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/plugin/manager.hpp>
 #include <rodaq/storage/types.hpp>
+#include <rodaq/system/system_service.hpp>
 #include <rodaq/task/task_service.hpp>
 
 #include "../artifact/ledger_store.hpp"
@@ -94,6 +95,7 @@ public:
 
     TaskService& tasks() noexcept;
     ArtifactService& artifacts() noexcept;
+    SystemService& system() noexcept;
     // Caller retains the composition through actual observation return, even
     // when Core shutdown completes independently of a blocked filesystem call.
     Result<void> observe();
