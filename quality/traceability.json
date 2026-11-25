@@ -1,194 +1,170 @@
 {
   "authority": "https://app.notion.com/p/417da2b2a80f816592c1e898187cb69c",
-  "baseline": "S0-20261115-01",
-  "note": "Coverage inventory only. Test labels in planned_tests are coverage groups, not executable IDs. Test results and stage status live only in Notion 00.",
+  "baseline": "S7-20261126-01",
+  "note": "Coverage inventory only. Test results and stage status live only in Notion 00.",
   "requirements": [
     {
       "requirement": "FUNC-01",
       "modules": "Application/Server/Plugin/Volume",
-      "gates": [
-        "S5",
-        "S7"
-      ],
-      "planned_tests": [
-        "deployment_e2e"
-      ],
-      "implemented_tests": []
+      "gates": ["S5", "S7"],
+      "planned_tests": ["deployment_e2e"],
+      "implemented_tests": [
+        "ServerContractTest.ServerConfigStrictParserValidatesLoopbackBoundsAndRejectsUnknownOrDupes",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa",
+        "S4cClosureTest.ResetDeletesArtifactsPreservesHighWaterAndAllowsRetireWithNonResurrection"
+      ]
     },
     {
       "requirement": "FUNC-02",
       "modules": "Task/Plugin/Pipeline",
-      "gates": [
-        "S2",
-        "S4A",
-        "S5",
-        "S6"
-      ],
-      "planned_tests": [
-        "task_configuration_contract"
-      ],
-      "implemented_tests": []
+      "gates": ["S2", "S4A", "S5", "S6"],
+      "planned_tests": ["task_configuration_contract"],
+      "implemented_tests": [
+        "TaskServiceTest.*",
+        "TaskControllerTest.*",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa",
+        "web/tests/web_contract.test.ts"
+      ]
     },
     {
       "requirement": "FUNC-03",
       "modules": "Task/Pipeline",
-      "gates": [
-        "S4A",
-        "S7"
-      ],
-      "planned_tests": [
-        "multi_task_isolation"
-      ],
-      "implemented_tests": []
+      "gates": ["S4A", "S7"],
+      "planned_tests": ["multi_task_isolation"],
+      "implemented_tests": [
+        "TaskServiceTest.NativeExecutionRequiresIndependentCapacityForEveryAdmittedTask",
+        "S4cClosureTest.BootReconciliationRespectsManualAndResumeRecoveryPolicies"
+      ]
     },
     {
       "requirement": "FUNC-04",
       "modules": "Task/Pipeline/Server",
-      "gates": [
-        "S2",
-        "S4A",
-        "S5"
-      ],
-      "planned_tests": [
-        "task_control_contract"
-      ],
-      "implemented_tests": []
+      "gates": ["S2", "S4A", "S5"],
+      "planned_tests": ["task_control_contract"],
+      "implemented_tests": [
+        "TaskControllerTest.*",
+        "PipelineControllerTest.FormalTaskServiceStartPauseResumeStopUsesDurableControlAndRealFiles",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa"
+      ]
     },
     {
       "requirement": "FUNC-05",
       "modules": "Task/Pipeline/Artifact",
-      "gates": [
-        "S4B",
-        "S7"
-      ],
-      "planned_tests": [
-        "recording_rotation_retention"
-      ],
-      "implemented_tests": []
+      "gates": ["S4B", "S7"],
+      "planned_tests": ["recording_rotation_retention"],
+      "implemented_tests": [
+        "PipelineControllerTest.*",
+        "SegmentCommitterTest.*",
+        "Ros2Runtime.RepresentativeCameraAndLateJointsSurviveRotationPauseResumeAndCommit"
+      ]
     },
     {
       "requirement": "FUNC-06",
       "modules": "ROS2/Pipeline/Task",
-      "gates": [
-        "S3",
-        "S6"
-      ],
-      "planned_tests": [
-        "ros2_readiness_schema_qos"
-      ],
-      "implemented_tests": []
+      "gates": ["S3", "S6"],
+      "planned_tests": ["ros2_readiness_schema_qos"],
+      "implemented_tests": [
+        "Ros2Runtime.*",
+        "web/tests/web_contract.test.ts"
+      ]
     },
     {
       "requirement": "FUNC-07",
       "modules": "Pipeline/Storage/Artifact",
-      "gates": [
-        "S2",
-        "S3",
-        "S7"
-      ],
-      "planned_tests": [
-        "data_impact_settlement"
-      ],
-      "implemented_tests": []
+      "gates": ["S2", "S3", "S7"],
+      "planned_tests": ["data_impact_settlement"],
+      "implemented_tests": [
+        "PipelineControllerTest.*",
+        "McapStorageTest.*",
+        "SegmentCommitterTest.*"
+      ]
     },
     {
       "requirement": "FUNC-08",
       "modules": "Artifact/Server",
-      "gates": [
-        "S4B",
-        "S5"
-      ],
-      "planned_tests": [
-        "artifact_query_read_download"
-      ],
-      "implemented_tests": []
+      "gates": ["S4B", "S5"],
+      "planned_tests": ["artifact_query_read_download"],
+      "implemented_tests": [
+        "ServerContractTest.ByteRangeParserAndFilenameSanitizerMatchContract",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa",
+        "Ros2Runtime.FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead"
+      ]
     },
     {
       "requirement": "FUNC-09",
       "modules": "ROS2/MCAP/Artifact",
-      "gates": [
-        "S3",
-        "S7"
-      ],
-      "planned_tests": [
-        "ros2_mcap_interoperability"
-      ],
-      "implemented_tests": []
+      "gates": ["S3", "S7"],
+      "planned_tests": ["ros2_mcap_interoperability"],
+      "implemented_tests": [
+        "McapStorageTest.*",
+        "Ros2Runtime.FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead",
+        "Ros2Runtime.SeparatelyInstalledCustomMessageRecordsWithoutCompiledMessageHeaders"
+      ]
     },
     {
       "requirement": "FUNC-10",
       "modules": "Task/Pipeline/Volume",
-      "gates": [
-        "S4A",
-        "S4B",
-        "S7"
-      ],
-      "planned_tests": [
-        "resource_bounds_faults"
-      ],
-      "implemented_tests": []
+      "gates": ["S4A", "S4B", "S7"],
+      "planned_tests": ["resource_bounds_faults"],
+      "implemented_tests": [
+        "PipelineControllerTest.*",
+        "ServerContractTest.ExecutorIsolatesReserveLaneAndTracksLateReturnAfterTimeout"
+      ]
     },
     {
       "requirement": "FUNC-11",
       "modules": "Task/Artifact",
-      "gates": [
-        "S4C",
-        "S7"
-      ],
-      "planned_tests": [
-        "crash_recovery"
-      ],
-      "implemented_tests": []
+      "gates": ["S4C", "S7"],
+      "planned_tests": ["crash_recovery"],
+      "implemented_tests": [
+        "S4cClosureTest.BootReconciliationRespectsManualAndResumeRecoveryPolicies",
+        "S4cClosureTest.InterruptedResetResumesDeterministicallyOnBoot",
+        "S4cClosureTest.RealCrashWhileRunningAndQuarantinePresentReconcileCleanlyOnBoot",
+        "SegmentCommitterTest.*"
+      ]
     },
     {
       "requirement": "FUNC-12",
       "modules": "Task/Artifact",
-      "gates": [
-        "S4C",
-        "S5"
-      ],
-      "planned_tests": [
-        "reset_retire_contract"
-      ],
-      "implemented_tests": []
+      "gates": ["S4C", "S5"],
+      "planned_tests": ["reset_retire_contract"],
+      "implemented_tests": [
+        "S4cClosureTest.ResetDeletesArtifactsPreservesHighWaterAndAllowsRetireWithNonResurrection",
+        "S4cClosureTest.RetiredTombstoneGarbageCollectsAfterAuditWindowWithZeroReferences",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa"
+      ]
     },
     {
       "requirement": "FUNC-13",
       "modules": "Core/Server/Web",
-      "gates": [
-        "S5",
-        "S6",
-        "S7"
-      ],
-      "planned_tests": [
-        "application_observability_e2e"
-      ],
-      "implemented_tests": []
+      "gates": ["S5", "S6", "S7"],
+      "planned_tests": ["application_observability_e2e"],
+      "implemented_tests": [
+        "ServerContractTest.WireDtoSerializationAndOpenApiProjectionMatchV1Contract",
+        "ServerE2eTest.FullHttpLifecycleAuthIdempotencyArtifactStreamingAndStaticSpa",
+        "web/tests/web_contract.test.ts"
+      ]
     },
     {
       "requirement": "FUNC-14",
       "modules": "Server/Core/Deployment",
-      "gates": [
-        "S5",
-        "S7"
-      ],
-      "planned_tests": [
-        "security_isolation_endurance"
-      ],
-      "implemented_tests": []
+      "gates": ["S5", "S7"],
+      "planned_tests": ["security_isolation_endurance"],
+      "implemented_tests": [
+        "ServerContractTest.AuthStateEnforcesPermissionsVerifierSessionsAndCsrf",
+        "ServerContractTest.ExecutorIsolatesReserveLaneAndTracksLateReturnAfterTimeout",
+        "web/tests/web_contract.test.ts"
+      ]
     },
     {
       "requirement": "FUNC-15",
       "modules": "Plugin/SDK",
-      "gates": [
-        "S1",
-        "S7"
-      ],
-      "planned_tests": [
-        "plugin_out_of_tree_sdk"
-      ],
+      "gates": ["S1", "S7"],
+      "planned_tests": ["plugin_out_of_tree_sdk"],
       "implemented_tests": [
         "rodaq_counter_binary_matrix",
+        "rodaq_domain_binary_matrix",
+        "rodaq_runtime_sdk_consumer",
         "rodaq_abi_manifest_comparator",
         "rodaq_plugin_metadata",
         "AbiErrorBuffer.*",
