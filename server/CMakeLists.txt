@@ -21,11 +21,16 @@ target_link_libraries(rodaq_server_lib
 rodaq_enable_project_warnings(rodaq_server_lib)
 
 add_executable(rodaq src/main.cpp)
+target_include_directories(rodaq PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(rodaq PRIVATE rodaq_server_lib rodaq::daq Drogon::Drogon)
 rodaq_enable_project_warnings(rodaq)
 
 install(TARGETS rodaq RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES src/api/openapi.yaml DESTINATION ${CMAKE_INSTALL_DATADIR}/rodaq/api)
+if(EXISTS "${CMAKE_SOURCE_DIR}/web/dist/index.html")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/web/dist/"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/rodaq/web)
+endif()
 
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
