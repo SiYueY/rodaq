@@ -507,4 +507,55 @@ Result<std::vector<CreateReceipt>> TaskCreateStore::retained_receipts() {
     }
 }
 
+Result<bool> TaskCreateStore::remove_for_retired_task(TaskId task_id) {
+    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
+    if (!execution.owns_lock()) {
+        return Status(StatusCode::Conflict, {});
+    }
+    if (state_->protected_state) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    try {
+        auto found = state_->receipts.end();
+        for (auto it = state_->receipts.begin(); it != state_->receipts.end(); ++it) {
+            if (it->second.receipt.assigned_task_id == task_id) {
+                found = it;
+                break;
+            }
+        }
+        if (found == state_->receipts.end()) {
+            return false;
+        }
+        auto actual = state_->check_actual(found->first, found->second);
+        if (!actual.ok()) {
+            return std::move(actual).status();
+        }
+        FileDescriptor directory_fd(
+            ::open(state_->directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (directory_fd.value < 0) {
+            state_->protected_state = true;
+            return Status(StatusCode::Unavailable, {});
+        }
+        const auto name = file_name(found->first);
+        if (injected(state_->faults, persistence::FileStep::RemoveAuthority) != 0 ||
+            unlinkat(directory_fd.value, name.c_str(), 0) != 0) {
+            state_->protected_state = true;
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto synced = sync_descriptor(
+            directory_fd.value, persistence::FileStep::SyncDirectory, state_->faults);
+        if (!synced.ok()) {
+            state_->protected_state = true;
+            return std::move(synced).status();
+        }
+        state_->receipts.erase(found);
+        return true;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    } catch (const std::filesystem::filesystem_error&) {
+        state_->protected_state = true;
+        return Status(StatusCode::Unavailable, {});
+    }
+}
+
 }  // namespace rodaq::task
