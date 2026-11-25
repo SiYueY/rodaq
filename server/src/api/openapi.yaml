@@ -1,0 +1,676 @@
+openapi: 3.1.0
+info:
+  title: RoDAQ V1 HTTP API
+  version: 1.0.0
+  description: Machine-readable OpenAPI 3.1 projection of the authoritative RoDAQ Server V1 HTTP/JSON wire contract.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /api/session:
+    post:
+      operationId: createSession
+      summary: Establish browser session from bootstrap Bearer credential
+      parameters:
+        - $ref: '#/components/parameters/ApiVersionHeader'
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '429': { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      operationId: getSession
+      summary: Inspect current authenticated browser session and CSRF token
+      responses:
+        '200':
+          description: Active session metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      operationId: deleteSession
+      summary: Invalidate current browser session
+      responses:
+        '204':
+          description: Session invalidated
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+  /api/system:
+    get:
+      operationId: getSystem
+      summary: Get Server phase and Core SystemService snapshot
+      responses:
+        '200':
+          description: System snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemEnvelope'
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+  /api/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: Get installed/allowed/qualified backends, output roots, profiles, and API limits
+      responses:
+        '200':
+          description: System capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesEnvelope'
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks with keyset pagination
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Task page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPageEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      operationId: createTask
+      summary: Create or import a Task from Portable TaskConfig V1
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortableTaskConfig'
+      responses:
+        '201':
+          description: Task durably created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCreateEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+        '413': { $ref: '#/components/responses/ErrorResponse' }
+        '415': { $ref: '#/components/responses/ErrorResponse' }
+        '429': { $ref: '#/components/responses/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ErrorResponse' }
+        '504': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks/{task_id}:
+    get:
+      operationId: getTask
+      summary: Get single Task four-fact snapshot
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          description: Task snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskEnvelope'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks/{task_id}/config:
+    get:
+      operationId: getTaskConfig
+      summary: Export raw Portable TaskConfig V1 (no API envelope)
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          description: Raw Portable TaskConfig V1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortableTaskConfig'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    put:
+      operationId: configureTask
+      summary: Submit Configure mutation for a Stopped quiescent Task
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/IfControlGenerationHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortableTaskConfig'
+      responses:
+        '202':
+          description: Configure operation durably accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationAcceptedEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks/{task_id}/operations:
+    post:
+      operationId: createTaskOperation
+      summary: Submit lifecycle operation (start, pause, resume, stop, reset, retire)
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/IfControlGenerationHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '202':
+          description: Operation durably accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationAcceptedEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '403': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      operationId: listTaskOperations
+      summary: List retained operations for a Task
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Operation page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationPageEnvelope'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks/{task_id}/operations/{operation_id}:
+    get:
+      operationId: getTaskOperation
+      summary: Get single operation snapshot
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/OperationIdPath'
+      responses:
+        '200':
+          description: Operation snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationEnvelope'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /api/tasks/{task_id}/runtime:
+    get:
+      operationId: getTaskRuntime
+      summary: Get bounded Pipeline and Stream runtime snapshot for a Task
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          description: Task runtime snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskRuntimeEnvelope'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /api/artifacts:
+    get:
+      operationId: listArtifacts
+      summary: Query committed artifacts with keyset pagination
+      parameters:
+        - name: task_id
+          in: query
+          schema: { type: string }
+        - name: pipeline_id
+          in: query
+          schema: { type: string }
+        - name: format
+          in: query
+          schema: { type: string }
+        - name: recording_begin
+          in: query
+          schema: { type: string }
+        - name: recording_end
+          in: query
+          schema: { type: string }
+        - name: receive_wall_begin
+          in: query
+          schema: { type: string, format: date-time }
+        - name: receive_wall_end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: committed_begin
+          in: query
+          schema: { type: string, format: date-time }
+        - name: committed_end
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Artifact page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactPageEnvelope'
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+  /api/artifacts/{artifact_id}:
+    get:
+      operationId: getArtifact
+      summary: Get committed artifact detail
+      parameters:
+        - $ref: '#/components/parameters/ArtifactIdPath'
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactEnvelope'
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+  /api/artifacts/{artifact_id}/files/{file_id}:
+    head:
+      operationId: headArtifactFile
+      summary: Preflight committed artifact file metadata
+      parameters:
+        - $ref: '#/components/parameters/ArtifactIdPath'
+        - $ref: '#/components/parameters/FileIdPath'
+      responses:
+        '200': { description: File metadata headers }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      operationId: downloadArtifactFile
+      summary: Stream committed artifact file via ReadLease with single-range support
+      parameters:
+        - $ref: '#/components/parameters/ArtifactIdPath'
+        - $ref: '#/components/parameters/FileIdPath'
+      responses:
+        '200': { description: Full artifact file stream }
+        '206': { description: Single byte range stream }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '404': { $ref: '#/components/responses/ErrorResponse' }
+        '416': { $ref: '#/components/responses/ErrorResponse' }
+components:
+  parameters:
+    ApiVersionHeader:
+      name: RoDAQ-API-Version
+      in: header
+      required: true
+      schema: { type: string, example: '1.0' }
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    IfControlGenerationHeader:
+      name: If-Control-Generation
+      in: header
+      required: false
+      schema: { type: string, pattern: '^[0-9]+$' }
+    CursorQuery:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200 }
+    TaskIdPath:
+      name: task_id
+      in: path
+      required: true
+      schema: { type: string }
+    OperationIdPath:
+      name: operation_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactIdPath:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string }
+    FileIdPath:
+      name: file_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    ErrorResponse:
+      description: Structured RoDAQ error envelope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ApiVersion:
+      type: object
+      required: [major, minor]
+      properties:
+        major: { type: integer }
+        minor: { type: integer }
+    DurationValue:
+      type: object
+      required: [value, unit]
+      properties:
+        value: { type: string, pattern: '^[0-9]+$' }
+        unit: { type: string, enum: [ns, us, ms, s] }
+    FreshnessData:
+      type: object
+      required: [state, age]
+      properties:
+        state: { type: string, enum: [fresh, stale, unknown] }
+        age:
+          oneOf:
+            - $ref: '#/components/schemas/DurationValue'
+            - { type: 'null' }
+    DesiredState:
+      type: string
+      enum: [stopped, running, paused]
+    ExecutionCondition:
+      type: string
+      enum: [idle, preparing, active, degraded, draining, protected, pending_cleanup, failed]
+    OperationKind:
+      type: string
+      enum: [configure, start, pause, resume, stop, reset, retire]
+    LifecycleOperationKind:
+      type: string
+      enum: [start, pause, resume, stop, reset, retire]
+    OperationState:
+      type: string
+      enum: [accepted, in_progress, succeeded, partially_succeeded, failed, superseded]
+    Retryability:
+      type: string
+      enum: [never, after_condition_change, after_backoff, after_process_restart, manual_recovery_required]
+    FailureDomain:
+      type: string
+      enum: [request, task_control, pipeline, collector, storage, volume, persistence_state, process]
+    DataImpact:
+      type: string
+      enum: [none, pre_admission_only, accepted_known_failed, persistence_unknown, artifact_quarantined, historical_artifact_lost_or_corrupt]
+    ErrorDetail:
+      type: object
+      required: [code, path, message]
+      properties:
+        code: { type: string }
+        path: { type: string }
+        message: { type: string }
+    ErrorBody:
+      type: object
+      required: [code, message, retryability, failure_domain, data_impact, details]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryability: { $ref: '#/components/schemas/Retryability' }
+        failure_domain: { $ref: '#/components/schemas/FailureDomain' }
+        data_impact: { $ref: '#/components/schemas/DataImpact' }
+        details:
+          type: array
+          items: { $ref: '#/components/schemas/ErrorDetail' }
+    ErrorEnvelope:
+      type: object
+      required: [api_version, request_id, error]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        error: { $ref: '#/components/schemas/ErrorBody' }
+    SessionData:
+      type: object
+      required: [principal, scopes, api_version, csrf_token]
+      properties:
+        principal: { type: string }
+        scopes:
+          type: array
+          items: { type: string, enum: [read, control, admin] }
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        csrf_token: { type: string }
+    SessionEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/SessionData' }
+    SystemData:
+      type: object
+      required: [server_phase, core_ready, recovery, resources, volumes, backlog, captured_at, snapshot_sequence, freshness]
+      properties:
+        server_phase: { type: string, enum: [recovering, ready, draining, failed] }
+        core_ready: { type: boolean }
+        recovery:
+          type: object
+          required: [complete, reason, progress]
+          properties:
+            complete: { type: boolean }
+            reason: { type: [string, 'null'] }
+            progress: { type: [number, 'null'] }
+        resources:
+          type: object
+          required: [cpu_cores, rss_bytes, threads, open_fds]
+          properties:
+            cpu_cores: { type: number }
+            rss_bytes: { type: string }
+            threads: { type: string }
+            open_fds: { type: string }
+        volumes:
+          type: array
+          items:
+            type: object
+            required: [name, total_bytes, free_bytes, pressure]
+            properties:
+              name: { type: string }
+              total_bytes: { type: string }
+              free_bytes: { type: string }
+              pressure: { type: string, enum: [normal, low, critical, protected] }
+        backlog:
+          type: object
+          required: [commit_items, commit_bytes, active_downloads]
+          properties:
+            commit_items: { type: string }
+            commit_bytes: { type: string }
+            active_downloads: { type: string }
+        captured_at: { type: string, format: date-time }
+        snapshot_sequence: { type: string }
+        freshness: { $ref: '#/components/schemas/FreshnessData' }
+    SystemEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/SystemData' }
+    CapabilitiesData:
+      type: object
+      required: [application_version, backends, output_roots, resource_profiles, api_limits]
+      properties:
+        application_version: { type: string }
+        backends: { type: array, items: { type: object } }
+        output_roots: { type: array, items: { type: object } }
+        resource_profiles: { type: array, items: { type: object } }
+        api_limits:
+          type: object
+          required: [max_request_body_bytes, max_page_size, idempotency_retention, recommended_polling_floor]
+          properties:
+            max_request_body_bytes: { type: string }
+            max_page_size: { type: string }
+            idempotency_retention: { $ref: '#/components/schemas/DurationValue' }
+            recommended_polling_floor: { $ref: '#/components/schemas/DurationValue' }
+    CapabilitiesEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/CapabilitiesData' }
+    PortableTaskConfig:
+      type: object
+      required: [schema_version, recording_mode, start_policy, recovery_policy, segment_policy, retention_policy, pipelines]
+      properties:
+        schema_version: { type: string }
+        name: { type: string }
+        recording_mode: { type: string, enum: [continuous, rolling] }
+        start_policy: { type: string, enum: [all_required, best_effort] }
+        recovery_policy:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [manual, resume] }
+        segment_policy: { type: object }
+        retention_policy: { type: object }
+        pipelines: { type: array, items: { type: object } }
+    TaskCreateData:
+      type: object
+      required: [task_id, config_version]
+      properties:
+        task_id: { type: string }
+        config_version: { type: string }
+    TaskCreateEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/TaskCreateData' }
+    MutationAcceptedData:
+      type: object
+      required: [task_id, operation_id, state]
+      properties:
+        task_id: { type: string }
+        operation_id: { type: string }
+        state: { type: string, enum: [accepted] }
+    MutationAcceptedEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/MutationAcceptedData' }
+    OperationRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, parameters]
+      properties:
+        kind: { $ref: '#/components/schemas/LifecycleOperationKind' }
+        parameters:
+          type: object
+          additionalProperties: false
+    TaskData:
+      type: object
+      required: [task_id, name, config_version, desired_state, execution_condition, control_generation, current_operation_id, data_impact, captured_at, snapshot_sequence, freshness]
+      properties:
+        task_id: { type: string }
+        name: { type: [string, 'null'] }
+        config_version: { type: string }
+        desired_state: { $ref: '#/components/schemas/DesiredState' }
+        execution_condition: { $ref: '#/components/schemas/ExecutionCondition' }
+        control_generation: { type: string }
+        current_operation_id: { type: [string, 'null'] }
+        data_impact: { $ref: '#/components/schemas/DataImpact' }
+        captured_at: { type: string, format: date-time }
+        snapshot_sequence: { type: string }
+        freshness: { $ref: '#/components/schemas/FreshnessData' }
+    TaskEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/TaskData' }
+    TaskPageEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data:
+          type: object
+          required: [items, has_more, next_cursor]
+          properties:
+            items: { type: array, items: { type: object } }
+            has_more: { type: boolean }
+            next_cursor: { type: string }
+    OperationData:
+      type: object
+      required: [task_id, operation_id, kind, state, control_generation, accepted_at, terminal_at, retryability, failure_domain, data_impact, message]
+      properties:
+        task_id: { type: string }
+        operation_id: { type: string }
+        kind: { $ref: '#/components/schemas/OperationKind' }
+        state: { $ref: '#/components/schemas/OperationState' }
+        control_generation: { type: string }
+        accepted_at: { type: string, format: date-time }
+        terminal_at: { type: [string, 'null'], format: date-time }
+        retryability: { $ref: '#/components/schemas/Retryability' }
+        failure_domain: { $ref: '#/components/schemas/FailureDomain' }
+        data_impact: { $ref: '#/components/schemas/DataImpact' }
+        message: { type: [string, 'null'] }
+    OperationEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/OperationData' }
+    OperationPageEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data:
+          type: object
+          required: [items, has_more, next_cursor, history_truncated, oldest_retained_control_generation, oldest_retained_at]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/OperationData' } }
+            has_more: { type: boolean }
+            next_cursor: { type: string }
+            history_truncated: { type: boolean }
+            oldest_retained_control_generation: { type: [string, 'null'] }
+            oldest_retained_at: { type: [string, 'null'], format: date-time }
+    TaskRuntimeEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { type: object }
+    ArtifactPageEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data:
+          type: object
+          required: [items, has_more, next_cursor]
+          properties:
+            items: { type: array, items: { type: object } }
+            has_more: { type: boolean }
+            next_cursor: { type: string }
+    ArtifactEnvelope:
+      type: object
+      required: [api_version, request_id, data]
+      properties:
+        api_version: { $ref: '#/components/schemas/ApiVersion' }
+        request_id: { type: string }
+        data: { type: object }

@@ -1,7 +1,8 @@
-# RoDAQ Server
+# RoDAQ Server (V1)
 
-应用服务端位于仓库根目录。它装配 `rodaq` 模块，管理守护进程生命周期。HTTP 层负责控制、查询和 Web 静态资源，Drogon 是接入验证候选。
+Drogon 1.9.14 HTTP/JSON API server and static web console host for RoDAQ V1.
 
-生产包将 [Web 前端](../web/README.md) 的静态资源与服务端一起部署。页面和 `/api/v1/` 由同一本机回环地址提供，Web 和本机自动化共用 API。服务通过 `rodaq` 模块执行录制操作并统一管理任务配置。
-
-当前模块契约以 [Notion 上的 RoDAQ 设计文档](https://verbose-vulture-f51.notion.site/RoDAQ-417da2b2a80f81c68d97cffe766805b3) 为准；现有描述属于目标范围，不代表已完成实现。
+- **API Root**: `/api/` with `RoDAQ-API-Version: 1.0` negotiation (never `/api/v1/`).
+- **OpenAPI 3.1 Projection**: `src/api/openapi.yaml`.
+- **Core Boundary**: Links exclusively against public `rodaq::daq` service facades (`TaskService`, `SystemService`, `ArtifactService`).
+- **Build**: Configure CMake with `-DRODAQ_BUILD_SERVER=ON` and `-DCMAKE_PREFIX_PATH=<drogon-1.9.14-prefix>`.
