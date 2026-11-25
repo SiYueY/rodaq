@@ -69,3 +69,7 @@ Testing/
 # Python tooling
 __pycache__/
 *.py[cod]
+
+# Web build artifacts
+web/node_modules/
+web/dist/
