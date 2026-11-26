@@ -5,12 +5,14 @@
 #include "task_service.hpp"
 #include "task_controller.hpp"
 #include "create_store.hpp"
+#include "retirement_store.hpp"
 #include "../pipeline/stream_identity_store.hpp"
 
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <set>
 
 namespace rodaq::task {
 
@@ -128,6 +130,8 @@ struct TaskEntry {
     // Configure cannot change policy while this original-generation work exists.
     std::optional<RetentionWork> retention_work;
     bool artifact_maintenance_active{false};
+    bool resetting{false};
+    bool retiring{false};
     // Failed dispatch only; an actual ended result is replayed, never re-issued.
     bool ready_to_submit{false};
     std::uint32_t closing{0};
@@ -163,6 +167,10 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
     std::shared_ptr<const task::ServiceOptions> options;
     std::vector<plugin::PluginInfo> installed;
     std::unique_ptr<task::TaskCreateStore> creates;
+    std::unique_ptr<task::TaskRetirementStore> retired;
+    std::mutex retirement_mutex;
+    std::set<TaskId> pending_retirement_cleanups;
+    std::atomic<std::size_t> active_retirement_jobs{0};
     std::mutex catalog_mutex;
     std::vector<std::shared_ptr<task::TaskEntry>> entries;
     std::atomic<std::size_t> requests{0};
@@ -198,6 +206,12 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         const std::shared_ptr<task::TaskEntry>& entry,
         std::shared_ptr<task::Reply<OperationId>> reply,
         std::shared_ptr<const task::TaskControlRecord> accepted) noexcept;
+    void start_reset(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
+    void start_retire(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
+    Result<bool> cleanup_retired_namespace(TaskId task_id);
+    Result<bool> active_namespace_absent(TaskId task_id) const;
+    Result<void> sync_active_parents() const;
+    Result<void> remove_retired_receipt(TaskId task_id);
 
     struct CreateWork final : Work {
         std::shared_ptr<State> owner;
@@ -254,6 +268,25 @@ struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
         std::shared_ptr<task::TaskEntry> entry;
         std::shared_ptr<task::RunExecution> execution;
         std::uint64_t now_monotonic{0};
+        void run() noexcept override;
+    };
+
+    struct ResetJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        void run() noexcept override;
+    };
+
+    struct RetireJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        void run() noexcept override;
+    };
+
+    struct RemoveRetiredReceiptWork final : Work {
+        std::shared_ptr<State> owner;
+        TaskId task_id;
+        std::shared_ptr<task::Reply<bool>> reply;
         void run() noexcept override;
     };
 };

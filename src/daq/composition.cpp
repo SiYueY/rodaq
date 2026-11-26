@@ -201,6 +201,28 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return reserved.ok() ? Result<std::uint64_t>(reserved.value().begin)
                                  : Result<std::uint64_t>(reserved.status());
         };
+        execution->artifacts.volume_id = o.volume->identity();
+        execution->artifacts.reset_targets = [catalog = state->catalog](
+                                                 TaskId task_id, ControlGeneration max_gen) {
+            return catalog->reset_targets(task_id, max_gen);
+        };
+        execution->artifacts.delete_for_reset =
+            [catalog = state->catalog](
+                ArtifactId artifact_id, std::uint64_t gen, WallTime now,
+                std::chrono::steady_clock::time_point deadline) {
+                return catalog->delete_artifact(
+                    artifact_id, gen, artifact::DeleteReason::Reset, now, deadline);
+            };
+        execution->artifacts.purge_quarantined_for_reset =
+            [catalog = state->catalog](TaskId task_id, ControlGeneration max_gen) {
+                return catalog->purge_quarantined_for_reset(task_id, max_gen);
+            };
+        execution->artifacts.retire_eligible = [catalog = state->catalog](TaskId task_id) {
+            return catalog->retire_eligible(task_id);
+        };
+        execution->artifacts.has_task_references = [catalog = state->catalog](TaskId task_id) {
+            return catalog->has_task_references(task_id);
+        };
         service.execution = std::move(execution);
         auto tasks = TaskService::open(std::move(service));
         if (!tasks.ok()) {
@@ -316,7 +338,12 @@ Result<void> Composition::observe() {
     auto retained = state_->tasks->apply_retention(*state_->catalog);
     auto collected =
         state_->tasks->collect_artifacts(*state_->catalog, o.settings.artifact_audit_window);
-    return !retained.ok() ? retained : collected;
+    auto destructive =
+        state_->tasks->reconcile_destructive(*state_->catalog, o.settings.artifact_audit_window);
+    if (!retained.ok()) {
+        return retained;
+    }
+    return !collected.ok() ? collected : destructive;
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {

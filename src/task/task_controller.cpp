@@ -26,7 +26,8 @@ const StoredOperation* current_operation(const TaskControlRecord& record) noexce
 
 bool lifecycle(OperationKind kind) noexcept {
     return kind == OperationKind::Start || kind == OperationKind::Pause ||
-           kind == OperationKind::Resume || kind == OperationKind::Stop;
+           kind == OperationKind::Resume || kind == OperationKind::Stop ||
+           kind == OperationKind::Reset || kind == OperationKind::Retire;
 }
 
 bool closing(OperationKind kind) noexcept {
@@ -43,6 +44,9 @@ bool transition(DesiredState desired, OperationKind kind) noexcept {
             return desired == DesiredState::Paused;
         case OperationKind::Stop:
             return desired == DesiredState::Running || desired == DesiredState::Paused;
+        case OperationKind::Reset:
+        case OperationKind::Retire:
+            return desired == DesiredState::Stopped;
         default:
             return false;
     }
@@ -52,7 +56,8 @@ DesiredState target(OperationKind kind) noexcept {
     if (kind == OperationKind::Pause) {
         return DesiredState::Paused;
     }
-    return (kind == OperationKind::Stop || kind == OperationKind::Configure)
+    return (kind == OperationKind::Stop || kind == OperationKind::Configure ||
+            kind == OperationKind::Reset || kind == OperationKind::Retire)
                ? DesiredState::Stopped
                : DesiredState::Running;
 }
@@ -120,9 +125,19 @@ Result<std::shared_ptr<const ControlWork>> TaskController::make_intent(
     }
     try {
         auto candidate = base;
+        if (operation.snapshot.kind == OperationKind::Reset &&
+            base.reset_generation == std::numeric_limits<std::uint64_t>::max()) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
         ++candidate.control_generation;
         ++candidate.record_revision;
         operation.snapshot.control_generation = candidate.control_generation;
+        if (operation.snapshot.kind == OperationKind::Reset) {
+            ++candidate.reset_generation;
+            candidate.reset_intent = ResetIntent{
+                operation.snapshot.operation_id, candidate.reset_generation,
+                base.control_generation};
+        }
         if (candidate.current_operation_id) {
             for (auto& old : candidate.operation_history.entries) {
                 if (old.snapshot.operation_id == *candidate.current_operation_id &&
@@ -181,9 +196,18 @@ Result<ControlDecision> TaskController::request_lifecycle(
         precondition.expected_control_generation != durable_->control_generation) {
         return Status(StatusCode::Conflict, {});
     }
+    const auto* current = current_operation(*durable_);
+    const bool retiring_active = current && !terminal(current->snapshot.state) &&
+                                 current->snapshot.kind == OperationKind::Retire;
+    const bool destructive_blocked =
+        (kind == OperationKind::Reset || kind == OperationKind::Retire) && current &&
+        !terminal(current->snapshot.state);
     if (!facts.execution_available ||
-        ((kind == OperationKind::Start || kind == OperationKind::Resume) && !facts.quiescent) ||
-        durable_->reset_intent || (protected_ && kind != OperationKind::Stop)) {
+        ((kind == OperationKind::Start || kind == OperationKind::Resume ||
+          kind == OperationKind::Reset || kind == OperationKind::Retire) &&
+         !facts.quiescent) ||
+        durable_->reset_intent || retiring_active || destructive_blocked ||
+        (protected_ && kind != OperationKind::Stop)) {
         return Status(StatusCode::InvalidState, {});
     }
     if ((flight_ || stop_) && kind != OperationKind::Stop) {
@@ -254,8 +278,11 @@ Result<ControlDecision> TaskController::request_configure(
         precondition.expected_control_generation != durable_->control_generation) {
         return Status(StatusCode::Conflict, {});
     }
+    const auto* current = current_operation(*durable_);
     if (protected_ || durable_->reset_intent || durable_->desired_state != DesiredState::Stopped ||
-        !facts.quiescent) {
+        !facts.quiescent ||
+        (current && !terminal(current->snapshot.state) &&
+         current->snapshot.kind == OperationKind::Retire)) {
         return Status(StatusCode::InvalidState, {});
     }
     if (flight_ || stop_) {
@@ -332,6 +359,9 @@ Result<std::shared_ptr<const ControlWork>> TaskController::update_operation(
             if (entry.snapshot.operation_id == result.operation_id) {
                 entry.snapshot = result;
             }
+        }
+        if (result.kind == OperationKind::Reset && terminal(result.state)) {
+            candidate.reset_intent.reset();
         }
         auto work = make_work(
             std::move(candidate), ControlPublicationKind::OperationUpdate,

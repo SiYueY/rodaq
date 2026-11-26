@@ -564,4 +564,13 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_task_service_test rodaq_task_service_crash_probe rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_task_service_test)
     gtest_discover_tests(rodaq_task_service_test PROPERTIES TIMEOUT 30)
+    add_executable(rodaq_task_reset_retire_test task/reset_retire_test.cpp)
+    target_include_directories(rodaq_task_reset_retire_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(rodaq_task_reset_retire_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
+    target_compile_definitions(rodaq_task_reset_retire_test PRIVATE
+        RODAQ_RESET_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_RESET_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_task_reset_retire_test rodaq_fake_storage rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_task_reset_retire_test)
+    gtest_discover_tests(rodaq_task_reset_retire_test PROPERTIES TIMEOUT 30)
 endif()

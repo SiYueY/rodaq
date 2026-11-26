@@ -158,6 +158,10 @@ void TaskService::State::ControlJob::run() noexcept {
                 if (operation && (operation->kind == OperationKind::Start ||
                                   operation->kind == OperationKind::Resume)) {
                     owner->start_execution(entry);
+                } else if (operation && operation->kind == OperationKind::Reset) {
+                    owner->start_reset(entry);
+                } else if (operation && operation->kind == OperationKind::Retire) {
+                    owner->start_retire(entry);
                 }
                 return;
             }

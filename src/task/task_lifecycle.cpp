@@ -1,5 +1,7 @@
 #include "task_service_state.hpp"
 
+#include "identity.hpp"
+
 #include <new>
 #include <utility>
 
@@ -23,6 +25,77 @@ Result<OperationId> TaskService::resume(
 Result<OperationId> TaskService::stop(
     TaskId id, const RequestIdentity& request, const ControlPrecondition& precondition) {
     return lifecycle(id, OperationKind::Stop, request, precondition);
+}
+
+Result<OperationId> TaskService::reset(
+    TaskId id, const RequestIdentity& request, const ControlPrecondition& precondition) {
+    return lifecycle(id, OperationKind::Reset, request, precondition);
+}
+
+Result<OperationId> TaskService::retire(
+    TaskId id, const RequestIdentity& request, const ControlPrecondition& precondition) {
+    if (!state_->accepting.load(std::memory_order_acquire)) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    auto valid_req = task::validate_request_identity(request);
+    if (!valid_req.ok()) {
+        return valid_req.status();
+    }
+    auto digest = task::lifecycle_request_digest(id, OperationKind::Retire, precondition);
+    if (!digest.ok()) {
+        return digest.status();
+    }
+    // Check durable retirement tombstone authority first so idempotent Retire
+    // retries recover the original operation_id/Succeeded even after the active
+    // Task namespace has been cleaned up, and conflicting digests return Conflict.
+    auto retired = state_->retired->contains(id);
+    if (!retired.ok()) {
+        return retired.status();
+    }
+    if (retired.value()) {
+        return state_->retired->lookup_request(id, request, digest.value());
+    }
+    // For a fresh Retire on an active Task, verify artifact-side eligibility
+    // through the sole Artifact & Volume predicate before accepting if this is
+    // not already a durable/pending idempotent retry.
+    auto entry = state_->find(id);
+    if (!entry) {
+        return Status(StatusCode::NotFound, {});
+    }
+    bool already_known = false;
+    {
+        std::lock_guard<std::mutex> control(entry->control_mutex);
+        const auto durable = entry->controller->durable_record();
+        auto known = task::find_request(durable->operation_history, request, digest.value());
+        if (known.ok()) {
+            already_known = true;
+        } else if (known.status().code() != StatusCode::NotFound) {
+            return known.status();
+        }
+        if (!already_known && entry->control_work &&
+            entry->control_work->publication == task::ControlPublicationKind::Intent &&
+            entry->control_work->candidate->current_operation_id) {
+            for (const auto& op : entry->control_work->candidate->operation_history.entries) {
+                if (op.snapshot.operation_id ==
+                        *entry->control_work->candidate->current_operation_id &&
+                    op.request.request_key == request.request_key) {
+                    already_known = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!already_known && state_->options->execution &&
+        state_->options->execution->artifacts.retire_eligible) {
+        auto eligible = state_->options->execution->artifacts.retire_eligible(id);
+        if (!eligible.ok()) {
+            return eligible.status();
+        }
+        if (!eligible.value()) {
+            return Status(StatusCode::Conflict, {});
+        }
+    }
+    return lifecycle(id, OperationKind::Retire, request, precondition);
 }
 
 Result<OperationId> TaskService::lifecycle(
@@ -65,10 +138,14 @@ Result<OperationId> TaskService::lifecycle(
                 return Status(StatusCode::InvalidState, {});
             }
             const auto durable = entry->controller->durable_record();
+            const bool settled_quiescent =
+                entry->quiescent && entry->closing == 0 && !entry->retention_work &&
+                !entry->artifact_maintenance_active && !entry->resetting && !entry->retiring &&
+                entry->cleanup_active_id == 0 && !entry->cleanup_ready.frame &&
+                !entry->cleanup_pending.frame;
             auto decision = entry->controller->request_lifecycle(
                 kind, request, precondition, task::control_wall_now(),
-                {entry->quiescent && entry->closing == 0,
-                 static_cast<bool>(state_->options->execution)});
+                {settled_quiescent, static_cast<bool>(state_->options->execution)});
             if (!decision.ok()) {
                 return decision.status();
             }
@@ -169,6 +246,10 @@ Result<OperationId> TaskService::lifecycle(
         if (accepted) {
             if (kind == OperationKind::Start || kind == OperationKind::Resume) {
                 state_->start_execution(entry);
+            } else if (kind == OperationKind::Reset) {
+                state_->start_reset(entry);
+            } else if (kind == OperationKind::Retire) {
+                state_->start_retire(entry);
             }
             return *accepted;
         }

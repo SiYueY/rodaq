@@ -472,7 +472,23 @@ TEST_F(
 TEST_F(TaskControllerTest, ExhaustedIdentityAndIllegalTransitionsDoNotPublishNewIntent) {
     EXPECT_EQ(request(OperationKind::Resume, "resume").status().code(), StatusCode::InvalidState);
     EXPECT_EQ(request(OperationKind::Stop, "stop").status().code(), StatusCode::InvalidState);
-    EXPECT_EQ(request(OperationKind::Reset, "reset").status().code(), StatusCode::InvalidArgument);
+    EXPECT_EQ(
+        request(OperationKind::Configure, "configure").status().code(),
+        StatusCode::InvalidArgument);
+    EXPECT_EQ(
+        controller_
+            ->request_lifecycle(
+                OperationKind::Reset, {"reset-unsettled"}, {}, rodaq::WallTime{1s}, {false, true})
+            .status()
+            .code(),
+        StatusCode::InvalidState);
+    EXPECT_EQ(
+        controller_
+            ->request_lifecycle(
+                OperationKind::Retire, {"retire-unsettled"}, {}, rodaq::WallTime{1s}, {false, true})
+            .status()
+            .code(),
+        StatusCode::InvalidState);
     auto exhausted = initial_;
     exhausted.control_generation = std::numeric_limits<std::uint64_t>::max();
     exhausted.record_revision = exhausted.control_generation;
@@ -486,6 +502,62 @@ TEST_F(TaskControllerTest, ExhaustedIdentityAndIllegalTransitionsDoNotPublishNew
             .code(),
         StatusCode::ResourceExhausted);
     EXPECT_TRUE(owner.value()->durable_record()->operation_history.entries.empty());
+}
+
+TEST_F(TaskControllerTest, ResetSetsIntentBlocksOtherOperationsAndClearsOnTerminal) {
+    auto reset = request(OperationKind::Reset, "reset-1", {true, 1});
+    ASSERT_TRUE(reset.ok());
+    ASSERT_TRUE(accept(reset.value().work));
+    const auto durable = controller_->durable_record();
+    ASSERT_TRUE(durable->reset_intent.has_value());
+    EXPECT_EQ(durable->reset_generation, 1u);
+    EXPECT_EQ(durable->control_generation, 2u);
+    EXPECT_EQ(durable->reset_intent->operation_id, reset.value().operation_id);
+    EXPECT_EQ(durable->reset_intent->target_control_generation, 1u);
+
+    // While Reset is non-terminal, Start, Configure, Reset, and Retire are blocked.
+    EXPECT_EQ(
+        request(OperationKind::Start, "start-blocked").status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(
+        request(OperationKind::Retire, "retire-blocked").status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(
+        request(OperationKind::Reset, "reset-blocked").status().code(), StatusCode::InvalidState);
+
+    // Idempotent retry returns the same operation_id even after generation advanced.
+    auto retry = request(OperationKind::Reset, "reset-1", {true, 1});
+    ASSERT_TRUE(retry.ok());
+    EXPECT_TRUE(retry.value().durably_accepted);
+    EXPECT_EQ(retry.value().operation_id, reset.value().operation_id);
+
+    // Settling Reset to Succeeded clears reset_intent while keeping reset_generation = 1.
+    auto op = current();
+    op.state = OperationState::Succeeded;
+    op.terminal_at = rodaq::WallTime{2s};
+    auto update = controller_->update_operation(op);
+    ASSERT_TRUE(update.ok());
+    ASSERT_TRUE(accept(update.value()));
+    EXPECT_FALSE(controller_->durable_record()->reset_intent.has_value());
+    EXPECT_EQ(controller_->durable_record()->reset_generation, 1u);
+
+    // After Reset settles, Start is permitted again.
+    auto start = request(OperationKind::Start, "start-after-reset", {true, 2});
+    ASSERT_TRUE(start.ok());
+}
+
+TEST_F(TaskControllerTest, RetireAcceptedFromStoppedIdleBlocksConcurrentOps) {
+    auto retire = request(OperationKind::Retire, "retire-1", {true, 1});
+    ASSERT_TRUE(retire.ok());
+    ASSERT_TRUE(accept(retire.value().work));
+    EXPECT_EQ(controller_->durable_record()->desired_state, DesiredState::Stopped);
+    EXPECT_EQ(controller_->durable_record()->control_generation, 2u);
+
+    // While Retire is non-terminal, Start and Reset are blocked.
+    EXPECT_EQ(
+        request(OperationKind::Start, "start-during-retire").status().code(),
+        StatusCode::InvalidState);
+    EXPECT_EQ(
+        request(OperationKind::Reset, "reset-during-retire").status().code(),
+        StatusCode::InvalidState);
 }
 
 TEST_F(TaskControllerTest, LifecycleAdmissionFactsFollowIdempotencyAndGenerationGuards) {

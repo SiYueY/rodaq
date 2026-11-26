@@ -57,6 +57,13 @@ Result<TaskRuntimeSnapshot> TaskService::get_runtime_snapshot(TaskId id) const {
 Result<OperationSnapshot> TaskService::get_operation(TaskId id, OperationId operation) const {
     auto entry = state_->find(id);
     if (!entry) {
+        auto tombstone = state_->retired->load(id);
+        if (tombstone.ok() && tombstone.value().retire_operation_id == operation) {
+            return task::retirement_operation_snapshot(tombstone.value());
+        }
+        if (!tombstone.ok() && tombstone.status().code() != StatusCode::NotFound) {
+            return tombstone.status();
+        }
         return Status(StatusCode::NotFound, {});
     }
     try {

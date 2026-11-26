@@ -17,6 +17,7 @@
 #include "../persistence/json.hpp"
 #include "../artifact/recovery_scan.hpp"
 #include "../artifact/segment_committer.hpp"
+#include "../task/retirement_store.hpp"
 #include "run_configuration.hpp"
 
 namespace rodaq::daq {
@@ -33,6 +34,22 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
     if (!records.ok()) {
         return records.status();
     }
+    std::unique_ptr<task::TaskRetirementStore> retired_store;
+    const auto retired_dir = options.task_root / "retired";
+    if (std::filesystem::symlink_status(retired_dir).type() ==
+        std::filesystem::file_type::directory) {
+        auto opened = task::TaskRetirementStore::open(retired_dir, 65536);
+        if (!opened.ok()) {
+            return opened.status();
+        }
+        retired_store = std::move(opened.value());
+    }
+    const auto is_retired = [&](TaskId id) -> Result<bool> {
+        if (!retired_store) {
+            return false;
+        }
+        return retired_store->contains(id);
+    };
     const auto open_task = [&](TaskId id) {
         return task::TaskStore::open(
             options.task_root / "tasks" / to_string(id), options.task_root / "control", id,
@@ -43,16 +60,22 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
         if (record.state != artifact::LedgerState::Deleting) {
             continue;
         }
-        auto store = open_task(record.task_id);
-        if (!store.ok()) {
-            return store.status();
+        auto retired = is_retired(record.task_id);
+        if (!retired.ok()) {
+            return retired.status();
         }
-        auto control = store.value()->load_control();
-        if (!control.ok()) {
-            return control.status();
-        }
-        if (record.control_generation > control.value().control_generation) {
-            return Status(StatusCode::Conflict, {});
+        if (!retired.value()) {
+            auto store = open_task(record.task_id);
+            if (!store.ok()) {
+                return store.status();
+            }
+            auto control = store.value()->load_control();
+            if (!control.ok()) {
+                return control.status();
+            }
+            if (record.control_generation > control.value().control_generation) {
+                return Status(StatusCode::Conflict, {});
+            }
         }
         auto deleted = artifact::recover_deleting_artifact(
             options.volume, *options.ledger, record.segment_id,
@@ -94,6 +117,19 @@ Result<void> recover_pending_artifacts(const CompositionOptions& options) {
     };
     for (const auto& record : records.value()) {
         if (record.state != artifact::LedgerState::Committing) {
+            continue;
+        }
+        auto retired = is_retired(record.task_id);
+        if (!retired.ok()) {
+            return retired.status();
+        }
+        if (retired.value()) {
+            // A retired Task can never promote a committing artifact to Committed.
+            auto quarantined = artifact::quarantine_failed_precommit_artifact(
+                options.volume, *options.ledger, record.segment_id);
+            if (!quarantined.ok()) {
+                return quarantined.status();
+            }
             continue;
         }
         auto store = open_task(record.task_id);
@@ -295,11 +331,8 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             const auto retired = startup.state_root / "service/retired";
             const auto retired_type = std::filesystem::symlink_status(retired).type();
             if (retired_type != std::filesystem::file_type::not_found &&
-                (retired_type != std::filesystem::file_type::directory ||
-                 !std::filesystem::is_empty(retired))) {
-                // No ordinary Task/artifact recovery may precede retirement
-                // authority. Retain this diagnostic until its registry opens.
-                return Status(StatusCode::Unavailable, {});
+                retired_type != std::filesystem::file_type::directory) {
+                return Status(StatusCode::DataLoss, {});
             }
             for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
                 auto checked = directory(startup.state_root / "service" / name, startup.mode);

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/plugin/manager.hpp>
 #include <rodaq/task/task_service.hpp>
 
@@ -32,8 +33,28 @@ struct ResourceProfileAdmission {
     std::uint64_t max_segment_physical_bytes{0};
 };
 
-enum class ServiceFileDomain { Directories, CreateReceipts, Task, StreamIdentity, Recovery };
+enum class ServiceFileDomain {
+    Directories,
+    CreateReceipts,
+    Task,
+    StreamIdentity,
+    Recovery,
+    Retirement
+};
 enum class MaterializationStep { Allocated, Materializing, Config, Identity, Control, Completed };
+enum class ResetStep { BeforeDelete, AfterDeleteBeforeRecovery, BeforeControlTerminal };
+enum class RetireStep { BeforeTombstone, AfterTombstone, NamespaceCleanup };
+
+struct ArtifactOperations {
+    artifact::VolumeId volume_id;
+    std::function<Result<std::vector<ArtifactId>>(TaskId, ControlGeneration)> reset_targets;
+    std::function<Result<void>(
+        ArtifactId, std::uint64_t, WallTime, std::chrono::steady_clock::time_point)>
+        delete_for_reset;
+    std::function<Result<void>(TaskId, ControlGeneration)> purge_quarantined_for_reset;
+    std::function<Result<bool>(TaskId)> retire_eligible;
+    std::function<Result<bool>(TaskId)> has_task_references;
+};
 
 struct RunInputs {
     std::vector<RunPipeline> pipelines;
@@ -70,6 +91,7 @@ struct RunExecutionOptions {
     // durable Ledger + Catalog publication and transfer of retained charges.
     std::function<Result<void>(const pipeline::SealedPipelineSegment&)> commit;
     std::function<Result<std::uint64_t>()> reserve_segment;
+    ArtifactOperations artifacts;
 };
 
 struct ServiceOptions {
@@ -88,6 +110,7 @@ struct ServiceOptions {
     std::vector<ResourceProfileAdmission> resource_profiles;
     std::vector<std::string> output_roots;
     std::size_t max_tasks{8};
+    std::size_t max_retired_tombstones{1024};
     // Additional retained receipt capacity beyond active Task capacity. Pending
     // materialization never consumes an active catalog slot; total receipts
     // remain bounded by max_tasks + create_recovery_slots, including failures.
@@ -100,6 +123,8 @@ struct ServiceOptions {
     // Private deterministic persistence/crash seams, absent in production.
     std::function<int(ServiceFileDomain, persistence::FileStep)> file_faults;
     std::function<int(MaterializationStep)> materialization_faults;
+    std::function<int(ResetStep)> reset_faults;
+    std::function<int(RetireStep)> retire_faults;
 };
 
 }  // namespace rodaq::task

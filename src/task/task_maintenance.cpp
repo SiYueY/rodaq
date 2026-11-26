@@ -147,12 +147,16 @@ Result<void> TaskService::refresh_execution_facts(
 }
 
 bool TaskService::shutdown_settled() const {
+    if (state_->active_retirement_jobs.load(std::memory_order_acquire) != 0) {
+        return false;
+    }
     std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
     for (const auto& entry : state_->entries) {
         std::lock_guard<std::mutex> control(entry->control_mutex);
         if (!entry->quiescent || entry->closing || entry->persisting ||
-            entry->artifact_maintenance_active || entry->cleanup_active_id != 0 ||
-            entry->cleanup_ready.frame || entry->cleanup_pending.frame) {
+            entry->artifact_maintenance_active || entry->resetting || entry->retiring ||
+            entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
+            entry->cleanup_pending.frame) {
             return false;
         }
     }

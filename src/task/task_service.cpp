@@ -60,6 +60,10 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
         if (entry.execution) {
             snapshot.execution_condition = entry.execution->condition(control->desired_state);
         }
+        if ((control->reset_intent || entry.resetting || entry.retiring) &&
+            snapshot.execution_condition != ExecutionCondition::PendingCleanup) {
+            snapshot.execution_condition = ExecutionCondition::Draining;
+        }
         if (control->current_operation_id) {
             for (const auto& operation : control->operation_history.entries) {
                 if (operation.snapshot.operation_id == *control->current_operation_id) {
@@ -389,11 +393,22 @@ Result<TaskId> TaskService::State::create(
         }
         // Completed authority can exist before ordinary catalog publication,
         // including after an uncertain Completed write. It still owns a Task
-        // slot. Never admit another Task merely because that entry is invisible.
-        const auto completed = std::count_if(
-            retained.value().begin(), retained.value().end(),
-            [](const auto& receipt) { return receipt.phase == task::CreatePhase::Completed; });
-        if (static_cast<std::size_t>(completed) >= options->max_tasks) {
+        // slot. Retired Tasks release active max_tasks capacity immediately
+        // upon durable tombstone publication.
+        std::size_t active_completed = 0;
+        for (const auto& item : retained.value()) {
+            if (item.phase != task::CreatePhase::Completed) {
+                continue;
+            }
+            auto is_retired = retired->contains(item.assigned_task_id);
+            if (!is_retired.ok()) {
+                return is_retired.status();
+            }
+            if (!is_retired.value()) {
+                ++active_completed;
+            }
+        }
+        if (active_completed >= options->max_tasks) {
             return Status(StatusCode::ResourceExhausted, {});
         }
     }
@@ -412,6 +427,13 @@ Result<TaskId> TaskService::State::create(
     }
     auto receipt = std::move(*known.value());
     if (receipt.phase == task::CreatePhase::Completed) {
+        auto is_retired = retired->contains(receipt.assigned_task_id);
+        if (!is_retired.ok()) {
+            return is_retired.status();
+        }
+        if (is_retired.value()) {
+            return Status(StatusCode::Conflict, {});
+        }
         if (!find(receipt.assigned_task_id)) {
             auto entry = materialize(receipt.assigned_task_id, nullptr);
             if (!entry.ok()) {
@@ -573,10 +595,30 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         state->options = std::make_shared<const task::ServiceOptions>(std::move(options));
         state->installed = std::move(installed.value());
         state->entries.reserve(state->options->max_tasks);
-        for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
+        for (const auto* name :
+             {"tasks", "control", "identities", "create", "recovery", "retired"}) {
             auto made = state->directory(state->options->root / name);
             if (!made.ok()) {
                 return made.status();
+            }
+        }
+        // Boot Reconciliation reads retirement tombstone authority FIRST so a
+        // retired Task can never be resurrected even if old active files remain.
+        auto retired = task::TaskRetirementStore::open(
+            state->options->root / "retired", state->options->max_retired_tombstones,
+            state->file_hook(task::ServiceFileDomain::Retirement));
+        if (!retired.ok()) {
+            return retired.status();
+        }
+        state->retired = std::move(retired.value());
+        auto tombstones = state->retired->list();
+        if (!tombstones.ok()) {
+            return tombstones.status();
+        }
+        for (const auto& tombstone : tombstones.value()) {
+            auto absent = state->active_namespace_absent(tombstone.task_id);
+            if (!absent.ok() || !absent.value()) {
+                state->pending_retirement_cleanups.insert(tombstone.task_id);
             }
         }
         auto creates = task::TaskCreateStore::open(
@@ -592,6 +634,15 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
             return receipts.status();
         }
         for (const auto& receipt : receipts.value()) {
+            auto is_retired = state->retired->contains(receipt.assigned_task_id);
+            if (!is_retired.ok()) {
+                return is_retired.status();
+            }
+            if (is_retired.value()) {
+                // Schedule post-retirement cleanup; never resurrect retired Task.
+                state->pending_retirement_cleanups.insert(receipt.assigned_task_id);
+                continue;
+            }
             if (receipt.phase == task::CreatePhase::Completed) {
                 auto entry = state->materialize(receipt.assigned_task_id, nullptr);
                 if (!entry.ok()) {

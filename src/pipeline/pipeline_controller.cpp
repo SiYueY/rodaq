@@ -211,6 +211,10 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         for (const auto& binding : output->instance->streams.bindings()) {
             streams.push_back(binding.stream_id);
         }
+        sample = options.receive_clock();
+        if (!sample.ok()) {
+            return sample.status();
+        }
         auto segment = RecordingSegment::prepare(
             std::move(identity), std::move(streams), options.envelope,
             output->writer->capacity_model(), options.manifest_limits, *options.capacity,
