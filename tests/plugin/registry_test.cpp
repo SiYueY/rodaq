@@ -30,7 +30,8 @@ TEST(ServiceRegistry, SharedOwnershipMoveAndFreeze) {
         EXPECT_TRUE(registry.add_shared<CounterInterface>(std::move(provider)).ok());
         EXPECT_FALSE(weak.expired());
         auto moved = std::move(registry);
-        EXPECT_FALSE(registry.frozen());
+        // Intentional verification of defined moved-from state.
+        EXPECT_FALSE(registry.frozen());  // NOLINT(bugprone-use-after-move)
         EXPECT_TRUE(moved.freeze().ok());
         EXPECT_TRUE(moved.frozen());
         EXPECT_TRUE(moved.freeze().ok());

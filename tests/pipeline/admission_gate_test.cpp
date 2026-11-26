@@ -140,7 +140,8 @@ TEST(AdmissionGate, GuardMovesAndRejectedAttemptsNeverDuplicateAcceptedAccountin
         ASSERT_TRUE(entered.ok());
         auto original = std::move(entered).value();
         pipeline::AdmissionCommit moved(std::move(original));
-        EXPECT_FALSE(original.mark_committed());
+        // Intentional verification of defined moved-from state.
+        EXPECT_FALSE(original.mark_committed());  // NOLINT(bugprone-use-after-move)
         EXPECT_TRUE(moved.mark_committed());
         auto other = second.enter_commit(instance(2), 10);
         ASSERT_TRUE(other.ok());

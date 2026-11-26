@@ -121,8 +121,9 @@ TEST(PayloadPool, MoveOwnershipAndPoolFacadeDestructionKeepActualAccessBackingAl
     ASSERT_TRUE(spare.ok());
     auto moved = std::move(spare).value();
     moved = std::move(payload);
-    EXPECT_FALSE(static_cast<bool>(payload));
-    EXPECT_EQ(payload.size(), 0);
+    // Intentional verification of defined moved-from state.
+    EXPECT_FALSE(static_cast<bool>(payload));  // NOLINT(bugprone-use-after-move)
+    EXPECT_EQ(payload.size(), 0);              // NOLINT(bugprone-use-after-move)
     EXPECT_EQ(pool->snapshot().live_buffers, 1);
     std::promise<void> release;
     auto permission = release.get_future();
@@ -187,8 +188,11 @@ TEST(PayloadPool, InvalidGeometryAndMovedFacadeCannotCreateUnaccountedBacking) {
     auto created = pipeline::PayloadPool::create({1024, 256, 512, 4});
     ASSERT_TRUE(created.ok());
     auto moved = std::move(created).value();
-    EXPECT_EQ(created.value().reserve(1).status().code(), StatusCode::InvalidState);
-    EXPECT_EQ(created.value().snapshot().capacity_bytes, 0);
+    // Intentional verification of defined moved-from state.
+    EXPECT_EQ(
+        created.value().reserve(1).status().code(),  // NOLINT(bugprone-use-after-move)
+        StatusCode::InvalidState);
+    EXPECT_EQ(created.value().snapshot().capacity_bytes, 0);  // NOLINT(bugprone-use-after-move)
     EXPECT_TRUE(moved.reserve(512).ok());
 }
 
