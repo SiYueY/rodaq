@@ -582,4 +582,13 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_task_boot_reconciliation_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_task_boot_reconciliation_test)
     gtest_discover_tests(rodaq_task_boot_reconciliation_test PROPERTIES TIMEOUT 30)
+    # Intentionally omits src/ include dir to prove public-header-only rodaq::daq consumption.
+    add_executable(rodaq_system_service_test system/system_service_test.cpp)
+    target_link_libraries(rodaq_system_service_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
+    target_compile_definitions(rodaq_system_service_test PRIVATE
+        RODAQ_SYSTEM_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
+        RODAQ_SYSTEM_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
+    add_dependencies(rodaq_system_service_test rodaq_fake_storage rodaq_fake_acquisition)
+    rodaq_enable_project_warnings(rodaq_system_service_test)
+    gtest_discover_tests(rodaq_system_service_test PROPERTIES TIMEOUT 30)
 endif()

@@ -80,7 +80,8 @@ add_library(rodaq_daq SHARED
     src/persistence/digest.cpp
     src/ros2_subscription.cpp)
 target_sources(rodaq_daq PRIVATE
-    src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/startup.cpp src/task/task_maintenance.cpp
+    src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/runtime.cpp src/daq/startup.cpp
+    src/system/system_service.cpp src/task/task_maintenance.cpp
     src/task/task_rotation.cpp
     src/task/task_volume_recovery.cpp
     src/task/task_retention.cpp
@@ -124,6 +125,7 @@ target_sources(rodaq_daq PRIVATE
     src/pipeline/recording_instance.cpp)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
+target_compile_definitions(rodaq_daq PRIVATE RODAQ_APPLICATION_VERSION="${PROJECT_VERSION}")
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
     PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
 rodaq_enable_project_warnings(rodaq_daq)

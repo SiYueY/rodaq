@@ -14,9 +14,141 @@
 #include "run_configuration.hpp"
 #include "startup.hpp"
 #include "../artifact/artifact_catalog.hpp"
+#include "../system/system_service.hpp"
+
+#ifndef RODAQ_APPLICATION_VERSION
+#define RODAQ_APPLICATION_VERSION "0.1.0"
+#endif
 
 namespace rodaq::daq {
 namespace {
+
+BackendRole to_backend_role(task::AdmissionRole role) noexcept {
+    return role == task::AdmissionRole::Acquisition ? BackendRole::Acquisition
+                                                    : BackendRole::Storage;
+}
+
+VolumePressure to_volume_pressure(
+    const artifact::VolumeSpaceSnapshot& space, const artifact::VolumeCapacitySnapshot& cap,
+    const artifact::CatalogSnapshot& cat, bool force_protected) noexcept {
+    if (force_protected || space.protection != StatusCode::Ok || cap.protection != StatusCode::Ok ||
+        cat.protection != StatusCode::Ok ||
+        space.condition == artifact::VolumeSpaceCondition::Unknown) {
+        return VolumePressure::Protected;
+    }
+    if (space.condition == artifact::VolumeSpaceCondition::Stopped ||
+        space.condition == artifact::VolumeSpaceCondition::Recovering) {
+        return VolumePressure::Critical;
+    }
+    if (space.condition == artifact::VolumeSpaceCondition::Low) {
+        return VolumePressure::Low;
+    }
+    return VolumePressure::Normal;
+}
+
+SystemRecoveryStatus build_recovery_status(
+    const std::optional<artifact::VolumeRecoveryReport>& report, bool ready) {
+    SystemRecoveryStatus status;
+    status.complete = ready;
+    if (!ready) {
+        status.reason = std::string("recovering");
+        return status;
+    }
+    if (report) {
+        if (report->health != StatusCode::Ok) {
+            status.reason = std::string("volume_recovery_protected");
+        } else if (report->corrupted_committed_count > 0) {
+            status.reason = std::string("corrupted_committed_artifacts");
+        } else if (!report->quarantined.empty()) {
+            status.reason = std::string("quarantined_artifacts_present");
+        }
+    }
+    return status;
+}
+
+Result<SystemCapabilities> build_system_capabilities(const CompositionOptions& o) {
+    auto installed = o.plugins->plugins();
+    if (!installed.ok()) {
+        return installed.status();
+    }
+    SystemCapabilities caps;
+    caps.application_version = RODAQ_APPLICATION_VERSION;
+    caps.output_roots.push_back(o.settings.output_root);
+    caps.resource_profiles.reserve(o.settings.profiles.size());
+    for (const auto& profile : o.settings.profiles) {
+        caps.resource_profiles.push_back(
+            {profile.name, profile.storage.max_segment_physical_bytes});
+    }
+    caps.limits.max_page_size = 256;
+    caps.limits.idempotency_retention = std::chrono::hours{24};
+    caps.limits.recommended_polling_floor = std::chrono::seconds{1};
+
+    auto find_backend = [&](const std::string& id,
+                            const std::string& version) -> BackendCapability* {
+        for (auto& entry : caps.backends) {
+            if (entry.plugin_id == id && entry.plugin_version == version) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    };
+
+    for (const auto& plugin : installed.value()) {
+        auto* existing = find_backend(plugin.plugin_id, plugin.plugin_version);
+        if (existing) {
+            existing->installed = true;
+            continue;
+        }
+        BackendCapability entry;
+        entry.plugin_id = plugin.plugin_id;
+        entry.plugin_version = plugin.plugin_version;
+        entry.installed = true;
+        entry.allowed = false;
+        caps.backends.push_back(std::move(entry));
+    }
+    for (const auto& allowed : o.settings.allowed_plugins) {
+        auto* existing = find_backend(allowed.plugin_id, allowed.plugin_version);
+        if (existing) {
+            existing->role = to_backend_role(allowed.role);
+            existing->allowed = true;
+            continue;
+        }
+        BackendCapability entry;
+        entry.plugin_id = allowed.plugin_id;
+        entry.plugin_version = allowed.plugin_version;
+        entry.role = to_backend_role(allowed.role);
+        entry.installed = false;
+        entry.allowed = true;
+        caps.backends.push_back(std::move(entry));
+    }
+    for (const auto& qual : o.settings.backend_qualifications) {
+        auto* existing = find_backend(qual.plugin_id, qual.plugin_version);
+        if (existing) {
+            if (!existing->role) {
+                existing->role = qual.role;
+            }
+            existing->support_status = qual.support_status;
+            existing->qualification_status = qual.qualification_status;
+            continue;
+        }
+        BackendCapability entry;
+        entry.plugin_id = qual.plugin_id;
+        entry.plugin_version = qual.plugin_version;
+        entry.role = qual.role;
+        entry.installed = false;
+        entry.allowed = false;
+        entry.support_status = qual.support_status;
+        entry.qualification_status = qual.qualification_status;
+        caps.backends.push_back(std::move(entry));
+    }
+    std::sort(caps.backends.begin(), caps.backends.end(), [](const auto& a, const auto& b) {
+        if (a.plugin_id != b.plugin_id) {
+            return a.plugin_id < b.plugin_id;
+        }
+        return a.plugin_version < b.plugin_version;
+    });
+    return caps;
+}
 
 bool valid(const CompositionOptions& o) {
     const auto boot = time::parse_boot_identity(o.boot.kernel_uuid);
@@ -33,8 +165,19 @@ bool valid(const CompositionOptions& o) {
         o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
         o.settings.native_timeout <= std::chrono::nanoseconds::zero() ||
         o.settings.artifact_audit_window <= std::chrono::nanoseconds::zero() ||
+        o.settings.system_snapshot_max_age <= std::chrono::nanoseconds::zero() ||
+        o.settings.system_snapshot_max_age > std::chrono::hours{24} ||
         !task::valid_runtime_recovery_policy(o.settings.runtime_recovery)) {
         return false;
+    }
+    for (auto i = o.settings.backend_qualifications.begin();
+         i != o.settings.backend_qualifications.end(); ++i) {
+        if (i->plugin_id.empty() || i->plugin_version.empty() ||
+            std::any_of(o.settings.backend_qualifications.begin(), i, [&](const auto& q) {
+                return q.plugin_id == i->plugin_id && q.plugin_version == i->plugin_version;
+            })) {
+            return false;
+        }
     }
     for (auto i = o.settings.profiles.begin(); i != o.settings.profiles.end(); ++i) {
         if (i->name.empty() || i->name.size() > 128 || i->sequence_reservation == 0 ||
@@ -75,13 +218,16 @@ struct Composition::State {
     std::shared_ptr<artifact::ArtifactCatalog> catalog;
     std::unique_ptr<ArtifactService> artifacts;
     std::unique_ptr<TaskService> tasks;
+    std::unique_ptr<SystemService> system;
     std::vector<std::shared_ptr<ExecutionLane>> lanes;
     // Only serializes explicit lifecycle/maintenance calls, never Task APIs.
     std::mutex lifecycle;
     std::mutex observation;
     bool started{false};
+    std::atomic<bool> core_ready{false};
     std::atomic<bool> stopping{false};
     bool stopped{false};
+    std::atomic<std::uint64_t> last_total_bytes{0};
 
     ~State() noexcept {
         if (started && !stopped) {
@@ -95,6 +241,32 @@ struct Composition::State {
         }
     }
 };
+
+void Composition::publish_system_observation(
+    const artifact::VolumeSpaceSnapshot& space, std::uint64_t total_bytes,
+    bool force_protected) noexcept {
+    if (!state_->system) {
+        return;
+    }
+    const auto& o = state_->resources->options;
+    const auto cap = o.capacity->snapshot();
+    const auto cat = state_->catalog->snapshot();
+    const bool ready = state_->core_ready.load(std::memory_order_acquire) &&
+                       !state_->stopping.load(std::memory_order_acquire);
+    system::SystemObservation obs;
+    obs.core_ready = ready;
+    obs.recovery = build_recovery_status(o.recovery_report, ready);
+    VolumeStatus volume;
+    volume.name = o.settings.output_root;
+    volume.total_bytes = total_bytes;
+    volume.free_bytes = force_protected ? 0 : space.effective_free_bytes;
+    volume.pressure = to_volume_pressure(space, cap, cat, force_protected);
+    obs.volumes.push_back(std::move(volume));
+    obs.backlog.commit_items =
+        std::max<std::uint64_t>(cap.commit_slots, static_cast<std::uint64_t>(cat.commit_inflight));
+    obs.backlog.commit_bytes = cap.commit_bytes;
+    (void)state_->system->refresh(obs);
+}
 
 Composition::Composition(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 
@@ -230,6 +402,18 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return tasks.status();
         }
         state->tasks = std::move(tasks.value());
+        auto capabilities = build_system_capabilities(o);
+        if (!capabilities.ok()) {
+            return capabilities.status();
+        }
+        system::SystemServiceOptions system_options;
+        system_options.capabilities = std::move(capabilities.value());
+        system_options.snapshot_max_age = o.settings.system_snapshot_max_age;
+        auto system = SystemService::create(std::move(system_options));
+        if (!system.ok()) {
+            return system.status();
+        }
+        state->system = std::move(system.value());
         // Allocate the final facade before enabling its mandatory-shutdown rule.
         auto composition = std::unique_ptr<Composition>(new Composition(std::move(state)));
         auto observed = composition->observe();
@@ -247,6 +431,10 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         if (!reconciled.ok()) {
             return reconciled.status();
         }
+        composition->state_->core_ready.store(true, std::memory_order_release);
+        composition->publish_system_observation(
+            boot_space, composition->state_->last_total_bytes.load(std::memory_order_acquire),
+            false);
         composition->state_->started = true;
         return composition;
     } catch (const std::bad_alloc&) {
@@ -258,6 +446,8 @@ TaskService& Composition::tasks() noexcept { return *state_->tasks; }
 
 ArtifactService& Composition::artifacts() noexcept { return *state_->artifacts; }
 
+SystemService& Composition::system() noexcept { return *state_->system; }
+
 Result<void> Composition::observe() {
     std::lock_guard<std::mutex> serial(state_->observation);
     if (state_->stopping) {
@@ -268,6 +458,8 @@ Result<void> Composition::observe() {
         auto verified = state_->deployment_lease->verify();
         if (!verified.ok()) {
             (void)state_->tasks->refresh_execution_facts(true);
+            publish_system_observation(
+                {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
             return verified.status();
         }
     }
@@ -279,6 +471,8 @@ Result<void> Composition::observe() {
         o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true);
         (void)state_->tasks->reconcile_volume(artifact::VolumeSpaceCondition::Unknown, 0);
+        publish_system_observation(
+            {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
         return sample.status();
     }
     auto observed = o.clock->observe(sample.value());
@@ -287,32 +481,38 @@ Result<void> Composition::observe() {
         (void)state_->tasks->refresh_execution_facts(true);
         (void)state_->tasks->reconcile_volume(
             artifact::VolumeSpaceCondition::Unknown, sample.value().monotonic_ns);
+        publish_system_observation(
+            {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
         return observed.status();
     }
     auto probe = o.capacity->begin_space_sample(sample.value().monotonic_ns);
     if (!probe.ok()) {
         return probe.status();
     }
-    auto free = o.volume->available_bytes();
+    auto stats = o.volume->space_stats();
     auto completed = o.sample();
     if (state_->stopping.load(std::memory_order_acquire)) {
         o.capacity->invalidate_space_sample();
         return Status(StatusCode::InvalidState, {});
     }
-    if (!free.ok() || !completed.ok()) {
+    if (!stats.ok() || !completed.ok()) {
         o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true);
         (void)state_->tasks->reconcile_volume(
             artifact::VolumeSpaceCondition::Unknown, sample.value().monotonic_ns);
-        return !free.ok() ? free.status() : completed.status();
+        publish_system_observation(
+            {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
+        return !stats.ok() ? stats.status() : completed.status();
     }
+    state_->last_total_bytes.store(stats.value().total_bytes, std::memory_order_release);
     auto updated = o.capacity->finish_space_sample(
-        probe.value(), free.value(), completed.value().monotonic_ns);
+        probe.value(), stats.value().available_bytes, completed.value().monotonic_ns);
     if (!updated.ok()) {
         o.capacity->invalidate_space_sample();
         (void)state_->tasks->refresh_execution_facts(true, completed.value().monotonic_ns);
         (void)state_->tasks->reconcile_volume(
             artifact::VolumeSpaceCondition::Unknown, completed.value().monotonic_ns);
+        publish_system_observation({}, stats.value().total_bytes, true);
         return updated.status();
     }
     const auto space = o.capacity->space_snapshot(completed.value().monotonic_ns);
@@ -321,21 +521,25 @@ Result<void> Composition::observe() {
     auto refreshed =
         state_->tasks->refresh_execution_facts(protect, completed.value().monotonic_ns);
     if (!refreshed.ok()) {
+        publish_system_observation(space, stats.value().total_bytes, true);
         return refreshed.status();
     }
     // One actual cleanup worker and one per-Task flight. Retry only retained,
     // fenced cleanup; never manufacture a new lifecycle request or re-open Run.
     auto cleanup = state_->tasks->drain_shutdown(true);
     if (!cleanup.ok()) {
+        publish_system_observation(space, stats.value().total_bytes, false);
         return cleanup.status();
     }
     auto recovery =
         state_->tasks->reconcile_volume(space.condition, completed.value().monotonic_ns);
     if (!recovery.ok()) {
+        publish_system_observation(space, stats.value().total_bytes, false);
         return recovery.status();
     }
     auto rotated = state_->tasks->schedule_rotation(completed.value().monotonic_ns);
     if (!rotated.ok()) {
+        publish_system_observation(space, stats.value().total_bytes, false);
         return rotated.status();
     }
     auto retained = state_->tasks->apply_retention(*state_->catalog);
@@ -343,6 +547,7 @@ Result<void> Composition::observe() {
         state_->tasks->collect_artifacts(*state_->catalog, o.settings.artifact_audit_window);
     auto destructive =
         state_->tasks->reconcile_destructive(*state_->catalog, o.settings.artifact_audit_window);
+    publish_system_observation(space, stats.value().total_bytes, false);
     if (!retained.ok()) {
         return retained;
     }
@@ -354,7 +559,9 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     if (state_->stopped) {
         return {};
     }
+    state_->core_ready.store(false, std::memory_order_release);
     state_->stopping = true;
+    publish_system_observation({}, state_->last_total_bytes.load(std::memory_order_acquire), true);
     auto closed = state_->tasks->close_admission();
     if (!closed.ok()) {
         return closed.status();

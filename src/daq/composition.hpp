@@ -12,6 +12,7 @@
 #include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/plugin/manager.hpp>
 #include <rodaq/storage/types.hpp>
+#include <rodaq/system/system_service.hpp>
 #include <rodaq/task/task_service.hpp>
 
 #include "../artifact/ledger_store.hpp"
@@ -41,6 +42,14 @@ struct StorageAdmission {
     std::string format;
 };
 
+struct BackendQualification {
+    std::string plugin_id;
+    std::string plugin_version;
+    BackendRole role{BackendRole::Acquisition};
+    SupportStatus support_status{SupportStatus::Deferred};
+    QualificationStatus qualification_status{QualificationStatus::NotQualified};
+};
+
 struct DeploymentSettings {
     std::uint64_t deployment_generation{0};
     // Resolved by the Core release/support-matrix owner, never by a Plugin.
@@ -49,6 +58,7 @@ struct DeploymentSettings {
     std::vector<ResourceProfile> profiles;
     std::vector<StorageAdmission> storage;
     std::vector<task::AllowedPlugin> allowed_plugins;
+    std::vector<BackendQualification> backend_qualifications;
     task::TaskStorePolicy tasks;
     // Registered Task capacity: 1..16; total preallocated Writer lanes <=256.
     // Each Task owns a full max_pipelines slice, including while it is idle.
@@ -56,6 +66,7 @@ struct DeploymentSettings {
     std::size_t create_recovery_slots{8};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
     std::chrono::nanoseconds artifact_audit_window{std::chrono::hours{24}};
+    std::chrono::nanoseconds system_snapshot_max_age{std::chrono::seconds{2}};
     task::RuntimeRecoveryPolicy runtime_recovery;
 };
 
@@ -94,6 +105,7 @@ public:
 
     TaskService& tasks() noexcept;
     ArtifactService& artifacts() noexcept;
+    SystemService& system() noexcept;
     // Caller retains the composition through actual observation return, even
     // when Core shutdown completes independently of a blocked filesystem call.
     Result<void> observe();
@@ -106,6 +118,9 @@ private:
     struct State;
     explicit Composition(std::unique_ptr<State> state) noexcept;
     void retain_lease(std::shared_ptr<DeploymentLease> lease) noexcept;
+    void publish_system_observation(
+        const artifact::VolumeSpaceSnapshot& space, std::uint64_t total_bytes,
+        bool force_protected) noexcept;
     std::unique_ptr<State> state_;
 };
 

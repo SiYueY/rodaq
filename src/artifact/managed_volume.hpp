@@ -53,6 +53,11 @@ public:
     StatusCode protection() const noexcept;
     Result<void> verify() const;
     Result<std::uint64_t> available_bytes() const;
+    struct SpaceStats {
+        std::uint64_t total_bytes{0};
+        std::uint64_t available_bytes{0};
+    };
+    Result<SpaceStats> space_stats() const;
     // Lazy Writer work only. No-replace creation; on non-OK the owner must
     // reconcile possible directory effects, not blindly retry/adopt it.
     Result<std::filesystem::path> create_staging(std::uint64_t segment_id);

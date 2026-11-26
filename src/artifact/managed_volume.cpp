@@ -485,7 +485,7 @@ Result<void> ManagedVolume::verify() const {
     }
 }
 
-Result<std::uint64_t> ManagedVolume::available_bytes() const {
+Result<ManagedVolume::SpaceStats> ManagedVolume::space_stats() const {
     auto verified = verify();
     if (!verified.ok()) {
         return verified.status();
@@ -495,10 +495,21 @@ Result<std::uint64_t> ManagedVolume::available_bytes() const {
         return filesystem_failure();
     }
     if (space.f_frsize == 0 ||
-        space.f_bavail > std::numeric_limits<std::uint64_t>::max() / space.f_frsize) {
+        space.f_bavail > std::numeric_limits<std::uint64_t>::max() / space.f_frsize ||
+        space.f_blocks > std::numeric_limits<std::uint64_t>::max() / space.f_frsize) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    return static_cast<std::uint64_t>(space.f_bavail) * space.f_frsize;
+    return SpaceStats{
+        static_cast<std::uint64_t>(space.f_blocks) * space.f_frsize,
+        static_cast<std::uint64_t>(space.f_bavail) * space.f_frsize};
+}
+
+Result<std::uint64_t> ManagedVolume::available_bytes() const {
+    auto stats = space_stats();
+    if (!stats.ok()) {
+        return stats.status();
+    }
+    return stats.value().available_bytes;
 }
 
 Result<std::filesystem::path> ManagedVolume::create_staging(std::uint64_t segment_id) {
