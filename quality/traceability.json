@@ -138,7 +138,12 @@
       "planned_tests": [
         "crash_recovery"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "BootReconciliationTest.*",
+        "SegmentCommitterTest.*",
+        "Startup*",
+        "FormalTombstone*"
+      ]
     },
     {
       "requirement": "FUNC-12",
@@ -150,7 +155,12 @@
       "planned_tests": [
         "reset_retire_contract"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "RetirementStoreTest.*",
+        "ResetRetireTest.*",
+        "TaskControllerTest.ResetSetsIntentBlocksOtherOperationsAndClearsOnTerminal",
+        "TaskControllerTest.RetireAcceptedFromStoppedIdleBlocksConcurrentOps"
+      ]
     },
     {
       "requirement": "FUNC-13",
@@ -163,7 +173,9 @@
       "planned_tests": [
         "application_observability_e2e"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "SystemServiceTest.*"
+      ]
     },
     {
       "requirement": "FUNC-14",

@@ -1,0 +1,63 @@
+{
+  "id": "S4C-20261126-01",
+  "stage": "S4C",
+  "role": "stage-exit-gate",
+  "captured_at": "2026-11-26 11:42:00 UTC",
+  "entry_commit": "e0791dc",
+  "code_base": "34d6627",
+  "branch": "next",
+  "sources": [
+    {
+      "name": "RoDAQ",
+      "page_id": "417da2b2a80f81c68d97cffe766805b3",
+      "last_edited_at": "2026-11-18T15:53:59.956Z"
+    },
+    {
+      "name": "00 · 开发实施计划与项目状态",
+      "page_id": "418da2b2a80f8141a08ae0cc08a73962",
+      "last_edited_at": "2026-11-25T18:30:57.214Z"
+    },
+    {
+      "name": "RoDAQ C++17 编码规范与代码质量基线",
+      "page_id": "418da2b2a80f817db957fa6f017c64bf",
+      "last_edited_at": "2026-11-14T16:47:16.580Z"
+    },
+    {
+      "name": "RoDAQ 系统架构设计说明书",
+      "page_id": "417da2b2a80f816592c1e898187cb69c",
+      "last_edited_at": "2026-11-14T16:18:06.710Z"
+    },
+    {
+      "name": "RoDAQ Task 模块设计",
+      "page_id": "417da2b2a80f81ad9e94f3323b427938",
+      "last_edited_at": "2026-11-23T02:10:53.952Z"
+    },
+    {
+      "name": "RoDAQ Artifact & Volume 模块设计",
+      "page_id": "418da2b2a80f8146a414d58c351a23ca",
+      "last_edited_at": "2026-11-14T16:15:25.693Z"
+    },
+    {
+      "name": "RoDAQ Server 模块设计",
+      "page_id": "418da2b2a80f81d191cadda6f11488bd",
+      "last_edited_at": "2026-11-14T16:18:46.459Z"
+    }
+  ],
+  "scope": "S4C Recovery, Reset, Retire, Boot Reconciliation, SystemService, and public rodaq::daq DaqRuntime boundary",
+  "verification": {
+    "gcc11_full_ctest": "787/787 executed passed, 0 failed (1 skipped: optional RODAQ_ROS2_RECOVERY_VOLUME dedicated tmpfs mount test from S3)",
+    "asan_ubsan_lsan": "198/198 S4C+Core tests passed, 0 failed, 0 leaks, 0 UB",
+    "tsan_clang14": "50/50 S4C concurrent tests + 12/12 ResetRetireTest repeats passed, 0 data races",
+    "format": "clang-format-14 --dry-run --Werror passed across all tracked C/C++ files; 0 blank-line rule violations",
+    "clang_tidy": "clang-tidy-14 0 user-code diagnostics on all S4C translation units",
+    "package_contract": "rodaq_package_contract passed (relocated install consumer linking only rodaq::daq; only rodaq::plugin and rodaq::daq exported)",
+    "remote_ci": "not executed (local unpushed branch next; local CI-equivalent gates executed)"
+  },
+  "evidence": [
+    "build/s1/s4c-full-ctest.log",
+    "build/asan-ubsan/s4c-asan-ctest.log",
+    "build/s1-tsan-clang/s4c-tsan-ctest.log",
+    "build/s1-tsan-clang/s4c-tsan-reset-retire.log"
+  ],
+  "qualification": "S4C Exit Gate Passed (S4A + S4B + S4C all Passed; S4 Passed). Ready to enter S5 Server."
+}
