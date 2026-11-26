@@ -1,7 +1,22 @@
 # RoDAQ Web
 
-Web 模块位于仓库根目录，采用原生 HTML、CSS 和 JavaScript，提供录制任务控制、状态观测和产物查询。
+RoDAQ V1 local operator console built with **Vue 3**, **TypeScript**, and **Vite 8.3.x** (Node.js 26.x LTS for build/CI). Production builds emit immutable hashed assets and `web_manifest.json` under `web/dist/`, served same-origin by the `rodaq` Drogon HTTP server alongside `/api/`.
 
-生产包将本目录的静态资源交由 [RoDAQ Server](../server/README.md) 从本机回环地址提供。浏览器以同源相对路径调用 `/api/v1/`，与本机自动化使用同一任务控制和状态语义。
+## Architecture & Boundaries
 
-当前模块契约以 [Notion 上的 RoDAQ 设计文档](https://verbose-vulture-f51.notion.site/RoDAQ-417da2b2a80f81c68d97cffe766805b3) 为准；现有描述属于目标范围，不代表已完成实现。
+- Interactive visualization and control layer over the authoritative `/api/` contract (`server/api/openapi.yaml`); never maintains a second Task state machine or predicts server state after HTTP 202.
+- Explicit desktop browser target matrix: `chrome111`, `edge111`, `firefox114`, `safari16.4`.
+- Browser session uses `HttpOnly; SameSite=Strict` cookie + in-memory `RoDAQ-CSRF-Token` recovered via `GET /api/session`; raw credentials and CSRF tokens are never written to `localStorage` or `sessionStorage`.
+- Principal-scoped bounded `PendingMutation` records in `sessionStorage` support idempotent recovery across reloads/timeouts without cross-principal leakage or replay.
+- Artifact downloads use authenticated `HEAD` preflight followed by same-origin browser navigation (never buffering large artifacts into JS memory).
+
+## Build & Verification
+
+```bash
+cd web
+npm ci
+npm run typecheck
+npm run test:unit
+npm run build
+npm run test:e2e
+```

@@ -16,7 +16,9 @@
       "implemented_tests": [
         "ServerConfigTest.*",
         "StaticAssetServiceTest.*",
-        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
+        "web/tests/e2e/console.spec.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
       ]
     },
     {
@@ -34,7 +36,11 @@
       "implemented_tests": [
         "StrictJsonCodecTest.*",
         "rodaq_server_openapi_test",
-        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "web/tests/unit/task_editor_logic.test.ts",
+        "web/tests/unit/format_and_errors.test.ts",
+        "web/tests/e2e/console.spec.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
       ]
     },
     {
@@ -62,7 +68,10 @@
       ],
       "implemented_tests": [
         "ServiceCallExecutorTest.*",
-        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "web/tests/component/core_components.test.ts",
+        "web/tests/e2e/console.spec.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
       ]
     },
     {
@@ -87,7 +96,11 @@
       "planned_tests": [
         "ros2_readiness_schema_qos"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "web/tests/component/core_components.test.ts",
+        "web/tests/unit/task_editor_logic.test.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
+      ]
     },
     {
       "requirement": "FUNC-07",
@@ -116,7 +129,9 @@
         "RangeAndDispositionTest.*",
         "DownloadRegistryTest.*",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
-        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
+        "web/tests/e2e/console.spec.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
       ]
     },
     {
@@ -193,7 +208,12 @@
       "implemented_tests": [
         "SystemServiceTest.*",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
-        "rodaq_server_openapi_test"
+        "rodaq_server_openapi_test",
+        "web/tests/unit/api_contract.test.ts",
+        "web/tests/unit/polling_and_request.test.ts",
+        "web/tests/component/core_components.test.ts",
+        "web/tests/e2e/console.spec.ts",
+        "web/tests/e2e/ros2_mcap.spec.ts"
       ]
     },
     {
@@ -211,7 +231,9 @@
         "ServiceCallExecutorTest.*",
         "DownloadRegistryTest.*",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
-        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
+        "web/tests/unit/pending_mutations.test.ts",
+        "web/tests/e2e/console.spec.ts"
       ]
     },
     {

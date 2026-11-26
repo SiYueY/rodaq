@@ -69,3 +69,9 @@ Testing/
 # Python tooling
 __pycache__/
 *.py[cod]
+
+# Web console build and test outputs
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/

@@ -1,0 +1,52 @@
+:root {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --bg-canvas: #f3f5f8;
+  --bg-surface: #ffffff;
+  --bg-subtle: #eef1f6;
+  --bg-nav: #111827;
+  --bg-nav-active: #1f2937;
+
+  --border-subtle: #d8dee6;
+  --border-strong: #b8c2cf;
+
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --text-inverse: #f9fafb;
+
+  --tone-neutral-bg: #eef1f6;
+  --tone-neutral-fg: #374151;
+  --tone-info-bg: #dbeafe;
+  --tone-info-fg: #1d4ed8;
+  --tone-success-bg: #dcfce7;
+  --tone-success-fg: #166534;
+  --tone-warning-bg: #fef3c7;
+  --tone-warning-fg: #92400e;
+  --tone-danger-bg: #fee2e2;
+  --tone-danger-fg: #991b1b;
+
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --danger: #b91c1c;
+  --danger-hover: #991b1b;
+  --focus-ring: 0 0 0 3px rgba(29, 78, 216, 0.35);
+}

@@ -31,6 +31,12 @@ rodaq_enable_project_warnings(rodaq)
 install(TARGETS rodaq RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES api/openapi.yaml DESTINATION ${CMAKE_INSTALL_DATADIR}/rodaq/api)
 
+set(RODAQ_WEB_DIST_DIR "" CACHE PATH "Optional prebuilt web/dist directory to stage into share/rodaq/web")
+if(RODAQ_WEB_DIST_DIR)
+    install(DIRECTORY "${RODAQ_WEB_DIST_DIR}/"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/rodaq/web)
+endif()
+
 if(BUILD_TESTING)
     find_package(GTest 1.11 REQUIRED)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
