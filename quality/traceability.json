@@ -13,7 +13,11 @@
       "planned_tests": [
         "deployment_e2e"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "ServerConfigTest.*",
+        "StaticAssetServiceTest.*",
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+      ]
     },
     {
       "requirement": "FUNC-02",
@@ -27,7 +31,11 @@
       "planned_tests": [
         "task_configuration_contract"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "StrictJsonCodecTest.*",
+        "rodaq_server_openapi_test",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
+      ]
     },
     {
       "requirement": "FUNC-03",
@@ -52,7 +60,10 @@
       "planned_tests": [
         "task_control_contract"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "ServiceCallExecutorTest.*",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
+      ]
     },
     {
       "requirement": "FUNC-05",
@@ -101,7 +112,12 @@
       "planned_tests": [
         "artifact_query_read_download"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "RangeAndDispositionTest.*",
+        "DownloadRegistryTest.*",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+      ]
     },
     {
       "requirement": "FUNC-09",
@@ -159,7 +175,8 @@
         "RetirementStoreTest.*",
         "ResetRetireTest.*",
         "TaskControllerTest.ResetSetsIntentBlocksOtherOperationsAndClearsOnTerminal",
-        "TaskControllerTest.RetireAcceptedFromStoppedIdleBlocksConcurrentOps"
+        "TaskControllerTest.RetireAcceptedFromStoppedIdleBlocksConcurrentOps",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
       ]
     },
     {
@@ -174,7 +191,9 @@
         "application_observability_e2e"
       ],
       "implemented_tests": [
-        "SystemServiceTest.*"
+        "SystemServiceTest.*",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "rodaq_server_openapi_test"
       ]
     },
     {
@@ -187,7 +206,13 @@
       "planned_tests": [
         "security_isolation_endurance"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "AuthStateTest.*",
+        "ServiceCallExecutorTest.*",
+        "DownloadRegistryTest.*",
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm"
+      ]
     },
     {
       "requirement": "FUNC-15",

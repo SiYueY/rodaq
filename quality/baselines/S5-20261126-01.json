@@ -1,0 +1,60 @@
+{
+  "id": "S5-20261126-01",
+  "stage": "S5",
+  "role": "stage-exit-gate",
+  "captured_at": "2026-11-26 13:20:00 UTC",
+  "entry_commit": "f43893e",
+  "code_base": "5ae3f4b",
+  "branch": "next",
+  "sources": [
+    {
+      "name": "RoDAQ",
+      "page_id": "417da2b2a80f81c68d97cffe766805b3",
+      "last_edited_at": "2026-11-18T15:53:59.956Z"
+    },
+    {
+      "name": "00 · 开发实施计划与项目状态",
+      "page_id": "418da2b2a80f8141a08ae0cc08a73962",
+      "last_edited_at": "2026-11-26T11:51:00.000Z"
+    },
+    {
+      "name": "RoDAQ C++17 编码规范与代码质量基线",
+      "page_id": "418da2b2a80f817db957fa6f017c64bf",
+      "last_edited_at": "2026-11-14T16:47:16.580Z"
+    },
+    {
+      "name": "RoDAQ 系统架构设计说明书",
+      "page_id": "417da2b2a80f816592c1e898187cb69c",
+      "last_edited_at": "2026-11-14T16:18:06.710Z"
+    },
+    {
+      "name": "RoDAQ 技术选型说明书",
+      "page_id": "417da2b2a80f81e28c92ea07f46405f9",
+      "last_edited_at": "2026-11-14T15:58:27.402Z"
+    },
+    {
+      "name": "RoDAQ Server 模块设计",
+      "page_id": "418da2b2a80f81d191cadda6f11488bd",
+      "last_edited_at": "2026-11-14T16:18:46.459Z"
+    }
+  ],
+  "scope": "S5 Drogon 1.9.14 HTTP Server (/api/*), OpenAPI 3.1.0, Bearer/Session/CSRF/Host/Origin security, bounded 5-lane ServiceCallExecutor, DownloadSession/DownloadRegistry streaming/Range/cancel/backpressure, static SPA serving, and rodaq --deployment daemon",
+  "verification": {
+    "gcc11_s5_ctest": "11/11 S5 tests passed (8 unit, 2 HTTP/daemon E2E including real rodaq binary SIGTERM + restart recovery, 1 OpenAPI 3.1/SV-API-009/SV-CORE-001 conformance) in 1.29s",
+    "gcc11_full_ctest": "798/798 executed passed, 0 failed (1 skipped: optional RODAQ_ROS2_RECOVERY_VOLUME dedicated tmpfs mount test from S3)",
+    "asan_ubsan_lsan": "33/33 S5+TaskService+SystemService tests passed under ASan+UBSan+LSan, 0 leaks, 0 UB, 0 UAF",
+    "tsan_clang14": "8/8 multi-threaded S5 unit tests passed with 0 data races; HTTP integration tests reported 0 races in RoDAQ code (2 warnings solely inside uninstrumented prebuilt libtrantor.a)",
+    "format": "clang-format-14 --dry-run --Werror passed across all tracked C/C++ files; 0 TODO/FIXME in server/",
+    "clang_tidy": "clang-tidy-14 0 user-code diagnostics across all 14 S5/modified Core translation units",
+    "install_and_package_contract": "cmake --install verified bin/rodaq, share/rodaq/api/openapi.yaml, and strict export of only rodaq::plugin and rodaq::daq; rodaq_package_contract passed",
+    "remote_ci": "not executed (local unpushed branch next; local CI-equivalent gates executed)"
+  },
+  "evidence": [
+    "build/s1/s5-full-ctest-pass.log",
+    "build/asan-ubsan/s5-asan-ctest.log",
+    "build/s1-tsan-clang/s5-tsan-ctest.log",
+    "build/s1/s5-clang-tidy.log",
+    "build/s1/s5-clang-tidy-extra.log"
+  ],
+  "qualification": "S5 Exit Gate Passed. Ready to enter S6 Web Console."
+}
