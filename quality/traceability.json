@@ -19,6 +19,7 @@
         "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
         "web/tests/e2e/console.spec.ts",
         "web/tests/e2e/ros2_mcap.spec.ts",
+        "web/tests/e2e/perf_stability.spec.ts",
         "tools/verify_release_package.py"
       ]
     },
@@ -44,7 +45,8 @@
         "web/tests/unit/task_editor_logic.test.ts",
         "web/tests/unit/format_and_errors.test.ts",
         "web/tests/e2e/console.spec.ts",
-        "web/tests/e2e/ros2_mcap.spec.ts"
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "web/tests/e2e/perf_stability.spec.ts"
       ]
     },
     {
@@ -87,7 +89,8 @@
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
         "web/tests/component/core_components.test.ts",
         "web/tests/e2e/console.spec.ts",
-        "web/tests/e2e/ros2_mcap.spec.ts"
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "web/tests/e2e/perf_stability.spec.ts"
       ]
     },
     {
@@ -171,7 +174,8 @@
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
         "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
         "web/tests/e2e/console.spec.ts",
-        "web/tests/e2e/ros2_mcap.spec.ts"
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "web/tests/e2e/perf_stability.spec.ts"
       ]
     },
     {
@@ -281,7 +285,8 @@
         "web/tests/unit/polling_and_request.test.ts",
         "web/tests/component/core_components.test.ts",
         "web/tests/e2e/console.spec.ts",
-        "web/tests/e2e/ros2_mcap.spec.ts"
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "web/tests/e2e/perf_stability.spec.ts"
       ]
     },
     {

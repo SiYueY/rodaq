@@ -3,7 +3,7 @@
   "stage": "S7",
   "role": "stage-in-progress-checkpoint",
   "status": "Blocked",
-  "captured_at": "2026-11-26 16:49:00 UTC",
+  "captured_at": "2026-11-26 16:58:00 UTC",
   "entry_commit": "b400234",
   "branch": "next",
   "sources": [
@@ -15,7 +15,7 @@
     {
       "name": "00 · 开发实施计划与项目状态",
       "page_id": "418da2b2a80f8141a08ae0cc08a73962",
-      "last_edited_at": "2026-11-26T16:33:16.000Z"
+      "last_edited_at": "2026-11-26T16:50:38.000Z"
     },
     {
       "name": "RoDAQ 系统架构设计说明书",
@@ -30,26 +30,26 @@
   ],
   "completed_local_gates": {
     "func_traceability": "quality/traceability.json maps 15/15 requirements (FUNC-01..FUNC-15) to real executable CTest, Vitest, Playwright, and release qualification tests",
-    "release_package_staging": "build/s7-qualification/rodaq-0.1.0-linux-amd64-humble.tar.gz (25,644,690 bytes, sha256=115d04c701c26a1f...) contains bin/rodaq, librodaq_plugin.so, librodaq_daq.so, public headers, CMake config (strictly exporting only rodaq::plugin & rodaq::daq), com.rodaq.acquisition.ros2@1.0.0, com.rodaq.storage.mcap@1.0.0 (behavioral fakes excluded), openapi.yaml, task_config.schema.json, and share/rodaq/web/*; zero build-tree RPATH leaks, zero Node.js runtime dependency",
-    "relocated_out_of_tree_sdk_replay": "Unpacked release tarball to isolated prefix; built, installed, loaded, instantiated, and closed out-of-tree C11 plugin (com.example.s7.c_probe@1.0.0), C++17 plugin (com.example.s7.cpp_probe@1.0.0), and C++17 rodaq::daq + rodaq::plugin consumer via find_package(RoDAQ REQUIRED) + rodaq_register_plugin()",
-    "installed_ros2_humble_mcap_and_sigkill_recovery": "Relocated bin/rodaq recorded 2 live ROS 2 Humble topics (/s7_chatter 100 Hz + /s7_telemetry 50 Hz) with 2s rotation -> 4 committed MCAP artifacts, Pause/Resume/Stop succeeded, HTTP Range 206 byte-exact verified, independent ros2 bag info verified both topics, SIGKILL crash during active run recovered in existing mode in 308.3 ms preserving 4/4 committed MCAP artifacts byte-identical, SIGTERM clean exit 0; dev-host telemetry (Intel Core Ultra 5 125H, Ubuntu 22.04, NVMe ext4): API p50=1.20 ms, p99=1.93 ms (36 samples), RSS max=51.5 MB, open FDs max=60, threads max=44",
-    "humble_regression": "18/18 S7 key CTests passed (all 11 Server/OpenAPI tests, Ros2Runtime FormalTask & Representative camera/joint tests, rodaq_counter_binary_matrix, rodaq_domain_binary_matrix, rodaq_runtime_sdk_consumer, rodaq_counter_independent_projects, rodaq_package_contract); full Humble regression baseline 798/798 executed passed in S5 with zero C++ changes since",
-    "ubuntu24_ros2_jazzy_replay": "Docker ros2-bag-phase0:jazzy-amd64-local (Ubuntu 24.04 + GCC 13 + ROS 2 Jazzy): rebuilt rodaq_plugin, rodaq_daq, rodaq_ros2_acquisition, rodaq_mcap_storage with 0 warnings; 24/24 CTests passed (Ros2Runtime FormalTask/Representative/CustomMsg, Ros2SegmentRuntime, RodaqMeta, McapConfig/Qos/Storage, rodaq_package_contract)"
+    "humble_release_package_and_qualification": "build/s7-qualification/rodaq-0.1.0-linux-amd64-humble.tar.gz (Ubuntu 22.04 + GCC 11.4 + ROS 2 Humble + Drogon 1.9.14 + share/rodaq/web; strictly exports only rodaq::plugin & rodaq::daq; 0 build-tree RPATH leaks; 0 Node.js runtime dep; behavioral fakes excluded); relocated out-of-tree C11 + C++17 plugin & rodaq::daq consumer replay PASSED; multi-stream 64 KiB + telemetry ROS 2 -> MCAP (4 rotated segments, 15.64 MB, 3.22 MB/s), HTTP Range 206 + ros2 bag info PASSED; 2x consecutive SIGKILL crashes (0 committed artifact loss; history RTO 366.2/320.1 ms, recording resume RTO 620.6/904.7 ms), mid-download disconnect ReadLease release + Reset PASSED, SIGTERM exit 0; dev-host API latency (90 samples): p50=1.19 ms, p99=2.03 ms, p99.9_max=2.03 ms; RSS max=49.4 MiB, FDs max=60, threads max=44",
+    "jazzy_release_package_and_qualification": "build/s7-qualification/rodaq-0.1.0-linux-amd64-jazzy.tar.gz (Ubuntu 24.04 + GCC 13 + ROS 2 Jazzy + Drogon 1.9.14 + share/rodaq/web inside Docker ros2-bag-phase0:jazzy-amd64-local); 9/9 Jazzy Server unit/OpenAPI tests + 24/24 Jazzy Core/ROS2/MCAP/package-contract CTests PASSED; relocated out-of-tree C11 + C++17 plugin & rodaq::daq consumer replay PASSED; multi-stream ROS 2 Jazzy -> MCAP (4 rotated segments, 15.61 MB, 3.22 MB/s), HTTP Range 206 + ros2 bag info PASSED; 2x consecutive SIGKILL crashes (0 committed artifact loss; history RTO 314.2/314.7 ms, recording resume RTO 771.8/775.5 ms), mid-download disconnect ReadLease release + Reset PASSED, SIGTERM exit 0; API latency (90 samples): p50=1.03 ms, p99=2.43 ms, p99.9_max=2.43 ms; RSS max=54.1 MiB, FDs max=49, threads max=48",
+    "web_perf_stability_e2e_018": "web/tests/e2e/perf_stability.spec.ts (Chrome 154, 1280x720, 16 live streams @ 1 Hz polling): DOM nodes constant 387..387 (0 drift), JS heap 8.54 -> 6.66 MiB (max 9.02 MiB)",
+    "humble_regression": "18/18 S7 key CTests passed; full Humble regression baseline 798/798 executed passed in S5 with zero C++ changes since; tracked C/C++ clang-format-14 0 violations"
   },
   "external_blockers": [
     "72-hour continuous engineering pre-qualification endurance run (real wall-clock time window)",
     "7x24-hour (168-hour) continuous production endurance trial (real wall-clock time window)",
-    "Target industrial hardware qualification, heavy reference workload (100,300 rec/s / 909.44 MB/s), and physical power-loss testing (only dev-host and SIGKILL process crash tested here)",
-    "Native macOS Safari 16.4 runtime E2E verification (Ubuntu 22.04 Linux host tested Chrome 154, Edge 139, Firefox 159; Vite build.target includes safari16.4)",
-    "Ubuntu 24.04 + ROS 2 Jazzy Drogon 1.9.14 Server binary packaging (Drogon 1.9.14 prefix is currently prepared on Ubuntu 22.04 Humble host only; Jazzy Core + ROS 2 + MCAP verified 24/24)",
+    "Target industrial hardware qualification, heavy reference workload (100,300 rec/s / 909.44 MB/s), and physical power-loss testing (only dev-host and 2x SIGKILL process crash tested here)",
+    "Native macOS Safari 16.4 runtime E2E verification (Ubuntu 22.04 Linux host passed Chrome 154, Edge 139, Firefox 159; Vite build.target includes safari16.4)",
     "Remote GitHub CI execution (local unpushed branch next per no-push rule; local CI-equivalent gates executed)"
   ],
   "evidence": [
-    "build/s7-qualification/s7-release-qualification.json",
+    "build/s7-qualification/s7-release-qualification-humble.json",
+    "build/s7-qualification/s7-release-qualification-jazzy.json",
     "build/s7-qualification/rodaq-0.1.0-linux-amd64-humble.tar.gz",
-    "build/s7-qualification/s7-jazzy-replay.log",
+    "build/s7-qualification/rodaq-0.1.0-linux-amd64-jazzy.tar.gz",
+    "build/s7-qualification/s7-jazzy-server.log",
     "build/s7-qualification/s7-jazzy-ctest.log",
     "build/s1/s6-web-verify.log"
   ],
-  "qualification": "S7 Blocked (NOT Production Qualified). All locally executable Required integration, release packaging, relocated out-of-tree SDK replay, multi-browser Web E2E, Humble/Jazzy Core+ROS2+MCAP, and SIGKILL recovery gates passed. External wall-clock endurance, target hardware/power-loss, macOS Safari, Jazzy Drogon packaging, and remote CI remain required before declaring RoDAQ V1 Production Qualified."
+  "qualification": "S7 Blocked (NOT Production Qualified). Both Ubuntu 22.04 Humble and Ubuntu 24.04 Jazzy release packages, relocated out-of-tree SDK replays, multi-stream ROS2->MCAP + ros2 bag info, 2x consecutive SIGKILL recovery, mid-download disconnect ReadLease x Reset, WEB-E2E-018 1Hz DOM/heap stability, and multi-browser Chrome/Edge/Firefox E2E all passed locally. External 72h/168h endurance, target industrial hardware/power-loss, native macOS Safari 16.4, and remote GitHub CI remain required before declaring RoDAQ V1 Production Qualified."
 }

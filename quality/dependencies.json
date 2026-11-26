@@ -161,12 +161,12 @@
     {
       "os": "Ubuntu 22.04",
       "ros": "Humble",
-      "state": "baseline host only; backend qualification pending"
+      "state": "S0-S6 passed; S7 release package, relocated OOT SDK replay, multi-stream ROS2->MCAP + 2x SIGKILL recovery passed locally; 72h/168h & target hardware pending"
     },
     {
       "os": "Ubuntu 24.04",
       "ros": "Jazzy",
-      "state": "pending"
+      "state": "Core/ROS2/MCAP/Drogon 1.9.14 Server built cleanly (GCC 13); S7 release package, relocated OOT SDK replay, multi-stream ROS2->MCAP + 2x SIGKILL recovery passed locally; 72h/168h & target hardware pending"
     }
   ]
 }

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ BUILD_DIR = REPO_ROOT / "build" / "s1"
 WEB_DIST_DIR = REPO_ROOT / "web" / "dist"
 OUT_DIR = REPO_ROOT / "build" / "s7-qualification"
 RELEASE_NAME = "rodaq-0.1.0-linux-amd64-humble"
+ROS_DISTRO = "humble"
 ADMIN_TOKEN = "rodaq-s7-qual-admin-secret-0123456789abc"
 ROS_DOMAIN_ID = 53
 
@@ -388,8 +390,6 @@ int main(int argc, char** argv) {
                 "-B",
                 str(bld),
                 f"-DCMAKE_PREFIX_PATH={relocated_prefix}",
-                "-DCMAKE_C_COMPILER=gcc-11",
-                "-DCMAKE_CXX_COMPILER=g++-11",
             ]
         )
         run_checked(["cmake", "--build", str(bld), "-j4"])
@@ -518,7 +518,7 @@ def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
         def start_daemon(mode: str) -> subprocess.Popen:
             write_dep(mode)
             cmd = (
-                f'source /opt/ros/humble/setup.bash && '
+                f'source /opt/ros/{ROS_DISTRO}/setup.bash && '
                 f'export LD_LIBRARY_PATH="{prefix / "lib"}:$LD_LIBRARY_PATH" && '
                 f'exec "{prefix / "bin/rodaq"}" --deployment "{dep_file}"'
             )
@@ -542,7 +542,7 @@ def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
                 time.sleep(0.05)
             raise RuntimeError("rodaq did not reach ready phase")
 
-        # Multi-topic ROS 2 Humble publisher: /s7_chatter (100 Hz) + /s7_telemetry (50 Hz) = 150 msg/s.
+        # Multi-topic ROS 2 publisher: /s7_chatter (64 KiB @ 50 Hz ~= 3.2 MB/s) + /s7_telemetry (100 Hz).
         pub_py = tmp / "s7_pub.py"
         pub_py.write_text(
             """import rclpy, time
@@ -552,13 +552,14 @@ rclpy.init()
 node = Node('rodaq_s7_qual_pub')
 p1 = node.create_publisher(String, '/s7_chatter', 50)
 p2 = node.create_publisher(String, '/s7_telemetry', 50)
-payload_pad = 'X' * 512
+big_pad = 'B' * 60000
+small_pad = 'T' * 512
 i = 0
 try:
     while rclpy.ok():
-        p1.publish(String(data=f's7-chatter-{i}-{payload_pad}'))
+        p2.publish(String(data=f's7-telemetry-{i}-{small_pad}'))
         if i % 2 == 0:
-            p2.publish(String(data=f's7-telemetry-{i}-{payload_pad}'))
+            p1.publish(String(data=f's7-chatter-{i}-{big_pad}'))
         i += 1
         time.sleep(0.01)
 except KeyboardInterrupt:
@@ -573,7 +574,7 @@ finally:
             [
                 "bash",
                 "-lc",
-                f'source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID={ROS_DOMAIN_ID} && exec python3 "{pub_py}"',
+                f'source /opt/ros/{ROS_DISTRO}/setup.bash && export ROS_DOMAIN_ID={ROS_DOMAIN_ID} && exec python3 "{pub_py}"',
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -662,13 +663,16 @@ finally:
         st = wait_op(op["data"]["operation_id"])
         assert st["state"] == "succeeded", f"start failed: {st}"
 
-        # Sample system & runtime for 4.5s (triggers >=2 rotated MCAP segments) and measure API latency + RSS/FDs.
+        # Sample system & runtime for ~4.5s (45x2 = 90 HTTP API samples; triggers >=2 rotated MCAP segments).
         api_latencies_ms: list[float] = []
         rss_samples: list[int] = []
         fd_samples: list[int] = []
         thread_samples: list[int] = []
+        queue_rec_hwm = 0
+        queue_bytes_hwm = 0
         max_accepted_records = 0
-        for _ in range(18):
+        t_rec_start = time.monotonic()
+        for _ in range(45):
             c1, sys_body, dt1 = http_json(base_url, "GET", "/api/system")
             c2, rt_body, dt2 = http_json(base_url, "GET", f"/api/tasks/{task_id}/runtime")
             assert c1 == 200 and c2 == 200
@@ -679,7 +683,10 @@ finally:
             thread_samples.append(int(res["threads"]))
             for p in rt_body["data"]["pipelines"]:
                 max_accepted_records = max(max_accepted_records, int(p["admission"]["accepted_records"]))
-            time.sleep(0.25)
+                queue_rec_hwm = max(queue_rec_hwm, int(p["queue"]["high_watermark_records"]))
+                queue_bytes_hwm = max(queue_bytes_hwm, int(p["queue"]["high_watermark_bytes"]))
+            time.sleep(0.1)
+        rec_elapsed_s = max(0.1, time.monotonic() - t_rec_start)
 
         # Pause -> Resume -> Stop lifecycle check
         for kind, key in (("pause", "s7-pause-1"), ("resume", "s7-resume-1"), ("stop", "s7-stop-1")):
@@ -697,6 +704,7 @@ finally:
         assert c == 200
         arts = arts_body["data"]["items"]
         assert len(arts) >= 2, f"Expected >=2 rotated MCAP artifacts, got {len(arts)}"
+        total_committed_bytes = sum(int(a["physical_bytes"]) for a in arts)
 
         first_art_id = arts[0]["artifact_id"]
         c, detail_body, _ = http_json(base_url, "GET", f"/api/artifacts/{first_art_id}")
@@ -709,35 +717,107 @@ finally:
         sc_range, range_bytes, _ = http_bytes(base_url, mcap_file["download_url"], byte_range="bytes=0-15")
         assert sc_range == 206 and range_bytes == full_bytes[:16]
 
-        # Independent ROS 2 Humble `ros2 bag info` verification on downloaded MCAP!
+        # Independent ROS 2 `ros2 bag info` verification on downloaded MCAP!
         dl_mcap = tmp / "downloaded_s7.mcap"
         dl_mcap.write_bytes(full_bytes)
         bag_info = run_checked(
-            ["bash", "-lc", f'source /opt/ros/humble/setup.bash && ros2 bag info -s mcap "{dl_mcap}"']
+            ["bash", "-lc", f'source /opt/ros/{ROS_DISTRO}/setup.bash && ros2 bag info -s mcap "{dl_mcap}"']
         )
         assert "/s7_chatter" in bag_info and "/s7_telemetry" in bag_info, f"Missing topics in ros2 bag info:\n{bag_info}"
 
-        # Start Run #2, let record, then SIGKILL (unclean crash), restart in `existing` mode, verify recovery!
-        c, op_b, _ = http_json(
-            base_url, "POST", f"/api/tasks/{task_id}/operations", {"kind": "start", "parameters": {}}, idem_key="s7-start-crash"
+        # Consecutive crash #1 + #2 (2x SIGKILL during active recording) measuring history RTO vs recording RTO!
+        crash_rto_history_ms: list[float] = []
+        crash_rto_recording_ms: list[float] = []
+        for crash_idx in (1, 2):
+            c, op_b, _ = http_json(
+                base_url,
+                "POST",
+                f"/api/tasks/{task_id}/operations",
+                {"kind": "start", "parameters": {}},
+                idem_key=f"s7-start-crash-{crash_idx}",
+            )
+            assert c == 202
+            assert wait_op(op_b["data"]["operation_id"])["state"] == "succeeded"
+            time.sleep(0.6)
+
+            daemon.kill()  # SIGKILL sudden crash!
+            daemon.wait(timeout=5)
+            daemon = None
+
+            t_rec0 = time.perf_counter()
+            daemon = start_daemon("existing")
+            # History Query Recovery RTO: first committed artifact query + byte-exact readback after crash.
+            c, arts_after, _ = http_json(base_url, "GET", f"/api/artifacts?task_id={task_id}&limit=50")
+            assert c == 200 and len(arts_after["data"]["items"]) >= len(arts)
+            sc_after, after_bytes, _ = http_bytes(base_url, mcap_file["download_url"])
+            assert sc_after == 200 and after_bytes == full_bytes
+            crash_rto_history_ms.append(round((time.perf_counter() - t_rec0) * 1000.0, 1))
+
+            # Verify manual-policy boot reconciliation preserved desired_state == 'running' (never fabricated user Stop).
+            c_t, task_after, _ = http_json(base_url, "GET", f"/api/tasks/{task_id}")
+            assert c_t == 200 and task_after["data"]["desired_state"] == "running", f"Unexpected post-crash task: {task_after}"
+
+            # Recording Resume RTO: operator stops reconciled manual task and starts fresh recording.
+            c, op_clr, _ = http_json(
+                base_url,
+                "POST",
+                f"/api/tasks/{task_id}/operations",
+                {"kind": "stop", "parameters": {}},
+                idem_key=f"s7-clear-after-crash-{crash_idx}",
+            )
+            assert c == 202, f"post-crash stop failed: {c} {op_clr}"
+            assert wait_op(op_clr["data"]["operation_id"])["state"] == "succeeded"
+
+            c, op_r, _ = http_json(
+                base_url,
+                "POST",
+                f"/api/tasks/{task_id}/operations",
+                {"kind": "start", "parameters": {}},
+                idem_key=f"s7-resume-after-crash-{crash_idx}",
+            )
+            assert c == 202, f"post-crash start failed: {c} {op_r}"
+            assert wait_op(op_r["data"]["operation_id"])["state"] == "succeeded"
+            crash_rto_recording_ms.append(round((time.perf_counter() - t_rec0) * 1000.0, 1))
+
+            c, op_s, _ = http_json(
+                base_url,
+                "POST",
+                f"/api/tasks/{task_id}/operations",
+                {"kind": "stop", "parameters": {}},
+                idem_key=f"s7-stop-after-crash-{crash_idx}",
+            )
+            assert c == 202, f"post-resume stop failed: {c} {op_s}"
+            assert wait_op(op_s["data"]["operation_id"])["state"] == "succeeded"
+
+        # Mid-download HTTP client disconnect releases ReadLease so subsequent Reset succeeds cleanly!
+        raw_sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        raw_req = (
+            f"GET {mcap_file['download_url']} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"Authorization: Bearer {ADMIN_TOKEN}\r\n"
+            f"RoDAQ-API-Version: 1.0\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        raw_sock.sendall(raw_req)
+        _ = raw_sock.recv(128)
+        raw_sock.close()  # Abrupt client disconnect mid-download!
+
+        # Wait briefly for server disconnect cleanup, verify active_downloads == 0, then Reset succeeds!
+        dl_clean = time.monotonic() + 5.0
+        while time.monotonic() < dl_clean:
+            _, sb, _ = http_json(base_url, "GET", "/api/system")
+            if int(sb["data"]["backlog"]["active_downloads"]) == 0:
+                break
+            time.sleep(0.05)
+        _, sb_final, _ = http_json(base_url, "GET", "/api/system")
+        assert int(sb_final["data"]["backlog"]["active_downloads"]) == 0
+
+        c, op_reset, _ = http_json(
+            base_url, "POST", f"/api/tasks/{task_id}/operations", {"kind": "reset", "parameters": {}}, idem_key="s7-reset-final"
         )
         assert c == 202
-        assert wait_op(op_b["data"]["operation_id"])["state"] == "succeeded"
-        time.sleep(0.8)
-
-        daemon.kill()  # SIGKILL sudden crash!
-        daemon.wait(timeout=5)
-        daemon = None
-
-        # Restart in existing mode -> verify recovery + preserved committed artifact readback!
-        t_rec0 = time.perf_counter()
-        daemon = start_daemon("existing")
-        recovery_ms = (time.perf_counter() - t_rec0) * 1000.0
-
-        c, arts_after, _ = http_json(base_url, "GET", f"/api/artifacts?task_id={task_id}&limit=50")
-        assert c == 200 and len(arts_after["data"]["items"]) >= len(arts)
-        sc_after, after_bytes, _ = http_bytes(base_url, mcap_file["download_url"])
-        assert sc_after == 200 and after_bytes == full_bytes
+        reset_res = wait_op(op_reset["data"]["operation_id"])
+        assert reset_res["state"] == "succeeded", f"Reset after download disconnect failed: {reset_res}"
 
         # Clean SIGTERM shutdown -> exit code 0.
         daemon.send_signal(signal.SIGTERM)
@@ -748,17 +828,31 @@ finally:
         api_latencies_ms.sort()
         p50 = statistics.median(api_latencies_ms)
         p99 = api_latencies_ms[min(len(api_latencies_ms) - 1, int(len(api_latencies_ms) * 0.99))]
+        p999 = api_latencies_ms[-1]
+        throughput_mb_s = (total_committed_bytes / (1024.0 * 1024.0)) / rec_elapsed_s
         result = {
             "status": "passed",
-            "host_caveat": "Dev-host Ubuntu 22.04 measurement (NOT target industrial hardware or 100,300 rec/s heavy reference workload)",
+            "ros_distro": ROS_DISTRO,
+            "host_caveat": "Dev-host measurement (NOT target industrial hardware or 100,300 rec/s / 909.44 MB/s heavy reference workload)",
             "committed_mcap_artifacts_before_crash": len(arts),
-            "committed_mcap_artifacts_after_sigkill_recovery": len(arts_after["data"]["items"]),
+            "total_committed_physical_bytes": total_committed_bytes,
+            "sustained_committed_mb_per_s": round(throughput_mb_s, 2),
             "max_accepted_records_observed": max_accepted_records,
+            "queue_hwm": {"records": queue_rec_hwm, "bytes": queue_bytes_hwm},
             "mcap_download_bytes": len(full_bytes),
             "range_206_verified": True,
             "ros2_bag_info_verified": True,
-            "sigkill_restart_recovery_ms": round(recovery_ms, 1),
-            "api_latency_ms": {"samples": len(api_latencies_ms), "p50": round(p50, 2), "p99": round(p99, 2)},
+            "consecutive_sigkill_crashes_tested": 2,
+            "committed_artifact_rpo_loss_count": 0,
+            "history_query_recovery_rto_ms": crash_rto_history_ms,
+            "recording_resume_recovery_rto_ms": crash_rto_recording_ms,
+            "mid_download_disconnect_lease_release_and_reset": True,
+            "api_latency_ms": {
+                "samples": len(api_latencies_ms),
+                "p50": round(p50, 2),
+                "p99": round(p99, 2),
+                "p999_max": round(p999, 2),
+            },
             "process_hwm": {
                 "rss_bytes_max": max(rss_samples),
                 "open_fds_max": max(fd_samples),
@@ -783,18 +877,30 @@ finally:
 
 
 def main() -> int:
+    global BUILD_DIR, RELEASE_NAME, ROS_DISTRO, ROS_DOMAIN_ID
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--build-dir", default=str(BUILD_DIR))
+    parser.add_argument("--ros-distro", default="humble", choices=["humble", "jazzy"])
+    parser.add_argument("--domain-id", type=int, default=53)
+    args = parser.parse_args()
+    BUILD_DIR = Path(args.build_dir).resolve()
+    ROS_DISTRO = args.ros_distro
+    ROS_DOMAIN_ID = args.domain_id
+    RELEASE_NAME = f"rodaq-0.1.0-linux-amd64-{ROS_DISTRO}"
+
     stage_dir, tarball, digest = stage_release_package()
     oot = replay_out_of_tree_sdk(tarball)
     runtime = run_installed_ros2_mcap_workload_and_crash_recovery(tarball)
     report = {
         "release_name": RELEASE_NAME,
+        "ros_distro": ROS_DISTRO,
         "staged_dir": str(stage_dir.relative_to(REPO_ROOT)),
         "tarball": str(tarball.relative_to(REPO_ROOT)),
         "tarball_sha256": digest,
         "out_of_tree_sdk_replay": oot,
         "installed_ros2_mcap_qualification": runtime,
     }
-    report_path = OUT_DIR / "s7-release-qualification.json"
+    report_path = OUT_DIR / f"s7-release-qualification-{ROS_DISTRO}.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"[S7] Wrote qualification report to {report_path}")
     return 0
