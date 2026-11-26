@@ -3,8 +3,9 @@
   "stage": "S7",
   "role": "stage-in-progress-checkpoint",
   "status": "Blocked",
-  "captured_at": "2026-11-26 16:58:00 UTC",
+  "captured_at": "2026-11-26 17:24:00 UTC",
   "entry_commit": "b400234",
+  "verified_code_commit": "9ab4ad73d453279ea86151a1c7489dbf0c167a7f",
   "branch": "next",
   "sources": [
     {
@@ -33,16 +34,45 @@
     "humble_release_package_and_qualification": "build/s7-qualification/rodaq-0.1.0-linux-amd64-humble.tar.gz (Ubuntu 22.04 + GCC 11.4 + ROS 2 Humble + Drogon 1.9.14 + share/rodaq/web; strictly exports only rodaq::plugin & rodaq::daq; 0 build-tree RPATH leaks; 0 Node.js runtime dep; behavioral fakes excluded); relocated out-of-tree C11 + C++17 plugin & rodaq::daq consumer replay PASSED; multi-stream 64 KiB + telemetry ROS 2 -> MCAP (4 rotated segments, 15.64 MB, 3.22 MB/s), HTTP Range 206 + ros2 bag info PASSED; 2x consecutive SIGKILL crashes (0 committed artifact loss; history RTO 366.2/320.1 ms, recording resume RTO 620.6/904.7 ms), mid-download disconnect ReadLease release + Reset PASSED, SIGTERM exit 0; dev-host API latency (90 samples): p50=1.19 ms, p99=2.03 ms, p99.9_max=2.03 ms; RSS max=49.4 MiB, FDs max=60, threads max=44",
     "jazzy_release_package_and_qualification": "build/s7-qualification/rodaq-0.1.0-linux-amd64-jazzy.tar.gz (Ubuntu 24.04 + GCC 13 + ROS 2 Jazzy + Drogon 1.9.14 + share/rodaq/web inside Docker ros2-bag-phase0:jazzy-amd64-local); 9/9 Jazzy Server unit/OpenAPI tests + 24/24 Jazzy Core/ROS2/MCAP/package-contract CTests PASSED; relocated out-of-tree C11 + C++17 plugin & rodaq::daq consumer replay PASSED; multi-stream ROS 2 Jazzy -> MCAP (4 rotated segments, 15.61 MB, 3.22 MB/s), HTTP Range 206 + ros2 bag info PASSED; 2x consecutive SIGKILL crashes (0 committed artifact loss; history RTO 314.2/314.7 ms, recording resume RTO 771.8/775.5 ms), mid-download disconnect ReadLease release + Reset PASSED, SIGTERM exit 0; API latency (90 samples): p50=1.03 ms, p99=2.43 ms, p99.9_max=2.43 ms; RSS max=54.1 MiB, FDs max=49, threads max=48",
     "web_perf_stability_e2e_018": "web/tests/e2e/perf_stability.spec.ts (Chrome 154, 1280x720, 16 live streams @ 1 Hz polling): DOM nodes constant 387..387 (0 drift), JS heap 8.54 -> 6.66 MiB (max 9.02 MiB)",
-    "humble_regression": "18/18 S7 key CTests passed; full Humble regression baseline 798/798 executed passed in S5 with zero C++ changes since; tracked C/C++ clang-format-14 0 violations"
+    "humble_regression": "18/18 S7 key CTests passed; full Humble regression baseline 798/798 executed passed in S5; local dev preset + clang-tidy-14 459/459 passed on 9ab4ad7; tracked C/C++ clang-format-14 0 violations",
+    "remote_github_actions_ci": {
+      "run_id": 45866057574,
+      "url": "https://github.com/SiYueY/rodaq/actions/runs/45866057574",
+      "head_sha": "9ab4ad73d453279ea86151a1c7489dbf0c167a7f",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-26T17:14:42Z",
+      "updated_at": "2026-11-26T17:23:52Z",
+      "jobs": [
+        {
+          "id": 140069056374,
+          "name": "core (dev)",
+          "conclusion": "success",
+          "url": "https://github.com/SiYueY/rodaq/actions/runs/45866057574/job/140069056374"
+        },
+        {
+          "id": 140069056876,
+          "name": "core (asan-ubsan)",
+          "conclusion": "success",
+          "url": "https://github.com/SiYueY/rodaq/actions/runs/45866057574/job/140069056876"
+        },
+        {
+          "id": 140069056703,
+          "name": "web",
+          "conclusion": "success",
+          "url": "https://github.com/SiYueY/rodaq/actions/runs/45866057574/job/140069056703"
+        }
+      ]
+    }
   },
   "external_blockers": [
     "72-hour continuous engineering pre-qualification endurance run (real wall-clock time window)",
     "7x24-hour (168-hour) continuous production endurance trial (real wall-clock time window)",
     "Target industrial hardware qualification, heavy reference workload (100,300 rec/s / 909.44 MB/s), and physical power-loss testing (only dev-host and 2x SIGKILL process crash tested here)",
-    "Native macOS Safari 16.4 runtime E2E verification (Ubuntu 22.04 Linux host passed Chrome 154, Edge 139, Firefox 159; Vite build.target includes safari16.4)",
-    "Remote GitHub CI execution (local unpushed branch next per no-push rule; local CI-equivalent gates executed)"
+    "Native macOS Safari 16.4 runtime E2E verification (Ubuntu 22.04 Linux host passed Chrome 154, Edge 139, Firefox 159; Vite build.target includes safari16.4)"
   ],
   "evidence": [
+    "https://github.com/SiYueY/rodaq/actions/runs/45866057574",
     "build/s7-qualification/s7-release-qualification-humble.json",
     "build/s7-qualification/s7-release-qualification-jazzy.json",
     "build/s7-qualification/rodaq-0.1.0-linux-amd64-humble.tar.gz",
@@ -51,5 +81,5 @@
     "build/s7-qualification/s7-jazzy-ctest.log",
     "build/s1/s6-web-verify.log"
   ],
-  "qualification": "S7 Blocked (NOT Production Qualified). Both Ubuntu 22.04 Humble and Ubuntu 24.04 Jazzy release packages, relocated out-of-tree SDK replays, multi-stream ROS2->MCAP + ros2 bag info, 2x consecutive SIGKILL recovery, mid-download disconnect ReadLease x Reset, WEB-E2E-018 1Hz DOM/heap stability, and multi-browser Chrome/Edge/Firefox E2E all passed locally. External 72h/168h endurance, target industrial hardware/power-loss, native macOS Safari 16.4, and remote GitHub CI remain required before declaring RoDAQ V1 Production Qualified."
+  "qualification": "S7 Blocked (NOT Production Qualified). Remote GitHub Actions CI run #45866057574 on 9ab4ad7 passed all 3 jobs (core dev + clang-tidy-14, core asan-ubsan, web). Both Ubuntu 22.04 Humble and Ubuntu 24.04 Jazzy release packages, relocated out-of-tree SDK replays, multi-stream ROS2->MCAP + ros2 bag info, 2x consecutive SIGKILL recovery, mid-download disconnect ReadLease x Reset, WEB-E2E-018 1Hz DOM/heap stability, and multi-browser Chrome/Edge/Firefox E2E all passed. External 72h/168h endurance, target industrial hardware/heavy load/physical power-loss, and native macOS Safari 16.4 remain required before declaring RoDAQ V1 Production Qualified."
 }
