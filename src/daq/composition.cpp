@@ -182,6 +182,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 {profile.name, profile.storage.max_segment_physical_bytes});
         }
         auto execution = std::make_shared<task::RunExecutionOptions>();
+        execution->boot = o.boot;
         execution->sample = o.sample;
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
@@ -229,20 +230,22 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return tasks.status();
         }
         state->tasks = std::move(tasks.value());
-        auto recovered = state->tasks->list_tasks({});
-        if (!recovered.ok()) {
-            return recovered.status();
-        }
-        for (const auto& item : recovered.value().items) {
-            if (item.task.execution_condition != ExecutionCondition::Idle) {
-                return Status(StatusCode::Unavailable, {});
-            }
-        }
         // Allocate the final facade before enabling its mandatory-shutdown rule.
         auto composition = std::unique_ptr<Composition>(new Composition(std::move(state)));
         auto observed = composition->observe();
         if (!observed.ok()) {
             return observed.status();
+        }
+        auto boot_sample = composition->state_->resources->options.sample();
+        if (!boot_sample.ok()) {
+            return boot_sample.status();
+        }
+        const auto boot_space = composition->state_->resources->options.capacity->space_snapshot(
+            boot_sample.value().monotonic_ns);
+        auto reconciled = composition->state_->tasks->reconcile_boot(
+            boot_space.condition, boot_sample.value().monotonic_ns);
+        if (!reconciled.ok()) {
+            return reconciled.status();
         }
         composition->state_->started = true;
         return composition;
@@ -357,9 +360,10 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         return closed.status();
     }
     state_->catalog->cancel_readers();
-    // Keep control and cleanup admission until actual completions have been
-    // published. In particular, an observer timeout must leave cleanup retryable.
-    auto created = state_->lanes[0]->shutdown(deadline);
+    // Keep create, control and cleanup lanes open while in-flight cleanup or
+    // post-retirement receipt removal settles; close_admission() already blocks
+    // new user Create/Lifecycle requests.
+    auto created = state_->lanes[0]->wait_idle(deadline);
     if (!created.ok()) {
         return created.status();
     }
@@ -384,6 +388,10 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     auto cleaned = state_->lanes[3]->wait_idle(deadline);
     if (!cleaned.ok()) {
         return cleaned.status();
+    }
+    created = state_->lanes[0]->wait_idle(deadline);
+    if (!created.ok()) {
+        return created.status();
     }
     controls = state_->lanes[1]->wait_idle(deadline);
     if (!controls.ok()) {
@@ -416,7 +424,7 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
             return Status(StatusCode::Unavailable, {});
         }
     }
-    for (std::size_t i = 1; i < 4; ++i) {
+    for (std::size_t i = 0; i < 4; ++i) {
         auto quiet = state_->lanes[i]->shutdown(deadline);
         if (!quiet.ok()) {
             return quiet.status();

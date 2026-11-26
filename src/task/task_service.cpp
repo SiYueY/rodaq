@@ -5,17 +5,20 @@
 #include "create_store.hpp"
 #include "identity.hpp"
 #include "task_controller.hpp"
+#include "../artifact/volume_capacity.hpp"
 #include "../pipeline/stream_identity_store.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <optional>
-#include <utility>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
@@ -34,6 +37,165 @@ bool label(std::string_view value) noexcept {
            std::all_of(value.begin(), value.end(), [](unsigned char byte) {
                return byte >= 0x21 && byte <= 0x7e;
            });
+}
+
+const task::StoredOperation* find_current_operation(
+    const task::TaskControlRecord& control) noexcept {
+    if (!control.current_operation_id) {
+        return nullptr;
+    }
+    for (const auto& entry : control.operation_history.entries) {
+        if (entry.snapshot.operation_id == *control.current_operation_id) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+Result<std::optional<task::TaskRecoveryRecord>> load_boot_recovery(task::TaskRecoveryStore& store) {
+    auto loaded = store.load();
+    if (loaded.ok()) {
+        return std::optional<task::TaskRecoveryRecord>(std::move(loaded.value()));
+    }
+    if (loaded.status().code() == StatusCode::NotFound) {
+        return std::optional<task::TaskRecoveryRecord>{};
+    }
+    if (loaded.status().code() == StatusCode::Unavailable) {
+        return store.reconcile();
+    }
+    return loaded.status();
+}
+
+Result<task::RecoveryBoundary> boot_recovery_boundary(const task::RunExecutionOptions& execution) {
+    std::string boot_uuid = execution.boot.kernel_uuid;
+    if (boot_uuid.empty()) {
+        auto boot = time::read_boot_identity();
+        if (!boot.ok()) {
+            return boot.status();
+        }
+        boot_uuid = std::move(boot.value().kernel_uuid);
+    }
+    auto sample = execution.sample();
+    if (!sample.ok()) {
+        return sample.status();
+    }
+    return task::RecoveryBoundary{std::move(boot_uuid), sample.value().monotonic_ns};
+}
+
+Result<void> settle_interrupted_run_at_boot(
+    task::TaskEntry& entry, const task::TaskControlRecord& control,
+    task::TaskRecoveryRecord& record, const task::RunExecutionOptions& execution, bool revoke,
+    bool compact) {
+    auto boundary = boot_recovery_boundary(execution);
+    if (!boundary.ok()) {
+        return boundary.status();
+    }
+    const bool needs_end =
+        record.run_operation && record.run_operation->phase != task::RunPhase::Ended;
+    const bool needs_revoke =
+        revoke && control.control_generation > record.observed_control_generation &&
+        ((record.run_operation && std::any_of(
+                                      record.run_operation->authorized_pipelines.begin(),
+                                      record.run_operation->authorized_pipelines.end(),
+                                      [](const auto& p) { return p.continuation_permission; })) ||
+         std::any_of(record.pipelines.begin(), record.pipelines.end(), [](const auto& p) {
+             return p.instance.continuation_permission;
+         }));
+    if (needs_end || needs_revoke) {
+        if (record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        const bool higher_control = control.control_generation > record.observed_control_generation;
+        if (higher_control) {
+            record.observed_control_generation = control.control_generation;
+            record.active_config_version = control.active_config_version;
+        }
+        if (record.run_operation) {
+            for (auto& pipe : record.run_operation->authorized_pipelines) {
+                if (!pipe.ended_boundary) {
+                    auto end = boundary.value();
+                    if (end.boot_uuid == pipe.prepared_boundary.boot_uuid) {
+                        end.monotonic_ns =
+                            std::max(end.monotonic_ns, pipe.prepared_boundary.monotonic_ns);
+                    }
+                    if (record.run_operation->authorization_boundary &&
+                        end.boot_uuid == record.run_operation->authorization_boundary->boot_uuid) {
+                        end.monotonic_ns = std::max(
+                            end.monotonic_ns,
+                            record.run_operation->authorization_boundary->monotonic_ns);
+                    }
+                    pipe.ended_boundary = std::move(end);
+                }
+                if (revoke && higher_control) {
+                    pipe.continuation_permission = false;
+                }
+            }
+            record.run_operation->phase = task::RunPhase::Ended;
+        }
+        if (revoke && higher_control) {
+            for (auto& pipe : record.pipelines) {
+                pipe.instance.continuation_permission = false;
+            }
+        }
+        const auto expected = record.record_revision++;
+        auto published = entry.recovery->publish(record, expected);
+        if (!published.ok()) {
+            return published.status();
+        }
+    }
+    if (compact && record.run_operation && record.run_operation->phase == task::RunPhase::Ended) {
+        if (record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        for (const auto& instance : record.run_operation->authorized_pipelines) {
+            const auto found = std::find_if(
+                record.pipelines.begin(), record.pipelines.end(), [&](const auto& existing) {
+                    return existing.instance.pipeline_id == instance.pipeline_id;
+                });
+            if (found != record.pipelines.end()) {
+                if (!found->instance.ended_boundary) {
+                    return Status(StatusCode::Conflict, {});
+                }
+                *found = {record.run_operation->control_generation, instance};
+            } else {
+                record.pipelines.push_back({record.run_operation->control_generation, instance});
+            }
+        }
+        record.run_operation.reset();
+        const auto expected = record.record_revision++;
+        auto published = entry.recovery->publish(record, expected);
+        if (!published.ok()) {
+            return published.status();
+        }
+    }
+    return {};
+}
+
+Result<void> settle_operation_at_boot(
+    task::TaskEntry& entry, const OperationSnapshot& terminal, const task::TaskStorePolicy& policy,
+    std::shared_ptr<const TaskConfig>& active) {
+    auto work = entry.controller->update_operation(terminal);
+    if (!work.ok()) {
+        return work.status();
+    }
+    const bool configuration = terminal.kind == OperationKind::Configure;
+    auto actual = task::execute_control_work(
+        *entry.store, *work.value(), configuration ? entry.identities.get() : nullptr,
+        policy.config);
+    auto completed = entry.controller->persistence_completed(
+        actual.work_id, actual.authority, actual.publication_failure);
+    if (!completed.ok()) {
+        return completed.status();
+    }
+    if (!completed.value().resolved || !completed.value().resolved->durable) {
+        return completed.value().resolved ? completed.value().resolved->status
+                                          : Status(StatusCode::DataLoss, {});
+    }
+    if (configuration) {
+        entry.identity = std::move(*actual.identities);
+        active = std::move(actual.active_config);
+    }
+    return {};
 }
 
 }  // namespace
@@ -60,16 +222,19 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
         if (entry.execution) {
             snapshot.execution_condition = entry.execution->condition(control->desired_state);
         }
-        if ((control->reset_intent || entry.resetting || entry.retiring) &&
-            snapshot.execution_condition != ExecutionCondition::PendingCleanup) {
-            snapshot.execution_condition = ExecutionCondition::Draining;
-        }
         if (control->current_operation_id) {
             for (const auto& operation : control->operation_history.entries) {
                 if (operation.snapshot.operation_id == *control->current_operation_id) {
                     snapshot.current_operation = operation.snapshot;
                 }
             }
+        }
+        const bool non_terminal_retire = snapshot.current_operation &&
+                                         !task::terminal(snapshot.current_operation->state) &&
+                                         snapshot.current_operation->kind == OperationKind::Retire;
+        if ((control->reset_intent || entry.resetting || entry.retiring || non_terminal_retire) &&
+            snapshot.execution_condition != ExecutionCondition::PendingCleanup) {
+            snapshot.execution_condition = ExecutionCondition::Draining;
         }
         auto runtime = capture_task_runtime(entry, *config, snapshot);
         if (!runtime.ok()) {
@@ -291,64 +456,262 @@ Result<std::shared_ptr<TaskEntry>> TaskService::State::materialize(
         }
         entry->recovery = std::move(recovery.value());
     }
+    auto active = std::make_shared<const TaskConfig>(std::move(config.value().config));
     const auto& history = control.value().operation_history;
+    const auto* current_op = find_current_operation(control.value());
     // Configure is accepted only after all prior execution owners are quiescent.
     // The current operation is retained even when older history has expired.
     const bool configuration_boundary =
-        std::any_of(history.entries.begin(), history.entries.end(), [&](const auto& operation) {
-            return control.value().current_operation_id == operation.snapshot.operation_id &&
-                   operation.snapshot.kind == OperationKind::Configure;
-        });
+        current_op && current_op->snapshot.kind == OperationKind::Configure;
     const bool never_started =
         !history.history_truncated &&
         std::none_of(history.entries.begin(), history.entries.end(), [](const auto& operation) {
             return operation.snapshot.kind == OperationKind::Start ||
                    operation.snapshot.kind == OperationKind::Resume;
         });
-    entry->quiescent = control.value().desired_state == DesiredState::Stopped &&
-                       !control.value().reset_intent && (configuration_boundary || never_started);
-    if (!entry->quiescent && entry->recovery &&
-        control.value().desired_state == DesiredState::Stopped && !control.value().reset_intent) {
-        const bool stopped =
-            std::any_of(history.entries.begin(), history.entries.end(), [&](const auto& operation) {
-                return control.value().current_operation_id == operation.snapshot.operation_id &&
-                       operation.snapshot.kind == OperationKind::Stop &&
-                       operation.snapshot.state == OperationState::Succeeded;
-            });
-        auto recovered = entry->recovery->load();
-        if (stopped && recovered.ok()) {
-            const auto& record = recovered.value();
-            entry->quiescent =
-                record.observed_control_generation == control.value().control_generation &&
-                record.active_config_version == control.value().active_config_version &&
-                !record.reset_progress && record.cleanup_intents.empty() && record.run_operation &&
-                record.run_operation->phase == task::RunPhase::Ended &&
-                std::all_of(
-                    record.pipelines.begin(), record.pipelines.end(),
-                    [](const auto& recent) { return recent.instance.ended_boundary.has_value(); });
+
+    if (!entry->recovery) {
+        entry->quiescent = control.value().desired_state == DesiredState::Stopped &&
+                           !control.value().reset_intent &&
+                           (configuration_boundary || never_started);
+        if (!entry->quiescent && current_op && !task::terminal(current_op->snapshot.state) &&
+            current_op->snapshot.kind == OperationKind::Retire) {
+            entry->quiescent = true;
+            entry->boot_action = task::BootAction::ResumeRetire;
+        } else if (control.value().reset_intent) {
+            entry->quiescent = true;
+            entry->boot_action = task::BootAction::ResumeReset;
+        }
+    } else {
+        auto loaded_rec = load_boot_recovery(*entry->recovery);
+        if (!loaded_rec.ok()) {
+            return loaded_rec.status();
+        }
+        auto& rec = loaded_rec.value();
+        const auto desired = control.value().desired_state;
+
+        if (desired == DesiredState::Stopped) {
+            if (control.value().reset_intent) {
+                if (rec && rec->run_operation &&
+                    rec->run_operation->phase != task::RunPhase::Ended) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, true, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                entry->quiescent = true;
+                entry->boot_action = task::BootAction::ResumeReset;
+            } else if (
+                current_op && !task::terminal(current_op->snapshot.state) &&
+                current_op->snapshot.kind == OperationKind::Retire) {
+                entry->quiescent = true;
+                entry->boot_action = task::BootAction::ResumeRetire;
+            } else if (configuration_boundary || never_started) {
+                entry->quiescent = true;
+            } else if (
+                current_op && current_op->snapshot.kind == OperationKind::Reset &&
+                task::terminal(current_op->snapshot.state)) {
+                entry->quiescent = true;
+            } else if (
+                current_op && current_op->snapshot.kind == OperationKind::Stop &&
+                !task::terminal(current_op->snapshot.state)) {
+                const bool possibly_opened =
+                    rec && rec->run_operation &&
+                    rec->run_operation->phase == task::RunPhase::OpenAuthorized;
+                if (rec) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, true, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                auto terminal = current_op->snapshot;
+                terminal.terminal_at = std::max(task::control_wall_now(), terminal.accepted_at);
+                if (possibly_opened) {
+                    terminal.state = OperationState::Failed;
+                    terminal.status_code = StatusCode::Unavailable;
+                    terminal.data_impact = DataImpact::PersistenceUnknown;
+                    terminal.failure_domain = FailureDomain::Process;
+                    terminal.retryability = Retryability::ManualRecoveryRequired;
+                } else {
+                    terminal.state = OperationState::Succeeded;
+                    terminal.status_code = StatusCode::Ok;
+                    terminal.data_impact = DataImpact::None;
+                }
+                auto settled_op =
+                    settle_operation_at_boot(*entry, terminal, options->store, active);
+                if (!settled_op.ok()) {
+                    return settled_op.status();
+                }
+                entry->quiescent = true;
+            } else if (
+                current_op && current_op->snapshot.kind == OperationKind::Stop &&
+                task::terminal(current_op->snapshot.state)) {
+                if (!rec) {
+                    entry->quiescent = false;
+                    if (current_op->snapshot.state == OperationState::Succeeded) {
+                        entry->missing_recovery_proof = true;
+                    }
+                } else if (
+                    current_op->snapshot.state == OperationState::Failed && rec->run_operation &&
+                    rec->run_operation->phase != task::RunPhase::Ended) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, true, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                    entry->quiescent = true;
+                } else {
+                    const auto& record = *rec;
+                    entry->quiescent =
+                        record.observed_control_generation == control.value().control_generation &&
+                        record.active_config_version == control.value().active_config_version &&
+                        !record.reset_progress && record.cleanup_intents.empty() &&
+                        (!record.run_operation ||
+                         record.run_operation->phase == task::RunPhase::Ended) &&
+                        std::all_of(
+                            record.pipelines.begin(), record.pipelines.end(),
+                            [](const auto& recent) {
+                                return recent.instance.ended_boundary.has_value();
+                            });
+                }
+            }
+        } else if (desired == DesiredState::Paused) {
+            if (current_op && current_op->snapshot.kind == OperationKind::Pause &&
+                !task::terminal(current_op->snapshot.state)) {
+                const bool possibly_opened =
+                    rec && rec->run_operation &&
+                    rec->run_operation->phase == task::RunPhase::OpenAuthorized;
+                if (rec) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, true, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                auto terminal = current_op->snapshot;
+                terminal.terminal_at = std::max(task::control_wall_now(), terminal.accepted_at);
+                if (possibly_opened) {
+                    terminal.state = OperationState::Failed;
+                    terminal.status_code = StatusCode::Unavailable;
+                    terminal.data_impact = DataImpact::PersistenceUnknown;
+                    terminal.failure_domain = FailureDomain::Process;
+                    terminal.retryability = Retryability::ManualRecoveryRequired;
+                } else {
+                    terminal.state = OperationState::Succeeded;
+                    terminal.status_code = StatusCode::Ok;
+                    terminal.data_impact = DataImpact::None;
+                }
+                auto settled_op =
+                    settle_operation_at_boot(*entry, terminal, options->store, active);
+                if (!settled_op.ok()) {
+                    return settled_op.status();
+                }
+                entry->quiescent = true;
+            } else if (rec) {
+                if (rec->run_operation && rec->run_operation->phase != task::RunPhase::Ended) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, true, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                entry->quiescent =
+                    !rec->reset_progress && rec->cleanup_intents.empty() &&
+                    (!rec->run_operation || rec->run_operation->phase == task::RunPhase::Ended) &&
+                    std::all_of(
+                        rec->pipelines.begin(), rec->pipelines.end(), [](const auto& recent) {
+                            return recent.instance.ended_boundary.has_value();
+                        });
+            }
+        } else if (desired == DesiredState::Running) {
+            const bool active_run_op =
+                current_op &&
+                (current_op->snapshot.kind == OperationKind::Start ||
+                 current_op->snapshot.kind == OperationKind::Resume) &&
+                current_op->snapshot.control_generation == control.value().control_generation;
+            if (active_run_op && !task::terminal(current_op->snapshot.state)) {
+                // Task §3.4 Rows 1 & 2: Accepted/InProgress Start/Resume continues
+                // original operation (never cancelled by manual policy). Any prior
+                // Prepared or OpenAuthorized instance is ended and compacted first.
+                if (rec && rec->run_operation) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, false, true);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                entry->quiescent = true;
+                entry->boot_action = task::BootAction::ContinueRun;
+            } else if (
+                active_run_op &&
+                (current_op->snapshot.state == OperationState::Succeeded ||
+                 current_op->snapshot.state == OperationState::PartiallySucceeded)) {
+                // Task §3.4 Row 3: Running + terminal Start/Resume + verifiable
+                // current-generation OpenAuthorized/Ended continuation evidence.
+                // Missing opened_observed never overturns durable OpenAuthorized.
+                bool has_continuation = false;
+                if (rec && rec->observed_control_generation == control.value().control_generation &&
+                    rec->active_config_version == control.value().active_config_version &&
+                    !rec->reset_progress && rec->cleanup_intents.empty()) {
+                    if (rec->run_operation &&
+                        rec->run_operation->operation_id == current_op->snapshot.operation_id &&
+                        rec->run_operation->control_generation ==
+                            control.value().control_generation &&
+                        (rec->run_operation->phase == task::RunPhase::OpenAuthorized ||
+                         rec->run_operation->phase == task::RunPhase::Ended)) {
+                        has_continuation = std::any_of(
+                            rec->run_operation->authorized_pipelines.begin(),
+                            rec->run_operation->authorized_pipelines.end(),
+                            [](const auto& p) { return p.continuation_permission; });
+                        if (rec->run_operation->phase == task::RunPhase::OpenAuthorized) {
+                            auto settled = settle_interrupted_run_at_boot(
+                                *entry, control.value(), *rec, *options->execution, false, false);
+                            if (!settled.ok()) {
+                                return settled.status();
+                            }
+                        }
+                    } else if (!rec->run_operation) {
+                        has_continuation = std::any_of(
+                            rec->pipelines.begin(), rec->pipelines.end(), [&](const auto& p) {
+                                return p.control_generation == control.value().control_generation &&
+                                       p.instance.continuation_permission;
+                            });
+                    }
+                }
+                entry->quiescent = true;
+                if (has_continuation && rec->recording_time_ns.has_value() &&
+                    active->recovery_policy == RecoveryPolicyMode::Resume &&
+                    validate_deployment(*active).ok()) {
+                    entry->boot_action = task::BootAction::BootResume;
+                } else {
+                    // Manual policy, missing continuation, or incompatible deployment
+                    // stays Gate Closed and projects Protected.
+                    entry->boot_action = task::BootAction::None;
+                }
+            } else {
+                // Task §3.4 Row 4: Running without recoverable op/verifiable evidence.
+                if (rec && rec->run_operation &&
+                    rec->run_operation->phase != task::RunPhase::Ended) {
+                    auto settled = settle_interrupted_run_at_boot(
+                        *entry, control.value(), *rec, *options->execution, false, false);
+                    if (!settled.ok()) {
+                        return settled.status();
+                    }
+                }
+                entry->quiescent = true;
+                entry->boot_action = task::BootAction::None;
+            }
         }
     }
-    auto active = std::make_shared<const TaskConfig>(std::move(config.value().config));
     if (entry->quiescent) {
         auto terminal = task::completed_configuration(*entry->controller->durable_record());
         if (terminal) {
-            auto work = entry->controller->update_operation(*terminal);
-            if (!work.ok()) {
-                return work.status();
+            auto settled = settle_operation_at_boot(*entry, *terminal, options->store, active);
+            if (!settled.ok()) {
+                return settled.status();
             }
-            auto actual = task::execute_control_work(
-                *entry->store, *work.value(), entry->identities.get(), options->store.config);
-            auto completed = entry->controller->persistence_completed(
-                actual.work_id, actual.authority, actual.publication_failure);
-            if (!completed.ok()) {
-                return completed.status();
-            }
-            if (!completed.value().resolved || !completed.value().resolved->durable) {
-                return completed.value().resolved ? completed.value().resolved->status
-                                                  : Status(StatusCode::DataLoss, {});
-            }
-            entry->identity = std::move(*actual.identities);
-            active = std::move(actual.active_config);
         }
     }
     auto published = task::make_task_publication(*entry, std::move(active), 1);
@@ -659,6 +1022,69 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
         return Status(StatusCode::ResourceExhausted, {});
     } catch (const fs::filesystem_error&) {
         return Status(StatusCode::Unavailable, {});
+    }
+}
+
+Result<void> TaskService::reconcile_boot(
+    artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic) {
+    if (!state_->accepting.load(std::memory_order_acquire)) {
+        return {};
+    }
+    try {
+        std::vector<std::shared_ptr<task::TaskEntry>> entries;
+        {
+            std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+            entries = state_->entries;
+        }
+        for (const auto& entry : entries) {
+            std::lock_guard<std::mutex> control(entry->control_mutex);
+            if (entry->missing_recovery_proof) {
+                return Status(StatusCode::Unavailable, {});
+            }
+        }
+        for (const auto& entry : entries) {
+            task::BootAction action = task::BootAction::None;
+            ControlGeneration gen = 0;
+            {
+                std::lock_guard<std::mutex> control(entry->control_mutex);
+                action = std::exchange(entry->boot_action, task::BootAction::None);
+                gen = entry->controller->durable_record()->control_generation;
+                if (action == task::BootAction::BootResume &&
+                    condition != artifact::VolumeSpaceCondition::Normal) {
+                    entry->volume_recovery = task::VolumeRecovery{gen, 0, now_monotonic};
+                    action = task::BootAction::None;
+                }
+            }
+            switch (action) {
+                case task::BootAction::None:
+                    break;
+                case task::BootAction::ContinueRun: {
+                    {
+                        std::lock_guard<std::mutex> control(entry->control_mutex);
+                        entry->controller->authorize_boot_run();
+                    }
+                    state_->start_execution(entry, task::RunPurpose::Operation, now_monotonic);
+                    break;
+                }
+                case task::BootAction::BootResume: {
+                    {
+                        std::lock_guard<std::mutex> control(entry->control_mutex);
+                        entry->controller->authorize_boot_run();
+                    }
+                    state_->start_execution(entry, task::RunPurpose::BootRecovery, now_monotonic);
+                    break;
+                }
+                case task::BootAction::ResumeReset:
+                    state_->start_reset(entry);
+                    break;
+                case task::BootAction::ResumeRetire:
+                    state_->start_retire(entry);
+                    break;
+            }
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
 }
 

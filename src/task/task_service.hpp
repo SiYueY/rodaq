@@ -69,9 +69,10 @@ struct RuntimeRecoveryPolicy {
 
 bool valid_runtime_recovery_policy(const RuntimeRecoveryPolicy& policy) noexcept;
 
-enum class RunPurpose { Operation, VolumeRecovery };
+enum class RunPurpose { Operation, VolumeRecovery, BootRecovery };
 
 struct RunExecutionOptions {
+    time::BootIdentity boot;
     pipeline::ReceiveClock sample{&time::sample_clocks};
     // Separate bounded Native domains, each with at least max_tasks workers
     // and queue slots. A blocked Task cannot consume another Task's capacity.

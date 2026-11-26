@@ -362,7 +362,7 @@ void TaskService::State::CloseJob::run() noexcept {
             reply->complete(OperationId{});
             return;
         }
-        if (internal_cleanup && execution->purpose == task::RunPurpose::VolumeRecovery) {
+        if (internal_cleanup && execution->purpose != task::RunPurpose::Operation) {
             return;
         }
         owner->finish_execution(

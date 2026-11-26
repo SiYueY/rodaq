@@ -22,6 +22,11 @@ struct VolumeCapacityState {
 
     bool space_stopped{false};
     std::optional<std::uint64_t> recovery_started;
+    // Earliest monotonic timestamp of the current unbroken valid sample chain.
+    // Concurrent readers whose CLOCK_MONOTONIC read happened just before a
+    // newer finish_space_sample() published are still covered by that fresher
+    // sample, while timestamps predating the chain or an invalidation fail closed.
+    std::optional<std::uint64_t> continuous_sample_since;
 
     std::uint64_t effective_free() const noexcept {
         const auto debt = consumed_total - sample_consumed_baseline;
@@ -35,8 +40,15 @@ struct VolumeCapacityState {
     VolumeSpaceSnapshot observe_space(std::uint64_t now) {
         VolumeSpaceSnapshot result;
         result.protection = counters.protection;
-        if (!counters.has_space_sample || now < counters.sampled_monotonic_ns ||
-            now - counters.sampled_monotonic_ns > options.space_sample_max_age_ns) {
+        const bool covered_by_newer_sample =
+            counters.has_space_sample && now < counters.sampled_monotonic_ns &&
+            continuous_sample_since && now >= *continuous_sample_since &&
+            counters.sampled_monotonic_ns - now <= options.space_sample_max_age_ns;
+        const bool stale = !counters.has_space_sample ||
+                           (now < counters.sampled_monotonic_ns && !covered_by_newer_sample) ||
+                           (now >= counters.sampled_monotonic_ns &&
+                            now - counters.sampled_monotonic_ns > options.space_sample_max_age_ns);
+        if (stale) {
             // Cold startup has no previously admitted work to resume. Once a
             // sample existed, unknown evidence must follow the recovery gate.
             space_stopped = space_stopped || last_published_probe != 0;
@@ -353,6 +365,7 @@ Result<void> VolumeCapacity::finish_space_sample(
     if (gap) {
         state_->space_stopped = true;
         state_->recovery_started.reset();
+        state_->continuous_sample_since.reset();
     }
     state_->last_published_probe = probe.id_;
     state_->sample_consumed_baseline = probe.consumed_;
@@ -361,6 +374,9 @@ Result<void> VolumeCapacity::finish_space_sample(
     // Use its start as the conservative freshness boundary, not a late return.
     state_->counters.sampled_monotonic_ns = probe.started_;
     state_->counters.has_space_sample = true;
+    if (!state_->continuous_sample_since) {
+        state_->continuous_sample_since = probe.started_;
+    }
     (void)state_->observe_space(finished_monotonic_ns);
     if (state_->space_stopped && state_->counters.protection == StatusCode::Ok &&
         state_->counters.actual_usage_complete &&
@@ -383,6 +399,7 @@ void VolumeCapacity::invalidate_space_sample() {
         state_->counters.has_space_sample = false;
         state_->space_stopped = true;
         state_->recovery_started.reset();
+        state_->continuous_sample_since.reset();
         state_->last_published_probe = state_->next_probe - 1;
     }
 }

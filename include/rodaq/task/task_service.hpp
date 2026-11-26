@@ -90,6 +90,8 @@ private:
     Result<void> schedule_rotation(std::uint64_t now_monotonic);
     Result<void> reconcile_volume(
         artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
+    Result<void> reconcile_boot(
+        artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
     Result<void> collect_artifacts(
         artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);

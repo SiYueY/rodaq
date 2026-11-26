@@ -84,6 +84,35 @@ Result<OperationId> TaskService::retire(
                 }
             }
         }
+        if (!already_known) {
+            if (precondition.has_expected_control_generation &&
+                precondition.expected_control_generation != durable->control_generation) {
+                return Status(StatusCode::Conflict, {});
+            }
+            const bool settled_quiescent =
+                entry->quiescent && entry->closing == 0 && !entry->retention_work &&
+                !entry->artifact_maintenance_active && !entry->resetting && !entry->retiring &&
+                entry->cleanup_active_id == 0 && !entry->cleanup_ready.frame &&
+                !entry->cleanup_pending.frame;
+            bool non_terminal_op = false;
+            if (durable->current_operation_id) {
+                for (const auto& op : durable->operation_history.entries) {
+                    if (op.snapshot.operation_id == *durable->current_operation_id &&
+                        !task::terminal(op.snapshot.state)) {
+                        non_terminal_op = true;
+                        break;
+                    }
+                }
+            }
+            if (!state_->options->execution || durable->desired_state != DesiredState::Stopped ||
+                durable->reset_intent || non_terminal_op || !settled_quiescent ||
+                entry->controller->persistence_protected()) {
+                return Status(StatusCode::InvalidState, {});
+            }
+            if (entry->persisting || entry->control_work) {
+                return Status(StatusCode::Conflict, {});
+            }
+        }
     }
     if (!already_known && state_->options->execution &&
         state_->options->execution->artifacts.retire_eligible) {

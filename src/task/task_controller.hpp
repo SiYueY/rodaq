@@ -129,6 +129,7 @@ public:
     bool persistence_protected() const noexcept { return protected_; }
 
     bool run_is_current(OperationId operation, ControlGeneration generation) const noexcept;
+    void authorize_boot_run() noexcept;
 
 private:
     struct PendingStop {

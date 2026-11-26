@@ -341,7 +341,7 @@ TEST_F(ResetRetireTest, ResetBlockedByActiveReadLeaseThenSettlesAfterRelease) {
         StatusCode::InvalidState);
     EXPECT_EQ(
         composition_->tasks().retire(task, {"blocked-retire"}, {}).status().code(),
-        StatusCode::Conflict);
+        StatusCode::InvalidState);
 
     // Release the ReadLease -> subsequent observe() retries and settles Reset!
     handle.reset();

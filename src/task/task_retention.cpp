@@ -83,14 +83,23 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
             std::optional<task::RetentionWork> work;
             {
                 std::lock_guard<std::mutex> control(entry->control_mutex);
+                if (!state_->accepting.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (entry->artifact_maintenance_active || entry->retiring || entry->resetting ||
+                    !entry->store || !entry->recovery) {
+                    continue;
+                }
                 work = entry->retention_work;
                 current = std::atomic_load(&entry->published);
                 if (!work && (entry->persisting || entry->controller->persistence_protected() ||
-                              entry->control_work ||
+                              entry->control_work || current->control->reset_intent ||
                               current->config->retention_policy.mode != RetentionMode::Rolling)) {
                     continue;
                 }
+                entry->artifact_maintenance_active = true;
             }
+            ArtifactMaintenanceFlight flight{*entry};
             if (!work) {
                 auto versions = catalog.retention_versions(entry->id);
                 if (!versions.ok()) {
@@ -142,8 +151,8 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                     const auto latest = std::atomic_load(&entry->published);
                     if (!state_->accepting.load(std::memory_order_acquire) || entry->persisting ||
                         entry->controller->persistence_protected() || entry->control_work ||
-                        entry->retention_work || latest->control != current->control ||
-                        latest->config != current->config) {
+                        entry->retention_work || entry->retiring || entry->resetting ||
+                        latest->control != current->control || latest->config != current->config) {
                         continue;
                     }
                     work = task::RetentionWork{
@@ -152,14 +161,6 @@ Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
                     entry->retention_work = work;
                 }
             }
-            {
-                std::lock_guard<std::mutex> control(entry->control_mutex);
-                if (!state_->accepting.load(std::memory_order_acquire)) {
-                    break;
-                }
-                entry->artifact_maintenance_active = true;
-            }
-            ArtifactMaintenanceFlight flight{*entry};
             // Maintenance owns the actual call. A deadline only bounds observing
             // leases; it never discards the retained intent or releases disk charge.
             auto checkpoint = checkpoint_committed(*entry, work->committed_recording_end_ns);
@@ -200,7 +201,8 @@ Result<void> TaskService::collect_artifacts(
                 if (!state_->accepting.load(std::memory_order_acquire)) {
                     break;
                 }
-                if (entry->artifact_maintenance_active) {
+                if (entry->artifact_maintenance_active || entry->retiring || entry->resetting ||
+                    !entry->recovery) {
                     continue;
                 }
                 entry->artifact_maintenance_active = true;

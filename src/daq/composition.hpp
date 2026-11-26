@@ -62,7 +62,7 @@ struct DeploymentSettings {
 struct CompositionOptions {
     // Startup has exclusively opened/reconciled these actual authorities. This
     // composition never guesses absence, initializes a missing authority, or
-    // adopts unregistered output. Full boot reconciliation belongs to S4C.
+    // adopts unregistered output.
     std::filesystem::path task_root;
     std::shared_ptr<plugin::PluginManager> plugins;
     std::shared_ptr<time::ClockCorrelation> clock;

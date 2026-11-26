@@ -212,6 +212,15 @@ void TaskService::State::start_execution(
                                        ? std::numeric_limits<std::uint64_t>::max()
                                        : now_monotonic + delay;
             }
+            if (purpose == task::RunPurpose::BootRecovery) {
+                const auto config = std::atomic_load(&entry->published)->config;
+                if (!entry->quiescent || entry->persisting || entry->control_work ||
+                    entry->closing || entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
+                    entry->cleanup_pending.frame || !task::terminal(operation->state) ||
+                    config->recovery_policy != RecoveryPolicyMode::Resume) {
+                    return;
+                }
+            }
             if (purpose == task::RunPurpose::Operation && entry->execution &&
                 entry->execution->control->current_operation_id == current->current_operation_id) {
                 const auto existing = entry->execution;
@@ -262,15 +271,17 @@ void TaskService::State::start_execution(
                 execution->result_ready = true;
                 execution->returned.notify_all();
             }
-            if (purpose == task::RunPurpose::VolumeRecovery) {
+            if (purpose != task::RunPurpose::Operation) {
                 std::lock_guard<std::mutex> control(entry->control_mutex);
                 if (entry->execution == execution) {
                     entry->quiescent = true;  // No actual work or Native owner was admitted.
-                    std::lock_guard<std::mutex> registered(execution->registration);
-                    execution->recovery_exhausted =
-                        entry->volume_recovery &&
-                        entry->volume_recovery->attempts >=
-                            options->execution->runtime_recovery.max_attempts;
+                    if (purpose == task::RunPurpose::VolumeRecovery) {
+                        std::lock_guard<std::mutex> registered(execution->registration);
+                        execution->recovery_exhausted =
+                            entry->volume_recovery &&
+                            entry->volume_recovery->attempts >=
+                                options->execution->runtime_recovery.max_attempts;
+                    }
                 }
             } else {
                 finish_execution(
@@ -335,18 +346,27 @@ void TaskService::State::PrepareJob::run() noexcept {
     bool partial = false;
     std::uint64_t recording_base = 0;
     try {
-        auto inputs = owner->options->execution->resolve(
-            *execution->control, *execution->config, *entry->identities);
-        auto identities = entry->identities->load();
-        if (identities.ok()) {
+        auto admitted = owner->validate_deployment(*execution->config);
+        if (!admitted.ok()) {
+            failure = admitted.status().code();
+        }
+        auto inputs = failure == StatusCode::Ok
+                          ? owner->options->execution->resolve(
+                                *execution->control, *execution->config, *entry->identities)
+                          : Result<task::RunInputs>(Status(failure, {}));
+        auto identities = failure == StatusCode::Ok
+                              ? entry->identities->load()
+                              : Result<pipeline::StreamIdentityState>(Status(failure, {}));
+        if (failure == StatusCode::Ok && identities.ok()) {
             std::lock_guard<std::mutex> control(entry->control_mutex);
             entry->identity = std::move(identities.value());
-        } else if (inputs.ok()) {
+        } else if (failure == StatusCode::Ok && inputs.ok()) {
             inputs = identities.status();
         }
-        if (!inputs.ok()) {
+        if (failure == StatusCode::Ok && !inputs.ok()) {
             failure = inputs.status().code();
-        } else {
+        }
+        if (failure == StatusCode::Ok) {
             auto& selected = inputs.value();
             auto recovered_time = [&] {
                 std::lock_guard<std::mutex> recovery(entry->recovery_execution);
@@ -424,7 +444,7 @@ void TaskService::State::PrepareJob::run() noexcept {
                         }
                         std::lock_guard<std::mutex> recovery(entry->recovery_execution);
                         auto checkpoint =
-                            execution->purpose == task::RunPurpose::VolumeRecovery
+                            execution->purpose != task::RunPurpose::Operation
                                 ? compact_ended_authorization(*entry, *execution->control)
                                 : Result<void>{};
                         if (checkpoint.ok()) {

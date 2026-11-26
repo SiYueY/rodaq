@@ -395,4 +395,17 @@ TEST(VolumeWatermarks, SlowObservationCompletionCannotInventAStableRecoveryInter
     EXPECT_TRUE(volume.admit_recording(129).ok());
 }
 
+TEST(VolumeWatermarks, ConcurrentFresherSampleCoversInFlightReaderWithoutLatchingStop) {
+    auto volume = artifact::VolumeCapacity::create(options()).value();
+    sample(volume, 1000, 100);
+    // A concurrent observer finishes a fresher sample at 105 while a reader
+    // holds monotonic timestamp 102 from the same unbroken valid chain.
+    sample(volume, 1000, 105);
+    EXPECT_EQ(volume.space_snapshot(102).condition, artifact::VolumeSpaceCondition::Normal);
+    EXPECT_TRUE(volume.admit_recording(102).ok());
+    // A timestamp predating the unbroken chain still fails closed.
+    EXPECT_EQ(volume.space_snapshot(99).condition, artifact::VolumeSpaceCondition::Unknown);
+    EXPECT_FALSE(volume.admit_recording(105).ok());
+}
+
 }  // namespace

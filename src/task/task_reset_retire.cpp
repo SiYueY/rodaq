@@ -572,7 +572,11 @@ Result<void> TaskService::reconcile_destructive(
             }
         }
 
-        // 3. Fail-closed retirement tombstone GC.
+        // 3. Fail-closed retirement tombstone GC. Never collect while any
+        // retirement cleanup job is still active.
+        if (state_->active_retirement_jobs.load(std::memory_order_acquire) != 0) {
+            return first_failure.ok() ? Result<void>{} : Result<void>(first_failure);
+        }
         auto tombstones = state_->retired->list();
         if (!tombstones.ok()) {
             return tombstones.status();

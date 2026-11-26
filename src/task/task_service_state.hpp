@@ -111,6 +111,8 @@ struct VolumeRecovery {
     std::uint64_t not_before{0};
 };
 
+enum class BootAction { None, ContinueRun, BootResume, ResumeReset, ResumeRetire };
+
 struct TaskEntry {
     TaskId id;
     std::mutex control_mutex;
@@ -124,6 +126,8 @@ struct TaskEntry {
     std::shared_ptr<RunExecution> execution;
     std::optional<VolumeRecovery> volume_recovery;
     std::shared_ptr<const PublishedTask> published;
+    BootAction boot_action{BootAction::None};
+    bool missing_recovery_proof{false};
     bool quiescent{false};
     bool persisting{false};
     // Retained until actual deletion settles, including uncertain publication.

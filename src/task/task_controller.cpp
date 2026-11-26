@@ -497,4 +497,11 @@ bool TaskController::run_is_current(
            current->snapshot.state != OperationState::Superseded;
 }
 
+void TaskController::authorize_boot_run() noexcept {
+    if (!protected_ && !flight_ && !stop_ && durable_->desired_state == DesiredState::Running &&
+        !durable_->reset_intent) {
+        opening_fenced_ = false;
+    }
+}
+
 }  // namespace rodaq::task
