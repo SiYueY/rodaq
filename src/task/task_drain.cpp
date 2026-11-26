@@ -52,6 +52,9 @@ Result<void> revoke_continuation(task::TaskEntry& entry, const task::TaskControl
             return Status(StatusCode::Conflict, {});
         }
         expected = record.record_revision++;
+    } else {
+        // No prior Run has ever prepared or opened; initial recording time is 0.
+        record.recording_time_ns = 0;
     }
     record.task_id = entry.id;
     record.observed_control_generation = control.control_generation;

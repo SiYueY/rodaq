@@ -2451,6 +2451,9 @@ TEST_F(PipelineControllerTest, StopDuringActualLateSealCannotReopenTheSuccessor)
     ASSERT_TRUE(entered);
     // Footer creation precedes the injected 500ms actual Native return.
     ASSERT_LT(std::chrono::steady_clock::now() - began, 250ms);
+    // Allow at least one periodic acquisition tick to enter the successor while
+    // 1.tmp is still inside its 500ms late_seal return window.
+    std::this_thread::sleep_for(15ms);
     EXPECT_TRUE(composition_->artifacts().query_artifacts({}).value().items.empty());
     auto stop = service.stop(id, {"stop"}, {true, 2});
     ASSERT_TRUE(stop.ok());
