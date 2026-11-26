@@ -47,6 +47,14 @@
       "verification": "artifact identity/replacement tests; canonical-byte and domain-separated digest golden fixtures"
     },
     {
+      "name": "Drogon + Trantor",
+      "version": "1.9.14",
+      "license": "MIT (Drogon); BSD-3-Clause (Trantor)",
+      "source": "Prepared local CMake prefix (~/.local/rodaq-deps) with Ubuntu 22.04 libjsoncpp-dev 1.9.5-3, zlib1g-dev 1:1.2.11, uuid-dev 2.37.2, libbrotli-dev 1.0.9",
+      "purpose": "Private server/ HTTP listener, routing, static asset delivery, and async Artifact download transport; never exposed in Core public API",
+      "verification": "S5 server unit, API/OpenAPI contract, auth/CSRF, DownloadSession streaming/Range/cancel/backpressure, and shutdown CTest targets"
+    },
+    {
       "name": "mcap_vendor / libmcap",
       "version": "Humble 0.15.16 / libmcap 0.8.0; Jazzy 0.26.11 / libmcap 1.3.1",
       "package": {

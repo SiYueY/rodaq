@@ -4036,6 +4036,9 @@ TEST_F(PipelineControllerTest, ActualDeletionRetainsOneOwnerWhileParentSyncObser
 TEST_F(PipelineControllerTest, RetentionUsesTaskWideCommittedTimeAndPreservesTheLeftBoundary) {
     retention_monotonic = 200;
     options_.receive_clock = &retention_clock;
+    options_.definition.acquisition.json = R"({"streams":["first","second"],"period_us":5000})";
+    options_.envelope.max_segment_records = 1000;
+    options_.envelope.max_segment_input_bytes = 8000;
     create();
     second(false);
     ASSERT_TRUE(controller_);

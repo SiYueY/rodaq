@@ -1,0 +1,1150 @@
+openapi: 3.1.0
+info:
+  title: RoDAQ Local Control & Query API
+  version: 1.0.0
+  description: >-
+    Machine-readable OpenAPI 3.1 projection of the authoritative Notion
+    "RoDAQ Server 模块设计" V1 HTTP wire contract.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local loopback daemon
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: rodaq_session
+  parameters:
+    ApiVersionHeader:
+      name: RoDAQ-API-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+\.[0-9]+$'
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    IfControlGenerationHeader:
+      name: If-Control-Generation
+      in: header
+      required: false
+      schema:
+        $ref: '#/components/schemas/DecimalString'
+    CsrfTokenHeader:
+      name: RoDAQ-CSRF-Token
+      in: header
+      required: false
+      schema:
+        type: string
+    CursorQuery:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 256
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+  schemas:
+    DecimalString:
+      type: string
+      pattern: '^(0|[1-9][0-9]{0,19})$'
+    Rfc3339Utc:
+      type: string
+      format: date-time
+    ApiVersion:
+      type: object
+      additionalProperties: false
+      required: [major, minor]
+      properties:
+        major:
+          type: integer
+          minimum: 1
+        minor:
+          type: integer
+          minimum: 0
+    DurationValue:
+      type: object
+      additionalProperties: false
+      required: [value, unit]
+      properties:
+        value:
+          $ref: '#/components/schemas/DecimalString'
+        unit:
+          type: string
+          enum: [ns, us, ms, s]
+    FreshnessData:
+      type: object
+      additionalProperties: false
+      required: [state, age]
+      properties:
+        state:
+          type: string
+          enum: [fresh, stale, unknown]
+        age:
+          oneOf:
+            - $ref: '#/components/schemas/DurationValue'
+            - type: 'null'
+    DesiredState:
+      type: string
+      enum: [stopped, running, paused]
+    ExecutionCondition:
+      type: string
+      enum: [idle, preparing, active, degraded, draining, protected, pending_cleanup, failed]
+    OperationKind:
+      type: string
+      enum: [configure, start, pause, resume, stop, reset, retire]
+    OperationState:
+      type: string
+      enum: [accepted, in_progress, succeeded, partially_succeeded, failed, superseded]
+    Retryability:
+      type: string
+      enum: [never, after_condition_change, after_backoff, after_process_restart, manual_recovery_required]
+    FailureDomain:
+      type: string
+      enum: [request, task_control, pipeline, collector, storage, volume, persistence_state, process]
+    DataImpact:
+      type: string
+      enum: [none, pre_admission_only, accepted_known_failed, persistence_unknown, artifact_quarantined, historical_artifact_lost_or_corrupt]
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, path, message]
+      properties:
+        code:
+          type: string
+          enum: [required, unknown_field, invalid_type, invalid_enum, invalid_format, out_of_range, too_large, duplicate, conflict, unsupported, unavailable]
+        path:
+          type: string
+        message:
+          type: string
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [api_version, request_id, error]
+      properties:
+        api_version:
+          $ref: '#/components/schemas/ApiVersion'
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retryability, failure_domain, data_impact, details]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            retryability:
+              $ref: '#/components/schemas/Retryability'
+            failure_domain:
+              $ref: '#/components/schemas/FailureDomain'
+            data_impact:
+              $ref: '#/components/schemas/DataImpact'
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/ErrorDetail'
+    SessionData:
+      type: object
+      additionalProperties: false
+      required: [principal, scopes, api_version, csrf_token]
+      properties:
+        principal:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [read, control, admin]
+        api_version:
+          $ref: '#/components/schemas/ApiVersion'
+        csrf_token:
+          type: string
+    SystemData:
+      type: object
+      additionalProperties: false
+      required: [server_phase, core_ready, recovery, resources, volumes, backlog, captured_at, snapshot_sequence, freshness]
+      properties:
+        server_phase:
+          type: string
+          enum: [recovering, ready, draining, failed]
+        core_ready:
+          type: boolean
+        recovery:
+          type: object
+          additionalProperties: false
+          required: [complete, reason, progress]
+          properties:
+            complete:
+              type: boolean
+            reason:
+              type: [string, 'null']
+            progress:
+              type: [number, 'null']
+        resources:
+          type: object
+          additionalProperties: false
+          required: [cpu_cores, rss_bytes, threads, open_fds]
+          properties:
+            cpu_cores:
+              type: number
+            rss_bytes:
+              $ref: '#/components/schemas/DecimalString'
+            threads:
+              $ref: '#/components/schemas/DecimalString'
+            open_fds:
+              $ref: '#/components/schemas/DecimalString'
+        volumes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, total_bytes, free_bytes, pressure]
+            properties:
+              name:
+                type: string
+              total_bytes:
+                $ref: '#/components/schemas/DecimalString'
+              free_bytes:
+                $ref: '#/components/schemas/DecimalString'
+              pressure:
+                type: string
+                enum: [normal, low, critical, protected]
+        backlog:
+          type: object
+          additionalProperties: false
+          required: [commit_items, commit_bytes, active_downloads]
+          properties:
+            commit_items:
+              $ref: '#/components/schemas/DecimalString'
+            commit_bytes:
+              $ref: '#/components/schemas/DecimalString'
+            active_downloads:
+              $ref: '#/components/schemas/DecimalString'
+        captured_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        snapshot_sequence:
+          $ref: '#/components/schemas/DecimalString'
+        freshness:
+          $ref: '#/components/schemas/FreshnessData'
+    BackendCapability:
+      type: object
+      additionalProperties: false
+      required: [plugin_id, plugin_version, role, installed, allowed, support_status, qualification_status]
+      properties:
+        plugin_id:
+          type: string
+        plugin_version:
+          type: string
+        role:
+          type: string
+          enum: [acquisition, storage]
+        installed:
+          type: boolean
+        allowed:
+          type: boolean
+        support_status:
+          type: string
+          enum: [required, qualified_candidate, deferred]
+        qualification_status:
+          type: string
+          enum: [qualified, not_qualified]
+    OutputRootCapability:
+      type: object
+      additionalProperties: false
+      required: [name, allowed, writable, free_bytes, pressure]
+      properties:
+        name:
+          type: string
+        allowed:
+          type: boolean
+        writable:
+          type: boolean
+        free_bytes:
+          $ref: '#/components/schemas/DecimalString'
+        pressure:
+          type: string
+          enum: [normal, low, critical, protected]
+    ResourceProfileCapability:
+      type: object
+      additionalProperties: false
+      required: [name, allowed, max_streams_per_pipeline, max_segment_physical_bytes]
+      properties:
+        name:
+          type: string
+        allowed:
+          type: boolean
+        max_streams_per_pipeline:
+          $ref: '#/components/schemas/DecimalString'
+        max_segment_physical_bytes:
+          $ref: '#/components/schemas/DecimalString'
+    ApiLimits:
+      type: object
+      additionalProperties: false
+      required: [max_request_body_bytes, max_page_size, idempotency_retention, recommended_polling_floor]
+      properties:
+        max_request_body_bytes:
+          $ref: '#/components/schemas/DecimalString'
+        max_page_size:
+          $ref: '#/components/schemas/DecimalString'
+        idempotency_retention:
+          $ref: '#/components/schemas/DurationValue'
+        recommended_polling_floor:
+          $ref: '#/components/schemas/DurationValue'
+    CapabilitiesData:
+      type: object
+      additionalProperties: false
+      required: [application_version, backends, output_roots, resource_profiles, api_limits]
+      properties:
+        application_version:
+          type: string
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendCapability'
+        output_roots:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutputRootCapability'
+        resource_profiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceProfileCapability'
+        api_limits:
+          $ref: '#/components/schemas/ApiLimits'
+    TaskData:
+      type: object
+      additionalProperties: false
+      required: [task_id, name, config_version, desired_state, execution_condition, control_generation, current_operation_id, data_impact, captured_at, snapshot_sequence, freshness]
+      properties:
+        task_id:
+          type: string
+        name:
+          type: [string, 'null']
+        config_version:
+          type: string
+        desired_state:
+          $ref: '#/components/schemas/DesiredState'
+        execution_condition:
+          $ref: '#/components/schemas/ExecutionCondition'
+        control_generation:
+          $ref: '#/components/schemas/DecimalString'
+        current_operation_id:
+          type: [string, 'null']
+        data_impact:
+          $ref: '#/components/schemas/DataImpact'
+        captured_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        snapshot_sequence:
+          $ref: '#/components/schemas/DecimalString'
+        freshness:
+          $ref: '#/components/schemas/FreshnessData'
+    TaskSummary:
+      type: object
+      additionalProperties: false
+      required: [task_id, name, config_version, desired_state, execution_condition, control_generation, current_operation_id, data_impact, runtime_summary, captured_at, freshness]
+      properties:
+        task_id:
+          type: string
+        name:
+          type: [string, 'null']
+        config_version:
+          type: string
+        desired_state:
+          $ref: '#/components/schemas/DesiredState'
+        execution_condition:
+          $ref: '#/components/schemas/ExecutionCondition'
+        control_generation:
+          $ref: '#/components/schemas/DecimalString'
+        current_operation_id:
+          type: [string, 'null']
+        data_impact:
+          $ref: '#/components/schemas/DataImpact'
+        runtime_summary:
+          type: object
+          additionalProperties: false
+          required: [accepted_records_per_second, commit_lag, receiving_streams, total_streams]
+          properties:
+            accepted_records_per_second:
+              type: number
+            commit_lag:
+              oneOf:
+                - $ref: '#/components/schemas/DurationValue'
+                - type: 'null'
+            receiving_streams:
+              $ref: '#/components/schemas/DecimalString'
+            total_streams:
+              $ref: '#/components/schemas/DecimalString'
+        captured_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        freshness:
+          $ref: '#/components/schemas/FreshnessData'
+    TaskCreateData:
+      type: object
+      additionalProperties: false
+      required: [task_id, config_version]
+      properties:
+        task_id:
+          type: string
+        config_version:
+          type: string
+    MutationAcceptedData:
+      type: object
+      additionalProperties: false
+      required: [task_id, operation_id, state]
+      properties:
+        task_id:
+          type: string
+        operation_id:
+          type: string
+        state:
+          type: string
+          const: accepted
+    OperationRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, parameters]
+      properties:
+        kind:
+          type: string
+          enum: [start, pause, resume, stop, reset, retire]
+        parameters:
+          type: object
+          additionalProperties: false
+          maxProperties: 0
+    OperationData:
+      type: object
+      additionalProperties: false
+      required: [task_id, operation_id, kind, state, control_generation, accepted_at, terminal_at, retryability, failure_domain, data_impact, message]
+      properties:
+        task_id:
+          type: string
+        operation_id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/OperationKind'
+        state:
+          $ref: '#/components/schemas/OperationState'
+        control_generation:
+          $ref: '#/components/schemas/DecimalString'
+        accepted_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        terminal_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339Utc'
+            - type: 'null'
+        retryability:
+          $ref: '#/components/schemas/Retryability'
+        failure_domain:
+          $ref: '#/components/schemas/FailureDomain'
+        data_impact:
+          $ref: '#/components/schemas/DataImpact'
+        message:
+          type: [string, 'null']
+    ReceivedStats:
+      type: object
+      additionalProperties: false
+      required: [records, logical_bytes, records_per_second, logical_bytes_per_second]
+      properties:
+        records:
+          $ref: '#/components/schemas/DecimalString'
+        logical_bytes:
+          $ref: '#/components/schemas/DecimalString'
+        records_per_second:
+          type: number
+          minimum: 0
+        logical_bytes_per_second:
+          type: number
+          minimum: 0
+    AdmissionStats:
+      type: object
+      additionalProperties: false
+      required: [accepted_records, rejected_records, reject_reasons]
+      properties:
+        accepted_records:
+          $ref: '#/components/schemas/DecimalString'
+        rejected_records:
+          $ref: '#/components/schemas/DecimalString'
+        reject_reasons:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [reason, records]
+            properties:
+              reason:
+                type: string
+              records:
+                $ref: '#/components/schemas/DecimalString'
+    StreamRuntimeData:
+      type: object
+      additionalProperties: false
+      required: [stream_id, stream_key, name, entry_ready, source_ready, receiving, last_receive_at, window, received, admission, captured_at, freshness]
+      properties:
+        stream_id:
+          type: string
+        stream_key:
+          type: string
+        name:
+          type: [string, 'null']
+        entry_ready:
+          type: boolean
+        source_ready:
+          type: boolean
+        receiving:
+          type: boolean
+        last_receive_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339Utc'
+            - type: 'null'
+        window:
+          $ref: '#/components/schemas/DurationValue'
+        received:
+          $ref: '#/components/schemas/ReceivedStats'
+        admission:
+          $ref: '#/components/schemas/AdmissionStats'
+        captured_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        freshness:
+          $ref: '#/components/schemas/FreshnessData'
+    PipelineRuntimeData:
+      type: object
+      additionalProperties: false
+      required: [pipeline_id, required, instance_id, condition, gate_state, received, admission, queue, writer, storage, commit, streams]
+      properties:
+        pipeline_id:
+          type: string
+        required:
+          type: boolean
+        instance_id:
+          type: [string, 'null']
+        condition:
+          $ref: '#/components/schemas/ExecutionCondition'
+        gate_state:
+          type: string
+          enum: [closed, open]
+        received:
+          $ref: '#/components/schemas/ReceivedStats'
+        admission:
+          $ref: '#/components/schemas/AdmissionStats'
+        queue:
+          type: object
+          additionalProperties: false
+          required: [records, bytes, high_watermark_records, high_watermark_bytes, oldest_age]
+          properties:
+            records:
+              $ref: '#/components/schemas/DecimalString'
+            bytes:
+              $ref: '#/components/schemas/DecimalString'
+            high_watermark_records:
+              $ref: '#/components/schemas/DecimalString'
+            high_watermark_bytes:
+              $ref: '#/components/schemas/DecimalString'
+            oldest_age:
+              oneOf:
+                - $ref: '#/components/schemas/DurationValue'
+                - type: 'null'
+        writer:
+          type: object
+          additionalProperties: false
+          required: [logical_bytes_per_second, pending_records, last_progress_at]
+          properties:
+            logical_bytes_per_second:
+              type: number
+            pending_records:
+              $ref: '#/components/schemas/DecimalString'
+            last_progress_at:
+              oneOf:
+                - $ref: '#/components/schemas/Rfc3339Utc'
+                - type: 'null'
+        storage:
+          type: object
+          additionalProperties: false
+          required: [physical_bytes_per_second, pending_bytes, last_progress_at]
+          properties:
+            physical_bytes_per_second:
+              type: number
+            pending_bytes:
+              $ref: '#/components/schemas/DecimalString'
+            last_progress_at:
+              oneOf:
+                - $ref: '#/components/schemas/Rfc3339Utc'
+                - type: 'null'
+        commit:
+          type: object
+          additionalProperties: false
+          required: [lag, durable_bytes_per_second, pending_segments, last_committed_artifact_id, last_progress_at]
+          properties:
+            lag:
+              oneOf:
+                - $ref: '#/components/schemas/DurationValue'
+                - type: 'null'
+            durable_bytes_per_second:
+              type: number
+            pending_segments:
+              $ref: '#/components/schemas/DecimalString'
+            last_committed_artifact_id:
+              type: [string, 'null']
+            last_progress_at:
+              oneOf:
+                - $ref: '#/components/schemas/Rfc3339Utc'
+                - type: 'null'
+        streams:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamRuntimeData'
+    TaskRuntimeData:
+      type: object
+      additionalProperties: false
+      required: [task_id, captured_at, snapshot_sequence, freshness, pipelines]
+      properties:
+        task_id:
+          type: string
+        captured_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        snapshot_sequence:
+          $ref: '#/components/schemas/DecimalString'
+        freshness:
+          $ref: '#/components/schemas/FreshnessData'
+        pipelines:
+          type: array
+          items:
+            $ref: '#/components/schemas/PipelineRuntimeData'
+    RecordingRangeData:
+      type: object
+      additionalProperties: false
+      required: [begin, end]
+      properties:
+        begin:
+          $ref: '#/components/schemas/DurationValue'
+        end:
+          $ref: '#/components/schemas/DurationValue'
+    ArtifactSummaryData:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, task_id, pipeline_id, segment_id, committed_at, recording_range, format, logical_bytes, physical_bytes, data_impact]
+      properties:
+        artifact_id:
+          type: string
+        task_id:
+          type: string
+        pipeline_id:
+          type: string
+        segment_id:
+          type: string
+        committed_at:
+          $ref: '#/components/schemas/Rfc3339Utc'
+        recording_range:
+          $ref: '#/components/schemas/RecordingRangeData'
+        format:
+          type: string
+        logical_bytes:
+          $ref: '#/components/schemas/DecimalString'
+        physical_bytes:
+          $ref: '#/components/schemas/DecimalString'
+        data_impact:
+          $ref: '#/components/schemas/DataImpact'
+    ArtifactFileData:
+      type: object
+      additionalProperties: false
+      required: [file_id, display_name, size, media_type, etag, download_url]
+      properties:
+        file_id:
+          type: string
+        display_name:
+          type: string
+        size:
+          $ref: '#/components/schemas/DecimalString'
+        media_type:
+          type: string
+        etag:
+          type: string
+        download_url:
+          type: string
+    CoverageData:
+      type: object
+      additionalProperties: false
+      required: [complete, gap_count, gaps]
+      properties:
+        complete:
+          type: boolean
+        gap_count:
+          $ref: '#/components/schemas/DecimalString'
+        gaps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, recording_begin, recording_end, message]
+            properties:
+              kind:
+                type: string
+                enum: [source_unavailable, admission_reject, overflow, storage_failure, persistence_unknown, reset_or_retention]
+              recording_begin:
+                oneOf:
+                  - $ref: '#/components/schemas/DurationValue'
+                  - type: 'null'
+              recording_end:
+                oneOf:
+                  - $ref: '#/components/schemas/DurationValue'
+                  - type: 'null'
+              message:
+                type: [string, 'null']
+    ArtifactData:
+      allOf:
+        - $ref: '#/components/schemas/ArtifactSummaryData'
+        - type: object
+          required: [coverage, files]
+          properties:
+            coverage:
+              $ref: '#/components/schemas/CoverageData'
+            files:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/ArtifactFileData'
+    PortableTaskConfig:
+      type: object
+      additionalProperties: false
+      description: Authoritative Portable Task Configuration V1 (mirrors schemas/task_config.schema.json)
+      required: [format_version, recording_mode, start_policy, recovery_policy, segment_policy, retention_policy, pipelines]
+      properties:
+        format_version:
+          type: string
+          const: '1.0'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        recording_mode:
+          type: string
+          enum: [continuous, rolling]
+        start_policy:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode:
+              type: string
+              enum: [all_required, best_effort]
+        recovery_policy:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode:
+              type: string
+              enum: [manual, resume]
+        segment_policy:
+          type: object
+          additionalProperties: false
+          required: [max_duration, max_physical_bytes]
+          properties:
+            max_duration:
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/DurationValue'
+            max_physical_bytes:
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/DecimalString'
+        retention_policy:
+          type: object
+          additionalProperties: false
+          required: [mode, max_duration, max_physical_bytes]
+          properties:
+            mode:
+              type: string
+              enum: [keep_all, rolling]
+            max_duration:
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/DurationValue'
+            max_physical_bytes:
+              oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/DecimalString'
+            include_previous_continuous:
+              type: boolean
+        pipelines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [required, resource_profile, output_root, acquisition, storage, streams]
+            properties:
+              pipeline_id:
+                $ref: '#/components/schemas/DecimalString'
+              required:
+                type: boolean
+              resource_profile:
+                type: string
+              output_root:
+                type: string
+              acquisition:
+                type: object
+                additionalProperties: false
+                required: [plugin_id, plugin_version, config]
+                properties:
+                  plugin_id:
+                    type: string
+                  plugin_version:
+                    type: string
+                  config:
+                    type: object
+              storage:
+                type: object
+                additionalProperties: false
+                required: [plugin_id, plugin_version, config]
+                properties:
+                  plugin_id:
+                    type: string
+                  plugin_version:
+                    type: string
+                  config:
+                    type: object
+              streams:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [stream_key, readiness_policy]
+                  properties:
+                    stream_id:
+                      $ref: '#/components/schemas/DecimalString'
+                    stream_key:
+                      type: string
+                    name:
+                      type: string
+                    readiness_policy:
+                      type: string
+                      enum: [entry_ready, source_ready]
+paths:
+  /api/session:
+    post:
+      summary: Establish browser session from bootstrap Bearer token
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Session created
+        '400':
+          description: Missing or unsupported API version
+        '401':
+          description: Invalid bearer credential
+        '429':
+          description: Session capacity exhausted
+    get:
+      summary: Recover authenticated browser session metadata and current CSRF token
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Current session snapshot
+        '401':
+          description: Unauthenticated
+    delete:
+      summary: Destroy current session
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Session destroyed
+  /api/system:
+    get:
+      summary: Query server phase, Core health, recovery, process resources, volume pressure, and backlog
+      responses:
+        '200':
+          description: SystemData envelope
+        '401':
+          description: Unauthenticated
+  /api/capabilities:
+    get:
+      summary: Query installed/allowed/qualified backends, output roots, resource profiles, and API limits
+      responses:
+        '200':
+          description: CapabilitiesData envelope
+        '503':
+          description: Recovering or unavailable
+  /api/tasks:
+    get:
+      summary: List tasks with keyset pagination and overview runtime summary
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: TaskPage envelope
+    post:
+      summary: Create a task from raw Portable TaskConfig JSON
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortableTaskConfig'
+      responses:
+        '201':
+          description: TaskCreateData envelope
+        '400':
+          description: Invalid JSON or TaskConfig
+        '409':
+          description: Idempotency digest conflict or resource exhausted
+        '413':
+          description: Payload too large
+        '415':
+          description: Unsupported media type
+  /api/tasks/{task_id}:
+    get:
+      summary: Get task four-state snapshot
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TaskData envelope
+        '404':
+          description: Task not found
+  /api/tasks/{task_id}/config:
+    get:
+      summary: Export raw Portable TaskConfig JSON without API envelope
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Raw Portable TaskConfig with ETag=config_version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortableTaskConfig'
+        '404':
+          description: Task not found
+    put:
+      summary: Submit durable Task Configure operation
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/IfControlGenerationHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortableTaskConfig'
+      responses:
+        '202':
+          description: MutationAcceptedData envelope
+        '409':
+          description: Generation/state/idempotency conflict
+  /api/tasks/{task_id}/operations:
+    post:
+      summary: Submit lifecycle operation (start, pause, resume, stop, reset, retire)
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/IfControlGenerationHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '202':
+          description: MutationAcceptedData envelope
+        '403':
+          description: Insufficient scope (reset/retire require admin)
+        '409':
+          description: State/generation/idempotency conflict
+    get:
+      summary: List bounded retained task operation history
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: OperationPage envelope
+  /api/tasks/{task_id}/operations/{operation_id}:
+    get:
+      summary: Query single operation snapshot
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OperationData envelope
+        '404':
+          description: operation_not_found_or_expired
+  /api/tasks/{task_id}/runtime:
+    get:
+      summary: Query bounded per-pipeline and per-stream runtime snapshot
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TaskRuntimeData envelope
+  /api/artifacts:
+    get:
+      summary: Query committed artifacts with keyset pagination and filters
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - name: task_id
+          in: query
+          schema:
+            type: string
+        - name: pipeline_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/DecimalString'
+        - name: format
+          in: query
+          schema:
+            type: string
+        - name: recording_begin
+          in: query
+          schema:
+            type: string
+        - name: recording_end
+          in: query
+          schema:
+            type: string
+        - name: receive_wall_begin
+          in: query
+          schema:
+            $ref: '#/components/schemas/Rfc3339Utc'
+        - name: receive_wall_end
+          in: query
+          schema:
+            $ref: '#/components/schemas/Rfc3339Utc'
+        - name: committed_begin
+          in: query
+          schema:
+            $ref: '#/components/schemas/Rfc3339Utc'
+        - name: committed_end
+          in: query
+          schema:
+            $ref: '#/components/schemas/Rfc3339Utc'
+      responses:
+        '200':
+          description: ArtifactPage envelope
+  /api/artifacts/{artifact_id}:
+    get:
+      summary: Get committed artifact detail and file list
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ArtifactData envelope
+        '404':
+          description: Artifact not found
+  /api/artifacts/{artifact_id}/files/{file_id}:
+    head:
+      summary: Preflight committed artifact file metadata (size, ETag, Accept-Ranges)
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File metadata headers without body
+        '404':
+          description: Artifact or file not found
+    get:
+      summary: Download committed artifact file with single-Range, If-Range, and ReadLease
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Range
+          in: header
+          schema:
+            type: string
+        - name: If-Range
+          in: header
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Full file stream with Content-Length
+        '206':
+          description: Partial file stream with Content-Range and Content-Length
+        '400':
+          description: Malformed or multiple Range header
+        '416':
+          description: Unsatisfiable Range with Content-Range bytes */full_length

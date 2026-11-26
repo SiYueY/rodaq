@@ -16,7 +16,18 @@ Result<TaskSnapshot> TaskService::get_task(TaskId id) const {
         return Status(StatusCode::NotFound, {});
     }
     try {
-        return std::atomic_load(&entry->published)->snapshot;
+        const auto published = std::atomic_load(&entry->published);
+        auto result = published->snapshot;
+        result.age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - published->observed_at);
+        if (result.age < std::chrono::nanoseconds::zero()) {
+            result.age = std::chrono::nanoseconds::zero();
+        }
+        if (result.freshness == SnapshotFreshness::Fresh &&
+            result.age > state_->options->runtime_snapshot_max_age) {
+            result.freshness = SnapshotFreshness::Stale;
+        }
+        return result;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -124,18 +135,40 @@ Result<TaskPage> TaskService::list_tasks(const PageRequest& request) const {
         page.items.reserve(selected.size());
         for (const auto& entry : selected) {
             const auto published = std::atomic_load(&entry->published);
+            auto age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - published->observed_at);
+            if (age < std::chrono::nanoseconds::zero()) {
+                age = std::chrono::nanoseconds::zero();
+            }
             auto freshness = published->runtime.freshness;
             if (freshness == SnapshotFreshness::Fresh &&
-                std::chrono::steady_clock::now() - published->observed_at >
-                    state_->options->runtime_snapshot_max_age) {
+                age > state_->options->runtime_snapshot_max_age) {
                 freshness = SnapshotFreshness::Stale;
             }
+            auto task_snap = published->snapshot;
+            task_snap.age = age;
+            if (task_snap.freshness == SnapshotFreshness::Fresh &&
+                age > state_->options->runtime_snapshot_max_age) {
+                task_snap.freshness = SnapshotFreshness::Stale;
+            }
+            std::uint64_t total_streams = 0;
+            std::uint64_t receiving_streams = 0;
+            for (const auto& pipe : published->runtime.pipelines) {
+                total_streams += pipe.streams.size();
+                for (const auto& stream : pipe.streams) {
+                    if (stream.facts && stream.facts->receiving.value_or(false)) {
+                        ++receiving_streams;
+                    }
+                }
+            }
             page.items.push_back(
-                {published->snapshot,
+                {std::move(task_snap),
                  published->runtime.accepted_records_per_second,
                  {},
                  freshness,
-                 published->runtime.data_impact});
+                 published->runtime.data_impact,
+                 receiving_streams,
+                 total_streams});
         }
         if (page.has_more) {
             page.next_cursor = "tasks:v1:" + to_string(page.items.back().task.task_id);

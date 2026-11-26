@@ -77,7 +77,8 @@ Result<SystemCapabilities> build_system_capabilities(const CompositionOptions& o
     caps.resource_profiles.reserve(o.settings.profiles.size());
     for (const auto& profile : o.settings.profiles) {
         caps.resource_profiles.push_back(
-            {profile.name, profile.storage.max_segment_physical_bytes});
+            {profile.name, profile.storage.max_segment_physical_bytes,
+             static_cast<std::uint32_t>(o.settings.tasks.config.max_streams_per_pipeline)});
     }
     caps.limits.max_page_size = 256;
     caps.limits.idempotency_retention = std::chrono::hours{24};

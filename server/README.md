@@ -1,7 +1,18 @@
 # RoDAQ Server
 
-应用服务端位于仓库根目录。它装配 `rodaq` 模块，管理守护进程生命周期。HTTP 层负责控制、查询和 Web 静态资源，Drogon 是接入验证候选。
+RoDAQ V1 local daemon and HTTP control/query service (`rodaq` executable), built on C++17, Drogon 1.9.14, and the public `rodaq::daq` C++ facade (`TaskService`, `ArtifactService`, `SystemService`, `DaqRuntime`).
 
-生产包将 [Web 前端](../web/README.md) 的静态资源与服务端一起部署。页面和 `/api/v1/` 由同一本机回环地址提供，Web 和本机自动化共用 API。服务通过 `rodaq` 模块执行录制操作并统一管理任务配置。
+## Architecture & Boundaries
 
-当前模块契约以 [Notion 上的 RoDAQ 设计文档](https://verbose-vulture-f51.notion.site/RoDAQ-417da2b2a80f81c68d97cffe766805b3) 为准；现有描述属于目标范围，不代表已完成实现。
+- Exposes the versioned `/api/` HTTP/JSON contract defined in Notion **RoDAQ Server 模块设计** (`server/api/openapi.yaml` is the single machine-readable OpenAPI 3.1 projection).
+- Links strictly against public `rodaq::daq` and Drogon 1.9.14; never includes private Core headers (`src/task/`, `src/pipeline/`, `src/artifact/`).
+- Serves built Vue 3 static assets (`web/dist/`) on the same loopback origin with SPA fallback for non-`/api/` routes only.
+- Uses bounded execution domains (`control`, `control_reserve`, `query`, `query_reserve`, `maintenance`) and independent `DownloadSession` streaming (`ArtifactReadHandle` → `DownloadRegistry` → Drogon async transport) with single-Range (`200`/`206`/`416`), `If-Range`, TCP backpressure, disconnect cancellation, and exactly-once `ReadLease` release.
+
+## Build & Run
+
+Configure with `-DRODAQ_BUILD_SERVER=ON` and `-DCMAKE_PREFIX_PATH=<drogon-prefix>`:
+
+```bash
+rodaq --deployment /etc/rodaq/deployment.json
+```

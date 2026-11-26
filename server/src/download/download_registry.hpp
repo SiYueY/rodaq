@@ -1,0 +1,103 @@
+#pragma once
+
+#include "../config.hpp"
+#include "download_session.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+#include <trantor/net/TcpConnection.h>
+
+#include <rodaq/result.hpp>
+
+namespace rodaq::server {
+
+enum class DownloadAdmissionFailure { PrincipalQuota, GlobalSaturation, ShuttingDown };
+
+struct DownloadMetrics {
+    std::uint64_t active{0};
+    std::uint64_t high_water_active{0};
+    std::uint64_t total_started{0};
+    std::uint64_t total_completed{0};
+    std::uint64_t total_cancelled{0};
+    std::uint64_t total_bytes_sent{0};
+    std::uint64_t rejected_principal{0};
+    std::uint64_t rejected_global{0};
+};
+
+struct DownloadAdmitResult {
+    bool admitted{false};
+    DownloadAdmissionFailure failure{DownloadAdmissionFailure::GlobalSaturation};
+    std::shared_ptr<DownloadSession> session;
+};
+
+// Owns bounded download worker pool and active DownloadSession registry for
+// capacity enforcement, disconnect cancel propagation, and ordered shutdown.
+class DownloadRegistry {
+public:
+    static Result<std::unique_ptr<DownloadRegistry>> create(const DownloadConfig& config);
+
+    DownloadRegistry(const DownloadRegistry&) = delete;
+    DownloadRegistry& operator=(const DownloadRegistry&) = delete;
+    ~DownloadRegistry() noexcept;
+
+    DownloadAdmitResult create_session(
+        const std::string& principal, ByteRange range, std::shared_ptr<ArtifactReadHandle> handle,
+        std::weak_ptr<trantor::TcpConnection> connection);
+
+    void notify_connection_closed(const trantor::TcpConnection* raw_conn) noexcept;
+
+    void cancel_all() noexcept;
+
+    Result<void> shutdown(std::chrono::steady_clock::time_point deadline);
+
+    std::uint64_t active_count() const;
+
+    DownloadMetrics metrics() const;
+
+private:
+    struct SharedState {
+        mutable std::mutex registry_mutex;
+        std::condition_variable settled_cv;
+        std::uint64_t next_session_id{1};
+        std::size_t reserved_sessions{0};
+        std::unordered_map<std::uint64_t, std::shared_ptr<DownloadSession>> active_sessions;
+        std::unordered_map<std::uint64_t, const trantor::TcpConnection*> session_conns;
+        std::unordered_map<const trantor::TcpConnection*, std::vector<std::uint64_t>> conn_sessions;
+        std::unordered_map<std::string, std::size_t> principal_sessions;
+        DownloadMetrics metrics;
+        bool stopping{false};
+
+        std::mutex worker_mutex;
+        std::condition_variable worker_cv;
+        std::deque<std::function<void()>> read_queue;
+        bool workers_stopping{false};
+    };
+
+    explicit DownloadRegistry(DownloadConfig config);
+    static void worker_loop(const std::shared_ptr<SharedState>& state);
+    static void submit_disk_read(
+        const std::shared_ptr<SharedState>& state, std::function<void()> task);
+    static void on_session_terminal(
+        const std::shared_ptr<SharedState>& state, std::uint64_t session_id,
+        std::uint64_t bytes_sent, bool cancelled);
+
+    DownloadConfig config_;
+    std::size_t max_per_principal_{2};
+    std::shared_ptr<SharedState> state_;
+    bool stopped_{false};
+    std::vector<std::thread> workers_;
+};
+
+}  // namespace rodaq::server

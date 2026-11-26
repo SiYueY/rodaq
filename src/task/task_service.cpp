@@ -209,7 +209,9 @@ Result<std::shared_ptr<const PublishedTask>> task::make_task_publication(
         }
         TaskSnapshot snapshot;
         snapshot.task_id = entry.id;
+        snapshot.name = config->name;
         snapshot.active_config_version = control->active_config_version;
+        snapshot.freshness = SnapshotFreshness::Fresh;
         snapshot.desired_state = control->desired_state;
         snapshot.control_generation = control->control_generation;
         snapshot.reset_generation = control->reset_generation;

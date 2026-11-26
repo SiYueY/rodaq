@@ -80,6 +80,7 @@ struct BackendCapability {
 struct ResourceProfileCapability {
     std::string name;
     std::uint64_t max_segment_physical_bytes{0};
+    std::uint32_t max_streams_per_pipeline{64};
 };
 
 struct CoreLimitsCapability {

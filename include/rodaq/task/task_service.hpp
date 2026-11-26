@@ -33,6 +33,9 @@ struct TaskSnapshot {
     std::uint64_t snapshot_sequence{0};
     WallTime captured_at;
     DataImpact data_impact{DataImpact::None};
+    std::string name;
+    SnapshotFreshness freshness{SnapshotFreshness::NotObserved};
+    std::chrono::nanoseconds age{0};
 };
 
 struct TaskSummary {
@@ -41,6 +44,8 @@ struct TaskSummary {
     std::optional<std::chrono::nanoseconds> commit_lag;
     SnapshotFreshness freshness{SnapshotFreshness::NotObserved};
     DataImpact data_impact{DataImpact::None};
+    std::uint64_t receiving_streams{0};
+    std::uint64_t total_streams{0};
 };
 
 struct TaskPage {
