@@ -1,6 +1,6 @@
 {
   "authority": "https://app.notion.com/p/417da2b2a80f816592c1e898187cb69c",
-  "baseline": "S0-20261115-01",
+  "baseline": "S6-20261126-01",
   "note": "Coverage inventory only. Test labels in planned_tests are coverage groups, not executable IDs. Test results and stage status live only in Notion 00.",
   "requirements": [
     {
@@ -18,7 +18,8 @@
         "StaticAssetServiceTest.*",
         "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
         "web/tests/e2e/console.spec.ts",
-        "web/tests/e2e/ros2_mcap.spec.ts"
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "tools/verify_release_package.py"
       ]
     },
     {
@@ -34,6 +35,9 @@
         "task_configuration_contract"
       ],
       "implemented_tests": [
+        "TaskConfig.*",
+        "ConfigIdentity.*",
+        "rodaq_task_schema_conformance",
         "StrictJsonCodecTest.*",
         "rodaq_server_openapi_test",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
@@ -53,7 +57,14 @@
       "planned_tests": [
         "multi_task_isolation"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "TaskServiceTest.*",
+        "RequiredAndPolicy/CompositionPolicyTest.*",
+        "StreamTable.*",
+        "StreamIdentityStoreTest.*",
+        "SharedTaskTime/RecordingTimelineTest.*",
+        "OneOrTwoPipelines/AutomaticVolumeRecoveryTest.*"
+      ]
     },
     {
       "requirement": "FUNC-04",
@@ -67,6 +78,11 @@
         "task_control_contract"
       ],
       "implemented_tests": [
+        "TaskControllerTest.*",
+        "TaskControlRecord.*",
+        "TaskRequest.*",
+        "OperationHistory.*",
+        "ActualPublicationBoundaries/SupersedingPublicationTest.*",
         "ServiceCallExecutorTest.*",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
         "web/tests/component/core_components.test.ts",
@@ -84,7 +100,13 @@
       "planned_tests": [
         "recording_rotation_retention"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "PipelineControllerTest.*",
+        "SegmentCapacityTest.*",
+        "DurationAndPhysical/Ros2SegmentRuntime.*",
+        "ContinuousHistory/AutomaticRetentionTest.*",
+        "tools/verify_release_package.py"
+      ]
     },
     {
       "requirement": "FUNC-06",
@@ -97,6 +119,11 @@
         "ros2_readiness_schema_qos"
       ],
       "implemented_tests": [
+        "Ros2Config.*",
+        "Ros2SchemaTest.*",
+        "Ros2Qos.*",
+        "Ros2TypeName.*",
+        "Ros2Runtime.*",
         "web/tests/component/core_components.test.ts",
         "web/tests/unit/task_editor_logic.test.ts",
         "web/tests/e2e/ros2_mcap.spec.ts"
@@ -113,7 +140,17 @@
       "planned_tests": [
         "data_impact_settlement"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "AdmissionGate.*",
+        "AdmissionTest.*",
+        "PipelineWriterTest.*",
+        "RecordingInstanceTest.*",
+        "RecordQueueTest.*",
+        "CompositeIo/McapCompositeFaultTest.*",
+        "Faults/FakeStorageFailureTest.*",
+        "Faults/FakeAcquisitionFailureTest.*",
+        "SegmentCommitterTest.*"
+      ]
     },
     {
       "requirement": "FUNC-08",
@@ -126,6 +163,9 @@
         "artifact_query_read_download"
       ],
       "implemented_tests": [
+        "LedgerStoreTest.*",
+        "SegmentManifest.*",
+        "SealedFilesTest.*",
         "RangeAndDispositionTest.*",
         "DownloadRegistryTest.*",
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
@@ -144,7 +184,14 @@
       "planned_tests": [
         "ros2_mcap_interoperability"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "RodaqMeta.*",
+        "Ros2Runtime.SeparatelyInstalledCustomMessageRecordsWithoutCompiledMessageHeaders",
+        "Ros2Runtime.FormalTaskRecordsRos2ThroughMcapCommitAndArtifactRead",
+        "Ros2Runtime.RepresentativeCameraAndLateJointsSurviveRotationPauseResumeAndCommit",
+        "web/tests/e2e/ros2_mcap.spec.ts",
+        "tools/verify_release_package.py"
+      ]
     },
     {
       "requirement": "FUNC-10",
@@ -157,7 +204,17 @@
       "planned_tests": [
         "resource_bounds_faults"
       ],
-      "implemented_tests": []
+      "implemented_tests": [
+        "PayloadPool.*",
+        "RecordBudget.*",
+        "ManagedVolumeTest.*",
+        "VolumeCapacity.*",
+        "VolumeWatermarks.*",
+        "StopOrUnknownSpace/VolumeAdmissionProtectionTest.*",
+        "ActiveOrSilentSource/TaskVolumeProtectionTest.*",
+        "PauseAndStop/SupersededVolumeRecoveryTest.*",
+        "CleanupSchedulingTest.*"
+      ]
     },
     {
       "requirement": "FUNC-11",
@@ -171,9 +228,17 @@
       ],
       "implemented_tests": [
         "BootReconciliationTest.*",
+        "TaskCreateStoreTest.*",
+        "CreateCrashBoundaries/ServiceCrashTest.*",
+        "ConfigureCrashBoundaries/ConfigureCrashTest.*",
+        "TaskRecoveryTest.*",
+        "PlaybackAnchorStoreTest.*",
         "SegmentCommitterTest.*",
-        "Startup*",
-        "FormalTombstone*"
+        "PhaseAndCrashBoundary/QuarantineCrashTest.*",
+        "PhaseAndDurabilityBoundary/CommitRecoverySyncTest.*",
+        "StagingOrFinal/CommitRecoveryTest.*",
+        "DeletedOnlyOrMixedCommitted/FormalTombstoneStartupTest.*",
+        "tools/verify_release_package.py"
       ]
     },
     {
@@ -189,9 +254,12 @@
       "implemented_tests": [
         "RetirementStoreTest.*",
         "ResetRetireTest.*",
+        "DeletePublicationBoundaries/ArtifactDeletePublicationTest.*",
+        "PartialDeletionWindows/DeleteRecoveryWindowTest.*",
         "TaskControllerTest.ResetSetsIntentBlocksOtherOperationsAndClearsOnTerminal",
         "TaskControllerTest.RetireAcceptedFromStoppedIdleBlocksConcurrentOps",
-        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa"
+        "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
+        "web/tests/e2e/console.spec.ts"
       ]
     },
     {
@@ -233,7 +301,8 @@
         "ServerHttpIntegrationTest.FullLifecycleSecurityDownloadRangeAndStaticSpa",
         "ServerHttpIntegrationTest.DaemonBinaryStartupLifecycleRestartPersistenceAndSigterm",
         "web/tests/unit/pending_mutations.test.ts",
-        "web/tests/e2e/console.spec.ts"
+        "web/tests/e2e/console.spec.ts",
+        "tools/verify_release_package.py"
       ]
     },
     {
@@ -248,6 +317,10 @@
       ],
       "implemented_tests": [
         "rodaq_counter_binary_matrix",
+        "rodaq_domain_binary_matrix",
+        "rodaq_counter_independent_projects",
+        "rodaq_runtime_sdk_consumer",
+        "rodaq_package_contract",
         "rodaq_abi_manifest_comparator",
         "rodaq_plugin_metadata",
         "AbiErrorBuffer.*",
@@ -256,7 +329,8 @@
         "PluginAuthoring.*",
         "PluginCatalogTest.*",
         "PluginResolver.*",
-        "PluginSemVer.*"
+        "PluginSemVer.*",
+        "tools/verify_release_package.py"
       ]
     }
   ]
