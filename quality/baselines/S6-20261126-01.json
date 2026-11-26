@@ -1,0 +1,52 @@
+{
+  "id": "S6-20261126-01",
+  "stage": "S6",
+  "role": "stage-exit-gate",
+  "captured_at": "2026-11-26 16:31:00 UTC",
+  "entry_commit": "dfebf03",
+  "code_base": "be3cbea",
+  "branch": "next",
+  "sources": [
+    {
+      "name": "RoDAQ",
+      "page_id": "417da2b2a80f81c68d97cffe766805b3",
+      "last_edited_at": "2026-11-18T15:53:59.956Z"
+    },
+    {
+      "name": "00 · 开发实施计划与项目状态",
+      "page_id": "418da2b2a80f8141a08ae0cc08a73962",
+      "last_edited_at": "2026-11-26T13:24:27.931Z"
+    },
+    {
+      "name": "RoDAQ 技术选型说明书",
+      "page_id": "417da2b2a80f81e28c92ea07f46405f9",
+      "last_edited_at": "2026-11-14T15:58:27.402Z"
+    },
+    {
+      "name": "RoDAQ Server 模块设计",
+      "page_id": "418da2b2a80f81d191cadda6f11488bd",
+      "last_edited_at": "2026-11-14T16:18:46.459Z"
+    },
+    {
+      "name": "RoDAQ Web 模块设计",
+      "page_id": "418da2b2a80f81248fafde0626c0ec0f",
+      "last_edited_at": "2026-11-14T16:11:58.524Z"
+    }
+  ],
+  "scope": "S6 Vue 3 + TypeScript + Vite 8.3.x Web Console (Node.js v26.13.1 LTS), OpenAPI 3.1.0 contract parity, AppShell/Router lifecycle, Overview/System/Tasks/TaskEditor(ROS2+MCAP)/TaskDetail/Operations/Artifacts, bounded polling & PendingMutation principal/scope isolation (WEB-E2E-019/020), same-origin static staging (share/rodaq/web), and installed-package ROS 2 Humble -> MCAP E2E",
+  "verification": {
+    "toolchain": "Node.js v26.13.1 LTS, npm 11.20.0, vue 3.5.46, vue-router 4.6.5, typescript 5.9.3, vite 8.3.8, vitest 4.1.12, @playwright/test 1.65.1",
+    "typecheck_and_build": "vue-tsc --noEmit (strict: true, noImplicitAny: true) 0 errors; vite build succeeded emitting dist/index.html, dist/web_manifest.json (api_major=1, api_minor_min=0), and hashed assets compiled explicitly for build.target=['chrome111','edge111','firefox114','safari16.4']",
+    "vitest_unit_and_component": "6/6 test files, 23/23 tests passed (BigInt uint64 >2^53-1 formatting, Retry-After & polling floor/visibility/backoff/generation discard, WEB-E2E-019 concurrent PendingMutation capacity refusal, WEB-E2E-020 principal/scope/TTL/tamper/Recovering isolation, OpenAPI 3.1.0 closed-enum parity + minor 1.2 compat + major 2.0 fail-closed, ROS2/MCAP compatibility table & identity diff, XSS plain-text ErrorPanel, 4-state TaskControlPanel & ConfirmDialog, 0 Hz StreamRuntimeTable & 250-row windowing, OperationTable history_truncated)",
+    "playwright_e2e_chrome": "3/3 passed on Google Chrome 154.0.8037.57 (full operator workflow including Pause/Resume/Configure/Reset/Import-400/Download, RBAC 403 + cross-principal PendingMutation WEB-E2E-020, and installed bin/rodaq + share/rodaq/web + live ROS 2 Humble -> MCAP download + MCAP header/footer/topic/payload verification)",
+    "playwright_e2e_edge": "3/3 passed on Microsoft Edge 139.0.3405.111",
+    "playwright_e2e_firefox": "3/3 passed on Mozilla Firefox 159.0 (Playwright Gecko)",
+    "browser_matrix_boundary": "Native macOS Safari 16.4 runtime is not available on this Ubuntu 22.04 Linux host (Playwright Linux WebKit also requires uninstalled host packages libgstcodecparsers-1.0.so.0 / libavif.so.13). Vite build.target explicitly includes safari16.4; native macOS Safari verification remains in S7 cross-platform matrix.",
+    "static_hygiene_and_staging": "0 v-html/innerHTML/as-any/localStorage/TODO/FIXME//api/v1/ occurrences in web/src/; cmake --install with RODAQ_WEB_DIST_DIR stages share/rodaq/web/* alongside bin/rodaq and strictly exports only rodaq::plugin and rodaq::daq; rodaq_server_openapi_test passed",
+    "remote_ci": "not executed (local unpushed branch next; local CI-equivalent gates executed)"
+  },
+  "evidence": [
+    "build/s1/s6-web-verify.log"
+  ],
+  "qualification": "S6 Exit Gate Passed within Ubuntu 22.04 Linux verification boundary (Chrome 154, Edge 139, Firefox 159, installed ROS 2 Humble -> MCAP -> Web download). Native macOS Safari 16.4 runtime deferred to S7 cross-OS support matrix."
+}
