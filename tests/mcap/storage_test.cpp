@@ -24,6 +24,7 @@
 #include <optional>
 #include <tuple>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -645,6 +646,106 @@ TEST_F(McapStorageTest, ActualSdkLoadsOfficialPluginAndReceivesCallerOwnedSealFi
     }
     ASSERT_TRUE(instance.value().close(soon()).ok());
     EXPECT_TRUE(manager_->shutdown(soon()).ok());
+}
+
+TEST_F(McapStorageTest, ExpiredDeadlineAtEntryPreventsAllMutableSideEffects) {
+    format::StorageBackend backend;
+    ASSERT_TRUE(backend.configure(R"({"format_version":"1.0"})").ok());
+
+    const auto expired = plugin::Deadline::after(0ns).value();
+    EXPECT_EQ(backend.prepare(envelope(), expired).status().code(), StatusCode::DeadlineExceeded);
+    ASSERT_TRUE(backend.prepare(envelope(), soon()).ok());
+
+    EXPECT_EQ(
+        backend.prepare_descriptor(descriptor(), expired).status().code(),
+        StatusCode::DeadlineExceeded);
+    ASSERT_TRUE(backend.prepare_descriptor(descriptor(), soon()).ok());
+
+    const auto staging = (root_ / "staging").string();
+    storage::SegmentSpec spec{
+        {sizeof(storage::SegmentSpec)},
+        7,
+        {staging.data(), static_cast<std::uint32_t>(staging.size())}};
+    EXPECT_EQ(backend.open_segment(spec, expired).status().code(), StatusCode::DeadlineExceeded);
+    EXPECT_FALSE(fs::exists(root_ / "staging/7.mcap"));
+    EXPECT_FALSE(fs::exists(root_ / "staging/7.rodaqmeta"));
+    ASSERT_TRUE(backend.open_segment(spec, soon()).ok());
+
+    auto item = record();
+    const auto write_res = backend.write_batch({&item, 1}, expired);
+    EXPECT_EQ(write_res.status.code(), StatusCode::DeadlineExceeded);
+    EXPECT_EQ(write_res.batch_result.confirmed_prefix, 0u);
+    EXPECT_EQ(write_res.batch_result.tail_state, RODAQ_STORAGE_TAIL_DEFINITELY_UNWRITTEN);
+    ASSERT_TRUE(backend.write_batch({&item, 1}, soon()).status.ok());
+
+    EXPECT_EQ(backend.seal_segment(expired).status().code(), StatusCode::DeadlineExceeded);
+    ASSERT_TRUE(backend.seal_segment(soon()).ok());
+
+    EXPECT_EQ(backend.quiesce(expired).status().code(), StatusCode::DeadlineExceeded);
+    ASSERT_TRUE(backend.quiesce(soon()).ok());
+}
+
+TEST_F(McapStorageTest, MidBatchAndBetweenPairedWritesDeadlineReportsExactPrefixAndUnknownTail) {
+    // Part A: deadline expires after record 0 completes both MCAP & sidecar,
+    // before record 1 starts -> confirmed_prefix=1, DEFINITELY_UNWRITTEN, still Open.
+    {
+        int meta_writes = 0;
+        format::CheckedSink::Write slow_meta = [&](int fd, const void* bytes,
+                                                   std::size_t count) -> ssize_t {
+            ++meta_writes;
+            if (meta_writes == 2) {  // 1st is header, 2nd is record 0 sidecar
+                std::this_thread::sleep_for(30ms);
+            }
+            return ::write(fd, bytes, count);
+        };
+        format::StorageBackend backend({}, slow_meta);
+        prepare(backend);
+        open(backend, 11);
+        std::array<storage::Record, 2> records{record(), record()};
+        records[1].acceptance_sequence++;
+        records[1].receive_monotonic++;
+        const auto res = backend.write_batch(
+            {records.data(), records.size()}, plugin::Deadline::after(15ms).value());
+        EXPECT_EQ(res.status.code(), StatusCode::DeadlineExceeded);
+        EXPECT_EQ(res.batch_result.confirmed_prefix, 1u);
+        EXPECT_EQ(res.batch_result.tail_state, RODAQ_STORAGE_TAIL_DEFINITELY_UNWRITTEN);
+        // Segment stayed clean and sealable.
+        ASSERT_TRUE(backend.seal_segment(soon()).ok());
+        ASSERT_TRUE(backend.quiesce(soon()).ok());
+    }
+
+    // Part B: deadline expires AFTER record 0 MCAP write, BEFORE record 0 sidecar write ->
+    // sidecar write is NOT started, confirmed_prefix=0, tail_state=UNKNOWN, fail-closed.
+    {
+        int mcap_writes = 0;
+        int meta_entry_writes = 0;
+        format::CheckedSink::Write slow_mcap = [&](int fd, const void* bytes,
+                                                   std::size_t count) -> ssize_t {
+            const auto out = ::write(fd, bytes, count);
+            ++mcap_writes;
+            if (mcap_writes >= 4) {  // trigger during message write
+                std::this_thread::sleep_for(30ms);
+            }
+            return out;
+        };
+        format::CheckedSink::Write count_meta = [&](int fd, const void* bytes,
+                                                    std::size_t count) -> ssize_t {
+            ++meta_entry_writes;
+            return ::write(fd, bytes, count);
+        };
+        format::StorageBackend backend(slow_mcap, count_meta);
+        prepare(backend);
+        open(backend, 12);
+        const int meta_before = meta_entry_writes;
+        auto item = record();
+        const auto res = backend.write_batch({&item, 1}, plugin::Deadline::after(15ms).value());
+        EXPECT_EQ(res.status.code(), StatusCode::DeadlineExceeded);
+        EXPECT_EQ(res.batch_result.confirmed_prefix, 0u);
+        EXPECT_EQ(res.batch_result.tail_state, RODAQ_STORAGE_TAIL_UNKNOWN);
+        EXPECT_EQ(meta_entry_writes, meta_before);
+        EXPECT_FALSE(backend.seal_segment(soon()).ok());
+        ASSERT_TRUE(backend.quiesce(soon()).ok());
+    }
 }
 
 }  // namespace

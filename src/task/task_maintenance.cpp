@@ -46,13 +46,17 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
             std::lock_guard<std::mutex> catalog(state_->catalog_mutex);
             entries = state_->entries;
         }
+        Status first_error;
         for (const auto& entry : entries) {
             if (pending_only) {
                 state_->cleanup_failed_pipelines(entry);
             }
             auto retried = state_->retry_cleanup(entry);
             if (!retried.ok()) {
-                return retried.status();
+                if (first_error.ok()) {
+                    first_error = retried.status();
+                }
+                continue;
             }
             auto job = std::make_shared<State::CloseJob>();
             job->owner = state_;
@@ -91,8 +95,12 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
                     }
                 }
                 if (!entry->execution || !state_->options->execution) {
-                    // A protected recovered Task is not proof of quiescence.
-                    return Status(StatusCode::Unavailable, {});
+                    // A protected recovered Task is not proof of quiescence,
+                    // but must not prevent subsequent healthy Tasks from draining.
+                    if (first_error.ok()) {
+                        first_error = Status(StatusCode::Unavailable, {});
+                    }
+                    continue;
                 }
                 job->control = entry->controller->durable_record();
                 job->execution = entry->execution;
@@ -107,10 +115,12 @@ Result<void> TaskService::drain_shutdown(bool pending_only) {
                 --entry->closing;
                 std::lock_guard<std::mutex> registered(job->execution->registration);
                 job->execution->draining = false;
-                return queued.status();
+                if (first_error.ok()) {
+                    first_error = queued.status();
+                }
             }
         }
-        return {};
+        return first_error.ok() ? Result<void>{} : Result<void>(std::move(first_error));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }

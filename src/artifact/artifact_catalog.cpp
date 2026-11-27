@@ -149,6 +149,7 @@ Result<std::shared_ptr<ArtifactCatalog>> ArtifactCatalog::create(CatalogOptions 
         auto state = std::make_shared<CatalogState>();
         state->slots.resize(options.max_artifacts);
         state->readers.resize(options.max_read_leases);
+        state->cancel_scratch.resize(options.max_read_leases);
         state->options = std::move(options);
         return std::shared_ptr<ArtifactCatalog>(new ArtifactCatalog(std::move(state)));
     } catch (const std::bad_alloc&) {

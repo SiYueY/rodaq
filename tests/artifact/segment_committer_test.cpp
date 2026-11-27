@@ -1047,4 +1047,55 @@ TEST_F(SegmentCommitterTest, CatalogPurgeQuarantinedForResetReclaimsBytesAndSlot
     EXPECT_FALSE(catalog.value()->has_task_references(record.task_id).value());
 }
 
+TEST_F(SegmentCommitterTest, CancelReadersIsNoexceptFencesNewAcquiresAndRetainsInflightBacking) {
+    // IC-R01: ArtifactCatalog::cancel_readers() must be noexcept, close
+    // accepting_reads without allocation, cancel active readers, and retain
+    // ReadBacking while an in-flight read_at() is still active.
+    static_assert(noexcept(std::declval<artifact::ArtifactCatalog&>().cancel_readers()));
+    static_assert(
+        noexcept(std::declval<artifact::ArtifactCatalog&>().cancel_readers(rodaq::ArtifactId{1})));
+
+    auto committer = prepare();
+    ASSERT_TRUE(committer.ok());
+    ASSERT_TRUE(committer.value()->commit(*ledger_).ok());
+
+    const auto boot = rodaq::time::parse_boot_identity("11111111-2222-3333-4444-555555555555");
+    ASSERT_TRUE(boot.ok());
+    const auto report = artifact::inspect_volume_recovery(volume_, *ledger_, {}, boot.value());
+    ASSERT_TRUE(report.ok());
+    auto cap_res = artifact::VolumeCapacity::create(
+        {1000000, 1000000, 0, 100, 16, 16, 32}, report.value().total_physical_bytes(),
+        report.value().artifact_slots);
+    ASSERT_TRUE(cap_res.ok());
+    auto capacity = std::make_shared<artifact::VolumeCapacity>(std::move(cap_res.value()));
+    artifact::CatalogOptions options;
+    options.volume = volume_;
+    options.ledger = std::move(ledger_);
+    options.capacity = capacity;
+    options.max_artifacts = 16;
+    options.max_read_leases = 4;
+    auto catalog = artifact::ArtifactCatalog::create(options);
+    ASSERT_TRUE(catalog.ok());
+    ASSERT_TRUE(catalog.value()->rebuild(report.value()).ok());
+
+    {
+        auto lease = catalog.value()->acquire(rodaq::ArtifactId{7}, rodaq::ArtifactFileId{1});
+        ASSERT_TRUE(lease.ok());
+        EXPECT_EQ(catalog.value()->snapshot().read_leases, 1u);
+
+        catalog.value()->cancel_readers();
+
+        // New acquire immediately rejected after global cancel fence.
+        auto blocked = catalog.value()->acquire(rodaq::ArtifactId{7}, rodaq::ArtifactFileId{1});
+        EXPECT_EQ(blocked.status().code(), StatusCode::InvalidState);
+
+        // Existing lease is cancelled on read_at() and still owns its slot until destroyed.
+        std::array<std::byte, 4> buf{};
+        auto read_res = lease.value().read_at(0, {buf.data(), buf.size()});
+        EXPECT_EQ(read_res.status().code(), StatusCode::InvalidState);
+        EXPECT_EQ(catalog.value()->snapshot().read_leases, 1u);
+    }
+    EXPECT_EQ(catalog.value()->snapshot().read_leases, 0u);
+}
+
 }  // namespace

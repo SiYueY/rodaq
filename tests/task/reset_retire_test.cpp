@@ -10,10 +10,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -578,6 +580,361 @@ TEST_F(ResetRetireTest, RetireCrashBeforeAndAfterTombstoneMaintainExactLineariza
         ASSERT_TRUE(op_snap.ok());
         EXPECT_EQ(op_snap.value().state, OperationState::Succeeded);
     }
+}
+
+TEST_F(ResetRetireTest, RetiredTaskWriterCapacityIsReusableAcrossMultipleCyclesInSameProcess) {
+    // IC-T01: With max_tasks=1, retiring Task A must release its Writer lane
+    // slice after settlement so Task B and Task C can Create, Start, Record,
+    // Commit, Reset, and Retire in the SAME process without restart.
+    auto startup = make_startup(DeploymentOpenMode::Initialize);
+    startup.settings.max_tasks = 1;
+    auto opened = Composition::open(startup);
+    ASSERT_TRUE(opened.ok()) << static_cast<int>(opened.status().code());
+    composition_ = std::move(opened.value());
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        const std::string tag = "cycle-" + std::to_string(cycle);
+        auto created = composition_->tasks().create_task(make_task_config(tag), {tag + "-create"});
+        ASSERT_TRUE(created.ok()) << tag << " create=" << static_cast<int>(created.status().code());
+        const TaskId id = created.value();
+        std::uint64_t gen = 1;
+        record_one_segment(id, gen, tag);
+
+        const auto arts = composition_->artifacts().query_artifacts({});
+        ASSERT_TRUE(arts.ok());
+        ASSERT_EQ(arts.value().items.size(), 1u) << tag;
+
+        auto reset = composition_->tasks().reset(id, {tag + "-reset"}, {true, gen});
+        ASSERT_TRUE(reset.ok()) << tag;
+        ASSERT_TRUE(wait_operation(id, reset.value(), OperationState::Succeeded, true)) << tag;
+        ++gen;
+
+        auto retired = composition_->tasks().retire(id, {tag + "-retire"}, {true, gen});
+        ASSERT_TRUE(retired.ok()) << tag;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            (void)composition_->observe();
+            if (composition_->tasks().get_task(id).status().code() == StatusCode::NotFound) {
+                break;
+            }
+            std::this_thread::sleep_for(5ms);
+        }
+        ASSERT_EQ(composition_->tasks().get_task(id).status().code(), StatusCode::NotFound) << tag;
+    }
+}
+
+TEST_F(ResetRetireTest, ProductionCompositionIsolatesBlockedControlFsyncAcrossDistinctTasks) {
+    // IC-T02: In production Composition (max_tasks=2), blocking Task A's
+    // TaskStore SyncFile must NOT block Task B's independent Configure/Start.
+    std::mutex gate_mu;
+    std::condition_variable gate_cv;
+    bool block_enabled = false;
+    bool entered_sync = false;
+    bool release_sync = false;
+
+    auto startup = make_startup(DeploymentOpenMode::Initialize);
+    startup.settings.max_tasks = 2;
+    fs::create_directory(root_ / "state/service");
+    fs::create_directory(root_ / "state/time");
+    fs::create_directory(root_ / "state/ledger");
+    fs::create_directory(root_ / "state/segment-ids");
+
+    auto boot = rodaq::time::read_boot_identity();
+    ASSERT_TRUE(boot.ok());
+    auto sample = rodaq::time::sample_clocks();
+    ASSERT_TRUE(sample.ok());
+    auto vol = rodaq::artifact::ManagedVolume::open(
+        root_ / "volume", rodaq::artifact::VolumeOpenMode::Initialize);
+    ASSERT_TRUE(vol.ok());
+    auto ledger = rodaq::artifact::LedgerStore::open(
+        root_ / "state/ledger", rodaq::artifact::LedgerOpenMode::Initialize,
+        startup.ledger_records);
+    ASSERT_TRUE(ledger.ok());
+    auto seg_ids = rodaq::artifact::SegmentIdStore::open(
+        root_ / "state/segment-ids", rodaq::artifact::SegmentIdOpenMode::NewDeployment);
+    ASSERT_TRUE(seg_ids.ok());
+    auto cap = rodaq::artifact::VolumeCapacity::create(startup.capacity, 0, 0);
+    ASSERT_TRUE(cap.ok());
+    auto clock = rodaq::time::ClockCorrelation::create(
+        root_ / "state/time", boot.value(), sample.value(),
+        {rodaq::time::BootArtifactState::Absent, {}});
+    ASSERT_TRUE(clock.ok());
+    auto plugins = rodaq::plugin::PluginManager::create(startup.plugins);
+    ASSERT_TRUE(plugins.ok());
+    auto plugin_mgr = std::make_shared<rodaq::plugin::PluginManager>(std::move(plugins.value()));
+
+    CompositionOptions opts;
+    opts.task_root = root_ / "state/service";
+    opts.plugins = plugin_mgr;
+    opts.clock = std::move(clock.value());
+    opts.boot = boot.value();
+    opts.volume = std::move(vol.value());
+    opts.capacity = std::make_shared<rodaq::artifact::VolumeCapacity>(std::move(cap.value()));
+    opts.ledger = std::move(ledger.value());
+    opts.segment_ids = std::move(seg_ids.value());
+    opts.settings = startup.settings;
+    opts.task_file_faults = [&](rodaq::task::ServiceFileDomain domain,
+                                rodaq::persistence::FileStep step) -> int {
+        if (domain == rodaq::task::ServiceFileDomain::Task &&
+            step == rodaq::persistence::FileStep::SyncFile) {
+            std::unique_lock<std::mutex> lk(gate_mu);
+            if (block_enabled && !entered_sync) {
+                entered_sync = true;
+                gate_cv.notify_all();
+                gate_cv.wait(lk, [&] { return release_sync; });
+            }
+        }
+        return 0;
+    };
+
+    auto created_comp = Composition::create(std::move(opts));
+    ASSERT_TRUE(created_comp.ok()) << static_cast<int>(created_comp.status().code());
+    composition_ = std::move(created_comp.value());
+
+    const TaskId task_a =
+        composition_->tasks().create_task(make_task_config("task-a"), {"create-a"}).value();
+    const TaskId task_b =
+        composition_->tasks().create_task(make_task_config("task-b"), {"create-b"}).value();
+
+    {
+        std::lock_guard<std::mutex> lk(gate_mu);
+        block_enabled = true;
+    }
+
+    auto cfg_a = make_task_config("task-a-v2");
+    std::thread blocker([&] {
+        (void)composition_->tasks().configure(task_a, cfg_a, {"cfg-a"}, {true, 1});
+    });
+    {
+        std::unique_lock<std::mutex> lk(gate_mu);
+        ASSERT_TRUE(gate_cv.wait_for(lk, 3s, [&] { return entered_sync; }));
+    }
+
+    // While Task A is blocked inside TaskStore::SyncFile, Task B's Configure
+    // must succeed promptly on the second Control worker!
+    auto cfg_b = make_task_config("task-b-v2");
+    const auto t0 = std::chrono::steady_clock::now();
+    auto res_b = composition_->tasks().configure(task_b, cfg_b, {"cfg-b"}, {true, 1});
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
+    ASSERT_TRUE(res_b.ok()) << "Task B configure failed: "
+                            << static_cast<int>(res_b.status().code());
+    EXPECT_LT(elapsed_ms, 1500);
+    ASSERT_TRUE(wait_operation(task_b, res_b.value()));
+
+    // IC-T03: Start Task B and accept records while Task A is STILL blocked in
+    // Control SyncFile, then trigger Process Shutdown with a 400ms deadline.
+    // Shutdown must return DeadlineExceeded (retaining Task A's owner) AFTER
+    // Task B has already drained, sealed, and durably committed its artifact!
+    auto start_b = composition_->tasks().start(task_b, {"start-b"}, {true, 2});
+    ASSERT_TRUE(start_b.ok());
+    ASSERT_TRUE(wait_operation(task_b, start_b.value()));
+    ASSERT_TRUE(wait_records(task_b, 2));
+
+    const auto sd1 = composition_->shutdown(std::chrono::steady_clock::now() + 400ms);
+    EXPECT_EQ(sd1.status().code(), StatusCode::DeadlineExceeded);
+
+    const auto committed_b = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(committed_b.ok());
+    ASSERT_EQ(committed_b.value().items.size(), 1u);
+    EXPECT_EQ(committed_b.value().items[0].task_id, task_b);
+
+    {
+        std::lock_guard<std::mutex> lk(gate_mu);
+        release_sync = true;
+    }
+    gate_cv.notify_all();
+    blocker.join();
+
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 3s).ok());
+    composition_.reset();
+}
+
+TEST_F(ResetRetireTest, MultiPipelineCloseDrainsHealthySiblingWhenOnePipelineBlocks) {
+    // IC-T04: In a 2-Pipeline Task, Pipeline 1 hangs in late_seal (800ms > 200ms
+    // native_timeout) while Pipeline 2 is healthy. Stop must drain & commit
+    // Pipeline 2 in parallel without being blocked by Pipeline 1.
+    auto startup = make_startup(DeploymentOpenMode::Initialize);
+    startup.settings.max_tasks = 1;
+    startup.settings.tasks.config.max_pipelines = 2;
+    startup.settings.native_timeout = 250ms;
+    auto opened = Composition::open(startup);
+    ASSERT_TRUE(opened.ok()) << static_cast<int>(opened.status().code());
+    composition_ = std::move(opened.value());
+
+    TaskConfig cfg = make_task_config("multi-pipe");
+    cfg.pipelines[0].storage.json = R"({"mode":"late_seal","delay_ms":800})";
+    rodaq::PipelineConfig pipe2;
+    pipe2.required = true;
+    pipe2.resource_profile = "basic";
+    pipe2.output_root = "local";
+    pipe2.acquisition = {
+        "rodaq.fake.acquisition", "1.0.0", R"({"streams":["healthy"],"period_us":1000})"};
+    pipe2.storage = {"rodaq.fake.storage", "1.0.0", "{}"};
+    pipe2.streams.push_back({0, "healthy", "healthy", rodaq::ReadinessPolicy::EntryReady});
+    cfg.pipelines.push_back(std::move(pipe2));
+
+    const TaskId id = composition_->tasks().create_task(cfg, {"create-mp"}).value();
+    auto start = composition_->tasks().start(id, {"start-mp"}, {true, 1});
+    ASSERT_TRUE(start.ok());
+    ASSERT_TRUE(wait_operation(id, start.value()));
+
+    // Wait until BOTH pipelines have accepted records.
+    const auto rec_deadline = std::chrono::steady_clock::now() + 5s;
+    bool both_ready = false;
+    while (std::chrono::steady_clock::now() < rec_deadline) {
+        (void)composition_->observe();
+        auto rt = composition_->tasks().get_runtime_snapshot(id);
+        if (rt.ok() && rt.value().pipelines.size() == 2 && rt.value().pipelines[0].facts &&
+            rt.value().pipelines[1].facts && rt.value().pipelines[0].facts->accepted_records >= 1 &&
+            rt.value().pipelines[1].facts->accepted_records >= 1) {
+            both_ready = true;
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(both_ready);
+
+    auto stop = composition_->tasks().stop(id, {"stop-mp"}, {true, 2});
+    ASSERT_TRUE(stop.ok());
+    ASSERT_TRUE(wait_operation(id, stop.value(), OperationState::Failed));
+
+    // Healthy Pipeline 2 MUST have committed its artifact even though Pipeline 1
+    // timed out during seal!
+    const auto arts = composition_->artifacts().query_artifacts({});
+    ASSERT_TRUE(arts.ok());
+    ASSERT_GE(arts.value().items.size(), 1u);
+
+    // Wait for Pipeline 1's delayed seal to return cleanly, then shutdown.
+    ASSERT_TRUE(composition_->shutdown(std::chrono::steady_clock::now() + 4s).ok());
+    composition_.reset();
+}
+
+TEST_F(ResetRetireTest, BlockedCommitRunsOnDedicatedDomainWithoutStarvingOtherTask) {
+    // IC-P01: Blocking Ledger SyncFile during Task A's Commit must time out
+    // Task A's observer on native_timeout while retaining Commit owner on the
+    // dedicated commit_lane, and must NOT starve Task B's Control or Writers.
+    std::mutex gate_mu;
+    std::condition_variable gate_cv;
+    bool block_ledger = false;
+    bool entered_ledger = false;
+    bool release_ledger = false;
+
+    auto startup = make_startup(DeploymentOpenMode::Initialize);
+    startup.settings.max_tasks = 2;
+    startup.settings.native_timeout = 200ms;
+    fs::create_directory(root_ / "state/service");
+    fs::create_directory(root_ / "state/time");
+    fs::create_directory(root_ / "state/ledger");
+    fs::create_directory(root_ / "state/segment-ids");
+
+    auto boot = rodaq::time::read_boot_identity();
+    ASSERT_TRUE(boot.ok());
+    auto sample = rodaq::time::sample_clocks();
+    ASSERT_TRUE(sample.ok());
+    auto vol = rodaq::artifact::ManagedVolume::open(
+        root_ / "volume", rodaq::artifact::VolumeOpenMode::Initialize);
+    ASSERT_TRUE(vol.ok());
+    auto ledger = rodaq::artifact::LedgerStore::open(
+        root_ / "state/ledger", rodaq::artifact::LedgerOpenMode::Initialize, startup.ledger_records,
+        [&](rodaq::persistence::FileStep step) -> int {
+            if (step == rodaq::persistence::FileStep::SyncFile) {
+                std::unique_lock<std::mutex> lk(gate_mu);
+                if (block_ledger && !entered_ledger) {
+                    entered_ledger = true;
+                    gate_cv.notify_all();
+                    gate_cv.wait(lk, [&] { return release_ledger; });
+                }
+            }
+            return 0;
+        });
+    ASSERT_TRUE(ledger.ok());
+    auto seg_ids = rodaq::artifact::SegmentIdStore::open(
+        root_ / "state/segment-ids", rodaq::artifact::SegmentIdOpenMode::NewDeployment);
+    ASSERT_TRUE(seg_ids.ok());
+    auto cap = rodaq::artifact::VolumeCapacity::create(startup.capacity, 0, 0);
+    ASSERT_TRUE(cap.ok());
+    auto clock = rodaq::time::ClockCorrelation::create(
+        root_ / "state/time", boot.value(), sample.value(),
+        {rodaq::time::BootArtifactState::Absent, {}});
+    ASSERT_TRUE(clock.ok());
+    auto plugins = rodaq::plugin::PluginManager::create(startup.plugins);
+    ASSERT_TRUE(plugins.ok());
+    auto plugin_mgr = std::make_shared<rodaq::plugin::PluginManager>(std::move(plugins.value()));
+
+    CompositionOptions opts;
+    opts.task_root = root_ / "state/service";
+    opts.plugins = plugin_mgr;
+    opts.clock = std::move(clock.value());
+    opts.boot = boot.value();
+    opts.volume = std::move(vol.value());
+    opts.capacity = std::make_shared<rodaq::artifact::VolumeCapacity>(std::move(cap.value()));
+    opts.ledger = std::move(ledger.value());
+    opts.segment_ids = std::move(seg_ids.value());
+    opts.settings = startup.settings;
+
+    auto created_comp = Composition::create(std::move(opts));
+    ASSERT_TRUE(created_comp.ok());
+    composition_ = std::move(created_comp.value());
+
+    const TaskId task_a =
+        composition_->tasks().create_task(make_task_config("commit-a"), {"ca"}).value();
+    const TaskId task_b =
+        composition_->tasks().create_task(make_task_config("commit-b"), {"cb"}).value();
+
+    auto start_a = composition_->tasks().start(task_a, {"sa"}, {true, 1});
+    ASSERT_TRUE(start_a.ok());
+    ASSERT_TRUE(wait_operation(task_a, start_a.value()));
+    ASSERT_TRUE(wait_records(task_a, 2));
+
+    {
+        std::lock_guard<std::mutex> lk(gate_mu);
+        block_ledger = true;
+    }
+
+    auto stop_a = composition_->tasks().stop(task_a, {"stopa"}, {true, 2});
+    ASSERT_TRUE(stop_a.ok());
+    {
+        std::unique_lock<std::mutex> lk(gate_mu);
+        ASSERT_TRUE(gate_cv.wait_for(lk, 3s, [&] { return entered_ledger; }));
+    }
+
+    // Task A's Stop operation observer must time out cleanly rather than hanging
+    // Task A's cleanup worker forever.
+    ASSERT_TRUE(wait_operation(task_a, stop_a.value(), OperationState::Failed));
+
+    // Meanwhile Task B can still Start and accept records on its independent
+    // Control + Writer domains!
+    auto start_b = composition_->tasks().start(task_b, {"sb"}, {true, 1});
+    ASSERT_TRUE(start_b.ok());
+    ASSERT_TRUE(wait_operation(task_b, start_b.value()));
+    ASSERT_TRUE(wait_records(task_b, 2));
+
+    // Release the blocked Ledger SyncFile on commit_lane; shutdown settles cleanly.
+    {
+        std::lock_guard<std::mutex> lk(gate_mu);
+        release_ledger = true;
+    }
+    gate_cv.notify_all();
+
+    auto stop_b = composition_->tasks().stop(task_b, {"stopb"}, {true, 2});
+    ASSERT_TRUE(stop_b.ok());
+    ASSERT_TRUE(wait_operation(task_b, stop_b.value()));
+    // Allow Task A's PendingCleanup to observe the now-committed artifact via observe()
+    // before final shutdown.
+    const auto settle_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < settle_deadline) {
+        (void)composition_->observe();
+        auto snap_a = composition_->tasks().get_task(task_a);
+        if (snap_a.ok() && snap_a.value().execution_condition == ExecutionCondition::Idle) {
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    const auto sd = composition_->shutdown(std::chrono::steady_clock::now() + 4s);
+    ASSERT_TRUE(sd.ok()) << "shutdown status=" << static_cast<int>(sd.status().code());
+    composition_.reset();
 }
 
 }  // namespace

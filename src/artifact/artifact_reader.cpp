@@ -161,10 +161,10 @@ Result<void> ArtifactCatalog::block_reads(ArtifactId id) {
     return {};
 }
 
-void ArtifactCatalog::cancel_readers(std::optional<ArtifactId> id) {
+void ArtifactCatalog::cancel_readers(std::optional<ArtifactId> id) noexcept {
     auto state = state_;
-    std::vector<std::shared_ptr<ReadBacking>> actual;
-    actual.reserve(state->readers.size());
+    std::lock_guard<std::mutex> cancel_lock(state->cancel_mutex);
+    std::size_t count = 0;
     {
         std::lock_guard<std::mutex> lock(state->index);
         if (!id) {
@@ -172,15 +172,17 @@ void ArtifactCatalog::cancel_readers(std::optional<ArtifactId> id) {
         }
         for (const auto& slot : state->readers) {
             auto reader = slot.reader.lock();
-            if (reader) {
-                actual.push_back(std::move(reader));
+            if (reader && count < state->cancel_scratch.size()) {
+                state->cancel_scratch[count++] = std::move(reader);
             }
         }
     }
-    for (const auto& reader : actual) {
+    for (std::size_t i = 0; i < count; ++i) {
+        auto& reader = state->cancel_scratch[i];
         if (!id || reader->entry->info.summary.artifact_id == *id) {
             reader->cancelled.store(true);
         }
+        reader.reset();
     }
 }
 

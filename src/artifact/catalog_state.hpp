@@ -80,9 +80,13 @@ struct RetainedQuarantine {
 struct CatalogState {
     CatalogOptions options;
     mutable std::mutex index;
+    // Acquired only before index during reader cancellation so pre-allocated
+    // scratch slots keep cancel_readers() strictly non-allocating / noexcept.
+    std::mutex cancel_mutex;
     std::condition_variable reader_changed;
     std::vector<CatalogSlot> slots;
     std::vector<ReadSlot> readers;
+    std::vector<std::shared_ptr<ReadBacking>> cancel_scratch;
     std::vector<std::shared_ptr<RetainedQuarantine>> quarantined;
     bool accepting_reads{true};
     bool rebuilding{false};

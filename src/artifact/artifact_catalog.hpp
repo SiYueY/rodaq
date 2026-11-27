@@ -77,7 +77,7 @@ public:
     Result<ArtifactInfo> get(ArtifactId id) const;
     Result<ArtifactReadHandle> acquire(ArtifactId id, ArtifactFileId file);
     Result<void> block_reads(ArtifactId id);
-    void cancel_readers(std::optional<ArtifactId> id = {});
+    void cancel_readers(std::optional<ArtifactId> id = {}) noexcept;
     Result<void> wait_readers(ArtifactId id, std::chrono::steady_clock::time_point deadline);
     // Maintenance actual execution only. Caller owns policy/generation selection;
     // the Ledger owns durable intent, and the retained entry owns disk charges.

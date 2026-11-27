@@ -142,10 +142,19 @@ void TaskService::State::RotateJob::run() noexcept {
             if (rotated.value()) {
                 // Actual accepted work must settle even if Stop superseded
                 // this Run during Native Seal. Artifact work never opens Gate.
-                auto committed = owner->options->execution->commit(*rotated.value());
+                const auto work_id = rotated.value()->work_id;
+                const auto segment_id = rotated.value()->segment->metadata.segment_id();
+                auto controller = pipeline.controller;
+                auto committed =
+                    owner->options->execution->commit_with_ack
+                        ? owner->options->execution->commit_with_ack(
+                              *rotated.value(),
+                              [controller, work_id, segment_id] {
+                                  (void)controller->acknowledge_artifact(work_id, segment_id);
+                              })
+                        : owner->options->execution->commit(*rotated.value());
                 if (committed.ok()) {
-                    committed = pipeline.controller->acknowledge_artifact(
-                        rotated.value()->work_id, rotated.value()->segment->metadata.segment_id());
+                    committed = pipeline.controller->acknowledge_artifact(work_id, segment_id);
                 }
                 if (!committed.ok()) {
                     failure = committed.status().code();

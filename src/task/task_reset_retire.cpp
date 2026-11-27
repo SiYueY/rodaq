@@ -415,14 +415,19 @@ void TaskService::State::RetireJob::run() noexcept {
     RetireFlight flight{*entry, owner->active_retirement_jobs};
     try {
         std::shared_ptr<const task::TaskControlRecord> control;
+        std::shared_ptr<task::RunExecution> execution;
         bool task_side_ready = false;
         {
             std::lock_guard<std::mutex> lock(entry->control_mutex);
             control = entry->controller->durable_record();
+            execution = entry->execution;
             task_side_ready = control->desired_state == DesiredState::Stopped &&
                               !control->reset_intent && entry->quiescent && entry->closing == 0 &&
                               !entry->retention_work && !entry->artifact_maintenance_active &&
                               !entry->resetting;
+        }
+        if (task_side_ready && execution && !execution->resources_settled()) {
+            task_side_ready = false;
         }
         const auto* current = current_stored_operation(*control);
         if (!current || current->snapshot.kind != OperationKind::Retire ||
@@ -492,16 +497,22 @@ void TaskService::State::RetireJob::run() noexcept {
             owner->pending_retirement_cleanups.insert(entry->id);
         }
 
-        // Release exclusive file locks owned by the retired Task entry before
-        // unlinking its old active namespace files.
+        // Release exclusive file locks and settled execution handle owned by the
+        // retired Task entry before releasing its Writer lane slice and unlinking
+        // its old active namespace files.
         {
             std::lock_guard<std::mutex> control_lock(entry->control_mutex);
+            entry->execution.reset();
             entry->store.reset();
             entry->identities.reset();
         }
+        execution.reset();
         {
             std::lock_guard<std::mutex> recovery_lock(entry->recovery_execution);
             entry->recovery.reset();
+        }
+        if (owner->options->execution && owner->options->execution->release_task_resources) {
+            owner->options->execution->release_task_resources(entry->id);
         }
 
         if (owner->options->retire_faults &&

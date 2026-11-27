@@ -3,6 +3,7 @@
 #include "composition.hpp"
 
 #include <mutex>
+#include <optional>
 
 #include "../persistence/json.hpp"
 
@@ -11,14 +12,13 @@ namespace rodaq::daq {
 struct RunResources {
     CompositionOptions options;
     std::vector<std::shared_ptr<ExecutionLane>> writers;
-    // One fixed slice per registered Task for this composition lifetime. The
-    // control catalog uses the same max_tasks bound; no Native calls under lock.
+    // Fixed max_tasks slot table; each slot maps to a max_pipelines writer slice
+    // and is released on Retire only after actual writer work is proven idle.
     mutable std::mutex writer_ownership;
-    mutable std::vector<TaskId> writer_tasks;
-    // Serializes actual single-Volume Commit execution, including durable
-    // Ledger mutation. It never guards queries, Admission or control state.
-    std::mutex commit_execution;
+    mutable std::vector<std::optional<TaskId>> writer_tasks;
 };
+
+void release_writer_slot(const RunResources& resources, TaskId task_id) noexcept;
 
 artifact::ManifestLimits catalog_manifest_limits(const DeploymentSettings& settings);
 

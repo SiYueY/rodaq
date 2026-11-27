@@ -1,14 +1,170 @@
 #include "task_service_state.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace rodaq {
 namespace {
+
+struct PipelineDrainOutcome {
+    StatusCode failure{StatusCode::Ok};
+    DataImpact impact{DataImpact::None};
+    std::uint64_t accepted{0};
+    bool done{false};
+};
+
+DataImpact merge_impact(DataImpact current, DataImpact incoming) noexcept {
+    if (current == DataImpact::PersistenceUnknown || incoming == DataImpact::PersistenceUnknown) {
+        return DataImpact::PersistenceUnknown;
+    }
+    if (current == DataImpact::AcceptedKnownFailed || incoming == DataImpact::AcceptedKnownFailed) {
+        return DataImpact::AcceptedKnownFailed;
+    }
+    if (current == DataImpact::PreAdmissionOnly || incoming == DataImpact::PreAdmissionOnly) {
+        return DataImpact::PreAdmissionOnly;
+    }
+    return DataImpact::None;
+}
+
+PipelineDrainOutcome drain_single_pipeline(
+    const task::RunExecutionOptions& exec_opts,
+    const std::shared_ptr<task::RunExecution>& execution,
+    const std::shared_ptr<pipeline::PipelineController>& controller,
+    ControlGeneration control_generation) {
+    PipelineDrainOutcome out;
+    const auto fail = [&](StatusCode error) noexcept {
+        if (out.failure == StatusCode::Ok) {
+            out.failure = error;
+        }
+    };
+    auto closed = controller->close_admission(control_generation);
+    if (!closed.ok()) {
+        fail(closed.status().code());
+        out.done = true;
+        return out;
+    }
+    auto deadline = plugin::Deadline::after(exec_opts.native_timeout);
+    if (!deadline.ok()) {
+        fail(deadline.status().code());
+        out.done = true;
+        return out;
+    }
+    // Fixed two-Segment rotation envelope: settle the old handoff, then the
+    // final writable Segment, followed by an empty proof. Never loop
+    // unboundedly or release a busy/uncertain Commit.
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        auto drained = controller->drain(deadline.value());
+        if (!drained.ok()) {
+            fail(drained.status().code());
+            break;
+        }
+        if (!drained.value()) {
+            break;
+        }
+        const auto work_id = drained.value()->work_id;
+        const auto segment_id = drained.value()->segment->metadata.segment_id();
+        auto do_commit = [&]() -> Result<void> {
+            if (exec_opts.commit_with_ack) {
+                return exec_opts.commit_with_ack(
+                    *drained.value(), [controller, work_id, segment_id] {
+                        (void)controller->acknowledge_artifact(work_id, segment_id);
+                    });
+            }
+            return exec_opts.commit(*drained.value());
+        };
+        auto committed = do_commit();
+        if (!committed.ok() && committed.status().code() == StatusCode::Conflict) {
+            bool returned = false;
+            {
+                std::unique_lock<std::mutex> registered(execution->registration);
+                if (execution->rotating) {
+                    returned = execution->returned.wait_for(
+                        registered, exec_opts.native_timeout, [&] { return !execution->rotating; });
+                }
+            }
+            if (returned) {
+                committed = do_commit();
+            }
+        }
+        if (committed.ok()) {
+            committed = controller->acknowledge_artifact(work_id, segment_id);
+        }
+        if (!committed.ok()) {
+            fail(committed.status().code());
+            out.impact = DataImpact::PersistenceUnknown;
+            break;
+        }
+    }
+    auto cleanup = controller->cleanup(deadline.value());
+    if (!cleanup.ok()) {
+        fail(cleanup.status().code());
+    }
+    auto facts = controller->snapshot();
+    if (!facts.ok()) {
+        fail(facts.status().code());
+    } else {
+        out.accepted = facts.value().records.accepted;
+    }
+    if (facts.ok() && out.failure != StatusCode::Ok && facts.value().records.written != 0 &&
+        facts.value().artifact_work_id != 0 && out.impact == DataImpact::None) {
+        out.impact = DataImpact::PersistenceUnknown;
+    }
+    if (facts.ok() &&
+        (facts.value().records.unknown != 0 || facts.value().records.known_failed != 0)) {
+        fail(StatusCode::DataLoss);
+        if (facts.value().records.unknown != 0) {
+            out.impact = DataImpact::PersistenceUnknown;
+        } else if (out.impact == DataImpact::None) {
+            out.impact = DataImpact::AcceptedKnownFailed;
+        }
+    }
+    out.done = true;
+    return out;
+}
+
+struct ParallelDrainState {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::vector<PipelineDrainOutcome> outcomes;
+    std::size_t completed{0};
+};
+
+struct PipelineDrainWork final : Work {
+    std::shared_ptr<const task::ServiceOptions> options;
+    std::shared_ptr<task::RunExecution> execution;
+    std::shared_ptr<pipeline::PipelineController> controller;
+    ControlGeneration control_generation{0};
+    std::shared_ptr<ParallelDrainState> state;
+    std::size_t index{0};
+
+    void run() noexcept override {
+        PipelineDrainOutcome outcome;
+        try {
+            outcome = drain_single_pipeline(
+                *options->execution, execution, controller, control_generation);
+        } catch (const std::bad_alloc&) {
+            outcome.failure = StatusCode::ResourceExhausted;
+            outcome.impact = DataImpact::PersistenceUnknown;
+            outcome.done = true;
+        } catch (...) {
+            outcome.failure = StatusCode::Internal;
+            outcome.impact = DataImpact::PersistenceUnknown;
+            outcome.done = true;
+        }
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->outcomes[index] = outcome;
+        ++state->completed;
+        state->ready.notify_all();
+    }
+};
 
 struct CloseFlight {
     task::TaskEntry& entry;
@@ -253,77 +409,63 @@ void TaskService::State::CloseJob::run() noexcept {
                     return;
                 }
             }
-            for (const auto& pipeline : execution->pipelines) {
-                auto closed = pipeline.controller->close_admission(control->control_generation);
-                if (!closed.ok()) {
-                    fail(closed.status().code());
-                    continue;
-                }
-                auto deadline = plugin::Deadline::after(owner->options->execution->native_timeout);
-                if (!deadline.ok()) {
-                    fail(deadline.status().code());
-                    continue;
-                }
-                // Fixed two-Segment rotation envelope: settle the old handoff,
-                // then the final writable Segment, followed by an empty proof.
-                // Never loop unboundedly or release a busy/uncertain Commit.
-                for (unsigned pass = 0; pass < 3; ++pass) {
-                    auto drained = pipeline.controller->drain(deadline.value());
-                    if (!drained.ok()) {
-                        fail(drained.status().code());
-                        break;
-                    }
-                    if (!drained.value()) {
-                        break;
-                    }
-                    auto committed = owner->options->execution->commit(*drained.value());
-                    if (!committed.ok() && committed.status().code() == StatusCode::Conflict) {
-                        bool returned = false;
-                        {
-                            std::unique_lock<std::mutex> registered(execution->registration);
-                            if (execution->rotating) {
-                                returned = execution->returned.wait_for(
-                                    registered, owner->options->execution->native_timeout,
-                                    [&] { return !execution->rotating; });
-                            }
-                        }
-                        if (returned) {
-                            committed = owner->options->execution->commit(*drained.value());
-                        }
-                    }
-                    if (committed.ok()) {
-                        committed = pipeline.controller->acknowledge_artifact(
-                            drained.value()->work_id,
-                            drained.value()->segment->metadata.segment_id());
-                    }
-                    if (!committed.ok()) {
-                        fail(committed.status().code());
-                        impact = DataImpact::PersistenceUnknown;
-                        break;
+            const auto& exec_opts = *owner->options->execution;
+            if (execution->pipelines.size() > 1 && exec_opts.pipeline_cleanup_lane) {
+                const auto count = execution->pipelines.size();
+                auto shared = std::make_shared<ParallelDrainState>();
+                shared->outcomes.resize(count);
+                std::vector<std::size_t> fallback;
+                for (std::size_t i = 0; i < count; ++i) {
+                    auto work = std::make_shared<PipelineDrainWork>();
+                    work->options = owner->options;
+                    work->execution = execution;
+                    work->controller = execution->pipelines[i].controller;
+                    work->control_generation = control->control_generation;
+                    work->state = shared;
+                    work->index = i;
+                    if (!exec_opts.pipeline_cleanup_lane->submit(std::move(work)).ok()) {
+                        fallback.push_back(i);
                     }
                 }
-                auto cleanup = pipeline.controller->cleanup(deadline.value());
-                if (!cleanup.ok()) {
-                    fail(cleanup.status().code());
+                for (const auto i : fallback) {
+                    auto outcome = drain_single_pipeline(
+                        exec_opts, execution, execution->pipelines[i].controller,
+                        control->control_generation);
+                    std::lock_guard<std::mutex> lock(shared->mutex);
+                    shared->outcomes[i] = outcome;
+                    ++shared->completed;
+                    shared->ready.notify_all();
                 }
-                auto facts = pipeline.controller->snapshot();
-                if (!facts.ok()) {
-                    fail(facts.status().code());
-                } else {
-                    accepted += facts.value().records.accepted;
-                }
-                if (facts.ok() && failure != StatusCode::Ok && facts.value().records.written != 0 &&
-                    facts.value().artifact_work_id != 0 && impact == DataImpact::None) {
-                    impact = DataImpact::PersistenceUnknown;
-                }
-                if (facts.ok() && (facts.value().records.unknown != 0 ||
-                                   facts.value().records.known_failed != 0)) {
-                    fail(StatusCode::DataLoss);
-                    if (facts.value().records.unknown != 0) {
-                        impact = DataImpact::PersistenceUnknown;
-                    } else if (impact == DataImpact::None) {
-                        impact = DataImpact::AcceptedKnownFailed;
+                const auto grace =
+                    std::min(exec_opts.native_timeout, std::chrono::nanoseconds{200000000});
+                const auto wait_budget = exec_opts.native_timeout + grace;
+                std::unique_lock<std::mutex> lock(shared->mutex);
+                (void)shared->ready.wait_for(
+                    lock, wait_budget, [&] { return shared->completed == count; });
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto& outcome = shared->outcomes[i];
+                    if (!outcome.done) {
+                        // Pipeline still executing on pipeline_cleanup_lane;
+                        // PipelineDrainWork retains its controller backing.
+                        fail(StatusCode::DeadlineExceeded);
+                        impact = merge_impact(impact, DataImpact::PersistenceUnknown);
+                        continue;
                     }
+                    if (outcome.failure != StatusCode::Ok) {
+                        fail(outcome.failure);
+                    }
+                    impact = merge_impact(impact, outcome.impact);
+                    accepted += outcome.accepted;
+                }
+            } else {
+                for (const auto& pipeline : execution->pipelines) {
+                    const auto outcome = drain_single_pipeline(
+                        exec_opts, execution, pipeline.controller, control->control_generation);
+                    if (outcome.failure != StatusCode::Ok) {
+                        fail(outcome.failure);
+                    }
+                    impact = merge_impact(impact, outcome.impact);
+                    accepted += outcome.accepted;
                 }
             }
             {

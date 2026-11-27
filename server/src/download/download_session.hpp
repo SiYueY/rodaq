@@ -62,7 +62,8 @@ public:
         ByteRange range;
         std::shared_ptr<ArtifactReadHandle> handle;
         std::weak_ptr<trantor::TcpConnection> connection;
-        std::function<void(std::function<void()>)> submit_disk_read;
+        std::function<bool(std::shared_ptr<DownloadSession>, std::uint64_t, std::size_t)>
+            submit_disk_read;
         std::function<void(std::uint64_t session_id, std::uint64_t bytes_sent, bool cancelled)>
             on_terminal;
     };
@@ -83,6 +84,8 @@ public:
 
     void on_transport_writable() noexcept;
 
+    void execute_disk_read(std::uint64_t offset, std::size_t to_read);
+
     bool is_settled() const noexcept;
 
 private:
@@ -95,11 +98,10 @@ private:
 
     explicit DownloadSession(Options options);
 
-    std::optional<TerminalInvocation> pump_locked();
-    void schedule_read_locked();
-    void run_disk_read(std::uint64_t offset, std::size_t to_read);
-    std::optional<TerminalInvocation> try_settle_locked();
-    void close_stream_locked();
+    std::optional<TerminalInvocation> pump_locked() noexcept;
+    std::optional<TerminalInvocation> schedule_read_locked() noexcept;
+    std::optional<TerminalInvocation> try_settle_locked() noexcept;
+    void close_stream_locked() noexcept;
     static void invoke_terminal(std::optional<TerminalInvocation> invocation) noexcept;
 
     const std::uint64_t session_id_;
@@ -108,7 +110,8 @@ private:
     const std::uint64_t max_bytes_in_flight_;
     const ByteRange range_;
     std::weak_ptr<trantor::TcpConnection> connection_;
-    std::function<void(std::function<void()>)> submit_disk_read_;
+    std::function<bool(std::shared_ptr<DownloadSession>, std::uint64_t, std::size_t)>
+        submit_disk_read_;
     std::function<void(std::uint64_t, std::uint64_t, bool)> on_terminal_;
 
     mutable std::mutex mutex_;

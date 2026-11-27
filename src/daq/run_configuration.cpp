@@ -153,6 +153,30 @@ Result<Json> effective_configuration(
     }
 }
 
+void release_writer_slot(const RunResources& resources, TaskId task_id) noexcept {
+    const auto width = resources.options.settings.tasks.config.max_pipelines;
+    std::lock_guard<std::mutex> lock(resources.writer_ownership);
+    for (std::size_t slot = 0; slot < resources.writer_tasks.size(); ++slot) {
+        if (!resources.writer_tasks[slot].has_value() ||
+            !(*resources.writer_tasks[slot] == task_id)) {
+            continue;
+        }
+        const std::size_t base = slot * width;
+        bool idle = true;
+        for (std::size_t i = 0; i < width && base + i < resources.writers.size(); ++i) {
+            const auto snap = resources.writers[base + i]->snapshot();
+            if (snap.running != 0 || snap.queued != 0) {
+                idle = false;
+                break;
+            }
+        }
+        if (idle) {
+            resources.writer_tasks[slot].reset();
+        }
+        return;
+    }
+}
+
 Result<task::RunInputs> resolve_run(
     const RunResources& resources, const task::TaskControlRecord& control, const TaskConfig& config,
     pipeline::StreamIdentityStore& identities) {
@@ -166,17 +190,29 @@ Result<task::RunInputs> resolve_run(
         std::size_t writer_offset = 0;
         {
             std::lock_guard<std::mutex> lock(resources.writer_ownership);
-            auto found = std::find(
-                resources.writer_tasks.begin(), resources.writer_tasks.end(), control.task_id);
-            if (found == resources.writer_tasks.end()) {
-                if (resources.writer_tasks.size() == options.settings.max_tasks) {
+            if (resources.writer_tasks.size() < options.settings.max_tasks) {
+                resources.writer_tasks.resize(options.settings.max_tasks);
+            }
+            std::optional<std::size_t> selected_slot;
+            std::optional<std::size_t> free_slot;
+            for (std::size_t i = 0; i < options.settings.max_tasks; ++i) {
+                if (resources.writer_tasks[i].has_value() &&
+                    *resources.writer_tasks[i] == control.task_id) {
+                    selected_slot = i;
+                    break;
+                }
+                if (!free_slot && !resources.writer_tasks[i].has_value()) {
+                    free_slot = i;
+                }
+            }
+            if (!selected_slot) {
+                if (!free_slot) {
                     return Status(StatusCode::ResourceExhausted, {});
                 }
-                resources.writer_tasks.push_back(control.task_id);
-                found = resources.writer_tasks.end() - 1;
+                resources.writer_tasks[*free_slot] = control.task_id;
+                selected_slot = *free_slot;
             }
-            writer_offset =
-                static_cast<std::size_t>(found - resources.writer_tasks.begin()) * width;
+            writer_offset = *selected_slot * width;
         }
         task::RunInputs result;
         result.boot = options.boot;

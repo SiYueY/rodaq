@@ -19,6 +19,9 @@ DownloadRegistry::~DownloadRegistry() noexcept {
 Result<std::unique_ptr<DownloadRegistry>> DownloadRegistry::create(const DownloadConfig& config) {
     try {
         std::unique_ptr<DownloadRegistry> reg(new DownloadRegistry(config));
+        const std::size_t slot_capacity = std::max<std::size_t>(1, config.max_concurrent);
+        reg->state_->cancel_scratch.resize(slot_capacity);
+        reg->state_->read_ring.resize(slot_capacity);
         reg->workers_.reserve(config.workers);
         for (std::uint32_t i = 0; i < config.workers; ++i) {
             reg->workers_.emplace_back([state = reg->state_] { worker_loop(state); });
@@ -70,8 +73,10 @@ DownloadAdmitResult DownloadRegistry::create_session(
         opts.range = range;
         opts.handle = std::move(handle);
         opts.connection = std::move(connection);
-        opts.submit_disk_read = [state = state_](std::function<void()> fn) {
-            submit_disk_read(state, std::move(fn));
+        opts.submit_disk_read = [state = state_](
+                                    std::shared_ptr<DownloadSession> sess, std::uint64_t offset,
+                                    std::size_t to_read) noexcept {
+            return submit_disk_read(state, std::move(sess), offset, to_read);
         };
         opts.on_terminal = [state = state_](std::uint64_t id, std::uint64_t bytes, bool cancelled) {
             on_session_terminal(state, id, bytes, cancelled);
@@ -115,7 +120,8 @@ void DownloadRegistry::notify_connection_closed(const trantor::TcpConnection* ra
     if (!raw_conn) {
         return;
     }
-    std::vector<std::shared_ptr<DownloadSession>> to_cancel;
+    std::lock_guard<std::mutex> cancel_lock(state_->cancel_mutex);
+    std::size_t count = 0;
     {
         std::lock_guard<std::mutex> lock(state_->registry_mutex);
         const auto it = state_->conn_sessions.find(raw_conn);
@@ -124,30 +130,38 @@ void DownloadRegistry::notify_connection_closed(const trantor::TcpConnection* ra
         }
         for (const auto sid : it->second) {
             const auto sit = state_->active_sessions.find(sid);
-            if (sit != state_->active_sessions.end()) {
-                to_cancel.push_back(sit->second);
+            if (sit != state_->active_sessions.end() && count < state_->cancel_scratch.size()) {
+                state_->cancel_scratch[count++] = sit->second;
             }
             state_->session_conns.erase(sid);
         }
         state_->conn_sessions.erase(it);
     }
-    for (const auto& session : to_cancel) {
-        session->request_cancel();
+    for (std::size_t i = 0; i < count; ++i) {
+        auto session = std::move(state_->cancel_scratch[i]);
+        if (session) {
+            session->request_cancel();
+        }
     }
 }
 
 void DownloadRegistry::cancel_all() noexcept {
-    std::vector<std::shared_ptr<DownloadSession>> sessions;
+    std::lock_guard<std::mutex> cancel_lock(state_->cancel_mutex);
+    std::size_t count = 0;
     {
         std::lock_guard<std::mutex> lock(state_->registry_mutex);
         state_->stopping = true;
-        sessions.reserve(state_->active_sessions.size());
         for (const auto& kv : state_->active_sessions) {
-            sessions.push_back(kv.second);
+            if (count < state_->cancel_scratch.size()) {
+                state_->cancel_scratch[count++] = kv.second;
+            }
         }
     }
-    for (const auto& session : sessions) {
-        session->request_cancel();
+    for (std::size_t i = 0; i < count; ++i) {
+        auto session = std::move(state_->cancel_scratch[i]);
+        if (session) {
+            session->request_cancel();
+        }
     }
 }
 
@@ -198,36 +212,49 @@ DownloadMetrics DownloadRegistry::metrics() const {
     return state_->metrics;
 }
 
-void DownloadRegistry::submit_disk_read(
-    const std::shared_ptr<SharedState>& state, std::function<void()> task) {
+bool DownloadRegistry::submit_disk_read(
+    const std::shared_ptr<SharedState>& state, std::shared_ptr<DownloadSession> session,
+    std::uint64_t offset, std::size_t to_read) noexcept {
     {
         std::lock_guard<std::mutex> lock(state->worker_mutex);
-        state->read_queue.push_back(std::move(task));
+        if (state->workers_stopping || state->read_ring.empty() ||
+            state->ring_count >= state->read_ring.size()) {
+            return false;
+        }
+        const std::size_t tail = (state->ring_head + state->ring_count) % state->read_ring.size();
+        state->read_ring[tail] = {std::move(session), offset, to_read};
+        ++state->ring_count;
     }
     state->worker_cv.notify_one();
+    return true;
 }
 
 void DownloadRegistry::worker_loop(const std::shared_ptr<SharedState>& state) {
     for (;;) {
-        std::function<void()> task;
+        ReadJob job;
         {
             std::unique_lock<std::mutex> lock(state->worker_mutex);
             state->worker_cv.wait(
-                lock, [&] { return state->workers_stopping || !state->read_queue.empty(); });
-            if (state->read_queue.empty()) {
+                lock, [&] { return state->workers_stopping || state->ring_count > 0; });
+            if (state->ring_count == 0) {
                 if (state->workers_stopping) {
                     break;
                 }
                 continue;
             }
-            task = std::move(state->read_queue.front());
-            state->read_queue.pop_front();
+            job = std::move(state->read_ring[state->ring_head]);
+            state->read_ring[state->ring_head] = {};
+            state->ring_head = (state->ring_head + 1) % state->read_ring.size();
+            --state->ring_count;
         }
         try {
-            if (task) {
-                task();
+            if (job.session) {
+                job.session->execute_disk_read(job.offset, job.to_read);
             }
         } catch (...) {
+            if (job.session) {
+                job.session->request_cancel();
+            }
         }
     }
 }

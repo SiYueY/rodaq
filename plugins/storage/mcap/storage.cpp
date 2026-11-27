@@ -40,6 +40,17 @@ bool same_schema(const mcap::Schema& a, const mcap::Schema& b) {
     return a.name == b.name && a.encoding == b.encoding && a.data == b.data;
 }
 
+Result<void> check_deadline(plugin::Deadline deadline) {
+    auto remaining = deadline.remaining();
+    if (!remaining.ok()) {
+        return remaining.status();
+    }
+    if (remaining.value() <= std::chrono::nanoseconds::zero()) {
+        return Status(StatusCode::DeadlineExceeded, {});
+    }
+    return {};
+}
+
 }  // namespace
 
 struct StorageBackend::Descriptor {
@@ -111,12 +122,15 @@ Result<void> StorageBackend::configure(std::string_view input) {
 }
 
 Result<storage::CapacityModel> StorageBackend::prepare(
-    const storage::PrepareConfig& config, plugin::Deadline) {
+    const storage::PrepareConfig& config, plugin::Deadline deadline) {
     if (phase_ != Phase::Configured) {
         return Status(StatusCode::InvalidState, {});
     }
     if (!storage::abi::valid_prepare(&config)) {
         return Status(StatusCode::InvalidArgument, {});
+    }
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return ok.status();
     }
     if (config.max_descriptors_per_segment > kMaxDescriptors || config.max_segment_file_count < 2 ||
         config.max_relative_path_bytes < 30) {
@@ -139,7 +153,7 @@ Result<storage::CapacityModel> StorageBackend::prepare(
 }
 
 Result<void> StorageBackend::prepare_descriptor(
-    const storage::StreamDescriptor& input, plugin::Deadline) {
+    const storage::StreamDescriptor& input, plugin::Deadline deadline) {
     if (phase_ != Phase::Prepared && phase_ != Phase::Open && phase_ != Phase::Sealed) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -149,6 +163,9 @@ Result<void> StorageBackend::prepare_descriptor(
     }
     if (!storage::abi::valid_descriptor(&input) || input.data_profile != RODAQ_DATA_PROFILE_ROS2) {
         return Status(StatusCode::InvalidArgument, {});
+    }
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return ok.status();
     }
     const DescriptorKey key{input.stream_id, input.descriptor_id};
     auto existing = descriptors_.find(key);
@@ -204,13 +221,17 @@ Result<void> StorageBackend::prepare_descriptor(
     return {};
 }
 
-Result<void> StorageBackend::open_segment(const storage::SegmentSpec& segment, plugin::Deadline) {
+Result<void> StorageBackend::open_segment(
+    const storage::SegmentSpec& segment, plugin::Deadline deadline) {
     if (phase_ != Phase::Prepared && phase_ != Phase::Sealed) {
         return Status(StatusCode::InvalidState, {});
     }
     if (!storage::abi::valid_segment(&segment) || segment.staging_directory.size > 4095 ||
         segment.staging_directory.data[0] != '/' || segment.segment_id == segment_id_) {
         return Status(StatusCode::InvalidArgument, {});
+    }
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return ok.status();
     }
     // Once any file effect can happen, every exceptional/failed exit is a
     // contaminated Segment until actual quiesce. No retry or ordinary Seal.
@@ -234,12 +255,19 @@ Result<void> StorageBackend::open_segment(const storage::SegmentSpec& segment, p
         }
         auto opened = mcap_->open(directory, mcap_name_.c_str());
         if (opened.ok()) {
+            opened = check_deadline(deadline);
+        }
+        if (opened.ok()) {
             opened = meta_->open(directory, meta_name_.c_str());
         }
         ::close(directory);
         if (!opened.ok()) {
             fail(opened.status().code());
             return opened.status();
+        }
+        if (auto ok = check_deadline(deadline); !ok.ok()) {
+            fail(ok.status().code());
+            return ok.status();
         }
         mcap::McapWriterOptions options{std::string(kProfile)};
         options.library = kLibrary;
@@ -253,14 +281,18 @@ Result<void> StorageBackend::open_segment(const storage::SegmentSpec& segment, p
         metadata.name = "rosbag2";
         metadata.metadata.emplace("ROS_DISTRO", kDistro);
         const auto written = writer_->write(metadata);
+        if (!written.ok() || mcap_->status() != StatusCode::Ok) {
+            fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
+            return Status(failure_, {});
+        }
+        if (auto ok = check_deadline(deadline); !ok.ok()) {
+            fail(ok.status().code());
+            return ok.status();
+        }
         const auto header = encode_meta_header();
         meta_->write(header.data(), header.size());
-        if (!written.ok() || mcap_->status() != StatusCode::Ok ||
-            meta_->status() != StatusCode::Ok) {
-            fail(
-                mcap_->status() != StatusCode::Ok   ? mcap_->status()
-                : meta_->status() != StatusCode::Ok ? meta_->status()
-                                                    : StatusCode::DataLoss);
+        if (meta_->status() != StatusCode::Ok) {
+            fail(meta_->status());
             return Status(failure_, {});
         }
         segment_id_ = segment.segment_id;
@@ -335,7 +367,7 @@ Result<void> StorageBackend::materialize(Descriptor& descriptor) {
     return {};
 }
 
-storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::Deadline) {
+storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::Deadline deadline) {
     if (phase_ != Phase::Open) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -364,8 +396,14 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
     }
     storage::BatchResult outcome{
         {sizeof(storage::BatchResult)}, 0, RODAQ_STORAGE_TAIL_DEFINITELY_UNWRITTEN};
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return {ok.status(), outcome};
+    }
     try {
         for (std::uint32_t i = 0; i < batch.count; ++i) {
+            if (auto ok = check_deadline(deadline); !ok.ok()) {
+                return {ok.status(), outcome};
+            }
             const auto& record = batch.records[i];
             auto& descriptor = descriptors_.at({record.stream_id, record.descriptor_id});
             const auto record_bytes = storage::record_bound(model_, record.payload.size);
@@ -417,6 +455,10 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
                 fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
                 return {Status(failure_, {}), outcome};
             }
+            if (auto ok = check_deadline(deadline); !ok.ok()) {
+                fail(ok.status().code());
+                return {Status(failure_, {}), outcome};
+            }
             meta_->write(sidecar.bytes.data(), sidecar.size);
             if (meta_->status() != StatusCode::Ok) {
                 fail(meta_->status());
@@ -455,9 +497,12 @@ Result<storage::SegmentUsage> StorageBackend::segment_usage() const {
     return usage;
 }
 
-Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline) {
+Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline deadline) {
     if (phase_ != Phase::Open || paired_records_ == 0) {
         return Status(StatusCode::InvalidState, {});
+    }
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return ok.status();
     }
     phase_ = Phase::Failed;
     try {
@@ -467,10 +512,18 @@ Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline
             return footer.status();
         }
         writer_->close();
+        if (mcap_->status() != StatusCode::Ok) {
+            fail(mcap_->status());
+            return Status(failure_, {});
+        }
+        if (auto ok = check_deadline(deadline); !ok.ok()) {
+            fail(ok.status().code());
+            return Status(failure_, {});
+        }
         meta_->write(footer.value().data(), footer.value().size());
         meta_->end();
-        if (mcap_->status() != StatusCode::Ok || meta_->status() != StatusCode::Ok) {
-            fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : meta_->status());
+        if (meta_->status() != StatusCode::Ok) {
+            fail(meta_->status());
             return Status(failure_, {});
         }
         const auto total = segment_usage();
@@ -491,7 +544,10 @@ Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline
     return Status(failure_, {});
 }
 
-Result<void> StorageBackend::quiesce(plugin::Deadline) {
+Result<void> StorageBackend::quiesce(plugin::Deadline deadline) {
+    if (auto ok = check_deadline(deadline); !ok.ok()) {
+        return ok.status();
+    }
     if (writer_) {
         writer_->terminate();
     }

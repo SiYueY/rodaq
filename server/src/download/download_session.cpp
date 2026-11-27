@@ -119,16 +119,12 @@ bool if_range_matches_etag(
     if (trimmed.size() >= 2 && trimmed[0] == 'W' && trimmed[1] == '/') {
         return false;
     }
-    std::string quoted;
-    if (!strong_etag.empty() && strong_etag.front() == '"' && strong_etag.back() == '"') {
-        quoted = std::string(strong_etag);
-    } else {
-        quoted.reserve(strong_etag.size() + 2);
-        quoted.push_back('"');
-        quoted.append(strong_etag);
-        quoted.push_back('"');
+    if (!strong_etag.empty() && strong_etag.size() >= 2 && strong_etag.front() == '"' &&
+        strong_etag.back() == '"') {
+        return trimmed == strong_etag;
     }
-    return trimmed == quoted;
+    return trimmed.size() == strong_etag.size() + 2 && trimmed.front() == '"' &&
+           trimmed.back() == '"' && trimmed.substr(1, strong_etag.size()) == strong_etag;
 }
 
 std::string sanitize_download_filename(std::string_view raw_display_name) {
@@ -280,7 +276,7 @@ bool DownloadSession::is_settled() const noexcept {
     return settled_;
 }
 
-std::optional<DownloadSession::TerminalInvocation> DownloadSession::pump_locked() {
+std::optional<DownloadSession::TerminalInvocation> DownloadSession::pump_locked() noexcept {
     if (settled_ || inflight_read_) {
         return std::nullopt;
     }
@@ -303,29 +299,48 @@ std::optional<DownloadSession::TerminalInvocation> DownloadSession::pump_locked(
         waiting_backpressure_ = true;
         // Safety poll on event loop in case write-complete fired just before check.
         if (auto* loop = conn->getLoop()) {
-            std::weak_ptr<DownloadSession> weak_self = shared_from_this();
-            loop->runAfter(0.02, [weak_self] {
-                if (auto self = weak_self.lock()) {
-                    self->on_transport_writable();
-                }
-            });
+            try {
+                std::weak_ptr<DownloadSession> weak_self = shared_from_this();
+                loop->runAfter(0.02, [weak_self] {
+                    if (auto self = weak_self.lock()) {
+                        self->on_transport_writable();
+                    }
+                });
+            } catch (...) {
+                cancel_requested_ = true;
+                close_stream_locked();
+                return try_settle_locked();
+            }
         }
         return std::nullopt;
     }
-    schedule_read_locked();
-    return std::nullopt;
+    return schedule_read_locked();
 }
 
-void DownloadSession::schedule_read_locked() {
+std::optional<DownloadSession::TerminalInvocation>
+DownloadSession::schedule_read_locked() noexcept {
     const std::uint64_t offset = next_offset_;
     const std::size_t to_read =
         static_cast<std::size_t>(std::min<std::uint64_t>(chunk_bytes_, remaining_));
     inflight_read_ = true;
-    auto self = shared_from_this();
-    submit_disk_read_([self, offset, to_read] { self->run_disk_read(offset, to_read); });
+    bool admitted = false;
+    if (submit_disk_read_) {
+        try {
+            admitted = submit_disk_read_(shared_from_this(), offset, to_read);
+        } catch (...) {
+            admitted = false;
+        }
+    }
+    if (!admitted) {
+        inflight_read_ = false;
+        cancel_requested_ = true;
+        close_stream_locked();
+        return try_settle_locked();
+    }
+    return std::nullopt;
 }
 
-void DownloadSession::run_disk_read(std::uint64_t offset, std::size_t to_read) {
+void DownloadSession::execute_disk_read(std::uint64_t offset, std::size_t to_read) {
     // Runs strictly on bounded download worker thread, never on Drogon event loop.
     std::shared_ptr<ArtifactReadHandle> handle;
     std::byte* buf_ptr = nullptr;
@@ -375,7 +390,7 @@ void DownloadSession::run_disk_read(std::uint64_t offset, std::size_t to_read) {
     invoke_terminal(std::move(terminal));
 }
 
-void DownloadSession::close_stream_locked() {
+void DownloadSession::close_stream_locked() noexcept {
     auto conn = connection_.lock();
     if (conn) {
         conn->setWriteCompleteCallback(nullptr);
@@ -383,36 +398,48 @@ void DownloadSession::close_stream_locked() {
     const bool truncated_abort = started_ && remaining_ > 0;
     const bool normal_finish = started_ && remaining_ == 0 && !cancel_requested_;
     if (stream_) {
-        stream_->close();
+        try {
+            stream_->close();
+        } catch (...) {
+        }
         stream_.reset();
     }
     if (conn && !conn->disconnected()) {
         if (truncated_abort) {
-            conn->forceClose();
+            try {
+                conn->forceClose();
+            } catch (...) {
+            }
         } else if (normal_finish) {
-            if (auto* loop = conn->getLoop()) {
-                loop->queueInLoop([conn] {
-                    if (!conn->disconnected()) {
-                        conn->shutdown();
-                    }
-                });
-            } else {
-                conn->shutdown();
+            try {
+                if (auto* loop = conn->getLoop()) {
+                    loop->queueInLoop([conn] {
+                        if (!conn->disconnected()) {
+                            conn->shutdown();
+                        }
+                    });
+                } else {
+                    conn->shutdown();
+                }
+            } catch (...) {
+                try {
+                    conn->forceClose();
+                } catch (...) {
+                }
             }
         }
     }
 }
 
-std::optional<DownloadSession::TerminalInvocation> DownloadSession::try_settle_locked() {
+std::optional<DownloadSession::TerminalInvocation> DownloadSession::try_settle_locked() noexcept {
     if (settled_ || inflight_read_ || stream_) {
         return std::nullopt;
     }
     settled_ = true;
     // Release ArtifactReadHandle / ReadLease strictly once after in-flight read
-    // has returned and transport stream has closed.
+    // has returned and transport stream has closed. Swap releases memory noexcept.
     handle_.reset();
-    chunk_buffer_.clear();
-    chunk_buffer_.shrink_to_fit();
+    std::vector<std::byte>{}.swap(chunk_buffer_);
     if (!on_terminal_) {
         return std::nullopt;
     }

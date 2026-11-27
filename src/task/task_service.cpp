@@ -910,6 +910,15 @@ Result<std::unique_ptr<TaskService>> TaskService::open(task::ServiceOptions opti
                     return Status(StatusCode::InvalidArgument, {});
                 }
             }
+            if (execution.pipeline_cleanup_lane) {
+                const auto& p_lane = execution.pipeline_cleanup_lane;
+                const auto capacity = p_lane->snapshot();
+                if (!capacity.accepting || p_lane == execution.preparation_lane ||
+                    p_lane == execution.cleanup_lane || p_lane == options.control_lane ||
+                    p_lane == options.create_lane) {
+                    return Status(StatusCode::InvalidArgument, {});
+                }
+            }
         }
         const auto valid_labels = [](const auto& values) {
             if (values.size() > 256) {

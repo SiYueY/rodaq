@@ -193,6 +193,7 @@ struct SystemService::State {
     CpuSample last_cpu;
     std::uint64_t next_sequence{1};
     std::shared_ptr<const Published> published;
+    std::atomic<bool> observation_degraded{false};
 };
 
 SystemService::SystemService(std::shared_ptr<State> state) noexcept : state_(std::move(state)) {}
@@ -240,10 +241,16 @@ Result<void> SystemService::refresh(const system::SystemObservation& observation
         next->observed_at = std::chrono::steady_clock::now();
         std::atomic_store(
             &state_->published, std::shared_ptr<const State::Published>(std::move(next)));
+        state_->observation_degraded.store(false, std::memory_order_release);
         return {};
     } catch (const std::bad_alloc&) {
+        state_->observation_degraded.store(true, std::memory_order_release);
         return Status(StatusCode::ResourceExhausted, {});
     }
+}
+
+void SystemService::mark_observation_degraded() noexcept {
+    state_->observation_degraded.store(true, std::memory_order_release);
 }
 
 Result<SystemSnapshot> SystemService::snapshot() const {
@@ -259,6 +266,15 @@ Result<SystemSnapshot> SystemService::snapshot() const {
             if (result.freshness == SnapshotFreshness::Fresh &&
                 result.age > state_->snapshot_max_age) {
                 result.freshness = SnapshotFreshness::Stale;
+            }
+        }
+        if (state_->observation_degraded.load(std::memory_order_acquire)) {
+            result.core_ready = false;
+            if (result.freshness == SnapshotFreshness::Fresh) {
+                result.freshness = SnapshotFreshness::Stale;
+            }
+            for (auto& volume : result.volumes) {
+                volume.pressure = VolumePressure::Protected;
             }
         }
         return result;

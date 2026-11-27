@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -210,6 +212,50 @@ bool valid(const CompositionOptions& o) {
     return true;
 }
 
+struct CommitReply {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::optional<Result<void>> result;
+
+    void complete(Result<void> value) noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (result) {
+            return;
+        }
+        result.emplace(std::move(value));
+        ready.notify_all();
+    }
+
+    Result<void> wait(std::chrono::nanoseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!ready.wait_for(lock, timeout, [&] { return result.has_value(); })) {
+            return Status(StatusCode::DeadlineExceeded, {});
+        }
+        return *result;
+    }
+};
+
+struct CommitJob final : Work {
+    std::shared_ptr<artifact::ArtifactCatalog> catalog;
+    pipeline::SealedPipelineSegment sealed;
+    std::function<void()> on_committed;
+    std::shared_ptr<CommitReply> reply;
+
+    void run() noexcept override {
+        try {
+            auto result = catalog->commit(sealed);
+            if (result.ok() && on_committed) {
+                on_committed();
+            }
+            reply->complete(std::move(result));
+        } catch (const std::bad_alloc&) {
+            reply->complete(Status(StatusCode::ResourceExhausted, {}));
+        } catch (...) {
+            reply->complete(Status(StatusCode::Internal, {}));
+        }
+    }
+};
+
 }  // namespace
 
 struct Composition::State {
@@ -249,24 +295,30 @@ void Composition::publish_system_observation(
     if (!state_->system) {
         return;
     }
-    const auto& o = state_->resources->options;
-    const auto cap = o.capacity->snapshot();
-    const auto cat = state_->catalog->snapshot();
-    const bool ready = state_->core_ready.load(std::memory_order_acquire) &&
-                       !state_->stopping.load(std::memory_order_acquire);
-    system::SystemObservation obs;
-    obs.core_ready = ready;
-    obs.recovery = build_recovery_status(o.recovery_report, ready);
-    VolumeStatus volume;
-    volume.name = o.settings.output_root;
-    volume.total_bytes = total_bytes;
-    volume.free_bytes = force_protected ? 0 : space.effective_free_bytes;
-    volume.pressure = to_volume_pressure(space, cap, cat, force_protected);
-    obs.volumes.push_back(std::move(volume));
-    obs.backlog.commit_items =
-        std::max<std::uint64_t>(cap.commit_slots, static_cast<std::uint64_t>(cat.commit_inflight));
-    obs.backlog.commit_bytes = cap.commit_bytes;
-    (void)state_->system->refresh(obs);
+    try {
+        const auto& o = state_->resources->options;
+        const auto cap = o.capacity->snapshot();
+        const auto cat = state_->catalog->snapshot();
+        const bool ready = state_->core_ready.load(std::memory_order_acquire) &&
+                           !state_->stopping.load(std::memory_order_acquire);
+        system::SystemObservation obs;
+        obs.core_ready = ready;
+        obs.recovery = build_recovery_status(o.recovery_report, ready);
+        VolumeStatus volume;
+        volume.name = o.settings.output_root;
+        volume.total_bytes = total_bytes;
+        volume.free_bytes = force_protected ? 0 : space.effective_free_bytes;
+        volume.pressure = to_volume_pressure(space, cap, cat, force_protected);
+        obs.volumes.push_back(std::move(volume));
+        obs.backlog.commit_items = std::max<std::uint64_t>(
+            cap.commit_slots, static_cast<std::uint64_t>(cat.commit_inflight));
+        obs.backlog.commit_bytes = cap.commit_bytes;
+        if (!state_->system->refresh(obs).ok()) {
+            state_->system->mark_observation_degraded();
+        }
+    } catch (...) {
+        state_->system->mark_observation_degraded();
+    }
 }
 
 Composition::Composition(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
@@ -295,26 +347,54 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         state->resources->options = std::move(options);
         const auto& o = state->resources->options;
         // Reserve before creating any thread so every domain has an owner even
-        // if a later allocation fails. Four distinct business scheduling lanes.
+        // if a later allocation fails. Six distinct business scheduling domains:
+        // [0] create (1 worker), [1] control (max_tasks workers, per-Task serial),
+        // [2] prepare/rotate (max_tasks), [3] task cleanup (max_tasks),
+        // [4] per-pipeline cleanup (bounded parallel), [5] single-Volume commit (1).
         const auto writer_count = o.settings.max_tasks * o.settings.tasks.config.max_pipelines;
-        state->lanes.reserve(4 + writer_count);
+        constexpr std::size_t kCoreDomains = 6;
+        state->lanes.reserve(kCoreDomains + writer_count);
         state->resources->writers.reserve(writer_count);
-        state->resources->writer_tasks.reserve(o.settings.max_tasks);
+        state->resources->writer_tasks.resize(o.settings.max_tasks);
         std::size_t writer_capacity = 2;
         for (const auto& profile : o.settings.profiles) {
             writer_capacity = std::max(
                 writer_capacity,
                 static_cast<std::size_t>(profile.instance.callback_concurrency) + 2);
         }
-        for (std::size_t i = 0; i < 4 + writer_count; ++i) {
-            const auto workers = i == 2 || i == 3 ? o.settings.max_tasks : 1;
-            auto lane = ExecutionLane::create(
-                workers, i < 4 ? std::max<std::size_t>(8, o.settings.max_tasks) : writer_capacity);
+        std::size_t commit_queue = 8;
+        if (auto vol_policy = o.capacity->policy(); vol_policy.ok()) {
+            const auto slots = static_cast<std::size_t>(vol_policy.value().max_commit_slots);
+            commit_queue = std::clamp<std::size_t>(slots * 2, 8, 4096);
+        }
+        const std::size_t pipeline_cleanup_workers = std::clamp<std::size_t>(writer_count, 2, 16);
+        const std::size_t pipeline_cleanup_queue =
+            std::clamp<std::size_t>(writer_count * 2, 8, 4096);
+        for (std::size_t i = 0; i < kCoreDomains + writer_count; ++i) {
+            std::size_t workers = 1;
+            std::size_t capacity = writer_capacity;
+            if (i == 0) {
+                workers = 1;
+                capacity = std::max<std::size_t>(8, o.settings.max_tasks);
+            } else if (i == 1) {
+                workers = o.settings.max_tasks;
+                capacity = std::max<std::size_t>(8, o.settings.max_tasks * 2);
+            } else if (i == 2 || i == 3) {
+                workers = o.settings.max_tasks;
+                capacity = std::max<std::size_t>(8, o.settings.max_tasks);
+            } else if (i == 4) {
+                workers = pipeline_cleanup_workers;
+                capacity = pipeline_cleanup_queue;
+            } else if (i == 5) {
+                workers = 1;
+                capacity = commit_queue;
+            }
+            auto lane = ExecutionLane::create(workers, capacity);
             if (!lane.ok()) {
                 return lane.status();
             }
             state->lanes.push_back(lane.value());
-            if (i >= 4) {
+            if (i >= kCoreDomains) {
                 state->resources->writers.push_back(std::move(lane.value()));
             }
         }
@@ -359,17 +439,40 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         execution->sample = o.sample;
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
+        execution->pipeline_cleanup_lane = state->lanes[4];
         execution->native_timeout = o.settings.native_timeout;
         execution->runtime_recovery = o.settings.runtime_recovery;
         execution->resolve = [resources = std::shared_ptr<const RunResources>(state->resources)](
                                  const auto& control, const auto& config, auto& identities) {
             return resolve_run(*resources, control, config, identities);
         };
-        execution->commit = [catalog = state->catalog,
-                             resources = state->resources](const auto& sealed) {
-            std::lock_guard<std::mutex> flight(resources->commit_execution);
-            return catalog->commit(sealed);
+        execution->release_task_resources =
+            [resources = std::shared_ptr<const RunResources>(state->resources)](
+                TaskId task_id) noexcept { release_writer_slot(*resources, task_id); };
+        auto dispatch_commit = [catalog = state->catalog, commit_lane = state->lanes[5],
+                                timeout = o.settings.native_timeout](
+                                   const pipeline::SealedPipelineSegment& sealed,
+                                   std::function<void()> on_committed) -> Result<void> {
+            try {
+                auto job = std::make_shared<CommitJob>();
+                job->catalog = catalog;
+                job->sealed = sealed;
+                job->on_committed = std::move(on_committed);
+                job->reply = std::make_shared<CommitReply>();
+                auto reply = job->reply;
+                auto admitted = commit_lane->submit(std::move(job));
+                if (!admitted.ok()) {
+                    return admitted.status();
+                }
+                return reply->wait(timeout);
+            } catch (const std::bad_alloc&) {
+                return Status(StatusCode::ResourceExhausted, {});
+            }
         };
+        execution->commit = [dispatch_commit](const pipeline::SealedPipelineSegment& sealed) {
+            return dispatch_commit(sealed, {});
+        };
+        execution->commit_with_ack = std::move(dispatch_commit);
         execution->reserve_segment = [ids = o.segment_ids]() -> Result<std::uint64_t> {
             auto reserved = ids->reserve(1);
             return reserved.ok() ? Result<std::uint64_t>(reserved.value().begin)
@@ -568,6 +671,14 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         return closed.status();
     }
     state_->catalog->cancel_readers();
+    // Initiate drain/seal/commit for all healthy active executions BEFORE
+    // waiting on global Create/Control idle so a hung Control/Create fsync on
+    // one Task never prevents healthy sibling Tasks from settling cleanly.
+    auto draining = state_->tasks->drain_shutdown();
+    const Status initial_drain = draining.ok() ? Status{} : draining.status();
+    auto cleaned = state_->lanes[3]->wait_idle(deadline);
+    auto pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
+    auto committed = state_->lanes[5]->wait_idle(deadline);
     // Keep create, control and cleanup lanes open while in-flight cleanup or
     // post-retirement receipt removal settles; close_admission() already blocks
     // new user Create/Lifecycle requests.
@@ -579,12 +690,6 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     if (!controls.ok()) {
         return controls.status();
     }
-    // Initiate independent cleanup before observing the rotation/Prepare
-    // domain, which may still own a blocking Native or Commit operation.
-    auto draining = state_->tasks->drain_shutdown();
-    if (!draining.ok()) {
-        return draining.status();
-    }
     auto prepared = state_->lanes[2]->shutdown(deadline);
     if (!prepared.ok()) {
         return prepared.status();
@@ -593,9 +698,20 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     if (!draining.ok()) {
         return draining.status();
     }
-    auto cleaned = state_->lanes[3]->wait_idle(deadline);
+    if (!initial_drain.ok()) {
+        return initial_drain;
+    }
+    cleaned = state_->lanes[3]->wait_idle(deadline);
     if (!cleaned.ok()) {
         return cleaned.status();
+    }
+    pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
+    if (!pipeline_cleaned.ok()) {
+        return pipeline_cleaned.status();
+    }
+    committed = state_->lanes[5]->wait_idle(deadline);
+    if (!committed.ok()) {
+        return committed.status();
     }
     created = state_->lanes[0]->wait_idle(deadline);
     if (!created.ok()) {
@@ -607,9 +723,9 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     }
     if (!state_->tasks->shutdown_settled()) {
         // Private failed-initialization cleanup is still unproven. Observe
-        // actual Manager shutdown while cleanup/Writer domains remain available.
-        // Let the same Task owners reconcile that evidence rather than asserting
-        // that a failed create necessarily left no instance behind.
+        // actual Manager shutdown while cleanup/Writer/Commit domains remain
+        // available. Let the same Task owners reconcile that evidence rather
+        // than asserting that a failed create necessarily left no instance.
         auto native_deadline = plugin::Deadline::after(std::max(
             std::chrono::nanoseconds::zero(), std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                   deadline - std::chrono::steady_clock::now())));
@@ -628,12 +744,22 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         if (!cleaned.ok()) {
             return cleaned.status();
         }
+        pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
+        if (!pipeline_cleaned.ok()) {
+            return pipeline_cleaned.status();
+        }
+        committed = state_->lanes[5]->wait_idle(deadline);
+        if (!committed.ok()) {
+            return committed.status();
+        }
         if (!state_->tasks->shutdown_settled()) {
             return Status(StatusCode::Unavailable, {});
         }
     }
-    for (std::size_t i = 0; i < 4; ++i) {
-        auto quiet = state_->lanes[i]->shutdown(deadline);
+    for (const std::size_t idx :
+         {std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{5}, std::size_t{0},
+          std::size_t{1}}) {
+        auto quiet = state_->lanes[idx]->shutdown(deadline);
         if (!quiet.ok()) {
             return quiet.status();
         }

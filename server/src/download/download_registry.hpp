@@ -8,7 +8,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -67,7 +66,16 @@ public:
     DownloadMetrics metrics() const;
 
 private:
+    struct ReadJob {
+        std::shared_ptr<DownloadSession> session;
+        std::uint64_t offset{0};
+        std::size_t to_read{0};
+    };
+
     struct SharedState {
+        // Acquired only before registry_mutex to keep cancel paths strictly noexcept
+        // using pre-allocated cancel_scratch slots.
+        std::mutex cancel_mutex;
         mutable std::mutex registry_mutex;
         std::condition_variable settled_cv;
         std::uint64_t next_session_id{1};
@@ -76,19 +84,23 @@ private:
         std::unordered_map<std::uint64_t, const trantor::TcpConnection*> session_conns;
         std::unordered_map<const trantor::TcpConnection*, std::vector<std::uint64_t>> conn_sessions;
         std::unordered_map<std::string, std::size_t> principal_sessions;
+        std::vector<std::shared_ptr<DownloadSession>> cancel_scratch;
         DownloadMetrics metrics;
         bool stopping{false};
 
         std::mutex worker_mutex;
         std::condition_variable worker_cv;
-        std::deque<std::function<void()>> read_queue;
+        std::vector<ReadJob> read_ring;
+        std::size_t ring_head{0};
+        std::size_t ring_count{0};
         bool workers_stopping{false};
     };
 
     explicit DownloadRegistry(DownloadConfig config);
     static void worker_loop(const std::shared_ptr<SharedState>& state);
-    static void submit_disk_read(
-        const std::shared_ptr<SharedState>& state, std::function<void()> task);
+    static bool submit_disk_read(
+        const std::shared_ptr<SharedState>& state, std::shared_ptr<DownloadSession> session,
+        std::uint64_t offset, std::size_t to_read) noexcept;
     static void on_session_terminal(
         const std::shared_ptr<SharedState>& state, std::uint64_t session_id,
         std::uint64_t bytes_sent, bool cancelled);

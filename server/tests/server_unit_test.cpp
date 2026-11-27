@@ -418,6 +418,67 @@ TEST(DownloadRegistryTest, EnforcesPrincipalAndGlobalLimitsAndCleansUpOnShutdown
     EXPECT_EQ(dm.total_cancelled, 4u);
 }
 
+TEST(DownloadRegistryTest, NoexceptIfRangeAndDiskReadAdmissionFailureSettleOnce) {
+    // IC-SRV-01: verify zero-allocation noexcept If-Range comparison.
+    static_assert(noexcept(if_range_matches_etag("", "")));
+    EXPECT_TRUE(if_range_matches_etag("", "abc"));
+    EXPECT_TRUE(if_range_matches_etag("\"abc\"", "abc"));
+    EXPECT_TRUE(if_range_matches_etag("  \"abc\"  ", "\"abc\""));
+    EXPECT_FALSE(if_range_matches_etag("W/\"abc\"", "abc"));
+    EXPECT_FALSE(if_range_matches_etag("\"xyz\"", "abc"));
+
+    // IC-SRV-01: disk-read admission returning false or throwing std::bad_alloc
+    // rolls back inflight_read_, settles strictly once, and never terminates.
+    for (const bool throw_alloc : {false, true}) {
+        std::atomic<int> terminal_calls{0};
+        std::atomic<bool> was_cancelled{false};
+        DownloadSession::Options opts;
+        opts.session_id = throw_alloc ? 2u : 1u;
+        opts.principal = "alice";
+        opts.chunk_bytes = 4096;
+        opts.max_bytes_in_flight = 8192;
+        opts.range = {0, 99, 100, false};
+        opts.submit_disk_read =
+            [throw_alloc](std::shared_ptr<DownloadSession>, std::uint64_t, std::size_t) -> bool {
+            if (throw_alloc) {
+                throw std::bad_alloc();
+            }
+            return false;
+        };
+        opts.on_terminal = [&](std::uint64_t, std::uint64_t, bool cancelled) {
+            terminal_calls.fetch_add(1);
+            was_cancelled.store(cancelled);
+        };
+        auto session = DownloadSession::create(std::move(opts));
+        ASSERT_NE(session, nullptr);
+        // Calling on_transport_writable() / attach_and_start() / request_cancel()
+        // must never terminate and must settle strictly once.
+        session->attach_and_start(nullptr, "");
+        EXPECT_TRUE(session->is_settled());
+        EXPECT_EQ(terminal_calls.load(), 1);
+        session->on_transport_writable();
+        session->request_cancel();
+        EXPECT_EQ(terminal_calls.load(), 1);
+    }
+
+    // Exercise noexcept cancel_all() and notify_connection_closed() directly.
+    DownloadConfig cfg;
+    cfg.workers = 1;
+    cfg.max_concurrent = 4;
+    cfg.chunk_bytes = 4096;
+    cfg.max_bytes_in_flight = 8192;
+    auto reg = DownloadRegistry::create(cfg);
+    ASSERT_TRUE(reg.ok());
+    static_assert(noexcept(reg.value()->cancel_all()));
+    static_assert(noexcept(reg.value()->notify_connection_closed(nullptr)));
+    ByteRange r{0, 63, 64, false};
+    ASSERT_TRUE(reg.value()->create_session("alice", r, nullptr, {}).admitted);
+    ASSERT_TRUE(reg.value()->create_session("bob", r, nullptr, {}).admitted);
+    reg.value()->cancel_all();
+    EXPECT_EQ(reg.value()->active_count(), 0u);
+    ASSERT_TRUE(reg.value()->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+}
+
 TEST(StaticAssetServiceTest, EnforcesManifestMajorCachePolicyAndNeverFallbacksApi) {
     TempDir dir("web");
     write_file_mode(dir.path / "index.html", "<html><body>RoDAQ</body></html>", 0644);

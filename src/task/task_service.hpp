@@ -79,6 +79,10 @@ struct RunExecutionOptions {
     // The resolver must supply independent actual Writer ownership per run.
     std::shared_ptr<ExecutionLane> preparation_lane;
     std::shared_ptr<ExecutionLane> cleanup_lane;
+    // Optional dedicated per-Pipeline drain/cleanup domain so a blocking
+    // Pipeline quiesce inside a multi-Pipeline Task cannot prevent sibling
+    // healthy Pipelines from draining, sealing, and committing.
+    std::shared_ptr<ExecutionLane> pipeline_cleanup_lane;
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
     RecoveryPolicy recovery;
     RuntimeRecoveryPolicy runtime_recovery;
@@ -91,7 +95,15 @@ struct RunExecutionOptions {
     // Actual Artifact owner retains failed/uncertain commits. Success proves
     // durable Ledger + Catalog publication and transfer of retained charges.
     std::function<Result<void>(const pipeline::SealedPipelineSegment&)> commit;
+    // Optional async-capable Commit handoff invoked with a post-commit hook
+    // that runs on the Commit domain upon actual durable success (including
+    // after caller observer timeout) so late commits settle Pipeline state.
+    std::function<Result<void>(const pipeline::SealedPipelineSegment&, std::function<void()>)>
+        commit_with_ack;
     std::function<Result<std::uint64_t>()> reserve_segment;
+    // Invoked after durable Retire tombstone publication and proven actual
+    // execution settlement so per-Task Writer lane slices can be reused.
+    std::function<void(TaskId)> release_task_resources;
     ArtifactOperations artifacts;
 };
 

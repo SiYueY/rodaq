@@ -116,6 +116,7 @@ private:
     static Result<std::unique_ptr<SystemService>> create(system::SystemServiceOptions options);
     explicit SystemService(std::shared_ptr<State> state) noexcept;
     Result<void> refresh(const system::SystemObservation& observation);
+    void mark_observation_degraded() noexcept;
 
     std::shared_ptr<State> state_;
 };
