@@ -48,7 +48,7 @@ Result<ArtifactReadHandle> ArtifactCatalog::acquire(ArtifactId id, ArtifactFileI
     try {
         auto backing = std::make_shared<ReadBacking>();
         backing->owner = state;
-        std::size_t file_index = static_cast<std::size_t>(file.value - 1);
+        const std::size_t file_index = static_cast<std::size_t>(file.value - 1);
         {
             std::lock_guard<std::mutex> lock(state->index);
             if (!state->accepting_reads) {
@@ -57,18 +57,8 @@ Result<ArtifactReadHandle> ArtifactCatalog::acquire(ArtifactId id, ArtifactFileI
             if (state->options.volume->protection() != StatusCode::Ok) {
                 return Status(state->options.volume->protection(), {});
             }
-            if (state->options.ledger->protection() != StatusCode::Ok) {
-                return Status(state->options.ledger->protection(), {});
-            }
             const auto at = state->find(id.value);
-            if (at == state->slots.size()) {
-                return Status(StatusCode::NotFound, {});
-            }
-            auto published = state->public_entry(state->slots[at]);
-            if (!published.ok()) {
-                return published.status();
-            }
-            if (!published.value()) {
+            if (at == state->slots.size() || !state->slots[at].visible || !state->slots[at].entry) {
                 return Status(StatusCode::NotFound, {});
             }
             auto entry = state->slots[at].entry;

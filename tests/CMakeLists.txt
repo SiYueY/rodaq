@@ -41,6 +41,8 @@ add_executable(rodaq_build_contract_test build_contract_test.cpp)
 target_link_libraries(rodaq_build_contract_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_build_contract_test)
 include(GoogleTest)
+gtest_discover_tests(rodaq_build_contract_test)
+
 if(TARGET rodaq_ros2_config)
     add_executable(rodaq_ros2_runtime_test ros2/runtime_test.cpp ros2/core_test.cpp)
     target_link_libraries(rodaq_ros2_runtime_test PRIVATE rodaq_ros2_runtime GTest::gtest_main
@@ -97,13 +99,8 @@ if(TARGET rodaq_ros2_config)
     rodaq_enable_project_warnings(rodaq_ros2_config_test)
     gtest_discover_tests(rodaq_ros2_config_test PROPERTIES TIMEOUT 30)
 endif()
+
 if(TARGET rodaq_mcap_format)
-    add_executable(rodaq_mcap_format_test mcap/format_test.cpp)
-    target_link_libraries(rodaq_mcap_format_test PRIVATE rodaq_mcap_format GTest::gtest_main)
-    target_compile_definitions(rodaq_mcap_format_test PRIVATE
-        RODAQ_MCAP_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/mcap/fixtures")
-    rodaq_enable_project_warnings(rodaq_mcap_format_test)
-    gtest_discover_tests(rodaq_mcap_format_test PROPERTIES TIMEOUT 30)
     add_executable(rodaq_mcap_storage_test mcap/storage_test.cpp)
     target_link_libraries(rodaq_mcap_storage_test PRIVATE rodaq_mcap_format GTest::gtest_main)
     target_compile_definitions(rodaq_mcap_storage_test PRIVATE
@@ -112,147 +109,90 @@ if(TARGET rodaq_mcap_format)
     rodaq_enable_project_warnings(rodaq_mcap_storage_test)
     gtest_discover_tests(rodaq_mcap_storage_test PROPERTIES TIMEOUT 30)
 endif()
+
 add_executable(rodaq_task_config_test task/config_test.cpp)
 target_include_directories(rodaq_task_config_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(rodaq_task_config_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
 target_link_libraries(rodaq_task_config_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_task_config_test)
 gtest_discover_tests(rodaq_task_config_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_task_identity_test task/identity_test.cpp)
 target_include_directories(rodaq_task_identity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(rodaq_task_identity_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
 target_link_libraries(rodaq_task_identity_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_task_identity_test)
 gtest_discover_tests(rodaq_task_identity_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_create_store_test task/create_store_test.cpp)
-target_include_directories(rodaq_task_create_store_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_task_create_store_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_create_store_test)
-gtest_discover_tests(rodaq_task_create_store_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_task_operation_history_test task/operation_history_test.cpp)
 target_include_directories(rodaq_task_operation_history_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_task_operation_history_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_task_operation_history_test)
 gtest_discover_tests(rodaq_task_operation_history_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_control_record_test task/control_record_test.cpp)
-target_include_directories(rodaq_task_control_record_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_task_control_record_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_control_record_test)
-gtest_discover_tests(rodaq_task_control_record_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_task_store_test task/task_store_test.cpp)
 target_include_directories(rodaq_task_store_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(rodaq_task_store_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
 target_link_libraries(rodaq_task_store_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_task_store_test)
 gtest_discover_tests(rodaq_task_store_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_controller_test task/task_controller_test.cpp)
-target_include_directories(rodaq_task_controller_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_compile_definitions(rodaq_task_controller_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
-target_link_libraries(rodaq_task_controller_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_controller_test)
-gtest_discover_tests(rodaq_task_controller_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_recovery_test task/recovery_test.cpp)
-target_include_directories(rodaq_task_recovery_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_task_recovery_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_recovery_test)
-gtest_discover_tests(rodaq_task_recovery_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_retirement_store_test task/retirement_store_test.cpp)
-target_include_directories(rodaq_task_retirement_store_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_task_retirement_store_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_retirement_store_test)
-gtest_discover_tests(rodaq_task_retirement_store_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_task_config_identity_test task/config_identity_test.cpp)
-target_include_directories(rodaq_task_config_identity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_compile_definitions(rodaq_task_config_identity_test PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
-target_link_libraries(rodaq_task_config_identity_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_task_config_identity_test)
-gtest_discover_tests(rodaq_task_config_identity_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_stream_identity_test pipeline/stream_identity_test.cpp)
-target_include_directories(rodaq_stream_identity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_stream_identity_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_stream_identity_test)
-gtest_discover_tests(rodaq_stream_identity_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_sequence_allocator_test pipeline/sequence_allocator_test.cpp)
-target_include_directories(rodaq_sequence_allocator_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_sequence_allocator_test PRIVATE rodaq::daq GTest::gtest_main)
-rodaq_enable_project_warnings(rodaq_sequence_allocator_test)
-gtest_discover_tests(rodaq_sequence_allocator_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_admission_gate_test pipeline/admission_gate_test.cpp)
 target_include_directories(rodaq_admission_gate_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_admission_gate_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_admission_gate_test)
 gtest_discover_tests(rodaq_admission_gate_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_payload_pool_test pipeline/payload_pool_test.cpp)
 target_include_directories(rodaq_payload_pool_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_payload_pool_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_payload_pool_test)
 gtest_discover_tests(rodaq_payload_pool_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_descriptor_registry_test pipeline/descriptor_registry_test.cpp)
-target_include_directories(rodaq_descriptor_registry_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_descriptor_registry_test PRIVATE rodaq::daq GTest::gtest_main)
-rodaq_enable_project_warnings(rodaq_descriptor_registry_test)
-gtest_discover_tests(rodaq_descriptor_registry_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_record_queue_test pipeline/record_queue_test.cpp)
 target_include_directories(rodaq_record_queue_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_record_queue_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_record_queue_test)
 gtest_discover_tests(rodaq_record_queue_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_volume_capacity_test artifact/volume_capacity_test.cpp)
 target_include_directories(rodaq_volume_capacity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_volume_capacity_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_volume_capacity_test)
 gtest_discover_tests(rodaq_volume_capacity_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_task_config_probe task/config_probe.cpp)
 target_link_libraries(rodaq_task_config_probe PRIVATE rodaq::daq)
 rodaq_enable_project_warnings(rodaq_task_config_probe)
-add_executable(rodaq_persistent_json_test persistence/json_test.cpp)
-target_include_directories(rodaq_persistent_json_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_persistent_json_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_persistent_json_test)
-gtest_discover_tests(rodaq_persistent_json_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_atomic_file_test persistence/atomic_file_test.cpp)
 target_include_directories(rodaq_atomic_file_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_atomic_file_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_atomic_file_test)
 gtest_discover_tests(rodaq_atomic_file_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_clock_test time/clock_test.cpp)
 target_include_directories(rodaq_clock_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_clock_test PRIVATE rodaq::daq GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_clock_test)
 gtest_discover_tests(rodaq_clock_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_playback_anchor_store_test time/playback_anchor_store_test.cpp)
-target_include_directories(rodaq_playback_anchor_store_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_playback_anchor_store_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_playback_anchor_store_test)
-gtest_discover_tests(rodaq_playback_anchor_store_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_clock_correlation_test time/clock_correlation_test.cpp)
-target_include_directories(rodaq_clock_correlation_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_clock_correlation_test PRIVATE rodaq::daq GTest::gtest_main)
-rodaq_enable_project_warnings(rodaq_clock_correlation_test)
-gtest_discover_tests(rodaq_clock_correlation_test PROPERTIES TIMEOUT 30)
-add_executable(rodaq_jcs_number_probe persistence/number_probe.cpp)
-target_include_directories(rodaq_jcs_number_probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_jcs_number_probe PRIVATE rodaq::daq nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_jcs_number_probe)
-gtest_discover_tests(rodaq_build_contract_test)
+
 add_executable(rodaq_abi_boundary_test plugin/abi_boundary_test.cpp)
 target_link_libraries(rodaq_abi_boundary_test PRIVATE rodaq::plugin GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_abi_boundary_test)
 gtest_discover_tests(rodaq_abi_boundary_test)
+
 add_executable(rodaq_plugin_authoring_test plugin/authoring_test.cpp)
 target_link_libraries(rodaq_plugin_authoring_test PRIVATE rodaq::plugin GTest::gtest_main)
 rodaq_enable_project_warnings(rodaq_plugin_authoring_test)
 gtest_discover_tests(rodaq_plugin_authoring_test)
+
 add_executable(rodaq_plugin_catalog_test plugin/catalog_test.cpp)
 target_include_directories(rodaq_plugin_catalog_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
 target_link_libraries(rodaq_plugin_catalog_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_plugin_catalog_test)
 gtest_discover_tests(rodaq_plugin_catalog_test)
-add_executable(rodaq_plugin_registry_test plugin/registry_test.cpp)
-target_include_directories(rodaq_plugin_registry_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
-target_link_libraries(rodaq_plugin_registry_test PRIVATE rodaq::plugin GTest::gtest_main)
-rodaq_enable_project_warnings(rodaq_plugin_registry_test)
-gtest_discover_tests(rodaq_plugin_registry_test PROPERTIES TIMEOUT 30)
+
 add_executable(rodaq_plugin_initialization_test plugin/initialization_test.cpp)
 target_include_directories(rodaq_plugin_initialization_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
 target_link_libraries(rodaq_plugin_initialization_test PRIVATE rodaq::plugin GTest::gtest_main)
@@ -295,8 +235,6 @@ add_executable(rodaq_catalog_supervision_consumer plugin/catalog_supervision_con
 target_link_libraries(rodaq_catalog_supervision_consumer PRIVATE rodaq::plugin)
 rodaq_enable_project_warnings(rodaq_catalog_supervision_consumer)
 
-# Clang 14 TSan owns strong global new/delete symbols. Allocation-failure
-# injection uses replacements, so run this case in native and ASan/UBSan builds.
 if(NOT RODAQ_SANITIZER STREQUAL "thread")
     add_executable(rodaq_close_takeover_test plugin/close_takeover_test.cpp)
     target_link_libraries(rodaq_close_takeover_test PRIVATE rodaq::plugin GTest::gtest_main)
@@ -359,6 +297,7 @@ add_test(NAME rodaq_loader_supervision
         --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json
         --healthy-package ${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0)
 set_tests_properties(rodaq_loader_supervision PROPERTIES TIMEOUT 45 FIXTURES_REQUIRED counter_sdk)
+
 string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
 add_custom_target(rodaq_generate_abi_probe
     BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/abi_probe.c
@@ -378,6 +317,7 @@ configure_file(abi_signatures.c ${CMAKE_CURRENT_BINARY_DIR}/abi_signatures.cpp C
 add_library(rodaq_abi_signatures_cpp OBJECT ${CMAKE_CURRENT_BINARY_DIR}/abi_signatures.cpp)
 target_include_directories(rodaq_abi_signatures_cpp PRIVATE ${PROJECT_SOURCE_DIR}/include)
 rodaq_enable_project_warnings(rodaq_abi_signatures_cpp)
+
 add_test(NAME rodaq_abi_manifest_comparator
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/abi_manifest_test.py)
 add_test(NAME rodaq_plugin_metadata
@@ -393,13 +333,14 @@ add_test(NAME rodaq_domain_binary_matrix
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_domain_matrix.py
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
         --compiler ${CMAKE_C_COMPILER} --sanitizer ${RODAQ_SANITIZER})
-
 set_tests_properties(rodaq_domain_binary_matrix PROPERTIES FIXTURES_SETUP domain_sdk)
+
 add_test(NAME rodaq_runtime_sdk_consumer
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/build_runtime_consumer.py
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
         --compiler ${CMAKE_CXX_COMPILER} --sanitizer ${RODAQ_SANITIZER})
 set_tests_properties(rodaq_runtime_sdk_consumer PROPERTIES FIXTURES_REQUIRED "counter_sdk;domain_sdk")
+
 add_test(NAME rodaq_counter_independent_projects
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/abi/run_counter_projects.py
         --source ${PROJECT_SOURCE_DIR} --build ${PROJECT_BINARY_DIR}
@@ -413,24 +354,18 @@ add_test(NAME rodaq_package_contract
         -DRODAQ_SANITIZER=${RODAQ_SANITIZER}
         -P ${PROJECT_SOURCE_DIR}/tests/package_contract.cmake)
 
-if(RODAQ_SANITIZER STREQUAL "address-undefined")
-    add_executable(rodaq_provider_lifetime_violation plugin/provider_lifetime_violation.cpp)
-    target_link_libraries(rodaq_provider_lifetime_violation PRIVATE rodaq::plugin)
-    target_compile_options(rodaq_provider_lifetime_violation PRIVATE -UNDEBUG)
-    rodaq_enable_project_warnings(rodaq_provider_lifetime_violation)
-    add_test(NAME rodaq_provider_lifetime_qualification
-        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/expected_sanitizer_failure.py
-            --binary $<TARGET_FILE:rodaq_provider_lifetime_violation>
-            --report ${PROJECT_BINARY_DIR}/provider-lifetime-report.log)
-    set_tests_properties(rodaq_provider_lifetime_qualification PROPERTIES
-        TIMEOUT 30 ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=1:halt_on_error=1")
+if(RODAQ_BUILD_MCAP_STORAGE OR RODAQ_BUILD_ROS2_ACQUISITION)
+    add_test(NAME rodaq_oot_official_plugins_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRODAQ_BUILD_DIR=${PROJECT_BINARY_DIR}
+            -DRODAQ_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DRODAQ_C_COMPILER=${CMAKE_C_COMPILER}
+            -DRODAQ_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DRODAQ_BUILD_MCAP_STORAGE=${RODAQ_BUILD_MCAP_STORAGE}
+            -DRODAQ_BUILD_ROS2_ACQUISITION=${RODAQ_BUILD_ROS2_ACQUISITION}
+            -P ${PROJECT_SOURCE_DIR}/tests/oot_plugins_contract.cmake)
+    set_tests_properties(rodaq_oot_official_plugins_contract PROPERTIES TIMEOUT 120)
 endif()
-
-add_executable(rodaq_segment_capacity_test pipeline/segment_capacity_test.cpp)
-target_include_directories(rodaq_segment_capacity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_segment_capacity_test PRIVATE rodaq::daq GTest::gtest_main)
-rodaq_enable_project_warnings(rodaq_segment_capacity_test)
-gtest_discover_tests(rodaq_segment_capacity_test PROPERTIES TIMEOUT 30)
 
 add_executable(rodaq_admission_test pipeline/admission_test.cpp)
 target_include_directories(rodaq_admission_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -443,12 +378,6 @@ if(NOT RODAQ_SANITIZER STREQUAL "thread")
     target_compile_definitions(rodaq_admission_test PRIVATE RODAQ_TEST_ADMISSION_ALLOCATION=1)
 endif()
 
-add_executable(rodaq_segment_id_store_test artifact/segment_id_store_test.cpp)
-target_include_directories(rodaq_segment_id_store_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_segment_id_store_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_segment_id_store_test)
-gtest_discover_tests(rodaq_segment_id_store_test PROPERTIES TIMEOUT 30)
-
 add_executable(rodaq_managed_volume_test artifact/managed_volume_test.cpp)
 target_include_directories(rodaq_managed_volume_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(rodaq_managed_volume_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
@@ -460,12 +389,6 @@ target_include_directories(rodaq_sealed_files_test PRIVATE ${PROJECT_SOURCE_DIR}
 target_link_libraries(rodaq_sealed_files_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
 rodaq_enable_project_warnings(rodaq_sealed_files_test)
 gtest_discover_tests(rodaq_sealed_files_test PROPERTIES TIMEOUT 30)
-
-add_executable(rodaq_ledger_test artifact/ledger_test.cpp)
-target_include_directories(rodaq_ledger_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_ledger_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json)
-rodaq_enable_project_warnings(rodaq_ledger_test)
-gtest_discover_tests(rodaq_ledger_test PROPERTIES TIMEOUT 30)
 
 add_executable(rodaq_manifest_test artifact/manifest_test.cpp)
 target_include_directories(rodaq_manifest_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -497,9 +420,7 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_fake_storage_test rodaq_fake_storage rodaq_fake_storage_hang_probe)
     rodaq_enable_project_warnings(rodaq_fake_storage_test)
     gtest_discover_tests(rodaq_fake_storage_test PROPERTIES TIMEOUT 30)
-endif()
 
-if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_executable(rodaq_pipeline_writer_test pipeline/writer_test.cpp)
     target_include_directories(rodaq_pipeline_writer_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_pipeline_writer_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
@@ -508,9 +429,7 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_pipeline_writer_test rodaq_fake_storage)
     rodaq_enable_project_warnings(rodaq_pipeline_writer_test)
     gtest_discover_tests(rodaq_pipeline_writer_test PROPERTIES TIMEOUT 30)
-endif()
 
-if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_executable(rodaq_fake_acquisition_test fakes/acquisition_test.cpp)
     target_link_libraries(rodaq_fake_acquisition_test PRIVATE rodaq::plugin GTest::gtest_main nlohmann_json::nlohmann_json Threads::Threads)
     target_compile_definitions(rodaq_fake_acquisition_test PRIVATE
@@ -518,15 +437,7 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_fake_acquisition_test rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_fake_acquisition_test)
     gtest_discover_tests(rodaq_fake_acquisition_test PROPERTIES TIMEOUT 30)
-endif()
 
-add_executable(rodaq_stream_table_test pipeline/stream_table_test.cpp)
-target_include_directories(rodaq_stream_table_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(rodaq_stream_table_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
-rodaq_enable_project_warnings(rodaq_stream_table_test)
-gtest_discover_tests(rodaq_stream_table_test PROPERTIES TIMEOUT 30)
-
-if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_executable(rodaq_recording_instance_test pipeline/recording_instance_test.cpp)
     target_include_directories(rodaq_recording_instance_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_recording_instance_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
@@ -536,6 +447,7 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_recording_instance_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_recording_instance_test)
     gtest_discover_tests(rodaq_recording_instance_test PROPERTIES TIMEOUT 30)
+
     add_executable(rodaq_pipeline_controller_test pipeline/pipeline_controller_test.cpp)
     target_include_directories(rodaq_pipeline_controller_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_pipeline_controller_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
@@ -548,22 +460,18 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     gtest_discover_tests(rodaq_pipeline_controller_test PROPERTIES TIMEOUT 30)
     set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/pipeline/cleanup_fixture.cmake")
-    add_executable(rodaq_task_service_crash_probe task/service_crash_probe.cpp)
-    target_include_directories(rodaq_task_service_crash_probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    target_link_libraries(rodaq_task_service_crash_probe PRIVATE rodaq::daq nlohmann_json::nlohmann_json)
-    target_compile_definitions(rodaq_task_service_crash_probe PRIVATE RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json")
-    rodaq_enable_project_warnings(rodaq_task_service_crash_probe)
+
     add_executable(rodaq_task_service_test task/task_service_test.cpp)
     target_include_directories(rodaq_task_service_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_task_service_test PRIVATE rodaq::daq GTest::gtest_main nlohmann_json::nlohmann_json Threads::Threads)
     target_compile_definitions(rodaq_task_service_test PRIVATE
         RODAQ_TASK_CONFIG_FIXTURE="${PROJECT_SOURCE_DIR}/tests/task/fixtures/continuous.json"
-        RODAQ_SERVICE_CRASH_PROBE="$<TARGET_FILE:rodaq_task_service_crash_probe>"
         RODAQ_SERVICE_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
         RODAQ_SERVICE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
-    add_dependencies(rodaq_task_service_test rodaq_task_service_crash_probe rodaq_fake_storage rodaq_fake_acquisition)
+    add_dependencies(rodaq_task_service_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_task_service_test)
     gtest_discover_tests(rodaq_task_service_test PROPERTIES TIMEOUT 30)
+
     add_executable(rodaq_task_reset_retire_test task/reset_retire_test.cpp)
     target_include_directories(rodaq_task_reset_retire_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_link_libraries(rodaq_task_reset_retire_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
@@ -573,15 +481,7 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     add_dependencies(rodaq_task_reset_retire_test rodaq_fake_storage rodaq_fake_acquisition)
     rodaq_enable_project_warnings(rodaq_task_reset_retire_test)
     gtest_discover_tests(rodaq_task_reset_retire_test PROPERTIES TIMEOUT 30)
-    add_executable(rodaq_task_boot_reconciliation_test task/boot_reconciliation_test.cpp)
-    target_include_directories(rodaq_task_boot_reconciliation_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    target_link_libraries(rodaq_task_boot_reconciliation_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
-    target_compile_definitions(rodaq_task_boot_reconciliation_test PRIVATE
-        RODAQ_BOOT_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_storage/rodaq-plugins"
-        RODAQ_BOOT_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
-    add_dependencies(rodaq_task_boot_reconciliation_test rodaq_fake_storage rodaq_fake_acquisition)
-    rodaq_enable_project_warnings(rodaq_task_boot_reconciliation_test)
-    gtest_discover_tests(rodaq_task_boot_reconciliation_test PROPERTIES TIMEOUT 30)
+
     # Intentionally omits src/ include dir to prove public-header-only rodaq::daq consumption.
     add_executable(rodaq_system_service_test system/system_service_test.cpp)
     target_link_libraries(rodaq_system_service_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
@@ -592,3 +492,9 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
     rodaq_enable_project_warnings(rodaq_system_service_test)
     gtest_discover_tests(rodaq_system_service_test PROPERTIES TIMEOUT 30)
 endif()
+
+add_executable(rodaq_stream_table_test pipeline/stream_table_test.cpp)
+target_include_directories(rodaq_stream_table_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(rodaq_stream_table_test PRIVATE rodaq::daq GTest::gtest_main Threads::Threads)
+rodaq_enable_project_warnings(rodaq_stream_table_test)
+gtest_discover_tests(rodaq_stream_table_test PROPERTIES TIMEOUT 30)

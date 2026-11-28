@@ -3,25 +3,22 @@ info:
   title: RoDAQ Local Control & Query API
   version: 1.0.0
   description: >-
-    Machine-readable OpenAPI 3.1 projection of the authoritative Notion
-    "RoDAQ Server 模块设计" V1 HTTP wire contract.
+    Machine-readable OpenAPI 3.1 projection of the frozen RoDAQ Server V1 HTTP wire contract.
 servers:
   - url: http://127.0.0.1:8080
     description: Local loopback daemon
+security:
+  - bearerAuth: []
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-    sessionCookie:
-      type: apiKey
-      in: cookie
-      name: rodaq_session
   parameters:
     ApiVersionHeader:
       name: RoDAQ-API-Version
       in: header
-      required: false
+      required: true
       schema:
         type: string
         pattern: '^[0-9]+\.[0-9]+$'
@@ -39,12 +36,6 @@ components:
       required: false
       schema:
         $ref: '#/components/schemas/DecimalString'
-    CsrfTokenHeader:
-      name: RoDAQ-CSRF-Token
-      in: header
-      required: false
-      schema:
-        type: string
     CursorQuery:
       name: cursor
       in: query
@@ -79,34 +70,23 @@ components:
         minor:
           type: integer
           minimum: 0
-    DurationValue:
-      type: object
-      additionalProperties: false
-      required: [value, unit]
-      properties:
-        value:
-          $ref: '#/components/schemas/DecimalString'
-        unit:
-          type: string
-          enum: [ns, us, ms, s]
     FreshnessData:
       type: object
       additionalProperties: false
-      required: [state, age]
+      required: [state, age_ms]
       properties:
         state:
           type: string
           enum: [fresh, stale, unknown]
-        age:
-          oneOf:
-            - $ref: '#/components/schemas/DurationValue'
-            - type: 'null'
+        age_ms:
+          type: [integer, 'null']
+          minimum: 0
     DesiredState:
       type: string
       enum: [stopped, running, paused]
     ExecutionCondition:
       type: string
-      enum: [idle, preparing, active, degraded, draining, protected, pending_cleanup, failed]
+      enum: [idle, preparing, active, degraded, draining, protected, failed]
     OperationKind:
       type: string
       enum: [configure, start, pause, resume, stop, reset, retire]
@@ -121,7 +101,7 @@ components:
       enum: [request, task_control, pipeline, collector, storage, volume, persistence_state, process]
     DataImpact:
       type: string
-      enum: [none, pre_admission_only, accepted_known_failed, persistence_unknown, artifact_quarantined, historical_artifact_lost_or_corrupt]
+      enum: [none, pre_admission_only, accepted_known_failed, persistence_unknown, artifact_unavailable_or_corrupt]
     ErrorDetail:
       type: object
       additionalProperties: false
@@ -164,43 +144,18 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/ErrorDetail'
-    SessionData:
-      type: object
-      additionalProperties: false
-      required: [principal, scopes, api_version, csrf_token]
-      properties:
-        principal:
-          type: string
-        scopes:
-          type: array
-          items:
-            type: string
-            enum: [read, control, admin]
-        api_version:
-          $ref: '#/components/schemas/ApiVersion'
-        csrf_token:
-          type: string
     SystemData:
       type: object
       additionalProperties: false
-      required: [server_phase, core_ready, recovery, resources, volumes, backlog, captured_at, snapshot_sequence, freshness]
+      required: [server_phase, core_ready, resources, volumes, backlog, captured_at, snapshot_sequence, freshness]
       properties:
         server_phase:
           type: string
-          enum: [recovering, ready, draining, failed]
+          enum: [starting, ready, draining, failed]
         core_ready:
           type: boolean
-        recovery:
-          type: object
-          additionalProperties: false
-          required: [complete, reason, progress]
-          properties:
-            complete:
-              type: boolean
-            reason:
-              type: [string, 'null']
-            progress:
-              type: [number, 'null']
+        deployment_error:
+          type: string
         resources:
           type: object
           additionalProperties: false
@@ -208,12 +163,16 @@ components:
           properties:
             cpu_cores:
               type: number
+              minimum: 0
             rss_bytes:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             threads:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             open_fds:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
         volumes:
           type: array
           items:
@@ -224,9 +183,11 @@ components:
               name:
                 type: string
               total_bytes:
-                $ref: '#/components/schemas/DecimalString'
+                type: integer
+                minimum: 0
               free_bytes:
-                $ref: '#/components/schemas/DecimalString'
+                type: integer
+                minimum: 0
               pressure:
                 type: string
                 enum: [normal, low, critical, protected]
@@ -236,11 +197,14 @@ components:
           required: [commit_items, commit_bytes, active_downloads]
           properties:
             commit_items:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             commit_bytes:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             active_downloads:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
         captured_at:
           $ref: '#/components/schemas/Rfc3339Utc'
         snapshot_sequence:
@@ -281,7 +245,8 @@ components:
         writable:
           type: boolean
         free_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         pressure:
           type: string
           enum: [normal, low, critical, protected]
@@ -295,22 +260,25 @@ components:
         allowed:
           type: boolean
         max_streams_per_pipeline:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 1
         max_segment_physical_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 1
     ApiLimits:
       type: object
       additionalProperties: false
-      required: [max_request_body_bytes, max_page_size, idempotency_retention, recommended_polling_floor]
+      required: [max_request_body_bytes, max_page_size, recommended_polling_floor_ms]
       properties:
         max_request_body_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 1
         max_page_size:
-          $ref: '#/components/schemas/DecimalString'
-        idempotency_retention:
-          $ref: '#/components/schemas/DurationValue'
-        recommended_polling_floor:
-          $ref: '#/components/schemas/DurationValue'
+          type: integer
+          minimum: 1
+        recommended_polling_floor_ms:
+          type: integer
+          minimum: 1
     CapabilitiesData:
       type: object
       additionalProperties: false
@@ -383,18 +351,19 @@ components:
         runtime_summary:
           type: object
           additionalProperties: false
-          required: [accepted_records_per_second, commit_lag, receiving_streams, total_streams]
+          required: [accepted_records_per_second, commit_lag_ms, receiving_streams, total_streams]
           properties:
             accepted_records_per_second:
               type: number
-            commit_lag:
-              oneOf:
-                - $ref: '#/components/schemas/DurationValue'
-                - type: 'null'
+            commit_lag_ms:
+              type: [integer, 'null']
+              minimum: 0
             receiving_streams:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             total_streams:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
         captured_at:
           $ref: '#/components/schemas/Rfc3339Utc'
         freshness:
@@ -467,9 +436,11 @@ components:
       required: [records, logical_bytes, records_per_second, logical_bytes_per_second]
       properties:
         records:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         logical_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         records_per_second:
           type: number
           minimum: 0
@@ -482,9 +453,11 @@ components:
       required: [accepted_records, rejected_records, reject_reasons]
       properties:
         accepted_records:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         rejected_records:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         reject_reasons:
           type: array
           items:
@@ -495,14 +468,15 @@ components:
               reason:
                 type: string
               records:
-                $ref: '#/components/schemas/DecimalString'
+                type: integer
+                minimum: 0
     StreamRuntimeData:
       type: object
       additionalProperties: false
-      required: [stream_id, stream_key, name, entry_ready, source_ready, receiving, last_receive_at, window, received, admission, captured_at, freshness]
+      required: [stream_id, stream_key, name, entry_ready, source_ready, receiving, last_receive_at, window_ms, received, admission, captured_at, freshness]
       properties:
         stream_id:
-          type: string
+          $ref: '#/components/schemas/DecimalString'
         stream_key:
           type: string
         name:
@@ -517,8 +491,9 @@ components:
           oneOf:
             - $ref: '#/components/schemas/Rfc3339Utc'
             - type: 'null'
-        window:
-          $ref: '#/components/schemas/DurationValue'
+        window_ms:
+          type: integer
+          minimum: 0
         received:
           $ref: '#/components/schemas/ReceivedStats'
         admission:
@@ -533,7 +508,7 @@ components:
       required: [pipeline_id, required, instance_id, condition, gate_state, received, admission, queue, writer, storage, commit, streams]
       properties:
         pipeline_id:
-          type: string
+          $ref: '#/components/schemas/DecimalString'
         required:
           type: boolean
         instance_id:
@@ -550,20 +525,23 @@ components:
         queue:
           type: object
           additionalProperties: false
-          required: [records, bytes, high_watermark_records, high_watermark_bytes, oldest_age]
+          required: [records, bytes, high_watermark_records, high_watermark_bytes, oldest_age_ms]
           properties:
             records:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             bytes:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             high_watermark_records:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             high_watermark_bytes:
-              $ref: '#/components/schemas/DecimalString'
-            oldest_age:
-              oneOf:
-                - $ref: '#/components/schemas/DurationValue'
-                - type: 'null'
+              type: integer
+              minimum: 0
+            oldest_age_ms:
+              type: [integer, 'null']
+              minimum: 0
         writer:
           type: object
           additionalProperties: false
@@ -572,7 +550,8 @@ components:
             logical_bytes_per_second:
               type: number
             pending_records:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             last_progress_at:
               oneOf:
                 - $ref: '#/components/schemas/Rfc3339Utc'
@@ -585,7 +564,8 @@ components:
             physical_bytes_per_second:
               type: number
             pending_bytes:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             last_progress_at:
               oneOf:
                 - $ref: '#/components/schemas/Rfc3339Utc'
@@ -593,16 +573,16 @@ components:
         commit:
           type: object
           additionalProperties: false
-          required: [lag, durable_bytes_per_second, pending_segments, last_committed_artifact_id, last_progress_at]
+          required: [lag_ms, durable_bytes_per_second, pending_segments, last_committed_artifact_id, last_progress_at]
           properties:
-            lag:
-              oneOf:
-                - $ref: '#/components/schemas/DurationValue'
-                - type: 'null'
+            lag_ms:
+              type: [integer, 'null']
+              minimum: 0
             durable_bytes_per_second:
               type: number
             pending_segments:
-              $ref: '#/components/schemas/DecimalString'
+              type: integer
+              minimum: 0
             last_committed_artifact_id:
               type: [string, 'null']
             last_progress_at:
@@ -633,12 +613,14 @@ components:
     RecordingRangeData:
       type: object
       additionalProperties: false
-      required: [begin, end]
+      required: [begin_ms, end_ms]
       properties:
-        begin:
-          $ref: '#/components/schemas/DurationValue'
-        end:
-          $ref: '#/components/schemas/DurationValue'
+        begin_ms:
+          type: integer
+          minimum: 0
+        end_ms:
+          type: integer
+          minimum: 0
     ArtifactSummaryData:
       type: object
       additionalProperties: false
@@ -649,9 +631,9 @@ components:
         task_id:
           type: string
         pipeline_id:
-          type: string
+          $ref: '#/components/schemas/DecimalString'
         segment_id:
-          type: string
+          $ref: '#/components/schemas/DecimalString'
         committed_at:
           $ref: '#/components/schemas/Rfc3339Utc'
         recording_range:
@@ -659,9 +641,11 @@ components:
         format:
           type: string
         logical_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         physical_bytes:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         data_impact:
           $ref: '#/components/schemas/DataImpact'
     ArtifactFileData:
@@ -674,7 +658,8 @@ components:
         display_name:
           type: string
         size:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         media_type:
           type: string
         etag:
@@ -689,25 +674,24 @@ components:
         complete:
           type: boolean
         gap_count:
-          $ref: '#/components/schemas/DecimalString'
+          type: integer
+          minimum: 0
         gaps:
           type: array
           items:
             type: object
             additionalProperties: false
-            required: [kind, recording_begin, recording_end, message]
+            required: [kind, recording_begin_ms, recording_end_ms, message]
             properties:
               kind:
                 type: string
                 enum: [source_unavailable, admission_reject, overflow, storage_failure, persistence_unknown, reset_or_retention]
-              recording_begin:
-                oneOf:
-                  - $ref: '#/components/schemas/DurationValue'
-                  - type: 'null'
-              recording_end:
-                oneOf:
-                  - $ref: '#/components/schemas/DurationValue'
-                  - type: 'null'
+              recording_begin_ms:
+                type: [integer, 'null']
+                minimum: 0
+              recording_end_ms:
+                type: [integer, 'null']
+                minimum: 0
               message:
                 type: [string, 'null']
     ArtifactData:
@@ -727,7 +711,7 @@ components:
       type: object
       additionalProperties: false
       description: Authoritative Portable Task Configuration V1 (mirrors schemas/task_config.schema.json)
-      required: [format_version, recording_mode, start_policy, recovery_policy, segment_policy, retention_policy, pipelines]
+      required: [format_version, segment_policy, retention_policy, pipelines]
       properties:
         format_version:
           type: string
@@ -736,56 +720,31 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-        recording_mode:
-          type: string
-          enum: [continuous, rolling]
-        start_policy:
-          type: object
-          additionalProperties: false
-          required: [mode]
-          properties:
-            mode:
-              type: string
-              enum: [all_required, best_effort]
-        recovery_policy:
-          type: object
-          additionalProperties: false
-          required: [mode]
-          properties:
-            mode:
-              type: string
-              enum: [manual, resume]
         segment_policy:
           type: object
           additionalProperties: false
-          required: [max_duration, max_physical_bytes]
+          required: [max_duration_ms, max_physical_bytes]
           properties:
-            max_duration:
-              oneOf:
-                - type: 'null'
-                - $ref: '#/components/schemas/DurationValue'
+            max_duration_ms:
+              type: [integer, 'null']
+              minimum: 1
             max_physical_bytes:
-              oneOf:
-                - type: 'null'
-                - $ref: '#/components/schemas/DecimalString'
+              type: [integer, 'null']
+              minimum: 1
         retention_policy:
           type: object
           additionalProperties: false
-          required: [mode, max_duration, max_physical_bytes]
+          required: [mode, max_duration_ms, max_physical_bytes]
           properties:
             mode:
               type: string
               enum: [keep_all, rolling]
-            max_duration:
-              oneOf:
-                - type: 'null'
-                - $ref: '#/components/schemas/DurationValue'
+            max_duration_ms:
+              type: [integer, 'null']
+              minimum: 1
             max_physical_bytes:
-              oneOf:
-                - type: 'null'
-                - $ref: '#/components/schemas/DecimalString'
-            include_previous_continuous:
-              type: boolean
+              type: [integer, 'null']
+              minimum: 1
         pipelines:
           type: array
           minItems: 1
@@ -842,40 +801,9 @@ components:
                       type: string
                       enum: [entry_ready, source_ready]
 paths:
-  /api/session:
-    post:
-      summary: Establish browser session from bootstrap Bearer token
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Session created
-        '400':
-          description: Missing or unsupported API version
-        '401':
-          description: Invalid bearer credential
-        '429':
-          description: Session capacity exhausted
-    get:
-      summary: Recover authenticated browser session metadata and current CSRF token
-      security:
-        - sessionCookie: []
-      responses:
-        '200':
-          description: Current session snapshot
-        '401':
-          description: Unauthenticated
-    delete:
-      summary: Destroy current session
-      security:
-        - sessionCookie: []
-        - bearerAuth: []
-      responses:
-        '204':
-          description: Session destroyed
   /api/system:
     get:
-      summary: Query server phase, Core health, recovery, process resources, volume pressure, and backlog
+      summary: Query server phase, Core health, process resources, volume pressure, and backlog
       responses:
         '200':
           description: SystemData envelope
@@ -888,7 +816,7 @@ paths:
         '200':
           description: CapabilitiesData envelope
         '503':
-          description: Recovering or unavailable
+          description: Unavailable
   /api/tasks:
     get:
       summary: List tasks with keyset pagination and overview runtime summary
@@ -914,11 +842,15 @@ paths:
         '400':
           description: Invalid JSON or TaskConfig
         '409':
-          description: Idempotency digest conflict or resource exhausted
+          description: Idempotency conflict or resource exhausted
         '413':
           description: Payload too large
         '415':
           description: Unsupported media type
+        '503':
+          description: Control capacity saturated
+        '504':
+          description: Observer timeout
   /api/tasks/{task_id}:
     get:
       summary: Get task four-state snapshot
@@ -952,7 +884,7 @@ paths:
         '404':
           description: Task not found
     put:
-      summary: Submit durable Task Configure operation
+      summary: Submit Task Configure operation
       parameters:
         - name: task_id
           in: path
@@ -972,6 +904,10 @@ paths:
           description: MutationAcceptedData envelope
         '409':
           description: Generation/state/idempotency conflict
+        '503':
+          description: Control capacity saturated
+        '504':
+          description: Observer timeout
   /api/tasks/{task_id}/operations:
     post:
       summary: Submit lifecycle operation (start, pause, resume, stop, reset, retire)
@@ -992,12 +928,14 @@ paths:
       responses:
         '202':
           description: MutationAcceptedData envelope
-        '403':
-          description: Insufficient scope (reset/retire require admin)
         '409':
           description: State/generation/idempotency conflict
+        '503':
+          description: Control capacity saturated
+        '504':
+          description: Observer timeout
     get:
-      summary: List bounded retained task operation history
+      summary: List bounded retained task operation history (current daemon acceptance order)
       parameters:
         - name: task_id
           in: path
@@ -1148,3 +1086,5 @@ paths:
           description: Malformed or multiple Range header
         '416':
           description: Unsatisfiable Range with Content-Range bytes */full_length
+        '503':
+          description: Download concurrency saturated

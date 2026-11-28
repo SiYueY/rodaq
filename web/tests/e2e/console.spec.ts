@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -14,17 +13,7 @@ const SERVER_BIN = process.env.RODAQ_SERVER_BIN ?? path.join(REPO_ROOT, 'build/s
 const FAKE_STO_PKG = path.join(REPO_ROOT, 'build/s1/plugins/fake_storage/rodaq-plugins/rodaq.fake.storage');
 const FAKE_ACQ_PKG = path.join(REPO_ROOT, 'build/s1/plugins/fake_acquisition/rodaq-plugins/rodaq.fake.acquisition');
 
-const ADMIN_TOKEN = 'rodaq-e2e-admin-secret-0123456789abcdef';
-const ADMIN_B_TOKEN = 'rodaq-e2e-admin-b-secret-0123456789abcd';
-const READER_TOKEN = 'rodaq-e2e-reader-secret-0123456789abcde';
-
-function computeBearerVerifierHex(token: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(Buffer.from('rodaq.server-bearer.v1\0', 'utf8'))
-    .update(token, 'utf8')
-    .digest('hex');
-}
+const BEARER_TOKEN = 'rodaq-e2e-local-bearer-secret-0123456789abcdef';
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -51,7 +40,7 @@ function chmodRecursiveReadOnly(dir: string): void {
       fs.chmodSync(full, 0o555);
     } else {
       const mode = fs.statSync(full).mode;
-      fs.chmodSync(full, (mode & 0o111) ? 0o555 : 0o444);
+      fs.chmodSync(full, mode & 0o111 ? 0o555 : 0o444);
     }
   }
   fs.chmodSync(dir, 0o555);
@@ -115,44 +104,9 @@ test.beforeAll(async () => {
   fs.cpSync(FAKE_ACQ_PKG, path.join(pkgRoot, 'rodaq.fake.acquisition'), { recursive: true });
   chmodRecursiveReadOnly(pkgRoot);
 
-  const credFile = path.join(tmpRoot, 'credentials.json');
-  fs.writeFileSync(
-    credFile,
-    JSON.stringify(
-      {
-        format_version: '1.0',
-        credentials: [
-          {
-            credential_id: 'e2e-admin',
-            principal: 'e2e-admin',
-            scopes: ['read', 'control', 'admin'],
-            verifier: computeBearerVerifierHex(ADMIN_TOKEN),
-            credential_epoch: '1',
-            enabled: true,
-          },
-          {
-            credential_id: 'e2e-admin-b',
-            principal: 'e2e-admin-b',
-            scopes: ['read', 'control', 'admin'],
-            verifier: computeBearerVerifierHex(ADMIN_B_TOKEN),
-            credential_epoch: '1',
-            enabled: true,
-          },
-          {
-            credential_id: 'e2e-reader',
-            principal: 'e2e-reader',
-            scopes: ['read'],
-            verifier: computeBearerVerifierHex(READER_TOKEN),
-            credential_epoch: '1',
-            enabled: true,
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  fs.chmodSync(credFile, 0o600);
+  const tokenFile = path.join(tmpRoot, 'server.token');
+  fs.writeFileSync(tokenFile, `${BEARER_TOKEN}\n`);
+  fs.chmodSync(tokenFile, 0o600);
 
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
@@ -166,7 +120,7 @@ test.beforeAll(async () => {
         server: {
           format_version: '1.0',
           http: { listen_address: '127.0.0.1', port, worker_threads: 2 },
-          security: { credential_store: credFile },
+          security: { bearer_token_file: tokenFile },
         },
         daq: {
           state_root: path.join(tmpRoot, 'state'),
@@ -176,14 +130,14 @@ test.beforeAll(async () => {
           qualified_runtime_profile_id: 'web-e2e',
           max_tasks: 4,
           max_pipelines_per_task: 2,
-          volume_name: 'local',
+          volume: { name: 'local' },
           profiles: [
             {
               name: 'default',
-              payload_pool_bytes: '65536',
-              max_payload_bytes: '4096',
-              max_logical_bytes: '65536',
-              max_segment_physical_bytes: '1048576',
+              payload_pool_bytes: 65536,
+              max_payload_bytes: 4096,
+              max_logical_bytes: 65536,
+              max_segment_physical_bytes: 1048576,
               max_descriptors: 16,
               max_prepared_descriptors: 16,
               max_streams: 8,
@@ -213,7 +167,7 @@ test.beforeAll(async () => {
     ),
   );
 
-  daemon = spawn(SERVER_BIN, ['--deployment', depFile], {
+  daemon = spawn(SERVER_BIN, ['--config', depFile], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   daemon.stdout?.on('data', (d: Buffer) => {
@@ -223,7 +177,7 @@ test.beforeAll(async () => {
     daemonLogs += d.toString();
   });
 
-  await waitForServerReady(baseUrl, ADMIN_TOKEN);
+  await waitForServerReady(baseUrl, BEARER_TOKEN);
 });
 
 test.afterAll(async () => {
@@ -248,22 +202,16 @@ test.afterAll(async () => {
   }
 });
 
-test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', async ({ page }) => {
+test('RoDAQ Web Console end-to-end operator workflow with memory-only Bearer (WEB-E2E-001..011)', async ({ page }) => {
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
   page.on('pageerror', (err) => {
-    console.error('[PAGEERROR]', err);
     pageErrors.push(err.message);
   });
   page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') {
+    if (msg.type() === 'error') {
       const text = msg.text();
-      if (msg.type() === 'error') {
-        console.error('[CONSOLE ERROR]', text);
-      }
-      // Expected 400/401/404 network error logs during intentional negative checks are ignored.
       if (
-        msg.type() === 'error' &&
         !text.includes('status of 400') &&
         !text.includes('status of 401') &&
         !text.includes('status of 404')
@@ -273,30 +221,37 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
     }
   });
 
-  // 1. Deep-link redirect when unauthenticated -> /login?next=%2Ftasks (WEB-E2E-015)
+  // 1. Deep-link redirect when unauthenticated -> /login?next=%2Ftasks
   await page.goto(`${baseUrl}/tasks`);
   await expect(page).toHaveURL(/\/login\?next=(?:%2F|\/)tasks/);
 
-  // 2. Login via Bearer token -> HttpOnly cookie -> redirects back to /tasks (WEB-E2E-011)
-  await page.fill('input[type="password"]', ADMIN_TOKEN);
+  // 2. Wrong Bearer token fails closed with 401
+  await page.fill('input[type="password"]', 'wrong-bearer-token-0123456789abcdef012345');
+  await page.click('button[type="submit"]');
+  await expect(page.locator('[role="alert"]')).toContainText('401');
+
+  // 3. Valid Bearer token -> redirects back to /tasks; ZERO cookie/localStorage/sessionStorage leakage
+  await page.fill('input[type="password"]', BEARER_TOKEN);
   await page.click('button[type="submit"]');
   await expect(page).toHaveURL(`${baseUrl}/tasks`);
 
-  // Verify ZERO bearer token or CSRF token leaked into localStorage or sessionStorage.
   const storageSnapshot = await page.evaluate(() => ({
     local: JSON.stringify(window.localStorage),
     session: JSON.stringify(window.sessionStorage),
+    cookies: document.cookie,
   }));
-  expect(storageSnapshot.local).not.toContain(ADMIN_TOKEN);
-  expect(storageSnapshot.session).not.toContain(ADMIN_TOKEN);
-  expect(storageSnapshot.local).not.toContain('csrf');
+  expect(storageSnapshot.local).not.toContain(BEARER_TOKEN);
+  expect(storageSnapshot.session).not.toContain(BEARER_TOKEN);
+  expect(storageSnapshot.cookies).toBe('');
 
-  // 3. Reload (F5) stays authenticated via GET /api/session (WEB-E2E-011)
+  // 4. Reload (F5) clears memory-only Bearer and returns to /login (WEB-E2E-001)
   await page.reload();
+  await expect(page).toHaveURL(/\/login/);
+  await page.fill('input[type="password"]', BEARER_TOKEN);
+  await page.click('button[type="submit"]');
   await expect(page).toHaveURL(`${baseUrl}/tasks`);
-  await expect(page.locator('aside')).toContainText('e2e-admin');
 
-  // 4. Overview zero-task healthy state & System Capabilities matrix (WEB-E2E-001)
+  // 5. Overview zero-task healthy state & System Capabilities matrix
   await page.click('nav a[href="/"]');
   await expect(page).toHaveURL(`${baseUrl}/`);
   await expect(page.locator('main')).toContainText('ready');
@@ -308,14 +263,8 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await expect(page.locator('main')).toContainText('rodaq.fake.storage');
   await expect(page.locator('main')).toContainText('qualified');
 
-  // 5. Raw UTF-8 duplicate-key import rejected 400 by Server strict parser (WEB-E2E-012)
+  // 6. Create Task via simplified Portable TaskConfig UI editor -> navigates to Task Detail
   await page.click('nav a[href="/tasks"]');
-  await page.click('button:has-text("Import Raw JSON")');
-  await page.fill('textarea', '{"format_version":"1.0","format_version":"1.0"}');
-  await page.click('button:has-text("Submit Raw Import")');
-  await expect(page.locator('[role="alert"]')).toContainText('HTTP 400');
-
-  // 6. Create Task via UI editor -> navigates to Task Detail (WEB-E2E-002)
   await page.click('a:has-text("Create Task")');
   await expect(page).toHaveURL(`${baseUrl}/tasks/new`);
   await page.fill('#task-name', 'e2e-demo-task');
@@ -325,7 +274,7 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await expect(page.locator('main')).toContainText('stopped');
   await expect(page.locator('main')).toContainText('idle');
 
-  // 7. Start -> Running/Active -> Pause -> Paused/Idle -> Resume -> Active -> Stop -> Stopped/Idle (WEB-E2E-003/004)
+  // 7. Start -> Active -> Pause -> Idle -> Resume -> Active -> Stop -> Stopped/Idle
   await page.click('button:has-text("Start")');
   await expect(page.locator('main')).toContainText('running', { timeout: 10_000 });
   await expect(page.locator('main')).toContainText('active', { timeout: 10_000 });
@@ -347,7 +296,7 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await expect(page.locator('main')).toContainText('stopped', { timeout: 10_000 });
   await expect(page.locator('main')).toContainText('idle', { timeout: 10_000 });
 
-  // 8. Operations history & 404 lookup "Not found or expired" (WEB-E2E-006)
+  // 8. Operations history & 404 lookup "Not found or expired"
   await page.click('button[role="tab"]:has-text("Operations")');
   await expect(page.locator('main')).toContainText('start');
   await expect(page.locator('main')).toContainText('pause');
@@ -357,12 +306,12 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await page.click('button:has-text("Lookup")');
   await expect(page.locator('main')).toContainText('Not found or expired');
 
-  // 9. Artifacts page -> Detail -> HEAD preflight + real browser download (WEB-E2E-009)
+  // 9. Artifacts page -> Detail -> Bearer authenticated download
   await page.click('nav a[href="/artifacts"]');
   await expect(page).toHaveURL(`${baseUrl}/artifacts`);
   await expect(page.locator('table tbody tr').first()).toContainText('fake', { timeout: 10_000 });
   await page.locator('table tbody tr td button').first().click();
-  await expect(page.locator('main')).toContainText('Files');
+  await expect(page.locator('main')).toContainText('Committed Files');
 
   const downloadPromise = page.waitForEvent('download');
   await page.click('button:has-text("Download")');
@@ -372,7 +321,7 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   const stat = fs.statSync(dlPath!);
   expect(stat.size).toBeGreaterThan(0);
 
-  // 10. Configure Task -> Identity Diff -> Save (WEB-E2E-016)
+  // 10. Configure Task -> Identity Diff -> Save
   await page.click('nav a[href="/tasks"]');
   await page.click('a:has-text("e2e-demo-task")');
   await page.click('a:has-text("Configure")');
@@ -383,7 +332,7 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]+$/);
   await expect(page.locator('main')).toContainText('e2e-demo-task-v2', { timeout: 10_000 });
 
-  // 11. Reset Task ConfirmDialog: Escape cancels, Confirm executes (WEB-E2E-007/018)
+  // 11. Reset Task ConfirmDialog: Escape cancels, Confirm executes
   await page.click('button:has-text("Reset Task")');
   await expect(page.locator('[role="dialog"]')).toContainText('Confirm Reset Task');
   await page.keyboard.press('Escape');
@@ -393,7 +342,7 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
   await page.locator('[role="dialog"] button:has-text("Reset Task")').click();
   await expect(page.locator('main')).toContainText('reset', { timeout: 10_000 });
 
-  // 12. Logout -> returns to /login and blocks /tasks (WEB-E2E-015)
+  // 12. Sign Out clears memory Bearer -> returns to /login
   await page.click('button:has-text("Sign Out")');
   await expect(page).toHaveURL(/\/login/);
   await page.goto(`${baseUrl}/tasks`);
@@ -401,75 +350,4 @@ test('RoDAQ Web Console real end-to-end operator workflow (WEB-E2E-001..018)', a
 
   expect(pageErrors, `Unexpected uncaught page errors: ${pageErrors.join('; ')}`).toEqual([]);
   expect(consoleErrors, `Unexpected console errors: ${consoleErrors.join('; ')}`).toEqual([]);
-});
-
-test('RBAC read-only scope gating and cross-principal PendingMutation isolation (WEB-E2E-011/020)', async ({ page }) => {
-  const pageErrors: string[] = [];
-  page.on('pageerror', (err) => pageErrors.push(err.message));
-
-  // 1. Read-only principal cannot access /tasks/new (shows 403 Permission Denied) and has no Create button.
-  await page.goto(`${baseUrl}/login`);
-  await page.fill('input[type="password"]', READER_TOKEN);
-  await page.click('button[type="submit"]');
-  await expect(page).toHaveURL(`${baseUrl}/`);
-  await expect(page.locator('aside')).toContainText('e2e-reader');
-  await expect(page.locator('a:has-text("Create Task")')).toHaveCount(0);
-
-  await page.goto(`${baseUrl}/tasks/new`);
-  await expect(page.locator('[role="alert"]')).toContainText('Permission Denied (403)');
-
-  // 2. Seed an unsettled PendingMutation belonging to principal 'e2e-admin' in sessionStorage,
-  // then sign out and sign in as 'e2e-admin-b' -> must NOT replay or expose body, must allow explicit clear!
-  await page.evaluate(() => {
-    const body = '{"secret_payload":"principal-a-only"}';
-    let h1 = 0x811c9dc5;
-    let h2 = 0x01000193;
-    for (let i = 0; i < body.length; i += 1) {
-      const c = body.charCodeAt(i);
-      h1 ^= c;
-      h1 = Math.imul(h1, 0x01000193) >>> 0;
-      h2 ^= c + i;
-      h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
-    }
-    const digest = `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
-    window.sessionStorage.setItem(
-      'rodaq.pending_mutation.v1.foreign-key-1',
-      JSON.stringify({
-        version: 1,
-        method: 'POST',
-        path: '/api/tasks',
-        idempotencyKey: 'foreign-key-1',
-        originPrincipal: 'e2e-admin',
-        requiredScope: 'control',
-        operationKind: 'create',
-        taskId: null,
-        controlGeneration: null,
-        bodyUtf8: body,
-        bodyDigest: digest,
-        createdAt: new Date().toISOString(),
-        operationId: null,
-      }),
-    );
-  });
-
-  await page.click('button:has-text("Sign Out")');
-  await expect(page).toHaveURL(/\/login/);
-
-  await page.fill('input[type="password"]', ADMIN_B_TOKEN);
-  await page.click('button[type="submit"]');
-  await expect(page).toHaveURL(`${baseUrl}/`);
-  await expect(page.locator('main')).toContainText('unsettled local request(s) belong to another principal');
-  // Secret body from principal A must NEVER be rendered to principal B.
-  await expect(page.locator('main')).not.toContainText('principal-a-only');
-
-  // Explicit user-confirmed clear removes foreign record from sessionStorage.
-  await page.click('button:has-text("Clear Local Records")');
-  await expect(page.locator('[role="dialog"]')).toContainText('Clear Unsettled Local Request Records');
-  await page.locator('[role="dialog"] button:has-text("Clear Local Records")').click();
-  await expect(page.locator('main')).not.toContainText('unsettled local request(s) belong to another principal');
-  const remaining = await page.evaluate(() =>
-    window.sessionStorage.getItem('rodaq.pending_mutation.v1.foreign-key-1'),
-  );
-  expect(remaining).toBeNull();
-  expect(pageErrors).toEqual([]);
 });

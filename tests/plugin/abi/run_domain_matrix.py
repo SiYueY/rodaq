@@ -40,9 +40,9 @@ def main(args):
                     run(["cmake", "--install", build, "--prefix", installed], log)
                     manifest = installed / f"lib/rodaq/plugins/com.example.{domain}.compat/1.0.0/manifest.json"
                     data = json.loads(manifest.read_text())
-                    artifact = manifest.parent / data["artifact"]["path"]
-                    if hashlib.sha256(artifact.read_bytes()).hexdigest() != data["artifact"]["sha256"]:
-                        raise ValueError("Installed domain Artifact digest mismatch")
+                    artifact = manifest.parent / data["library"]
+                    if not artifact.is_file():
+                        raise ValueError("Installed domain library missing")
                     run(["python3", args.source / "tools/check_plugin_symbols.py", artifact], log)
                     programs[identity] = artifact
                 else:

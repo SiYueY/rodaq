@@ -10,13 +10,14 @@
 #include <new>
 #include <string_view>
 #include <sys/file.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include <utility>
 
-#include "../persistence/json.hpp"
 #include "../persistence/file_descriptor.hpp"
+#include "../persistence/json.hpp"
 #include "../time/clock.hpp"
 #include "../time/wall_time.hpp"
 #include "../uuid.hpp"
@@ -25,7 +26,7 @@ namespace rodaq::artifact {
 namespace {
 
 constexpr auto kDomain = "rodaq.volume.v1";
-persistence::JsonLimits limits() { return {4096, 2, 128, 4, 0, 5}; }
+persistence::JsonLimits limits() { return {4096, 2}; }
 
 using persistence::FileDescriptor;
 
@@ -106,9 +107,9 @@ Result<VolumeRuntimeIdentity> runtime_identity(int directory) {
             mount_id != extended.stx_mnt_id) {
             continue;
         }
-        (void)take_field(fields);  // parent ID
-        (void)take_field(fields);  // major:minor; fstat supplies exact st_dev
-        (void)take_field(fields);  // mounted filesystem's root
+        (void)take_field(fields);
+        (void)take_field(fields);
+        (void)take_field(fields);
         const auto point = take_field(fields);
         const auto options = take_field(fields);
         const auto separator = fields.find(" - ");
@@ -120,7 +121,7 @@ Result<VolumeRuntimeIdentity> runtime_identity(int directory) {
             return Status(StatusCode::DataLoss, {});
         }
         const auto type = take_field(fields);
-        (void)take_field(fields);  // mount source
+        (void)take_field(fields);
         const auto super = take_field(fields);
         if (point.empty() || type.empty() || options.empty() || super.empty()) {
             return Status(StatusCode::DataLoss, {});
@@ -173,7 +174,7 @@ Result<Marker> decode_marker(std::string_view bytes) {
     if (!identity.ok() || !created.ok()) {
         return Status(StatusCode::DataLoss, {});
     }
-    auto verified = persistence::verify_integrity(document, kDomain, limits());
+    auto verified = persistence::verify_integrity(document, kDomain);
     if (!verified.ok()) {
         return verified.status();
     }
@@ -239,7 +240,7 @@ struct ManagedVolume::State {
     std::filesystem::path metadata;
     std::filesystem::path artifacts;
     VolumeRuntimeIdentity runtime;
-    std::array<struct statx, 3> managed_directories{};
+    std::array<struct statx, 2> managed_directories{};
     Marker marker;
     persistence::FileFaultHook faults;
     int root_fd{-1};
@@ -322,7 +323,6 @@ Result<std::shared_ptr<ManagedVolume>> ManagedVolume::open(
             if (uuid::nonzero(expected_identity.value)) {
                 return Status(StatusCode::DataLoss, {});
             }
-            // Never create a new identity over existing artifacts or other facts.
             std::size_t entries = 0;
             for (const auto& entry : std::filesystem::directory_iterator(state->metadata)) {
                 if (++entries > 1 || entry.path().filename() != ".volume.lock") {
@@ -346,7 +346,7 @@ Result<std::shared_ptr<ManagedVolume>> ManagedVolume::open(
                 {{"format_version", "1.0"},
                  {"volume_id", uuid::format(random.value())},
                  {"created_at", created.value()}},
-                kDomain, limits());
+                kDomain);
             if (!bytes.ok()) {
                 return bytes.status();
             }
@@ -381,15 +381,12 @@ Result<std::shared_ptr<ManagedVolume>> ManagedVolume::open(
         if (!synced.ok()) {
             return synced.status();
         }
-        for (const auto* name : {"artifacts", "quarantine"}) {
-            synced = prepare_directory(state->metadata, name, state->faults);
-            if (!synced.ok()) {
-                return synced.status();
-            }
+        synced = prepare_directory(state->metadata, "artifacts", state->faults);
+        if (!synced.ok()) {
+            return synced.status();
         }
         std::size_t index = 0;
-        for (const auto& path :
-             {state->metadata, state->artifacts, state->metadata / "quarantine"}) {
+        for (const auto& path : {state->metadata, state->artifacts}) {
             auto captured = directory_identity(path);
             if (!captured.ok()) {
                 return captured.status();
@@ -444,8 +441,7 @@ Result<void> ManagedVolume::verify() const {
             return state_->protect(StatusCode::DataLoss);
         }
         std::size_t index = 0;
-        for (const auto& path :
-             {state_->metadata, state_->artifacts, state_->metadata / "quarantine"}) {
+        for (const auto& path : {state_->metadata, state_->artifacts}) {
             auto actual = directory_identity(path);
             if (!actual.ok()) {
                 return state_->protect(actual.status().code());
@@ -510,6 +506,46 @@ Result<std::uint64_t> ManagedVolume::available_bytes() const {
         return stats.status();
     }
     return stats.value().available_bytes;
+}
+
+Result<std::uint64_t> ManagedVolume::allocate_segment_id() const {
+    auto verified = verify();
+    if (!verified.ok()) {
+        return verified.status();
+    }
+    FileDescriptor parent(
+        ::open(state_->artifacts.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (parent.get() < 0) {
+        return state_->protect(StatusCode::Unavailable);
+    }
+    for (unsigned attempt = 0; attempt < 32; ++attempt) {
+        std::uint64_t id = 0;
+        std::size_t filled = 0;
+        while (filled < sizeof(id)) {
+            const auto count =
+                getrandom(reinterpret_cast<char*>(&id) + filled, sizeof(id) - filled, 0);
+            if (count < 0 && errno == EINTR) {
+                continue;
+            }
+            if (count <= 0) {
+                return Status(StatusCode::Unavailable, "getrandom failed for segment_id");
+            }
+            filled += static_cast<std::size_t>(count);
+        }
+        if (id == 0) {
+            continue;
+        }
+        const auto base = std::to_string(id);
+        struct stat st {};
+        const bool collision =
+            (fstatat(parent.get(), base.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) ||
+            (fstatat(parent.get(), (base + ".tmp").c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) ||
+            (fstatat(parent.get(), (base + ".deleting").c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0);
+        if (!collision) {
+            return id;
+        }
+    }
+    return Status(StatusCode::Conflict, "Failed to allocate unique random segment_id");
 }
 
 Result<std::filesystem::path> ManagedVolume::create_staging(std::uint64_t segment_id) {

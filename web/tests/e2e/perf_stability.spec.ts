@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -8,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * WEB-E2E-018: 1280x720 sustained 1 Hz runtime update stability & JS heap non-growth verification
+ * WEB-E2E-014: 1280x720 sustained 1 Hz runtime update stability & JS heap non-growth verification
  * against the installed rodaq Server and share/rodaq/web bundle.
  */
 
@@ -16,15 +15,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../..');
 const BUILD_DIR = path.join(REPO_ROOT, 'build/s1');
 const WEB_DIST = path.resolve(HERE, '../../dist');
-const ADMIN_TOKEN = 'rodaq-perf-e2e-admin-secret-0123456789ab';
-
-function computeBearerVerifierHex(token: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(Buffer.from('rodaq.server-bearer.v1\0', 'utf8'))
-    .update(token, 'utf8')
-    .digest('hex');
-}
+const BEARER_TOKEN = 'rodaq-perf-e2e-bearer-secret-0123456789abcd';
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -115,24 +106,9 @@ test.beforeAll(async () => {
   );
   chmodRecursiveReadOnly(pkgRoot);
 
-  const credFile = path.join(tmpRoot, 'credentials.json');
-  fs.writeFileSync(
-    credFile,
-    JSON.stringify({
-      format_version: '1.0',
-      credentials: [
-        {
-          credential_id: 'perf-admin',
-          principal: 'perf-admin',
-          scopes: ['read', 'control', 'admin'],
-          verifier: computeBearerVerifierHex(ADMIN_TOKEN),
-          credential_epoch: '1',
-          enabled: true,
-        },
-      ],
-    }),
-  );
-  fs.chmodSync(credFile, 0o600);
+  const tokenFile = path.join(tmpRoot, 'server.token');
+  fs.writeFileSync(tokenFile, `${BEARER_TOKEN}\n`);
+  fs.chmodSync(tokenFile, 0o600);
 
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
@@ -145,7 +121,7 @@ test.beforeAll(async () => {
       server: {
         format_version: '1.0',
         http: { listen_address: '127.0.0.1', port, worker_threads: 2 },
-        security: { credential_store: credFile },
+        security: { bearer_token_file: tokenFile },
       },
       daq: {
         state_root: path.join(tmpRoot, 'state'),
@@ -155,14 +131,14 @@ test.beforeAll(async () => {
         qualified_runtime_profile_id: 'web-perf-e2e',
         max_tasks: 2,
         max_pipelines_per_task: 2,
-        volume_name: 'local',
+        volume: { name: 'local' },
         profiles: [
           {
             name: 'default',
-            payload_pool_bytes: '262144',
-            max_payload_bytes: '4096',
-            max_logical_bytes: '262144',
-            max_segment_physical_bytes: '4194304',
+            payload_pool_bytes: 262144,
+            max_payload_bytes: 4096,
+            max_logical_bytes: 262144,
+            max_segment_physical_bytes: 4194304,
             max_descriptors: 64,
             max_prepared_descriptors: 64,
             max_streams: 32,
@@ -193,11 +169,11 @@ test.beforeAll(async () => {
     'bash',
     [
       '-lc',
-      `export LD_LIBRARY_PATH="${path.join(installPrefix, 'lib')}:$LD_LIBRARY_PATH" && exec "${path.join(installPrefix, 'bin/rodaq')}" --deployment "${depFile}"`,
+      `export LD_LIBRARY_PATH="${path.join(installPrefix, 'lib')}:$LD_LIBRARY_PATH" && exec "${path.join(installPrefix, 'bin/rodaq')}" --config "${depFile}"`,
     ],
     { stdio: 'ignore' },
   );
-  await waitForServerReady(baseUrl, ADMIN_TOKEN);
+  await waitForServerReady(baseUrl, BEARER_TOKEN);
 });
 
 test.afterAll(async () => {
@@ -212,16 +188,15 @@ test.afterAll(async () => {
   }
 });
 
-test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and non-growing heap (WEB-E2E-018)', async ({
+test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and non-growing heap (WEB-E2E-014)', async ({
   page,
   browserName,
 }) => {
-  // Create a 16-stream task via API and start it.
   const streams = Array.from({ length: 16 }, (_, i) => `s${i}`);
   const createRes = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${ADMIN_TOKEN}`,
+      Authorization: `Bearer ${BEARER_TOKEN}`,
       'RoDAQ-API-Version': '1.0',
       'Content-Type': 'application/json',
       'Idempotency-Key': 'perf-create-1',
@@ -229,16 +204,8 @@ test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and
     body: JSON.stringify({
       format_version: '1.0',
       name: 'perf-16-streams',
-      recording_mode: 'continuous',
-      start_policy: { mode: 'all_required' },
-      recovery_policy: { mode: 'manual' },
-      segment_policy: { max_duration: { value: '60', unit: 's' }, max_physical_bytes: null },
-      retention_policy: {
-        mode: 'keep_all',
-        max_duration: null,
-        max_physical_bytes: null,
-        include_previous_continuous: false,
-      },
+      segment_policy: { max_duration_ms: 60000, max_physical_bytes: null },
+      retention_policy: { mode: 'keep_all', max_duration_ms: null, max_physical_bytes: null },
       pipelines: [
         {
           required: true,
@@ -269,7 +236,7 @@ test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and
   const startRes = await fetch(`${baseUrl}/api/tasks/${created.task_id}/operations`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${ADMIN_TOKEN}`,
+      Authorization: `Bearer ${BEARER_TOKEN}`,
       'RoDAQ-API-Version': '1.0',
       'Content-Type': 'application/json',
       'Idempotency-Key': 'perf-start-1',
@@ -279,12 +246,13 @@ test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and
   expect(startRes.status).toBe(202);
 
   await page.goto(`${baseUrl}/login`);
-  await page.fill('input[type="password"]', ADMIN_TOKEN);
+  await page.fill('input[type="password"]', BEARER_TOKEN);
   await page.click('button[type="submit"]');
   await expect(page).toHaveURL(`${baseUrl}/`);
 
-  // Navigate to Task Detail -> Streams tab and observe 1 Hz updates for 8 seconds.
-  await page.goto(`${baseUrl}/tasks/${created.task_id}?tab=streams`);
+  await page.click('nav a[href="/tasks"]');
+  await page.click('a:has-text("perf-16-streams")');
+  await page.click('button[role="tab"]:has-text("Streams")');
   await expect(page.locator('main')).toContainText('Streams (16)', { timeout: 10_000 });
   await expect(page.locator('main')).toContainText('active', { timeout: 10_000 });
 
@@ -308,7 +276,6 @@ test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and
     }
   }
 
-  // DOM node count must remain strictly bounded (no runaway element accumulation across 1 Hz ticks).
   const minDom = Math.min(...domCounts);
   const maxDom = Math.max(...domCounts);
   expect(maxDom - minDom).toBeLessThanOrEqual(20);
@@ -318,11 +285,7 @@ test('1280x720 sustained 1 Hz multi-stream runtime polling keeps bounded DOM and
     const first = heapSamples[0];
     const last = heapSamples[heapSamples.length - 1];
     const maxHeap = Math.max(...heapSamples);
-    // Heap HWM under 64 MiB and no runaway monotonic growth (>3x baseline).
     expect(maxHeap).toBeLessThan(64 * 1024 * 1024);
     expect(last).toBeLessThan(Math.max(first * 3, 32 * 1024 * 1024));
-    console.log(
-      `[WEB-E2E-018] 1280x720 1Hz stability: dom=${minDom}..${maxDom}, heap_mb=${(first / 1048576).toFixed(2)}->${(last / 1048576).toFixed(2)} (max ${(maxHeap / 1048576).toFixed(2)} MiB)`,
-    );
   }
 });

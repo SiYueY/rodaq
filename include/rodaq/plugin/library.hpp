@@ -12,7 +12,6 @@ struct LibraryState;
 struct ManagerState;
 class PluginManager;
 class PluginInstance;
-class ServiceRegistry;
 
 class PluginLibrary {
 public:
@@ -25,9 +24,7 @@ public:
 
     explicit operator bool() const noexcept;
     [[nodiscard]] const PluginInfo& info() const noexcept;
-    [[nodiscard]] const PluginBinaryInfo& binary() const noexcept;
-    Result<PluginInstance> create_instance(
-        const ServiceRegistry& services, std::string_view config) const;
+    Result<PluginInstance> create_instance(std::string_view config) const;
 
 private:
     friend class PluginManager;

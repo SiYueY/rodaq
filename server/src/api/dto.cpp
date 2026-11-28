@@ -1,7 +1,5 @@
 #include "dto.hpp"
 
-#include "json_codec.hpp"
-
 #include <algorithm>
 #include <cmath>
 
@@ -15,13 +13,37 @@ double safe_rate(std::optional<double> rate) noexcept {
     return *rate;
 }
 
+std::int64_t to_non_negative_ms(std::chrono::nanoseconds d) noexcept {
+    if (d <= std::chrono::nanoseconds::zero()) {
+        return 0;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
+}
+
+std::uint64_t ns_to_ms_u64(std::uint64_t ns) noexcept { return ns / 1000000ULL; }
+
+std::string escape_json_pointer(std::string_view token) {
+    std::string out;
+    out.reserve(token.size());
+    for (const char ch : token) {
+        if (ch == '~') {
+            out += "~0";
+        } else if (ch == '/') {
+            out += "~1";
+        } else {
+            out.push_back(ch);
+        }
+    }
+    return out;
+}
+
 std::string_view pipeline_condition_wire(const PipelineRuntimeSnapshot& pipe) noexcept {
     if (!pipe.facts) {
         return "idle";
     }
     const auto& f = *pipe.facts;
     if (f.prepare_status && *f.prepare_status != StatusCode::Ok) {
-        return f.quiescent ? "failed" : "pending_cleanup";
+        return "failed";
     }
     if (f.writer_failure != StatusCode::Ok || f.acquisition_terminal_failure) {
         return "failed";
@@ -105,19 +127,11 @@ std::string_view to_wire_string(RecordRejectionReason reason) noexcept {
 
 nlohmann::json serialize_freshness(SnapshotFreshness freshness, std::chrono::nanoseconds age) {
     if (freshness == SnapshotFreshness::NotObserved) {
-        return nlohmann::json{{"state", "unknown"}, {"age", nullptr}};
+        return nlohmann::json{{"state", "unknown"}, {"age_ms", nullptr}};
     }
     return nlohmann::json{
         {"state", freshness == SnapshotFreshness::Fresh ? "fresh" : "stale"},
-        {"age", format_duration_ms(age)}};
-}
-
-nlohmann::json serialize_session(const SessionSnapshot& session) {
-    return nlohmann::json{
-        {"principal", session.principal},
-        {"scopes", session.scopes.to_wire()},
-        {"api_version", make_api_version_json(session.api_version)},
-        {"csrf_token", session.csrf_token}};
+        {"age_ms", to_non_negative_ms(age)}};
 }
 
 nlohmann::json serialize_system(
@@ -127,44 +141,34 @@ nlohmann::json serialize_system(
     for (const auto& vol : snapshot.volumes) {
         volumes.push_back(
             {{"name", vol.name},
-             {"total_bytes", std::to_string(vol.total_bytes)},
-             {"free_bytes", std::to_string(vol.free_bytes)},
+             {"total_bytes", vol.total_bytes},
+             {"free_bytes", vol.free_bytes},
              {"pressure", to_wire_string(vol.pressure)}});
-    }
-    nlohmann::json recovery_reason = nullptr;
-    if (deployment_error) {
-        recovery_reason = *deployment_error;
-    } else if (snapshot.recovery.reason) {
-        recovery_reason = *snapshot.recovery.reason;
-    }
-    nlohmann::json recovery_progress = nullptr;
-    if (snapshot.recovery.progress && std::isfinite(*snapshot.recovery.progress)) {
-        recovery_progress = *snapshot.recovery.progress;
     }
     const double cpu =
         std::isfinite(snapshot.resources.cpu_cores) && snapshot.resources.cpu_cores >= 0.0
             ? snapshot.resources.cpu_cores
             : 0.0;
-    return nlohmann::json{
+    nlohmann::json out{
         {"server_phase", to_wire_string(phase)},
         {"core_ready", snapshot.core_ready},
-        {"recovery",
-         {{"complete", snapshot.recovery.complete},
-          {"reason", std::move(recovery_reason)},
-          {"progress", std::move(recovery_progress)}}},
         {"resources",
          {{"cpu_cores", cpu},
-          {"rss_bytes", std::to_string(snapshot.resources.rss_bytes)},
-          {"threads", std::to_string(snapshot.resources.threads)},
-          {"open_fds", std::to_string(snapshot.resources.open_fds)}}},
+          {"rss_bytes", snapshot.resources.rss_bytes},
+          {"threads", snapshot.resources.threads},
+          {"open_fds", snapshot.resources.open_fds}}},
         {"volumes", std::move(volumes)},
         {"backlog",
-         {{"commit_items", std::to_string(snapshot.backlog.commit_items)},
-          {"commit_bytes", std::to_string(snapshot.backlog.commit_bytes)},
-          {"active_downloads", std::to_string(active_downloads)}}},
+         {{"commit_items", snapshot.backlog.commit_items},
+          {"commit_bytes", snapshot.backlog.commit_bytes},
+          {"active_downloads", active_downloads}}},
         {"captured_at", format_rfc3339_utc(snapshot.captured_at)},
         {"snapshot_sequence", std::to_string(snapshot.snapshot_sequence)},
         {"freshness", serialize_freshness(snapshot.freshness, snapshot.age)}};
+    if (deployment_error) {
+        out["deployment_error"] = *deployment_error;
+    }
+    return out;
 }
 
 nlohmann::json serialize_capabilities(
@@ -198,7 +202,7 @@ nlohmann::json serialize_capabilities(
             {{"name", name},
              {"allowed", true},
              {"writable", pressure != VolumePressure::Protected},
-             {"free_bytes", std::to_string(free_bytes)},
+             {"free_bytes", free_bytes},
              {"pressure", to_wire_string(pressure)}});
     }
     nlohmann::json profiles = nlohmann::json::array();
@@ -206,23 +210,23 @@ nlohmann::json serialize_capabilities(
         profiles.push_back(
             {{"name", p.name},
              {"allowed", true},
-             {"max_streams_per_pipeline", std::to_string(p.max_streams_per_pipeline)},
-             {"max_segment_physical_bytes", std::to_string(p.max_segment_physical_bytes)}});
+             {"max_streams_per_pipeline", p.max_streams_per_pipeline},
+             {"max_segment_physical_bytes", p.max_segment_physical_bytes}});
     }
     const auto effective_page =
         std::min<std::uint32_t>(config.http.max_page_size, caps.limits.max_page_size);
-    const auto effective_poll =
-        std::max(config.http.recommended_polling_floor, caps.limits.recommended_polling_floor);
+    const auto effective_poll = std::max(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(config.http.recommended_polling_floor),
+        caps.limits.recommended_polling_floor);
     return nlohmann::json{
         {"application_version", caps.application_version},
         {"backends", std::move(backends)},
         {"output_roots", std::move(output_roots)},
         {"resource_profiles", std::move(profiles)},
         {"api_limits",
-         {{"max_request_body_bytes", std::to_string(config.http.max_request_body_bytes)},
-          {"max_page_size", std::to_string(effective_page)},
-          {"idempotency_retention", format_duration_ms(caps.limits.idempotency_retention)},
-          {"recommended_polling_floor", format_duration_ms(effective_poll)}}}};
+         {{"max_request_body_bytes", config.http.max_request_body_bytes},
+          {"max_page_size", effective_page},
+          {"recommended_polling_floor_ms", to_non_negative_ms(effective_poll)}}}};
 }
 
 nlohmann::json serialize_task_data(const TaskSnapshot& snapshot) {
@@ -259,8 +263,9 @@ nlohmann::json serialize_task_page(const TaskPage& page) {
             item.task.current_operation
                 ? nlohmann::json(to_string(item.task.current_operation->operation_id))
                 : nlohmann::json(nullptr);
-        nlohmann::json commit_lag =
-            item.commit_lag ? format_duration_ms(*item.commit_lag) : nlohmann::json(nullptr);
+        nlohmann::json commit_lag_ms = item.commit_lag
+                                           ? nlohmann::json(to_non_negative_ms(*item.commit_lag))
+                                           : nlohmann::json(nullptr);
         items.push_back(
             {{"task_id", to_string(item.task.task_id)},
              {"name", std::move(name_val)},
@@ -272,9 +277,9 @@ nlohmann::json serialize_task_page(const TaskPage& page) {
              {"data_impact", to_wire_string(item.data_impact)},
              {"runtime_summary",
               {{"accepted_records_per_second", safe_rate(item.accepted_records_per_second)},
-               {"commit_lag", std::move(commit_lag)},
-               {"receiving_streams", std::to_string(item.receiving_streams)},
-               {"total_streams", std::to_string(item.total_streams)}}},
+               {"commit_lag_ms", std::move(commit_lag_ms)},
+               {"receiving_streams", item.receiving_streams},
+               {"total_streams", item.total_streams}}},
              {"captured_at", format_rfc3339_utc(item.task.captured_at)},
              {"freshness", serialize_freshness(item.freshness, item.task.age)}});
     }
@@ -317,25 +322,16 @@ nlohmann::json serialize_operation_page(TaskId task_id, const OperationPage& pag
     for (const auto& op : page.items) {
         items.push_back(serialize_operation(task_id, op));
     }
-    nlohmann::json oldest_gen =
-        page.oldest_retained_control_generation
-            ? nlohmann::json(std::to_string(*page.oldest_retained_control_generation))
-            : nlohmann::json(nullptr);
-    nlohmann::json oldest_at = page.oldest_retained_at
-                                   ? nlohmann::json(format_rfc3339_utc(*page.oldest_retained_at))
-                                   : nlohmann::json(nullptr);
     return nlohmann::json{
         {"items", std::move(items)},
         {"has_more", page.has_more},
         {"next_cursor", page.has_more ? page.next_cursor : std::string{}},
-        {"history_truncated", page.history_truncated},
-        {"oldest_retained_control_generation", std::move(oldest_gen)},
-        {"oldest_retained_at", std::move(oldest_at)}};
+        {"history_truncated", page.history_truncated}};
 }
 
 nlohmann::json serialize_task_runtime(const TaskRuntimeSnapshot& runtime) {
-    const auto window_json =
-        format_duration_ms(runtime.window ? *runtime.window : std::chrono::seconds{1});
+    const auto window_ms =
+        to_non_negative_ms(runtime.window ? *runtime.window : std::chrono::seconds{1});
     const auto captured_str = format_rfc3339_utc(runtime.captured_at);
     const auto freshness_json = serialize_freshness(runtime.freshness, runtime.age);
 
@@ -359,8 +355,7 @@ nlohmann::json serialize_task_runtime(const TaskRuntimeSnapshot& runtime) {
                 for (const auto& r : s.facts->rejections) {
                     stream_rejected += r.records;
                     reject_reasons.push_back(
-                        {{"reason", to_wire_string(r.reason)},
-                         {"records", std::to_string(r.records)}});
+                        {{"reason", to_wire_string(r.reason)}, {"records", r.records}});
                 }
                 total_rejected += stream_rejected;
             }
@@ -378,19 +373,18 @@ nlohmann::json serialize_task_runtime(const TaskRuntimeSnapshot& runtime) {
                  {"source_ready", s.facts ? s.facts->source_ready : false},
                  {"receiving", s.facts ? s.facts->receiving.value_or(false) : false},
                  {"last_receive_at", std::move(last_recv)},
-                 {"window", window_json},
+                 {"window_ms", window_ms},
                  {"received",
-                  {{"records", std::to_string(s.facts ? s.facts->received_records : 0u)},
-                   {"logical_bytes",
-                    std::to_string(s.facts ? s.facts->received_logical_bytes : 0u)},
+                  {{"records", s.facts ? s.facts->received_records : 0u},
+                   {"logical_bytes", s.facts ? s.facts->received_logical_bytes : 0u},
                    {"records_per_second",
                     safe_rate(s.facts ? s.facts->received_records_per_second : std::nullopt)},
                    {"logical_bytes_per_second",
                     safe_rate(
                         s.facts ? s.facts->received_logical_bytes_per_second : std::nullopt)}}},
                  {"admission",
-                  {{"accepted_records", std::to_string(s.facts ? s.facts->accepted_records : 0u)},
-                   {"rejected_records", std::to_string(stream_rejected)},
+                  {{"accepted_records", s.facts ? s.facts->accepted_records : 0u},
+                   {"rejected_records", stream_rejected},
                    {"reject_reasons", std::move(reject_reasons)}}},
                  {"captured_at", captured_str},
                  {"freshness", freshness_json}});
@@ -411,32 +405,32 @@ nlohmann::json serialize_task_runtime(const TaskRuntimeSnapshot& runtime) {
              {"condition", pipeline_condition_wire(pipe)},
              {"gate_state", (pipe.facts && pipe.facts->admission_open) ? "open" : "closed"},
              {"received",
-              {{"records", std::to_string(total_received_records)},
-               {"logical_bytes", std::to_string(total_received_bytes)},
+              {{"records", total_received_records},
+               {"logical_bytes", total_received_bytes},
                {"records_per_second", total_rec_rate},
                {"logical_bytes_per_second", total_byte_rate}}},
              {"admission",
-              {{"accepted_records", std::to_string(accepted)},
-               {"rejected_records", std::to_string(total_rejected)},
+              {{"accepted_records", accepted},
+               {"rejected_records", total_rejected},
                {"reject_reasons", nlohmann::json::array()}}},
              {"queue",
-              {{"records", std::to_string(queued_rec)},
-               {"bytes", std::to_string(queued_bytes)},
-               {"high_watermark_records", std::to_string(queued_rec)},
-               {"high_watermark_bytes", std::to_string(queued_bytes)},
-               {"oldest_age", nullptr}}},
+              {{"records", queued_rec},
+               {"bytes", queued_bytes},
+               {"high_watermark_records", queued_rec},
+               {"high_watermark_bytes", queued_bytes},
+               {"oldest_age_ms", nullptr}}},
              {"writer",
               {{"logical_bytes_per_second", total_byte_rate},
-               {"pending_records", std::to_string(unsettled)},
+               {"pending_records", unsettled},
                {"last_progress_at", nullptr}}},
              {"storage",
               {{"physical_bytes_per_second", 0.0},
-               {"pending_bytes", std::to_string(queued_bytes)},
+               {"pending_bytes", queued_bytes},
                {"last_progress_at", nullptr}}},
              {"commit",
-              {{"lag", nullptr},
+              {{"lag_ms", nullptr},
                {"durable_bytes_per_second", 0.0},
-               {"pending_segments", std::to_string(commit_items)},
+               {"pending_segments", commit_items},
                {"last_committed_artifact_id", nullptr},
                {"last_progress_at", nullptr}}},
              {"streams", std::move(streams)}});
@@ -457,11 +451,11 @@ nlohmann::json serialize_artifact_summary(const ArtifactSummary& summary) {
         {"segment_id", std::to_string(summary.segment_id)},
         {"committed_at", format_rfc3339_utc(summary.committed_at)},
         {"recording_range",
-         {{"begin", format_duration_ns(std::chrono::nanoseconds{summary.recording_range.begin_ns})},
-          {"end", format_duration_ns(std::chrono::nanoseconds{summary.recording_range.end_ns})}}},
+         {{"begin_ms", ns_to_ms_u64(summary.recording_range.begin_ns)},
+          {"end_ms", ns_to_ms_u64(summary.recording_range.end_ns)}}},
         {"format", summary.format},
-        {"logical_bytes", std::to_string(summary.logical_bytes)},
-        {"physical_bytes", std::to_string(summary.physical_bytes)},
+        {"logical_bytes", summary.logical_bytes},
+        {"physical_bytes", summary.physical_bytes},
         {"data_impact", to_wire_string(summary.data_impact)}};
 }
 
@@ -474,7 +468,7 @@ nlohmann::json serialize_artifact_detail(const ArtifactInfo& info) {
         files.push_back(
             {{"file_id", fid},
              {"display_name", f.display_name},
-             {"size", std::to_string(f.size)},
+             {"size", f.size},
              {"media_type", f.media_type},
              {"etag", f.etag},
              {"download_url", "/api/artifacts/" + art_id + "/files/" + fid}});
@@ -487,8 +481,8 @@ nlohmann::json serialize_artifact_detail(const ArtifactInfo& info) {
             if (gaps.size() < 32) {
                 gaps.push_back(
                     {{"kind", "storage_failure"},
-                     {"recording_begin", nullptr},
-                     {"recording_end", nullptr},
+                     {"recording_begin_ms", nullptr},
+                     {"recording_end_ms", nullptr},
                      {"message", "accepted records failed during storage write"}});
             }
         }
@@ -497,15 +491,15 @@ nlohmann::json serialize_artifact_detail(const ArtifactInfo& info) {
             if (gaps.size() < 32) {
                 gaps.push_back(
                     {{"kind", "persistence_unknown"},
-                     {"recording_begin", nullptr},
-                     {"recording_end", nullptr},
+                     {"recording_begin_ms", nullptr},
+                     {"recording_end_ms", nullptr},
                      {"message", "accepted records ended with unknown persistence"}});
             }
         }
     }
     doc["coverage"] = {
         {"complete", gap_count == 0 && info.summary.data_impact == DataImpact::None},
-        {"gap_count", std::to_string(gap_count)},
+        {"gap_count", gap_count},
         {"gaps", std::move(gaps)}};
     doc["files"] = std::move(files);
     return doc;
@@ -523,8 +517,8 @@ nlohmann::json serialize_artifact_page(const ArtifactPage& page) {
 }
 
 Result<OperationRequestDto> parse_operation_request(
-    std::string_view body, const StrictJsonLimits& limits, ApiError& error_out) {
-    const auto parsed = parse_strict_json(body, limits);
+    std::string_view body, const JsonParseLimits& limits, ApiError& error_out) {
+    const auto parsed = parse_bounded_json(body, limits);
     if (!parsed.ok) {
         error_out = make_request_error(
             400, "invalid_json", parsed.error.message,

@@ -13,7 +13,7 @@ async function onSubmit(): Promise<void> {
   const token = bearerInput.value.trim();
   if (!token) {
     submitError.value = new ApiFailure({
-      message: 'Please enter a local RoDAQ Bearer credential.',
+      message: 'Please enter a local RoDAQ Bearer token.',
       httpStatus: null,
       requestId: null,
       retryAfterMs: null,
@@ -25,8 +25,6 @@ async function onSubmit(): Promise<void> {
   submitError.value = null;
   try {
     await session.login(token);
-    // Immediately clear bearer from input memory once exchanged for HttpOnly session.
-    // AppShell lifecycle watcher is the sole authority for post-login route restoration.
     bearerInput.value = '';
   } catch (err) {
     submitError.value =
@@ -49,15 +47,16 @@ async function onSubmit(): Promise<void> {
     <section class="card">
       <h1 style="margin: 0 0 8px 0; font-size: 1.375rem">RoDAQ Local Console Sign In</h1>
       <p class="muted" style="margin: 0 0 16px 0; font-size: 0.875rem">
-        Authenticate using your local managed Bearer credential. RoDAQ exchanges it for an
-        <code>HttpOnly; SameSite=Strict</code> browser session and keeps the CSRF token in memory only.
+        Authenticate using the local high-entropy Bearer token. The token is kept strictly in page
+        memory (never written to cookies, localStorage, or sessionStorage); refreshing the page
+        requires re-entering the token.
       </p>
 
       <ErrorPanel v-if="submitError" :error="submitError" title="Authentication Failed" />
 
       <form @submit.prevent="onSubmit">
         <div class="form-field">
-          <label for="bearer-token-input">Bearer Credential</label>
+          <label for="bearer-token-input">Bearer Token</label>
           <input
             id="bearer-token-input"
             v-model="bearerInput"

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -48,21 +48,17 @@ public:
     RecordMetadataReservation& operator=(RecordMetadataReservation&&) = delete;
     ~RecordMetadataReservation() noexcept;
 
-    // Internal precondition: valid increasing sequence from the locked Stream
-    // allocator, after Gate/descriptor/Segment checks and all ordinary reserves.
-    // Counts/ranges are fixed backing; no allocation, I/O or quota check follows.
     RecordSettlement accept(std::uint64_t sequence) noexcept;
 
 private:
     friend class SegmentMetadata;
     RecordMetadataReservation(
         std::shared_ptr<SegmentMetadataState> state, std::size_t stream, std::size_t descriptor,
-        std::size_t epoch, time::ClockSnapshot received, std::uint64_t recording_ns) noexcept;
+        time::ClockSample received, std::uint64_t recording_ns) noexcept;
     std::shared_ptr<SegmentMetadataState> state_;
     std::size_t stream_;
     std::size_t descriptor_;
-    std::size_t epoch_;
-    time::ClockSnapshot received_;
+    time::ClockSample received_;
     std::uint64_t recording_ns_;
 };
 
@@ -74,8 +70,6 @@ public:
     DescriptorMetadataReservation& operator=(DescriptorMetadataReservation&&) = delete;
     ~DescriptorMetadataReservation() noexcept;
 
-    // Transfer alongside physical ownership before actual Native descriptor
-    // work. Actual success then makes the entry ready; failure keeps its bound.
     void transfer() noexcept;
     Result<void> mark_prepared();
 
@@ -94,26 +88,17 @@ struct SegmentMetadataSnapshot {
     std::uint64_t logical_bytes{0};
     std::uint64_t known_failed{0};
     std::uint64_t unknown{0};
-    // Records attached to write_batch frames; not a count/proof of all Native
-    // descriptor/open/seal/quiesce operations on the Storage instance.
     std::uint64_t native_inflight{0};
     std::uint64_t unresolved_owners{0};
-    std::uint64_t manifest_bytes_bound{0};
-    std::uint64_t high_water_manifest_bytes_bound{0};
-    // Pre-Admission reservations only. They leave this counter at Accept;
-    // accepted-but-unsettled work is derived from the settlement counters.
     std::uint32_t pending_admissions{0};
     std::uint32_t pending_descriptors{0};
     std::uint32_t descriptors{0};
-    std::uint32_t epochs{0};
     bool closed{false};
 };
 
 Result<std::uint64_t> unsettled_record_count(const SegmentMetadataSnapshot& snapshot);
 
 // Per-Segment fixed metadata capacity, separate from business Gate authority.
-// One short mutex owns reservations and accepted/settled facts. No method calls
-// Native, samples clocks, performs I/O or creates an execution domain.
 class SegmentMetadata {
 public:
     static Result<SegmentMetadata> create(
@@ -125,21 +110,13 @@ public:
     SegmentMetadata& operator=(SegmentMetadata&&) noexcept = default;
 
     Result<DescriptorMetadataReservation> reserve_descriptor(artifact::ManifestDescriptor facts);
-    // Prepare only, before any accepted/candidate Record. Recharges the frozen
-    // identity input against the same existing Manifest budget before Open.
-    Result<void> bind_effective_configuration(
-        std::string identity, persistence::Json configuration);
     Result<RecordMetadataReservation> reserve_record(
-        StreamId stream_id, rodaq_descriptor_id_t descriptor_id,
-        const time::ClockSnapshot& received, std::uint64_t recording_ns);
-    // Called inside Gate cut or after close_and_capture; existing pre-reserved
-    // guards finish before the cut, all later candidates roll back normally.
+        StreamId stream_id, rodaq_descriptor_id_t descriptor_id, const time::ClockSample& received,
+        std::uint64_t recording_ns);
     void close_admission();
     SegmentMetadataSnapshot snapshot() const;
-    // Only after closed, candidate rollback and exact actual settlement. Unknown
-    // remains in evidence; Artifact Committer separately owns normal eligibility.
     Result<artifact::SegmentManifest> capture_manifest(
-        std::vector<artifact::FileEvidence> files) const;
+        std::vector<artifact::FileEvidence> files, WallTime committed_at) const;
     std::uint64_t segment_id() const noexcept;
     TaskId task_id() const noexcept;
 

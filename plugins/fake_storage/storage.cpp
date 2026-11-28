@@ -9,8 +9,8 @@
 #include <fcntl.h>
 #include <iterator>
 #include <stdexcept>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -25,9 +25,7 @@ using rodaq::Status;
 using rodaq::StatusCode;
 using rodaq::plugin::Deadline;
 
-// Qualification-only backend. The little-endian, length-prefixed format is
-// intentionally simple enough to read independently of this encoder and SDK.
-// It owns no threads, Admission, buffering queue, durability or publish policy.
+// Qualification-only backend. Single-file little-endian length-prefixed format.
 class FakeStorage {
 public:
     FakeStorage() = default;
@@ -89,7 +87,7 @@ public:
         }
     }
 
-    Result<storage::CapacityModel> prepare(const storage::PrepareConfig& config, Deadline) {
+    Result<void> prepare(const storage::PrepareConfig& config, Deadline) {
         if (prepared_ || stopped_ || mode_ == "fail_prepare") {
             return Status(StatusCode::InvalidState, {});
         }
@@ -108,8 +106,7 @@ public:
         buffer_.reserve(
             static_cast<std::size_t>(std::max(config.max_record_bytes + 512, descriptor_bytes_)));
         prepared_ = true;
-        return storage::CapacityModel{
-            {sizeof(storage::CapacityModel)}, 1, 1, 512, 1, 1, 128, 64, 16};
+        return {};
     }
 
     Result<void> prepare_descriptor(const storage::StreamDescriptor& descriptor, Deadline) {
@@ -205,13 +202,10 @@ public:
             entry.emitted = false;
         }
         buffer_.clear();
-        for (const auto byte : std::string_view("RDAQFK1\n")) {
+        for (const auto byte : std::string_view("RDAQFK2\n")) {
             append(static_cast<std::uint8_t>(byte), 1);
         }
         append(segment.segment_id, 8);
-        append(limits_.system_boot_id, 8);
-        append(limits_.playback_anchor_monotonic, 8);
-        append(static_cast<std::uint64_t>(limits_.playback_anchor_realtime), 8);
         return write_buffer();
     }
 
@@ -221,13 +215,13 @@ public:
         }
         if (mode_ == "hang_write") {
             buffer_.clear();
-            append(255, 1);  // Observable actual Native entry; deliberately unsealed.
+            append(255, 1);
             auto entered = write_buffer();
             if (!entered.ok()) {
                 return entered.status();
             }
             for (;;) {
-                pause();  // Intentional fault: process supervision must end this work.
+                pause();
             }
         }
         if (mode_ == "late_write") {
@@ -258,8 +252,6 @@ public:
         }
         if (confirmed < batch.count) {
             if (mode_ == "prefix_unknown") {
-                // Deliberately write a suffix record without confirming it. Core
-                // must neither infer unwritten nor retry this contaminated set.
                 (void)write_record(batch.records[confirmed]);
                 poisoned_ = true;
             }
@@ -280,7 +272,7 @@ public:
             return Status(StatusCode::InvalidState, {});
         }
         return storage::SegmentUsage{
-            {sizeof(storage::SegmentUsage)}, physical_, 0, file_created_ ? 1u : 0u, 0};
+            {sizeof(storage::SegmentUsage)}, physical_, file_created_ ? 1u : 0u, 0};
     }
 
     Result<storage::SegmentSealResult> seal_segment(Deadline) {
@@ -300,8 +292,6 @@ public:
             return Status(StatusCode::Unavailable, {});
         }
         if (mode_ == "late_seal") {
-            // A complete format footer is observable while the actual Native
-            // Seal frame still owns its output. Core must wait for the return.
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
         }
         return storage::SegmentSealResult{{{"records.fake", physical_}}, physical_};
@@ -324,7 +314,6 @@ private:
     struct DescriptorEntry {
         std::uint64_t id{0};
         std::uint64_t stream{0};
-        std::uint64_t last_sequence{0};
         std::vector<std::uint8_t> encoded;
         bool emitted{false};
     };
@@ -375,8 +364,6 @@ private:
 
     Result<void> write_record(const storage::Record& record) {
         if (record.payload.size > limits_.max_record_bytes ||
-            record.system_boot_id != limits_.system_boot_id ||
-            record.receive_monotonic < limits_.playback_anchor_monotonic ||
             records_ >= limits_.max_segment_records ||
             record.payload.size > limits_.max_segment_input_bytes - input_bytes_) {
             return Status(StatusCode::InvalidArgument, {});
@@ -386,12 +373,6 @@ private:
         });
         if (descriptor == catalog_.end()) {
             return Status(StatusCode::NotFound, {});
-        }
-        for (const auto& entry : catalog_) {
-            if (entry.id != 0 && entry.stream == record.stream_id &&
-                record.acceptance_sequence <= entry.last_sequence) {
-                return Status(StatusCode::Conflict, {});
-            }
         }
         if (!descriptor->emitted) {
             if (segment_descriptors_ >= limits_.max_descriptors_per_segment) {
@@ -410,39 +391,15 @@ private:
         append(0, 4);
         append(record.stream_id, 8);
         append(record.descriptor_id, 8);
-        append(record.acceptance_sequence, 8);
-        append(record.system_boot_id, 8);
-        append(record.clock_epoch_id, 8);
-        append(record.receive_monotonic, 8);
-        append(static_cast<std::uint64_t>(record.receive_realtime), 8);
-        append(record.source_id.kind, 4);
-        append(record.source_id.size, 1);
-        buffer_.insert(
-            buffer_.end(), std::begin(record.source_id.data), std::end(record.source_id.data));
-        append(record.source_session_id, 8);
-        append(record.source_sequence, 8);
-        append(record.timestamp_count, 4);
-        for (std::uint32_t i = 0; i < record.timestamp_count; ++i) {
-            const auto& stamp = record.timestamps[i];
-            append(stamp.role, 4);
-            append(stamp.clock_domain, 4);
-            append(stamp.clock_id, 8);
-            append(static_cast<std::uint64_t>(stamp.value), 8);
-            append(stamp.flags, 4);
-            append(stamp.reserved, 4);
-        }
-        append(record.sequence_scope, 4);
-        append(record.delivery_flags, 4);
-        append(record.has_source_id, 1);
-        append(record.has_source_session_id, 1);
-        append(record.has_source_sequence, 1);
+        append(record.recording_time, 8);
+        append(record.publish_time, 8);
+        append(record.has_publish_time, 1);
         blob(record.payload.data, static_cast<std::size_t>(record.payload.size));
         frame_size();
         auto result = write_buffer();
         if (result.ok()) {
             ++records_;
             input_bytes_ += record.payload.size;
-            descriptor->last_sequence = record.acceptance_sequence;
         }
         return result;
     }

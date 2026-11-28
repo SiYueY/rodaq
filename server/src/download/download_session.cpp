@@ -169,7 +169,6 @@ std::string build_content_disposition(std::string_view raw_display_name) {
 
 DownloadSession::DownloadSession(Options options)
 : session_id_(options.session_id),
-  principal_(std::move(options.principal)),
   chunk_bytes_(options.chunk_bytes),
   max_bytes_in_flight_(options.max_bytes_in_flight),
   range_(options.range),

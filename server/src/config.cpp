@@ -2,17 +2,19 @@
 
 #include "api/json_codec.hpp"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <fstream>
-#include <set>
+#include <initializer_list>
+#include <limits>
 #include <sstream>
 #include <sys/stat.h>
 
 namespace rodaq::server {
 namespace {
 
-constexpr std::uint64_t kMaxJsonResponseHardCap = 64ULL * 1024 * 1024;
-constexpr std::uint64_t kMaxDownloadInFlightHardCap = 64ULL * 1024 * 1024;
+constexpr std::size_t kMaxJsonResponseHardCap = 64ull * 1024 * 1024;
+constexpr std::uint64_t kMaxDownloadInFlightHardCap = 64ull * 1024 * 1024;
 
 bool read_bounded_file(const std::filesystem::path& path, std::size_t max_bytes, std::string& out) {
     struct stat st {};
@@ -28,27 +30,32 @@ bool read_bounded_file(const std::filesystem::path& path, std::size_t max_bytes,
     }
     std::ostringstream ss;
     ss << file.rdbuf();
-    if (file.bad()) {
-        return false;
-    }
     out = ss.str();
     return out.size() <= max_bytes;
 }
 
-bool check_allowed_keys(const nlohmann::json& obj, const std::set<std::string_view>& allowed) {
+bool check_allowed_keys(
+    const nlohmann::json& obj, std::initializer_list<std::string_view> allowed) {
     if (!obj.is_object()) {
         return false;
     }
-    for (auto it = obj.begin(); it != obj.end(); ++it) {
-        if (allowed.find(it.key()) == allowed.end()) {
+    for (const auto& [k, _] : obj.items()) {
+        bool ok = false;
+        for (const auto a : allowed) {
+            if (k == a) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok) {
             return false;
         }
     }
     return true;
 }
 
-template <typename T>
-bool read_opt_int(const nlohmann::json& obj, const char* key, T& target) {
+template <typename Int>
+bool read_opt_int(const nlohmann::json& obj, const char* key, Int& out) {
     if (!obj.contains(key)) {
         return true;
     }
@@ -59,71 +66,70 @@ bool read_opt_int(const nlohmann::json& obj, const char* key, T& target) {
     if (v.is_number_integer() && v.get<std::int64_t>() < 0) {
         return false;
     }
-    const auto raw = v.get<std::uint64_t>();
-    if (raw > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
+    const auto u = v.get<std::uint64_t>();
+    if (u > static_cast<std::uint64_t>(std::numeric_limits<Int>::max())) {
         return false;
     }
-    target = static_cast<T>(raw);
+    out = static_cast<Int>(u);
     return true;
 }
 
-bool read_opt_u64_str(const nlohmann::json& obj, const char* key, std::uint64_t& target) {
+bool read_opt_ms(const nlohmann::json& obj, const char* key, std::chrono::milliseconds& out) {
+    std::uint64_t ms = 0;
     if (!obj.contains(key)) {
         return true;
     }
-    const auto& v = obj[key];
-    if (!v.is_string()) {
+    if (!read_opt_int(obj, key, ms) || ms == 0 ||
+        ms > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / 1000000LL)) {
         return false;
     }
-    const auto parsed = parse_u64_decimal(v.get_ref<const std::string&>());
-    if (!parsed) {
-        return false;
-    }
-    target = *parsed;
+    out = std::chrono::milliseconds{static_cast<std::int64_t>(ms)};
     return true;
 }
 
-bool read_opt_duration(
-    const nlohmann::json& obj, const char* key, std::chrono::nanoseconds& target) {
+bool read_opt_ns_from_ms(
+    const nlohmann::json& obj, const char* key, std::chrono::nanoseconds& out) {
+    std::chrono::milliseconds ms{0};
     if (!obj.contains(key)) {
         return true;
     }
-    std::string code;
-    std::string msg;
-    const auto parsed = parse_duration_object(obj[key], code, msg);
-    if (!parsed) {
+    if (!read_opt_ms(obj, key, ms)) {
         return false;
     }
-    target = *parsed;
+    out = std::chrono::duration_cast<std::chrono::nanoseconds>(ms);
     return true;
 }
 
-bool canonicalize_loopback(const std::string& input, std::string& canonical, bool& ipv6) {
+bool canonicalize_loopback(std::string_view input, std::string& out_addr, bool& is_ipv6) {
+    std::string raw(input);
+    if (raw.size() >= 2 && raw.front() == '[' && raw.back() == ']') {
+        raw = raw.substr(1, raw.size() - 2);
+    }
     in_addr v4{};
-    if (::inet_pton(AF_INET, input.c_str(), &v4) == 1) {
+    if (inet_pton(AF_INET, raw.c_str(), &v4) == 1) {
         const std::uint32_t host = ntohl(v4.s_addr);
-        if ((host >> 24) != 127u) {
+        if ((host & 0xFF000000u) != 0x7F000000u) {
             return false;
         }
         char buf[INET_ADDRSTRLEN]{};
-        if (!::inet_ntop(AF_INET, &v4, buf, sizeof(buf))) {
+        if (!inet_ntop(AF_INET, &v4, buf, sizeof(buf))) {
             return false;
         }
-        canonical = buf;
-        ipv6 = false;
+        out_addr = buf;
+        is_ipv6 = false;
         return true;
     }
     in6_addr v6{};
-    if (::inet_pton(AF_INET6, input.c_str(), &v6) == 1) {
+    if (inet_pton(AF_INET6, raw.c_str(), &v6) == 1) {
         if (!IN6_IS_ADDR_LOOPBACK(&v6)) {
             return false;
         }
         char buf[INET6_ADDRSTRLEN]{};
-        if (!::inet_ntop(AF_INET6, &v6, buf, sizeof(buf))) {
+        if (!inet_ntop(AF_INET6, &v6, buf, sizeof(buf))) {
             return false;
         }
-        canonical = buf;
-        ipv6 = true;
+        out_addr = buf;
+        is_ipv6 = true;
         return true;
     }
     return false;
@@ -131,88 +137,73 @@ bool canonicalize_loopback(const std::string& input, std::string& canonical, boo
 
 Result<ServerConfig> parse_server_object(const nlohmann::json& root) {
     if (!check_allowed_keys(
-            root, {"format_version", "http", "execution", "security", "download", "timeouts"})) {
+            root, {"format_version", "http", "execution", "security", "download", "timeouts",
+                   "static_assets_root"})) {
         return Status(StatusCode::InvalidArgument, "unexpected key in server config");
     }
     if (!root.contains("format_version") || !root["format_version"].is_string() ||
         root["format_version"].get_ref<const std::string&>() != "1.0") {
-        return Status(StatusCode::InvalidArgument, "server format_version must be 1.0");
+        return Status(StatusCode::InvalidArgument, "server config requires format_version 1.0");
     }
 
-    ServerConfig config;
+    ServerConfig cfg;
     if (root.contains("http")) {
         const auto& h = root["http"];
         if (!check_allowed_keys(
                 h, {"listen_address", "port", "worker_threads", "max_request_body_bytes",
                     "max_header_bytes", "max_query_bytes", "max_json_depth",
-                    "max_json_string_bytes", "max_json_members", "max_json_response_bytes",
-                    "max_page_size", "recommended_polling_floor"})) {
+                    "max_json_response_bytes", "max_page_size", "recommended_polling_floor_ms"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in server.http");
         }
         if (h.contains("listen_address")) {
             if (!h["listen_address"].is_string()) {
-                return Status(StatusCode::InvalidArgument, "listen_address must be string");
+                return Status(StatusCode::InvalidArgument, "http.listen_address must be string");
             }
-            config.http.listen_address = h["listen_address"].get<std::string>();
+            cfg.http.listen_address = h["listen_address"].get<std::string>();
         }
-        if (!read_opt_int(h, "port", config.http.port) ||
-            !read_opt_int(h, "worker_threads", config.http.worker_threads) ||
-            !read_opt_u64_str(h, "max_request_body_bytes", config.http.max_request_body_bytes) ||
-            !read_opt_u64_str(h, "max_header_bytes", config.http.max_header_bytes) ||
-            !read_opt_u64_str(h, "max_query_bytes", config.http.max_query_bytes) ||
-            !read_opt_int(h, "max_json_depth", config.http.max_json_depth) ||
-            !read_opt_u64_str(h, "max_json_string_bytes", config.http.max_json_string_bytes) ||
-            !read_opt_int(h, "max_json_members", config.http.max_json_members) ||
-            !read_opt_u64_str(h, "max_json_response_bytes", config.http.max_json_response_bytes) ||
-            !read_opt_int(h, "max_page_size", config.http.max_page_size) ||
-            !read_opt_duration(
-                h, "recommended_polling_floor", config.http.recommended_polling_floor)) {
-            return Status(StatusCode::InvalidArgument, "invalid server.http field");
+        if (!read_opt_int(h, "port", cfg.http.port) ||
+            !read_opt_int(h, "worker_threads", cfg.http.worker_threads) ||
+            !read_opt_int(h, "max_request_body_bytes", cfg.http.max_request_body_bytes) ||
+            !read_opt_int(h, "max_header_bytes", cfg.http.max_header_bytes) ||
+            !read_opt_int(h, "max_query_bytes", cfg.http.max_query_bytes) ||
+            !read_opt_int(h, "max_json_depth", cfg.http.max_json_depth) ||
+            !read_opt_int(h, "max_json_response_bytes", cfg.http.max_json_response_bytes) ||
+            !read_opt_int(h, "max_page_size", cfg.http.max_page_size) ||
+            !read_opt_ms(h, "recommended_polling_floor_ms", cfg.http.recommended_polling_floor)) {
+            return Status(StatusCode::InvalidArgument, "invalid server.http numeric setting");
         }
     }
 
     if (root.contains("execution")) {
         const auto& e = root["execution"];
-        if (!check_allowed_keys(
-                e, {"control_workers", "control_reserve_workers", "query_workers",
-                    "query_reserve_workers", "maintenance_workers", "control_queue",
-                    "control_reserve_queue", "query_queue", "query_reserve_queue",
-                    "maintenance_queue"})) {
+        if (!check_allowed_keys(e, {"control_workers", "control_queue"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in server.execution");
         }
-        if (!read_opt_int(e, "control_workers", config.execution.control_workers) ||
-            !read_opt_int(e, "control_reserve_workers", config.execution.control_reserve_workers) ||
-            !read_opt_int(e, "query_workers", config.execution.query_workers) ||
-            !read_opt_int(e, "query_reserve_workers", config.execution.query_reserve_workers) ||
-            !read_opt_int(e, "maintenance_workers", config.execution.maintenance_workers) ||
-            !read_opt_int(e, "control_queue", config.execution.control_queue) ||
-            !read_opt_int(e, "control_reserve_queue", config.execution.control_reserve_queue) ||
-            !read_opt_int(e, "query_queue", config.execution.query_queue) ||
-            !read_opt_int(e, "query_reserve_queue", config.execution.query_reserve_queue) ||
-            !read_opt_int(e, "maintenance_queue", config.execution.maintenance_queue)) {
-            return Status(StatusCode::InvalidArgument, "invalid server.execution field");
+        if (!read_opt_int(e, "control_workers", cfg.execution.control_workers) ||
+            !read_opt_int(e, "control_queue", cfg.execution.control_queue)) {
+            return Status(StatusCode::InvalidArgument, "invalid server.execution setting");
         }
     }
 
     if (root.contains("security")) {
         const auto& s = root["security"];
-        if (!check_allowed_keys(
-                s, {"credential_store", "max_credentials", "max_sessions", "session_idle_timeout",
-                    "session_absolute_timeout"})) {
+        if (!check_allowed_keys(s, {"bearer_token_file", "enforce_file_permissions"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in server.security");
         }
-        if (s.contains("credential_store")) {
-            if (!s["credential_store"].is_string()) {
-                return Status(StatusCode::InvalidArgument, "credential_store must be string");
+        if (s.contains("bearer_token_file")) {
+            if (!s["bearer_token_file"].is_string()) {
+                return Status(
+                    StatusCode::InvalidArgument, "security.bearer_token_file must be string");
             }
-            config.security.credential_store = s["credential_store"].get<std::string>();
+            cfg.security.bearer_token_file = s["bearer_token_file"].get<std::string>();
         }
-        if (!read_opt_int(s, "max_credentials", config.security.max_credentials) ||
-            !read_opt_int(s, "max_sessions", config.security.max_sessions) ||
-            !read_opt_duration(s, "session_idle_timeout", config.security.session_idle_timeout) ||
-            !read_opt_duration(
-                s, "session_absolute_timeout", config.security.session_absolute_timeout)) {
-            return Status(StatusCode::InvalidArgument, "invalid server.security field");
+        if (s.contains("enforce_file_permissions")) {
+            if (!s["enforce_file_permissions"].is_boolean()) {
+                return Status(
+                    StatusCode::InvalidArgument,
+                    "security.enforce_file_permissions must be boolean");
+            }
+            cfg.security.enforce_file_permissions = s["enforce_file_permissions"].get<bool>();
         }
     }
 
@@ -222,52 +213,67 @@ Result<ServerConfig> parse_server_object(const nlohmann::json& root) {
                 d, {"workers", "max_concurrent", "chunk_bytes", "max_bytes_in_flight"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in server.download");
         }
-        if (!read_opt_int(d, "workers", config.download.workers) ||
-            !read_opt_int(d, "max_concurrent", config.download.max_concurrent) ||
-            !read_opt_u64_str(d, "chunk_bytes", config.download.chunk_bytes) ||
-            !read_opt_u64_str(d, "max_bytes_in_flight", config.download.max_bytes_in_flight)) {
-            return Status(StatusCode::InvalidArgument, "invalid server.download field");
+        if (!read_opt_int(d, "workers", cfg.download.workers) ||
+            !read_opt_int(d, "max_concurrent", cfg.download.max_concurrent) ||
+            !read_opt_int(d, "chunk_bytes", cfg.download.chunk_bytes) ||
+            !read_opt_int(d, "max_bytes_in_flight", cfg.download.max_bytes_in_flight)) {
+            return Status(StatusCode::InvalidArgument, "invalid server.download setting");
         }
     }
 
     if (root.contains("timeouts")) {
         const auto& t = root["timeouts"];
-        if (!check_allowed_keys(t, {"health", "query", "mutation_acceptance", "shutdown"})) {
+        if (!check_allowed_keys(t, {"query_ms", "mutation_acceptance_ms", "shutdown_ms"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in server.timeouts");
         }
-        if (!read_opt_duration(t, "health", config.timeouts.health) ||
-            !read_opt_duration(t, "query", config.timeouts.query) ||
-            !read_opt_duration(t, "mutation_acceptance", config.timeouts.mutation_acceptance) ||
-            !read_opt_duration(t, "shutdown", config.timeouts.shutdown)) {
-            return Status(StatusCode::InvalidArgument, "invalid server.timeouts field");
+        if (!read_opt_ms(t, "query_ms", cfg.timeouts.query) ||
+            !read_opt_ms(t, "mutation_acceptance_ms", cfg.timeouts.mutation_acceptance) ||
+            !read_opt_ms(t, "shutdown_ms", cfg.timeouts.shutdown)) {
+            return Status(StatusCode::InvalidArgument, "invalid server.timeouts setting");
         }
     }
 
-    auto valid = validate_server_config(config);
+    if (root.contains("static_assets_root")) {
+        if (!root["static_assets_root"].is_string()) {
+            return Status(StatusCode::InvalidArgument, "static_assets_root must be string");
+        }
+        std::filesystem::path p(root["static_assets_root"].get<std::string>());
+        if (!p.is_absolute()) {
+            return Status(StatusCode::InvalidArgument, "static_assets_root must be absolute");
+        }
+        cfg.static_assets_root = std::move(p);
+    }
+
+    auto valid = validate_server_config(cfg);
     if (!valid.ok()) {
         return valid.status();
     }
-    return config;
+    return cfg;
 }
 
 Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
     if (!check_allowed_keys(
-            d, {"state_root", "volume_root", "mode", "plugin_search_paths", "deployment_generation",
-                "qualified_runtime_profile_id", "max_tasks", "max_pipelines_per_task",
-                "volume_name", "profiles", "allowed_backends"})) {
+            d, {"state_root", "volume_root", "mode", "plugin_search_paths", "max_loaded_plugins",
+                "max_plugin_instances", "max_plugin_config_bytes", "plugin_shutdown_timeout_ms",
+                "deployment_generation", "qualified_runtime_profile_id", "max_tasks",
+                "max_pipelines_per_task", "native_timeout_ms", "system_snapshot_max_age_ms",
+                "volume", "profiles", "allowed_backends"})) {
         return Status(StatusCode::InvalidArgument, "unexpected key in daq config");
     }
-    DaqOpenOptions opts;
     if (!d.contains("state_root") || !d["state_root"].is_string() || !d.contains("volume_root") ||
-        !d["volume_root"].is_string() || !d.contains("qualified_runtime_profile_id") ||
-        !d["qualified_runtime_profile_id"].is_string() || !d.contains("plugin_search_paths") ||
-        !d["plugin_search_paths"].is_array() || !d.contains("allowed_backends") ||
+        !d["volume_root"].is_string() || !d.contains("allowed_backends") ||
         !d["allowed_backends"].is_array()) {
-        return Status(StatusCode::InvalidArgument, "missing required daq fields");
+        return Status(
+            StatusCode::InvalidArgument,
+            "daq requires state_root, volume_root, and allowed_backends");
     }
+
+    DaqOpenOptions opts;
     opts.state_root = d["state_root"].get<std::string>();
     opts.volume_root = d["volume_root"].get<std::string>();
-    opts.qualified_runtime_profile_id = d["qualified_runtime_profile_id"].get<std::string>();
+    if (!opts.state_root.is_absolute() || !opts.volume_root.is_absolute()) {
+        return Status(StatusCode::InvalidArgument, "daq roots must be absolute paths");
+    }
     if (d.contains("mode")) {
         if (!d["mode"].is_string()) {
             return Status(StatusCode::InvalidArgument, "daq.mode must be string");
@@ -278,38 +284,100 @@ Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
         } else if (mode == "existing") {
             opts.mode = DaqOpenMode::Existing;
         } else {
-            return Status(StatusCode::InvalidArgument, "invalid daq.mode");
+            return Status(StatusCode::InvalidArgument, "daq.mode must be initialize or existing");
         }
     }
-    for (const auto& item : d["plugin_search_paths"]) {
-        if (!item.is_string()) {
-            return Status(StatusCode::InvalidArgument, "plugin_search_paths entry must be string");
+    if (d.contains("plugin_search_paths")) {
+        if (!d["plugin_search_paths"].is_array()) {
+            return Status(StatusCode::InvalidArgument, "daq.plugin_search_paths must be array");
         }
-        opts.plugin_search_paths.emplace_back(item.get<std::string>());
+        for (const auto& p : d["plugin_search_paths"]) {
+            if (!p.is_string()) {
+                return Status(
+                    StatusCode::InvalidArgument, "daq.plugin_search_paths entry must be string");
+            }
+            std::filesystem::path dir(p.get<std::string>());
+            if (!dir.is_absolute()) {
+                return Status(StatusCode::InvalidArgument, "plugin_search_paths must be absolute");
+            }
+            opts.plugin_search_paths.push_back(std::move(dir));
+        }
     }
-    if (!read_opt_u64_str(d, "deployment_generation", opts.deployment_generation) ||
+    if (!read_opt_int(d, "max_loaded_plugins", opts.max_loaded_plugins) ||
+        !read_opt_int(d, "max_plugin_instances", opts.max_plugin_instances) ||
+        !read_opt_int(d, "max_plugin_config_bytes", opts.max_plugin_config_bytes) ||
+        !read_opt_ns_from_ms(d, "plugin_shutdown_timeout_ms", opts.plugin_shutdown_timeout) ||
+        !read_opt_int(d, "deployment_generation", opts.deployment_generation) ||
         !read_opt_int(d, "max_tasks", opts.max_tasks) ||
-        !read_opt_int(d, "max_pipelines_per_task", opts.max_pipelines_per_task)) {
+        !read_opt_int(d, "max_pipelines_per_task", opts.max_pipelines_per_task) ||
+        !read_opt_ns_from_ms(d, "native_timeout_ms", opts.native_timeout) ||
+        !read_opt_ns_from_ms(d, "system_snapshot_max_age_ms", opts.system_snapshot_max_age)) {
         return Status(StatusCode::InvalidArgument, "invalid daq numeric setting");
     }
-    if (d.contains("volume_name")) {
-        if (!d["volume_name"].is_string()) {
-            return Status(StatusCode::InvalidArgument, "volume_name must be string");
+    if (d.contains("qualified_runtime_profile_id")) {
+        if (!d["qualified_runtime_profile_id"].is_string()) {
+            return Status(
+                StatusCode::InvalidArgument, "daq.qualified_runtime_profile_id must be string");
         }
-        opts.volume.name = d["volume_name"].get<std::string>();
+        opts.qualified_runtime_profile_id = d["qualified_runtime_profile_id"].get<std::string>();
     }
+
+    if (d.contains("volume")) {
+        const auto& v = d["volume"];
+        if (!check_allowed_keys(
+                v, {"name", "max_managed_bytes", "max_commit_bytes", "stop_free_bytes",
+                    "low_free_bytes", "recovery_free_bytes", "space_sample_max_age_ms",
+                    "recovery_stable_window_ms", "max_segments", "max_commit_slots",
+                    "max_artifacts_per_volume"})) {
+            return Status(StatusCode::InvalidArgument, "unexpected key in daq.volume");
+        }
+        if (v.contains("name")) {
+            if (!v["name"].is_string()) {
+                return Status(StatusCode::InvalidArgument, "daq.volume.name must be string");
+            }
+            opts.volume.name = v["name"].get<std::string>();
+        }
+        if (!read_opt_int(v, "max_managed_bytes", opts.volume.max_managed_bytes) ||
+            !read_opt_int(v, "max_commit_bytes", opts.volume.max_commit_bytes) ||
+            !read_opt_int(v, "stop_free_bytes", opts.volume.stop_free_bytes) ||
+            !read_opt_int(v, "low_free_bytes", opts.volume.low_free_bytes) ||
+            !read_opt_int(v, "recovery_free_bytes", opts.volume.recovery_free_bytes) ||
+            !read_opt_ns_from_ms(v, "space_sample_max_age_ms", opts.volume.space_sample_max_age) ||
+            !read_opt_ns_from_ms(
+                v, "recovery_stable_window_ms", opts.volume.recovery_stable_window) ||
+            !read_opt_int(v, "max_segments", opts.volume.max_segments) ||
+            !read_opt_int(v, "max_commit_slots", opts.volume.max_commit_slots) ||
+            !read_opt_int(v, "max_artifacts_per_volume", opts.volume.max_artifacts_per_volume)) {
+            return Status(StatusCode::InvalidArgument, "invalid daq.volume setting");
+        }
+    }
+
     if (d.contains("profiles")) {
         if (!d["profiles"].is_array() || d["profiles"].empty()) {
             return Status(StatusCode::InvalidArgument, "daq.profiles must be non-empty array");
         }
         for (const auto& p : d["profiles"]) {
             if (!check_allowed_keys(
-                    p, {"name", "max_records", "max_logical_bytes", "payload_pool_bytes",
-                        "max_payload_bytes", "payload_min_chunk_bytes", "payload_max_chunks",
-                        "queue_capacity", "callback_concurrency", "max_segment_physical_bytes",
-                        "max_segment_records", "max_segment_input_bytes", "max_batch_records",
-                        "max_batch_input_bytes", "max_streams", "max_descriptors",
-                        "max_sealed_files", "max_manifest_bytes", "max_prepared_descriptors"})) {
+                    p, {"name",
+                        "max_records",
+                        "max_logical_bytes",
+                        "payload_pool_bytes",
+                        "max_payload_bytes",
+                        "payload_min_chunk_bytes",
+                        "payload_max_chunks",
+                        "queue_capacity",
+                        "callback_concurrency",
+                        "max_segment_physical_bytes",
+                        "segment_reservation_bytes",
+                        "max_segment_records",
+                        "max_segment_input_bytes",
+                        "max_batch_records",
+                        "max_batch_input_bytes",
+                        "max_streams",
+                        "max_descriptors",
+                        "max_sealed_files",
+                        "max_manifest_bytes",
+                        "max_prepared_descriptors"})) {
                 return Status(StatusCode::InvalidArgument, "unexpected key in daq profile");
             }
             if (!p.contains("name") || !p["name"].is_string()) {
@@ -317,29 +385,33 @@ Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
             }
             DaqResourceProfile profile;
             profile.name = p["name"].get<std::string>();
-            if (!read_opt_u64_str(p, "max_records", profile.max_records) ||
-                !read_opt_u64_str(p, "max_logical_bytes", profile.max_logical_bytes) ||
-                !read_opt_u64_str(p, "payload_pool_bytes", profile.payload_pool_bytes) ||
-                !read_opt_u64_str(p, "max_payload_bytes", profile.max_payload_bytes) ||
+            const bool has_explicit_res = p.contains("segment_reservation_bytes");
+            if (!read_opt_int(p, "max_records", profile.max_records) ||
+                !read_opt_int(p, "max_logical_bytes", profile.max_logical_bytes) ||
+                !read_opt_int(p, "payload_pool_bytes", profile.payload_pool_bytes) ||
+                !read_opt_int(p, "max_payload_bytes", profile.max_payload_bytes) ||
                 !read_opt_int(p, "payload_min_chunk_bytes", profile.payload_min_chunk_bytes) ||
                 !read_opt_int(p, "payload_max_chunks", profile.payload_max_chunks) ||
                 !read_opt_int(p, "queue_capacity", profile.queue_capacity) ||
                 !read_opt_int(p, "callback_concurrency", profile.callback_concurrency) ||
-                !read_opt_u64_str(
+                !read_opt_int(
                     p, "max_segment_physical_bytes", profile.max_segment_physical_bytes) ||
-                !read_opt_u64_str(p, "max_segment_records", profile.max_segment_records) ||
-                !read_opt_u64_str(p, "max_segment_input_bytes", profile.max_segment_input_bytes) ||
+                !read_opt_int(p, "segment_reservation_bytes", profile.segment_reservation_bytes) ||
+                !read_opt_int(p, "max_segment_records", profile.max_segment_records) ||
+                !read_opt_int(p, "max_segment_input_bytes", profile.max_segment_input_bytes) ||
                 !read_opt_int(p, "max_batch_records", profile.max_batch_records) ||
-                !read_opt_u64_str(p, "max_batch_input_bytes", profile.max_batch_input_bytes) ||
+                !read_opt_int(p, "max_batch_input_bytes", profile.max_batch_input_bytes) ||
                 !read_opt_int(p, "max_streams", profile.max_streams) ||
                 !read_opt_int(p, "max_descriptors", profile.max_descriptors) ||
                 !read_opt_int(p, "max_sealed_files", profile.max_sealed_files) ||
-                !read_opt_u64_str(p, "max_manifest_bytes", profile.max_manifest_bytes) ||
+                !read_opt_int(p, "max_manifest_bytes", profile.max_manifest_bytes) ||
                 !read_opt_int(p, "max_prepared_descriptors", profile.max_prepared_descriptors)) {
                 return Status(StatusCode::InvalidArgument, "invalid daq profile setting");
             }
-            // Keep derived segment/batch/payload/manifest caps consistent when deployment overrides
-            // max_segment_physical_bytes below the default 512 MiB profile.
+            if (!has_explicit_res) {
+                profile.segment_reservation_bytes =
+                    profile.max_segment_physical_bytes + (profile.max_segment_physical_bytes / 4);
+            }
             if (profile.max_segment_input_bytes > profile.max_segment_physical_bytes) {
                 profile.max_segment_input_bytes = profile.max_segment_physical_bytes;
             }
@@ -429,8 +501,8 @@ Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
 
 std::string_view to_wire_string(ServerPhase phase) noexcept {
     switch (phase) {
-        case ServerPhase::Recovering:
-            return "recovering";
+        case ServerPhase::Starting:
+            return "starting";
         case ServerPhase::Ready:
             return "ready";
         case ServerPhase::Draining:
@@ -456,32 +528,22 @@ Result<void> validate_server_config(ServerConfig& config) {
         h.max_request_body_bytes < 65536 || h.max_request_body_bytes > 33554432 ||
         h.max_header_bytes < 4096 || h.max_header_bytes > 131072 || h.max_query_bytes < 1024 ||
         h.max_query_bytes > 65536 || h.max_json_depth < 8 || h.max_json_depth > 128 ||
-        h.max_json_string_bytes < 1024 || h.max_json_string_bytes > h.max_request_body_bytes ||
-        h.max_json_members < 16 || h.max_json_members > 65536 ||
         h.max_json_response_bytes < h.max_request_body_bytes ||
         h.max_json_response_bytes > kMaxJsonResponseHardCap || h.max_page_size == 0 ||
-        h.max_page_size > 1000 || h.recommended_polling_floor <= std::chrono::nanoseconds::zero()) {
+        h.max_page_size > 1000 || h.recommended_polling_floor <= 0ms) {
         return Status(StatusCode::InvalidArgument, "server.http value out of range");
     }
 
     const auto& e = config.execution;
-    if (e.control_workers == 0 || e.control_workers > 32 || e.control_reserve_workers == 0 ||
-        e.control_reserve_workers > 4 || e.query_workers == 0 || e.query_workers > 32 ||
-        e.query_reserve_workers == 0 || e.query_reserve_workers > 4 || e.maintenance_workers == 0 ||
-        e.maintenance_workers > 8 || e.control_queue < 4 || e.control_queue > 4096 ||
-        e.control_reserve_queue == 0 || e.control_reserve_queue > 128 || e.query_queue < 4 ||
-        e.query_queue > 8192 || e.query_reserve_queue == 0 || e.query_reserve_queue > 256 ||
-        e.maintenance_queue == 0 || e.maintenance_queue > 1024) {
+    if (e.control_workers == 0 || e.control_workers > 32 || e.control_queue < 1 ||
+        e.control_queue > 4096) {
         return Status(StatusCode::InvalidArgument, "server.execution value out of range");
     }
 
     const auto& s = config.security;
-    if (s.credential_store.empty() || !s.credential_store.is_absolute() || s.max_credentials == 0 ||
-        s.max_credentials > 1024 || s.max_sessions == 0 || s.max_sessions > 4096 ||
-        s.session_idle_timeout <= std::chrono::nanoseconds::zero() ||
-        s.session_absolute_timeout <= std::chrono::nanoseconds::zero() ||
-        s.session_idle_timeout > s.session_absolute_timeout) {
-        return Status(StatusCode::InvalidArgument, "server.security value out of range");
+    if (s.bearer_token_file.empty() || !s.bearer_token_file.is_absolute()) {
+        return Status(
+            StatusCode::InvalidArgument, "server.security.bearer_token_file must be absolute");
     }
 
     const auto& d = config.download;
@@ -492,10 +554,10 @@ Result<void> validate_server_config(ServerConfig& config) {
     }
 
     const auto& t = config.timeouts;
-    const auto max_ordinary = std::max({t.health, t.query, t.mutation_acceptance});
-    if (t.health < 100ms || t.health > 4s || t.query < 500ms || t.query > 8s ||
-        t.mutation_acceptance < 1s || t.mutation_acceptance > 12s || t.shutdown < 5s ||
-        t.shutdown > 300s || t.shutdown <= max_ordinary) {
+    const auto max_ordinary = std::max(t.query, t.mutation_acceptance);
+    if (t.query < 100ms || t.query > 8000ms || t.mutation_acceptance < 100ms ||
+        t.mutation_acceptance > 12000ms || t.shutdown < 5000ms || t.shutdown > 300000ms ||
+        t.shutdown <= max_ordinary) {
         return Status(StatusCode::InvalidArgument, "server.timeouts value out of range");
     }
 
@@ -528,7 +590,7 @@ Result<void> validate_server_config(ServerConfig& config) {
 }
 
 Result<ServerConfig> parse_server_config_json(std::string_view json_text) {
-    const auto parsed = parse_strict_json(json_text, {1048576, 32, 65536, 512, 4096});
+    const auto parsed = parse_bounded_json(json_text, {1048576, 32});
     if (!parsed.ok) {
         return Status(StatusCode::InvalidArgument, parsed.error.message);
     }
@@ -543,7 +605,7 @@ Result<DeploymentConfig> load_deployment_config(const std::filesystem::path& pat
     if (!read_bounded_file(path, 1048576, raw)) {
         return Status(StatusCode::NotFound, "deployment config file unreadable");
     }
-    const auto parsed = parse_strict_json(raw, {1048576, 32, 65536, 512, 4096});
+    const auto parsed = parse_bounded_json(raw, {1048576, 32});
     if (!parsed.ok) {
         return Status(StatusCode::InvalidArgument, parsed.error.message);
     }
@@ -588,7 +650,7 @@ Result<WebManifest> load_web_manifest(const std::filesystem::path& assets_root) 
     if (!read_bounded_file(manifest_path, 65536, raw)) {
         return Status(StatusCode::NotFound, "web_manifest.json not found");
     }
-    const auto parsed = parse_strict_json(raw, {65536, 8, 4096, 32, 128});
+    const auto parsed = parse_bounded_json(raw, {65536, 8});
     if (!parsed.ok) {
         return Status(StatusCode::InvalidArgument, parsed.error.message);
     }

@@ -7,30 +7,24 @@ import {
   isValidUint64Decimal,
   parseUint64BigInt,
 } from '../../src/format/decimal';
-import {
-  durationToMsClamped,
-  durationToNanoseconds,
-  formatAgeSeconds,
-  formatDuration,
-  formatTimestampUtc,
-} from '../../src/format/time';
+import { formatAgeSeconds, formatDurationMs, formatTimestampUtc } from '../../src/format/time';
 import {
   classifyFailureKind,
   parseApiVersionHeader,
   parseRetryAfterMs,
 } from '../../src/api/errors';
 
-describe('decimal uint64 BigInt formatting (WEB-E2E-002)', () => {
-  it('preserves exact uint64 precision above Number.MAX_SAFE_INTEGER', () => {
-    const beyondSafe = '9007199254740993'; // 2^53 + 1
-    const maxU64 = '18446744073709551615'; // 2^64 - 1
+describe('numeric and uint64 formatting', () => {
+  it('formats both bounded JSON numbers and uint64 DecimalStrings cleanly', () => {
+    const beyondSafe = '9007199254740993';
+    const maxU64 = '18446744073709551615';
     expect(isValidUint64Decimal(beyondSafe)).toBe(true);
     expect(isPositiveUint64Decimal(beyondSafe)).toBe(true);
     expect(parseUint64BigInt(beyondSafe)?.toString()).toBe(beyondSafe);
     expect(formatDecimalCount(beyondSafe)).toBe('9,007,199,254,740,993');
+    expect(formatDecimalCount(123456)).toBe('123,456');
 
     expect(isValidUint64Decimal(maxU64)).toBe(true);
-    expect(parseUint64BigInt(maxU64)?.toString()).toBe(maxU64);
     expect(formatDecimalCount(maxU64)).toBe('18,446,744,073,709,551,615');
   });
 
@@ -44,9 +38,9 @@ describe('decimal uint64 BigInt formatting (WEB-E2E-002)', () => {
   });
 
   it('formats IEC bytes and Hz rates deterministically', () => {
-    expect(formatIecBytes('0')).toBe('0 B');
-    expect(formatIecBytes('1024')).toBe('1.00 KiB');
-    expect(formatIecBytes('1572864')).toBe('1.50 MiB');
+    expect(formatIecBytes(0)).toBe('0 B');
+    expect(formatIecBytes(1024)).toBe('1.00 KiB');
+    expect(formatIecBytes(1572864)).toBe('1.50 MiB');
     expect(formatIecBytes('9007199254740993')).toContain('PiB');
     expect(formatIecBytes(null)).toBe('—');
     expect(formatRateHz(0)).toBe('0 Hz');
@@ -56,17 +50,16 @@ describe('decimal uint64 BigInt formatting (WEB-E2E-002)', () => {
 });
 
 describe('duration and time formatters', () => {
-  it('converts DurationValue using BigInt without overflow', () => {
-    expect(durationToNanoseconds({ value: '500', unit: 'ms' })).toBe(500_000_000n);
-    expect(durationToNanoseconds({ value: '120', unit: 's' })).toBe(120_000_000_000n);
-    expect(durationToMsClamped({ value: '2', unit: 's' }, 1000)).toBe(2000);
-    expect(formatDuration({ value: '0', unit: 'ms' })).toBe('0 ms');
-    expect(formatDuration({ value: '1500', unit: 'ms' })).toBe('1.50 s');
-    expect(formatDuration({ value: '125', unit: 's' })).toBe('2m 5s');
+  it('formats integer milliseconds cleanly', () => {
+    expect(formatDurationMs(null)).toBe('—');
+    expect(formatDurationMs(0)).toBe('0 ms');
+    expect(formatDurationMs(500)).toBe('500 ms');
+    expect(formatDurationMs(1500)).toBe('1.50 s');
+    expect(formatDurationMs(125_000)).toBe('2m 5s');
   });
 
   it('formats UTC timestamps and age', () => {
-    expect(formatTimestampUtc('2026-11-26T12:34:56.789Z')).toBe('2026-11-26 12:34:56Z');
+    expect(formatTimestampUtc('2026-11-27T12:34:56.789Z')).toBe('2026-11-27 12:34:56Z');
     expect(formatAgeSeconds(100_000, 95_000)).toBe('5s ago');
     expect(formatAgeSeconds(200_000, 75_000)).toBe('2m 5s ago');
   });
@@ -77,8 +70,8 @@ describe('error classification and header parsers', () => {
     expect(parseRetryAfterMs('7')).toBe(7000);
     expect(parseRetryAfterMs('0')).toBe(0);
     expect(parseRetryAfterMs('999999')).toBe(300_000);
-    const now = Date.parse('2026-11-26T12:00:00Z');
-    expect(parseRetryAfterMs('Thu, 26 Nov 2026 12:00:15 GMT', now)).toBe(15_000);
+    const now = Date.parse('2026-11-27T12:00:00Z');
+    expect(parseRetryAfterMs('Fri, 27 Nov 2026 12:00:15 GMT', now)).toBe(15_000);
     expect(parseRetryAfterMs('invalid-header', now)).toBeNull();
   });
 

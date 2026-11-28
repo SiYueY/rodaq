@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../security/auth.hpp"
+#include "../config.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -15,8 +15,6 @@
 
 namespace rodaq::server {
 
-constexpr std::uint32_t kApiMajor = 1;
-constexpr std::uint32_t kApiMinor = 0;
 constexpr std::size_t kMaxErrorDetails = 32;
 constexpr std::size_t kMaxDiagnosticBytes = 256;
 
@@ -38,17 +36,11 @@ struct ApiError {
 };
 
 std::string_view to_wire_string(Retryability value) noexcept;
-
 std::string_view to_wire_string(FailureDomain value) noexcept;
-
 std::string_view to_wire_string(DataImpact value) noexcept;
-
 std::string_view to_wire_string(DesiredState value) noexcept;
-
 std::string_view to_wire_string(ExecutionCondition value) noexcept;
-
 std::string_view to_wire_string(OperationKind value) noexcept;
-
 std::string_view to_wire_string(OperationState value) noexcept;
 
 nlohmann::json make_api_version_json(ApiVersion version = {kApiMajor, kApiMinor});

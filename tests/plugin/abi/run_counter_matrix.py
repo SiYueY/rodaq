@@ -52,9 +52,9 @@ def main(args):
                              "acquisition_provider": "com.example.acquisition.probe"}.get(kind, "com.example.counter")
                 manifest = installed / f"lib/rodaq/plugins/{plugin_id}/1.0.0/manifest.json"
                 data = json.loads(manifest.read_text())
-                artifact = manifest.parent / data["artifact"]["path"]
-                if hashlib.sha256(artifact.read_bytes()).hexdigest() != data["artifact"]["sha256"]:
-                    raise ValueError("Manifest artifact hash mismatch")
+                artifact = manifest.parent / data["library"]
+                if not artifact.is_file():
+                    raise ValueError("Manifest library file missing")
                 run(["python3", args.source / "tools/check_plugin_symbols.py", artifact], log)
                 programs[identity] = artifact
             else:

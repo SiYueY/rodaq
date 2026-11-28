@@ -9,7 +9,6 @@
 #include <rodaq/plugin/deadline.hpp>
 #include <rodaq/plugin/provider.hpp>
 #include <rodaq/storage/c/interface.h>
-#include <rodaq/storage/capacity.hpp>
 #include <rodaq/storage/validation.hpp>
 
 namespace rodaq::storage {
@@ -20,32 +19,13 @@ template <typename Implementation>
 struct Provider {
     static rodaq_status_code_t prepare(
         rodaq_interface_context_t* context, const PrepareConfig* config, rodaq_deadline_t deadline,
-        CapacityModel* model, rodaq_error_t* error) noexcept {
-        constexpr auto kPrefix =
-            offsetof(CapacityModel, seal_reserve_bytes) + sizeof(CapacityModel::seal_reserve_bytes);
-        if (!plugin::abi::readable(model, kPrefix)) {
-            plugin::abi::write_error(error, {});
-            return RODAQ_STATUS_INVALID_ARGUMENT;
-        }
-        write_value(model, CapacityModel{});
+        rodaq_error_t* error) noexcept {
         return control(
             context, deadline, error, [&](auto& implementation, auto budget) -> Result<void> {
                 if (!abi::valid_prepare(config)) {
                     return Status(StatusCode::InvalidArgument, "Invalid Storage prepare input");
                 }
-                auto result = implementation.prepare(*config, budget);
-                if (!result.ok()) {
-                    return result.status();
-                }
-                if (!abi::valid_capacity(result.value())) {
-                    return Status(StatusCode::Internal, "Invalid Storage capacity model");
-                }
-                auto maximum_record = record_bound(result.value(), config->max_record_bytes);
-                if (!maximum_record.ok()) {
-                    return maximum_record.status();
-                }
-                write_value(model, result.value());
-                return {};
+                return implementation.prepare(*config, budget);
             });
     }
 

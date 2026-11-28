@@ -33,10 +33,9 @@ struct VolumeRuntimeIdentity {
     std::string super_options;
 };
 
-// One Core owner of a real output root. Initialization is a deployment action;
-// Existing requires the previously admitted UUID and never recreates a marker.
-// Mount/marker failures latch protection until explicit deployment re-admission.
-// All filesystem methods run outside control/Admission/structure locks.
+// One Core owner of a real output root. Mount/marker failures latch protection
+// until explicit deployment re-admission. All filesystem methods run outside
+// control/Admission/structure locks.
 class ManagedVolume {
 public:
     static Result<std::shared_ptr<ManagedVolume>> open(
@@ -58,8 +57,9 @@ public:
         std::uint64_t available_bytes{0};
     };
     Result<SpaceStats> space_stats() const;
-    // Lazy Writer work only. No-replace creation; on non-OK the owner must
-    // reconcile possible directory effects, not blindly retry/adopt it.
+    // Generates a random non-zero 64-bit segment_id unused in .rodaq/artifacts/.
+    Result<std::uint64_t> allocate_segment_id() const;
+    // Lazy Writer work only. No-replace staging directory creation (<id>.tmp).
     Result<std::filesystem::path> create_staging(std::uint64_t segment_id);
 
 private:

@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { CLIENT_TIMEOUTS, createApiClient } from '../../src/api/client';
-import { CLOSED_ENUM_VALUES, type SessionData } from '../../src/api/generated';
+import { CLOSED_ENUM_VALUES, type SystemData } from '../../src/api/generated';
 import { ApiFailure } from '../../src/api/errors';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OPENAPI_PATH = path.resolve(HERE, '../../../server/api/openapi.yaml');
 
-describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)', () => {
-  it('matches server/api/openapi.yaml 3.1.0 closed enums and uses /api/* paths only', () => {
+describe('OpenAPI 3.1 contract parity & Bearer API version compatibility', () => {
+  it('matches server/api/openapi.yaml 3.1.0 closed enums, uses /api/* paths only, and has no /api/session', () => {
     const raw = fs.readFileSync(OPENAPI_PATH, 'utf8');
     const doc = parseYaml(raw) as {
       openapi: string;
@@ -21,7 +21,8 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
     expect(doc.openapi).toBe('3.1.0');
 
     const paths = Object.keys(doc.paths);
-    expect(paths.length).toBeGreaterThanOrEqual(12);
+    expect(paths.length).toBeGreaterThanOrEqual(11);
+    expect(paths).not.toContain('/api/session');
     for (const p of paths) {
       expect(p.startsWith('/api/')).toBe(true);
       expect(p.includes('/api/v1/')).toBe(false);
@@ -34,14 +35,14 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
     }
   });
 
-  it('accepts compatible minor API version with unknown optional fields and fails closed on major mismatch', async () => {
+  it('sends memory Bearer token without Cookie/CSRF, tolerates minor version, and fails closed on major mismatch', async () => {
     let incompatibleCount = 0;
     let unauthCount = 0;
 
     const mockFetch = vi.fn<typeof fetch>();
     const client = createApiClient(
       {
-        getCsrfToken: () => 'csrf-mem-token',
+        getBearerToken: () => 'test-memory-bearer-token-0123456789abcdef',
         onUnauthenticated: () => {
           unauthCount += 1;
         },
@@ -52,17 +53,21 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
       mockFetch,
     );
 
-    // 1. Minor 1.2 with unknown extra optional field succeeds cleanly.
+    // 1. Minor 1.2 with extra optional field succeeds cleanly.
     mockFetch.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           api_version: { major: 1, minor: 2 },
           request_id: 'req-1',
           data: {
-            principal: 'op1',
-            scopes: ['read', 'control'],
-            api_version: { major: 1, minor: 2 },
-            csrf_token: 'csrf-2',
+            server_phase: 'ready',
+            core_ready: true,
+            resources: { cpu_cores: 0.5, rss_bytes: 1024, threads: 4, open_fds: 20 },
+            volumes: [],
+            backlog: { commit_items: 0, commit_bytes: 0, active_downloads: 0 },
+            captured_at: '2026-11-27T08:00:00Z',
+            snapshot_sequence: '1',
+            freshness: { state: 'fresh', age_ms: 0 },
             future_optional_field: { ignored: true },
           },
         }),
@@ -76,13 +81,19 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
         },
       ),
     );
-    const session = await client.request<SessionData>({
+    const sys = await client.request<SystemData>({
       method: 'GET',
-      path: '/api/session',
+      path: '/api/system',
       timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
     });
-    expect(session.principal).toBe('op1');
+    expect(sys.server_phase).toBe('ready');
     expect(incompatibleCount).toBe(0);
+    const firstCall = mockFetch.mock.calls[0];
+    const firstHeaders = firstCall[1]?.headers as Record<string, string>;
+    expect(firstHeaders['Authorization']).toBe('Bearer test-memory-bearer-token-0123456789abcdef');
+    expect(firstHeaders['RoDAQ-API-Version']).toBe('1.0');
+    expect(firstHeaders['RoDAQ-CSRF-Token']).toBeUndefined();
+    expect(firstCall[1]?.credentials).toBe('omit');
 
     // 2. Major 2.0 triggers onApiIncompatible and fails closed.
     mockFetch.mockResolvedValueOnce(
@@ -118,7 +129,7 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
           request_id: 'req-401',
           error: {
             code: 'unauthenticated',
-            message: 'expired',
+            message: 'invalid bearer',
             retryability: 'never',
             failure_domain: 'request',
             data_impact: 'none',
@@ -143,24 +154,16 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
     ).rejects.toBeInstanceOf(ApiFailure);
     expect(unauthCount).toBe(1);
 
-    // 4. Raw UTF-8 import preserves duplicate keys verbatim on the wire with CSRF & Idempotency-Key.
-    const dupBody = '{"format_version":"1.0","format_version":"1.0"}';
+    // 4. Mutation sends Bearer + Idempotency-Key + API version and never CSRF.
     mockFetch.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           api_version: { major: 1, minor: 0 },
-          request_id: 'req-dup',
-          error: {
-            code: 'invalid_json',
-            message: 'duplicate key',
-            retryability: 'never',
-            failure_domain: 'request',
-            data_impact: 'none',
-            details: [],
-          },
+          request_id: 'req-mut',
+          data: { task_id: 't1', operation_id: 'op1', state: 'accepted' },
         }),
         {
-          status: 400,
+          status: 202,
           headers: {
             'Content-Type': 'application/json',
             'RoDAQ-API-Version': '1.0',
@@ -168,20 +171,19 @@ describe('OpenAPI 3.1 contract parity & API version compatibility (WEB-E2E-014)'
         },
       ),
     );
-    await expect(
-      client.request({
-        method: 'POST',
-        path: '/api/tasks',
-        rawJsonBody: dupBody,
-        idempotencyKey: 'idem-dup-1',
-        timeoutMs: CLIENT_TIMEOUTS.mutation,
-      }),
-    ).rejects.toMatchObject({ httpStatus: 400 });
+    await client.request({
+      method: 'POST',
+      path: '/api/tasks/t1/operations',
+      rawJsonBody: '{"kind":"start","parameters":{}}',
+      idempotencyKey: 'idem-1',
+      controlGeneration: '2',
+      timeoutMs: CLIENT_TIMEOUTS.mutation,
+    });
     const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
-    expect(lastCall[1]?.body).toBe(dupBody);
-    const headers = lastCall[1]?.headers as Record<string, string>;
-    expect(headers['RoDAQ-CSRF-Token']).toBe('csrf-mem-token');
-    expect(headers['Idempotency-Key']).toBe('idem-dup-1');
-    expect(headers['RoDAQ-API-Version']).toBe('1.0');
+    const lastHeaders = lastCall[1]?.headers as Record<string, string>;
+    expect(lastHeaders['Authorization']).toBe('Bearer test-memory-bearer-token-0123456789abcdef');
+    expect(lastHeaders['Idempotency-Key']).toBe('idem-1');
+    expect(lastHeaders['If-Control-Generation']).toBe('2');
+    expect(lastHeaders['RoDAQ-CSRF-Token']).toBeUndefined();
   });
 });

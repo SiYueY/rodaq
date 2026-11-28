@@ -3,7 +3,7 @@
 #include <memory>
 #include <string_view>
 
-#include <rodaq/acquisition/service.hpp>
+#include <rodaq/acquisition/provider.hpp>
 #include <rodaq/acquisition/types.hpp>
 
 namespace rodaq::ros2_acquisition {
@@ -17,8 +17,10 @@ public:
     Backend& operator=(const Backend&) = delete;
     ~Backend() noexcept;
 
-    Result<void> configure(std::string_view input, acquisition::ServiceReference service);
-    Result<void> prepare(const acquisition::PrepareConfig& config, plugin::Deadline deadline);
+    Result<void> configure(std::string_view input);
+    Result<void> prepare(
+        const acquisition::PrepareConfig& config, acquisition::Callbacks callbacks,
+        plugin::Deadline deadline);
     Result<void> start(plugin::Deadline deadline);
     Result<void> quiesce(plugin::Deadline deadline);
 

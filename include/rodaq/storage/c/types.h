@@ -1,14 +1,12 @@
 #ifndef RODAQ_STORAGE_C_TYPES_H
 #define RODAQ_STORAGE_C_TYPES_H
 
-#include <rodaq/canonical/c/types.h>
 #include <rodaq/canonical/c/ros2.h>
+#include <rodaq/canonical/c/types.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define RODAQ_STORAGE_TIMESTAMP_CAPACITY 6u
 
 typedef uint64_t rodaq_segment_id_t;
 
@@ -21,10 +19,9 @@ enum {
 };
 
 /**
- * EXTENSIBLE_STRUCT. Core-owned workload/time envelope, not plugin JSON. *_bytes fields count
- * bytes, *_records count records, *_file_count counts files. system_boot_id is nonzero; both
- * anchors are sampled together and frozen for the boot. playback_anchor_monotonic is
- * CLOCK_MONOTONIC nanoseconds; realtime is Unix epoch nanoseconds.
+ * EXTENSIBLE_STRUCT. Core-owned workload envelope, not plugin JSON. *_bytes fields count bytes,
+ * *_records count records, *_file_count counts files. Core owns coarse segment reservations and
+ * recording_time computation; Storage never returns a per-record CapacityModel.
  */
 typedef struct rodaq_storage_prepare_config {
     rodaq_struct_header_t header;
@@ -40,67 +37,27 @@ typedef struct rodaq_storage_prepare_config {
 
     uint32_t max_segment_file_count;
     uint32_t max_relative_path_bytes;
-
-    rodaq_system_boot_id_t system_boot_id;
-    uint64_t playback_anchor_monotonic; /* Unit: nanoseconds. */
-    int64_t playback_anchor_realtime;   /* Unit: nanoseconds since Unix epoch. */
 } rodaq_storage_prepare_config_t;
 
 /**
- * EXTENSIBLE_STRUCT caller output, SuccessOnly. Caller zeroes business fields and advertises actual
- * capacity in header. Provider writes common prefix only. Denominators are nonzero. Expansion is
- * checked ceil(bytes*numerator/denominator)+overhead; fixed overhead and seal reserve are byte
- * bounds, never averages. Frozen after successful prepare.
- */
-typedef struct rodaq_storage_capacity_model {
-    rodaq_struct_header_t header;
-
-    uint64_t payload_expansion_numerator;
-    uint64_t payload_expansion_denominator;
-    uint64_t per_record_overhead_bytes;
-
-    uint64_t descriptor_expansion_numerator;
-    uint64_t descriptor_expansion_denominator;
-    uint64_t per_descriptor_overhead_bytes;
-
-    uint64_t fixed_segment_overhead_bytes;
-    uint64_t seal_reserve_bytes;
-} rodaq_storage_capacity_model_t;
-
-/**
- * FROZEN_VALUE batch element. Header is sanity only, no tail extension. Payload/nested views live
- * until synchronous write actually returns. Nonzero stream/descriptor/sequence/boot/epoch facts.
- * timestamp_count <= 6; unused/absent/reserved fields are zero. Only RETAINED delivery bit is
- * supported. Boot must match prepared playback anchors.
+ * FROZEN_VALUE batch element. Header is sanity only, no tail extension. Payload views live until
+ * synchronous write_batch actually returns. recording_time is nanoseconds since Unix epoch computed
+ * from the Recording Instance playback anchor. publish_time is optional source publication time in
+ * nanoseconds (0 when !has_publish_time). reserved bytes are zero.
  */
 typedef struct rodaq_storage_record {
     rodaq_struct_header_t header;
 
     rodaq_stream_id_t stream_id;
     rodaq_descriptor_id_t descriptor_id;
-    uint64_t acceptance_sequence;
 
-    rodaq_system_boot_id_t system_boot_id;
-    rodaq_clock_epoch_id_t clock_epoch_id;
-    /** Core receive time in the recorded boot's CLOCK_MONOTONIC domain. Unit: nanoseconds. */
-    uint64_t receive_monotonic;
-    /** Core receive wall-clock time. Unit: nanoseconds since Unix epoch. */
-    int64_t receive_realtime;
-
-    rodaq_source_id_t source_id;
-    rodaq_source_session_id_t source_session_id;
-    uint64_t source_sequence;
+    uint64_t recording_time; /* Unit: nanoseconds since Unix epoch. */
+    uint64_t publish_time;   /* Unit: nanoseconds; 0 when !has_publish_time. */
 
     rodaq_bytes_t payload;
-    rodaq_record_timestamp_t timestamps[RODAQ_STORAGE_TIMESTAMP_CAPACITY];
 
-    uint32_t timestamp_count;
-    rodaq_sequence_scope_t sequence_scope;
-    rodaq_record_delivery_flags_t delivery_flags;
-    uint8_t has_source_id;
-    uint8_t has_source_session_id;
-    uint8_t has_source_sequence;
-    uint8_t reserved[5];
+    uint8_t has_publish_time;
+    uint8_t reserved[7];
 } rodaq_storage_record_t;
 
 /**
@@ -116,9 +73,9 @@ typedef struct rodaq_storage_batch_result {
 } rodaq_storage_batch_result_t;
 
 /**
- * EXTENSIBLE_STRUCT pointer input. Core-canonical immutable descriptor, with nonzero persistent
- * IDs. All schema/string/QoS views are borrowed until prepare_descriptor returns; no Acquisition
- * config or caller-supplied digest.
+ * EXTENSIBLE_STRUCT pointer input. Core-canonical immutable bind-once descriptor with nonzero IDs.
+ * All schema/string/QoS views are borrowed until prepare_descriptor returns; no Acquisition config
+ * or caller-supplied digest.
  */
 typedef struct rodaq_storage_descriptor {
     rodaq_struct_header_t header;
@@ -138,9 +95,8 @@ typedef struct rodaq_storage_descriptor {
 } rodaq_storage_descriptor_t;
 
 /**
- * EXTENSIBLE_STRUCT. segment_id is nonzero and never reused across the managed deployment. Borrowed
- * managed staging directory valid until open returns; copy/retain directory handle if needed.
- * Plugin never chooses the final publish path.
+ * EXTENSIBLE_STRUCT. segment_id is nonzero. Borrowed managed staging directory valid until
+ * open_segment returns; copy/retain directory handle if needed. Plugin never chooses final path.
  */
 typedef struct rodaq_segment_spec {
     rodaq_struct_header_t header;
@@ -149,16 +105,13 @@ typedef struct rodaq_segment_spec {
 } rodaq_segment_spec_t;
 
 /**
- * EXTENSIBLE_STRUCT caller output, SuccessOnly. Byte counters distinguish physical files from
- * pending conservative physical expansion. file_count counts existing managed files, reserved0
- * zero. Bounded in-memory read on Writer lane, no durable I/O.
+ * EXTENSIBLE_STRUCT caller output, SuccessOnly. Reports current observed physical bytes and managed
+ * file count of the active staging segment. Bounded in-memory read on Writer lane, no durable I/O.
  */
 typedef struct rodaq_segment_usage {
     rodaq_struct_header_t header;
 
     uint64_t physical_bytes;
-    uint64_t pending_physical_upper_bound;
-
     uint32_t file_count;
     uint32_t reserved0;
 } rodaq_segment_usage_t;
@@ -198,6 +151,7 @@ typedef struct rodaq_segment_seal_result {
     uint32_t file_count;
     uint64_t total_physical_bytes;
 } rodaq_segment_seal_result_t;
+
 #ifdef __cplusplus
 }
 #endif

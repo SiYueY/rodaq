@@ -4,9 +4,8 @@
 #include <cerrno>
 #include <dirent.h>
 #include <fcntl.h>
-#include <new>
-#include <optional>
 #include <limits>
+#include <new>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -14,10 +13,7 @@
 
 #include <rodaq/storage/validation.hpp>
 
-#include "../persistence/digest.hpp"
 #include "../persistence/file_descriptor.hpp"
-#include "manifest.hpp"
-#include "ledger_record.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -59,57 +55,6 @@ struct OpenedFile {
     : descriptor(std::move(fd)), identity(attributes) {}
 };
 
-struct RecoveredManifest {
-    SegmentManifest value;
-    std::unique_ptr<OpenedFile> file;
-    std::uint64_t bytes;
-};
-
-Result<RecoveredManifest> read_recovery_manifest(
-    int directory, const std::filesystem::path& path, const LedgerRecord& record,
-    const ManifestLimits& limits) {
-    FileDescriptor manifest_fd(
-        openat(directory, "manifest.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
-    struct stat attributes {};
-    if (manifest_fd.get() < 0 || fstat(manifest_fd.get(), &attributes) != 0) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    auto bytes = persistence::read_file(path, "manifest.json", limits.max_bytes);
-    if (!bytes.ok()) {
-        return bytes.status();
-    }
-    const auto expected_bytes =
-        persistence::byte_digest(bytes.value().data(), bytes.value().size());
-    const auto actual_bytes = persistence::file_digest(manifest_fd.get(), bytes.value().size());
-    if (!expected_bytes.ok() || !actual_bytes.ok()) {
-        return !expected_bytes.ok() ? expected_bytes.status() : actual_bytes.status();
-    }
-    if (actual_bytes.value() != expected_bytes.value()) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    auto decoded = decode_manifest(bytes.value(), limits);
-    if (!decoded.ok()) {
-        return decoded.status();
-    }
-    const auto& manifest = decoded.value();
-    auto binding = validate_manifest_ledger_binding(manifest, record, limits);
-    if (!binding.ok()) {
-        return binding.status();
-    }
-    if (std::any_of(
-            manifest.coverage.begin(), manifest.coverage.end(),
-            [](const auto& item) { return item.unknown != 0; }) ||
-        std::none_of(manifest.coverage.begin(), manifest.coverage.end(), [](const auto& item) {
-            return item.written != 0;
-        })) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    return RecoveredManifest{
-        std::move(decoded.value()),
-        std::make_unique<OpenedFile>(std::move(manifest_fd), attributes),
-        static_cast<std::uint64_t>(bytes.value().size())};
-}
-
 }  // namespace
 
 struct SealedFiles::State {
@@ -132,8 +77,6 @@ struct SealedFiles::State {
     std::uint64_t manifest_limit{0};
     bool manifest_attempted{false};
     bool synced{false};
-    bool recovered_final{false};
-    std::optional<SegmentManifest> recovered_manifest;
 
     State(
         std::shared_ptr<ManagedVolume> owner, std::filesystem::path path, FileDescriptor fd,
@@ -144,8 +87,6 @@ struct SealedFiles::State {
       parent(std::move(parent_fd)) {}
 
     Result<void> verify_entries() const {
-        // openat creates a new directory description: duplicated descriptions
-        // share their read offset, so dup+fdopendir would break later scans.
         const int scan = openat(directory.get(), ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (scan < 0) {
             return Status(StatusCode::Unavailable, {});
@@ -242,15 +183,12 @@ Result<std::unique_ptr<SealedFiles>> SealedFiles::open(
                 state->directory.get(), file.relative_path.c_str(),
                 O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
             struct stat attributes {};
-            if (fd.get() < 0 || fstat(fd.get(), &attributes) != 0) {
-                return Status(StatusCode::Unavailable, {});
+            if (fd.get() < 0 || fstat(fd.get(), &attributes) != 0 || !S_ISREG(attributes.st_mode) ||
+                attributes.st_nlink != 1 || attributes.st_size < 0 ||
+                static_cast<std::uint64_t>(attributes.st_size) != file.physical_size) {
+                return Status(StatusCode::DataLoss, {});
             }
-            auto digest = persistence::file_digest(fd.get(), file.physical_size);
-            if (!digest.ok()) {
-                return digest.status();
-            }
-            state->evidence.push_back(
-                {file.relative_path, file.physical_size, std::move(digest.value())});
+            state->evidence.push_back({file.relative_path, file.physical_size});
             state->files.emplace_back(std::move(fd), attributes);
         }
         auto result = std::unique_ptr<SealedFiles>(new SealedFiles(std::move(state)));
@@ -264,137 +202,6 @@ Result<std::unique_ptr<SealedFiles>> SealedFiles::open(
     } catch (const std::filesystem::filesystem_error&) {
         return Status(StatusCode::Unavailable, {});
     }
-}
-
-Result<std::unique_ptr<SealedFiles>> SealedFiles::recover(
-    std::shared_ptr<ManagedVolume> volume, const LedgerRecord& record, const ManifestLimits& limits,
-    persistence::FileFaultHook faults) {
-    if (!volume || record.state != LedgerState::Committing ||
-        !validate_ledger_record(record).ok() || !validate_manifest_limits(limits).ok() ||
-        !(record.volume_id == volume->identity())) {
-        return Status(StatusCode::InvalidArgument, {});
-    }
-    auto valid = volume->verify();
-    if (!valid.ok()) {
-        return valid.status();
-    }
-    try {
-        FileDescriptor parent(::open(
-            volume->artifacts_directory().c_str(),
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-        if (parent.get() < 0) {
-            return Status(StatusCode::Unavailable, {});
-        }
-        const auto final_name = std::to_string(record.segment_id);
-        const auto staging_name = final_name + ".tmp";
-        const auto exists = [&](const std::string& name) -> Result<bool> {
-            struct stat attributes {};
-            if (fstatat(parent.get(), name.c_str(), &attributes, AT_SYMLINK_NOFOLLOW) == 0) {
-                return S_ISDIR(attributes.st_mode) ? Result<bool>(true)
-                                                   : Result<bool>(Status(StatusCode::DataLoss, {}));
-            }
-            return errno == ENOENT ? Result<bool>(false)
-                                   : Result<bool>(Status(StatusCode::Unavailable, {}));
-        };
-        const auto final = exists(final_name);
-        const auto staging = exists(staging_name);
-        if (!final.ok() || !staging.ok()) {
-            return !final.ok() ? final.status() : staging.status();
-        }
-        if (final.value() == staging.value()) {
-            return Status(final.value() ? StatusCode::Conflict : StatusCode::DataLoss, {});
-        }
-        const auto path =
-            volume->artifacts_directory() / (final.value() ? final_name : staging_name);
-        FileDescriptor directory(::openat(
-            parent.get(), (final.value() ? final_name : staging_name).c_str(),
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-        if (directory.get() < 0) {
-            return Status(StatusCode::Unavailable, {});
-        }
-        auto state = std::make_unique<State>(
-            std::move(volume), path, std::move(directory), std::move(parent));
-        state->staging = state->volume->artifacts_directory() / staging_name;
-        state->current_directory = path;
-        state->final_name = final_name;
-        state->staging_name = staging_name;
-        state->segment_id = record.segment_id;
-        state->recovered_final = final.value();
-        state->faults = std::move(faults);
-        state->manifest_limit = limits.max_bytes;
-        state->manifest_attempted = true;
-        if (fstat(state->directory.get(), &state->directory_identity) != 0) {
-            return Status(StatusCode::Unavailable, {});
-        }
-        auto restored = read_recovery_manifest(state->directory.get(), path, record, limits);
-        if (!restored.ok()) {
-            return restored.status();
-        }
-        state->manifest = std::move(restored.value().file);
-        state->manifest_bytes = restored.value().bytes;
-        const auto& manifest = restored.value().value;
-
-        state->files.reserve(manifest.files.size());
-        state->evidence = manifest.files;
-        for (const auto& file : manifest.files) {
-            FileDescriptor fd(openat(
-                state->directory.get(), file.relative_path.c_str(),
-                O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
-            struct stat identity {};
-            if (fd.get() < 0 || fstat(fd.get(), &identity) != 0) {
-                return Status(StatusCode::DataLoss, {});
-            }
-            auto actual = persistence::file_digest(fd.get(), file.physical_size);
-            if (!actual.ok()) {
-                return actual.status();
-            }
-            if (actual.value() != file.digest ||
-                file.physical_size >
-                    std::numeric_limits<std::uint64_t>::max() - state->storage_bytes) {
-                return Status(StatusCode::DataLoss, {});
-            }
-            state->storage_bytes += file.physical_size;
-            state->files.emplace_back(std::move(fd), identity);
-        }
-        state->recovered_manifest.emplace(std::move(restored.value().value));
-        auto result = std::unique_ptr<SealedFiles>(new SealedFiles(std::move(state)));
-        valid = result->verify();
-        return valid.ok() ? Result<std::unique_ptr<SealedFiles>>(std::move(result))
-                          : Result<std::unique_ptr<SealedFiles>>(valid.status());
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    } catch (const std::filesystem::filesystem_error&) {
-        return Status(StatusCode::Unavailable, {});
-    }
-}
-
-const SegmentManifest& SealedFiles::recovery_manifest() const noexcept {
-    return *state_->recovered_manifest;
-}
-
-Result<void> SealedFiles::finish_recovery_publication() {
-    auto synced = sync_tree();
-    if (!synced.ok()) {
-        return synced.status();
-    }
-    synced = state_->recovered_final
-                 ? synchronize(
-                       state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults)
-                 : publish_directory();
-    if (!synced.ok()) {
-        return synced.status();
-    }
-    return verify_recovery_publication();
-}
-
-Result<void> SealedFiles::verify_recovery_publication() const {
-    struct stat staging {};
-    if (fstatat(
-            state_->parent.get(), state_->staging_name.c_str(), &staging, AT_SYMLINK_NOFOLLOW) ==
-        0) {
-        return Status(StatusCode::Conflict, {});
-    }
-    return errno == ENOENT ? verify() : Result<void>(Status(StatusCode::Unavailable, {}));
 }
 
 const std::vector<FileEvidence>& SealedFiles::evidence() const noexcept { return state_->evidence; }
@@ -513,14 +320,13 @@ std::uint64_t SealedFiles::segment_id() const noexcept { return state_->segment_
 VolumeId SealedFiles::volume_id() const noexcept { return state_->volume->identity(); }
 
 Result<void> SealedFiles::publish_directory() {
-    if (!state_->synced || state_->publication_attempted) {
+    if (!state_->manifest || state_->publication_attempted) {
         return Status(StatusCode::InvalidState, {});
     }
     state_->publication_attempted = true;
-    // Allocate the final spelling before any publication effect.
-    std::filesystem::path final;
+    std::filesystem::path final_path;
     try {
-        final = state_->volume->artifacts_directory() / state_->final_name;
+        final_path = state_->volume->artifacts_directory() / state_->final_name;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -537,21 +343,20 @@ Result<void> SealedFiles::publish_directory() {
     if (!verified.ok()) {
         return verified.status();
     }
-    struct stat pinned {
-    }, named{};
+    struct stat pinned {};
+    struct stat named {};
     if (fstat(state_->parent.get(), &pinned) != 0 ||
         lstat(state_->volume->artifacts_directory().c_str(), &named) != 0 ||
         !S_ISDIR(named.st_mode) || pinned.st_dev != named.st_dev || pinned.st_ino != named.st_ino) {
         return Status(StatusCode::DataLoss, {});
     }
-    // Never emulate NOREPLACE with an existence check followed by rename.
     const auto renamed = syscall(
         SYS_renameat2, state_->parent.get(), state_->staging_name.c_str(), state_->parent.get(),
         state_->final_name.c_str(), RENAME_NOREPLACE);
     if (renamed != 0) {
         return Status(errno == EEXIST ? StatusCode::Conflict : StatusCode::Unavailable, {});
     }
-    state_->current_directory.swap(final);
+    state_->current_directory.swap(final_path);
     auto synced =
         synchronize(state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults);
     if (!synced.ok()) {

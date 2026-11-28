@@ -1,7 +1,6 @@
 #include "startup.hpp"
 
 #include <cerrno>
-#include <algorithm>
 #include <cstdint>
 #include <fcntl.h>
 #include <filesystem>
@@ -15,10 +14,6 @@
 
 #include "../persistence/atomic_file.hpp"
 #include "../persistence/json.hpp"
-#include "../artifact/recovery_scan.hpp"
-#include "../artifact/segment_committer.hpp"
-#include "../task/retirement_store.hpp"
-#include "run_configuration.hpp"
 
 namespace rodaq::daq {
 namespace {
@@ -26,152 +21,6 @@ namespace {
 constexpr auto kLock = ".daq.lock";
 constexpr auto kMarker = "bootstrap.json";
 constexpr auto kDomain = "rodaq.deployment-bootstrap.v1";
-
-}  // namespace
-
-Result<void> recover_pending_artifacts(const CompositionOptions& options) {
-    auto records = options.ledger->recovery_snapshot();
-    if (!records.ok()) {
-        return records.status();
-    }
-    std::unique_ptr<task::TaskRetirementStore> retired_store;
-    const auto retired_dir = options.task_root / "retired";
-    if (std::filesystem::symlink_status(retired_dir).type() ==
-        std::filesystem::file_type::directory) {
-        auto opened = task::TaskRetirementStore::open(retired_dir, 65536);
-        if (!opened.ok()) {
-            return opened.status();
-        }
-        retired_store = std::move(opened.value());
-    }
-    const auto is_retired = [&](TaskId id) -> Result<bool> {
-        if (!retired_store) {
-            return false;
-        }
-        return retired_store->contains(id);
-    };
-    const auto open_task = [&](TaskId id) {
-        return task::TaskStore::open(
-            options.task_root / "tasks" / to_string(id), options.task_root / "control", id,
-            task::TaskStoreMode::Existing, options.settings.tasks);
-    };
-    // Durable DeleteIntent wins before any committing publication recovery.
-    for (const auto& record : records.value()) {
-        if (record.state != artifact::LedgerState::Deleting) {
-            continue;
-        }
-        auto retired = is_retired(record.task_id);
-        if (!retired.ok()) {
-            return retired.status();
-        }
-        if (!retired.value()) {
-            auto store = open_task(record.task_id);
-            if (!store.ok()) {
-                return store.status();
-            }
-            auto control = store.value()->load_control();
-            if (!control.ok()) {
-                return control.status();
-            }
-            if (record.control_generation > control.value().control_generation) {
-                return Status(StatusCode::Conflict, {});
-            }
-        }
-        auto deleted = artifact::recover_deleting_artifact(
-            options.volume, *options.ledger, record.segment_id,
-            catalog_manifest_limits(options.settings));
-        if (!deleted.ok()) {
-            return deleted.status();
-        }
-    }
-    const auto authorize = [&](const artifact::LedgerRecord& record,
-                               const artifact::SegmentManifest& manifest) -> Result<void> {
-        auto store = open_task(record.task_id);
-        if (!store.ok()) {
-            return store.status();
-        }
-        auto control = store.value()->load_control();
-        if (!control.ok()) {
-            return control.status();
-        }
-        if (record.control_generation > control.value().control_generation ||
-            record.reset_generation_at_commit != control.value().reset_generation ||
-            control.value().reset_intent) {
-            return Status(StatusCode::Conflict, {});
-        }
-        auto config = store.value()->load_config(manifest.identity.config_version);
-        if (!config.ok()) {
-            return config.status();
-        }
-        const auto pipeline = std::find_if(
-            config.value().config.pipelines.begin(), config.value().config.pipelines.end(),
-            [&](const auto& selected) { return selected.pipeline_id == record.pipeline_id; });
-        if (pipeline == config.value().config.pipelines.end() ||
-            pipeline->acquisition.plugin_id != manifest.identity.acquisition.plugin_id ||
-            pipeline->acquisition.plugin_version != manifest.identity.acquisition.plugin_version ||
-            pipeline->storage.plugin_id != manifest.identity.storage.plugin_id ||
-            pipeline->storage.plugin_version != manifest.identity.storage.plugin_version) {
-            return Status(StatusCode::DataLoss, {});
-        }
-        return {};
-    };
-    for (const auto& record : records.value()) {
-        if (record.state != artifact::LedgerState::Committing) {
-            continue;
-        }
-        auto retired = is_retired(record.task_id);
-        if (!retired.ok()) {
-            return retired.status();
-        }
-        if (retired.value()) {
-            // A retired Task can never promote a committing artifact to Committed.
-            auto quarantined = artifact::quarantine_failed_precommit_artifact(
-                options.volume, *options.ledger, record.segment_id);
-            if (!quarantined.ok()) {
-                return quarantined.status();
-            }
-            continue;
-        }
-        auto store = open_task(record.task_id);
-        if (!store.ok()) {
-            return store.status();
-        }
-        auto control = store.value()->load_control();
-        if (!control.ok()) {
-            return control.status();
-        }
-        if (control.value().reset_generation > record.reset_generation_at_commit) {
-            auto quarantined = artifact::quarantine_reset_invalidated_artifact(
-                options.volume, *options.ledger, record.segment_id, control.value());
-            if (!quarantined.ok()) {
-                return quarantined.status();
-            }
-            continue;
-        }
-        // The normal recovery callback acquires its own short-lived authority
-        // owner at each publication boundary.
-        store.value().reset();
-        auto recovered = artifact::SegmentCommitter::recover(
-            options.volume, *options.ledger, record.segment_id,
-            catalog_manifest_limits(options.settings), authorize);
-        if (!recovered.ok()) {
-            const auto code = recovered.status().code();
-            if (code == StatusCode::DataLoss || code == StatusCode::Conflict ||
-                code == StatusCode::NotFound) {
-                auto quarantined = artifact::quarantine_failed_precommit_artifact(
-                    options.volume, *options.ledger, record.segment_id);
-                if (!quarantined.ok()) {
-                    return quarantined.status();
-                }
-                continue;
-            }
-            return recovered.status();
-        }
-    }
-    return {};
-}
-
-namespace {
 
 struct StartupPlugins {
     std::shared_ptr<plugin::PluginManager> owner;
@@ -187,8 +36,6 @@ struct StartupPlugins {
                 (void)owner->shutdown(deadline.value());
             }
         } catch (...) {
-            // Preserve the startup error. PluginManager still owns its actual
-            // framework state and retains its abandoned-owner drain fallback.
         }
     }
 };
@@ -223,7 +70,7 @@ Result<std::shared_ptr<DeploymentLease>> acquire(
     return lease;
 }
 
-Result<void> directory(const std::filesystem::path& path, DeploymentOpenMode mode) {
+Result<void> ensure_directory(const std::filesystem::path& path, DeploymentOpenMode mode) {
     if (mode == DeploymentOpenMode::Initialize) {
         if (!std::filesystem::create_directory(path)) {
             return Status(StatusCode::Conflict, {});
@@ -246,7 +93,7 @@ Result<artifact::VolumeId> existing_volume(const std::filesystem::path& root) {
         return marker.status().code() == StatusCode::NotFound ? Status(StatusCode::DataLoss, {})
                                                               : marker.status();
     }
-    auto decoded = persistence::parse_json(marker.value(), {1024, 2, 128, 4, 0, 5});
+    auto decoded = persistence::parse_json(marker.value(), {1024, 4});
     if (!decoded.ok()) {
         return Status(StatusCode::DataLoss, {});
     }
@@ -291,7 +138,6 @@ Result<void> DeploymentLease::verify() const {
 Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
     try {
         if (!startup.state_root.is_absolute() || !startup.volume_root.is_absolute() ||
-            startup.ledger_records == 0 || startup.ledger_records > 65536 ||
             (startup.mode != DeploymentOpenMode::Initialize &&
              startup.mode != DeploymentOpenMode::Existing)) {
             return Status(StatusCode::InvalidArgument, {});
@@ -321,26 +167,17 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             }
             volume_id = recorded.value();
         }
-        for (const auto* name : {"service", "time", "segment-ids", "ledger"}) {
-            auto prepared = directory(startup.state_root / name, startup.mode);
-            if (!prepared.ok()) {
-                return prepared.status();
-            }
+        auto prepared = ensure_directory(startup.state_root / "service", startup.mode);
+        if (!prepared.ok()) {
+            return prepared.status();
         }
         if (!initialize) {
-            const auto retired = startup.state_root / "service/retired";
-            const auto retired_type = std::filesystem::symlink_status(retired).type();
-            if (retired_type != std::filesystem::file_type::not_found &&
-                retired_type != std::filesystem::file_type::directory) {
-                return Status(StatusCode::DataLoss, {});
-            }
-            for (const auto* name : {"tasks", "control", "identities", "create", "recovery"}) {
-                auto checked = directory(startup.state_root / "service" / name, startup.mode);
-                if (!checked.ok()) {
-                    return checked.status();
-                }
+            auto checked = ensure_directory(startup.state_root / "service/tasks", startup.mode);
+            if (!checked.ok()) {
+                return checked.status();
             }
         }
+
         CompositionOptions options;
         options.task_root = startup.state_root / "service";
         options.settings = std::move(startup.settings);
@@ -352,59 +189,13 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
             return volume.status();
         }
         options.volume = std::move(volume.value());
-        auto ledger = artifact::LedgerStore::open(
-            startup.state_root / "ledger",
-            initialize ? artifact::LedgerOpenMode::Initialize : artifact::LedgerOpenMode::Existing,
-            startup.ledger_records);
-        if (!ledger.ok()) {
-            return ledger.status();
-        }
-        options.ledger = std::move(ledger.value());
-        auto boot = time::read_boot_identity();
-        auto sample = time::sample_clocks();
-        if (!boot.ok() || !sample.ok()) {
-            return !boot.ok() ? boot.status() : sample.status();
-        }
-        options.boot = boot.value();
-        auto pending = recover_pending_artifacts(options);
-        if (!pending.ok()) {
-            return pending.status();
-        }
-        auto report = artifact::inspect_volume_recovery(
-            options.volume, *options.ledger, catalog_manifest_limits(options.settings),
-            options.boot);
-        if (!report.ok()) {
-            return report.status();
-        }
-        auto ids = artifact::SegmentIdStore::open(
-            startup.state_root / "segment-ids", initialize
-                                                    ? artifact::SegmentIdOpenMode::NewDeployment
-                                                    : artifact::SegmentIdOpenMode::Existing);
-        if (!ids.ok()) {
-            return ids.status();
-        }
-        options.segment_ids = std::move(ids.value());
-        auto capacity = artifact::VolumeCapacity::create(
-            startup.capacity, report.value().total_physical_bytes(), report.value().artifact_slots);
+
+        auto capacity = artifact::VolumeCapacity::create(startup.capacity, 0, 0);
         if (!capacity.ok()) {
             return capacity.status();
         }
         options.capacity = std::make_shared<artifact::VolumeCapacity>(std::move(capacity.value()));
-        if (!initialize &&
-            std::filesystem::symlink_status(startup.state_root / "time/playback-anchor.json")
-                    .type() != std::filesystem::file_type::regular) {
-            return Status(StatusCode::Unavailable, {});
-        }
-        const auto boot_evidence =
-            initialize ? time::BootArtifactEvidence{time::BootArtifactState::Absent, {}}
-                       : report.value().boot_evidence;
-        auto clock = time::ClockCorrelation::create(
-            startup.state_root / "time", options.boot, sample.value(), boot_evidence);
-        if (!clock.ok()) {
-            return clock.status();
-        }
-        options.clock = std::move(clock.value());
-        options.recovery_report = std::move(report.value());
+
         const auto plugin_timeout = startup.plugins.shutdown_timeout;
         auto plugins = plugin::PluginManager::create(std::move(startup.plugins));
         if (!plugins.ok()) {
@@ -412,6 +203,7 @@ Result<std::unique_ptr<Composition>> Composition::open(StartupOptions startup) {
         }
         options.plugins = std::make_shared<plugin::PluginManager>(std::move(plugins.value()));
         StartupPlugins pending_plugins{options.plugins, plugin_timeout};
+
         auto checked = lease.value()->verify();
         if (!checked.ok()) {
             return checked.status();

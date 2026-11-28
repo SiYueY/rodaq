@@ -7,11 +7,10 @@ namespace rodaq::acquisition {
 // Views follow the C ABI borrow duration. Owners must outlive actual calls.
 using PrepareConfig = rodaq_acquisition_prepare_config_t;
 using StreamBinding = rodaq_acquisition_stream_binding_t;
-using RecordAttempt = rodaq_record_attempt_t;
-using DescriptorProposal = rodaq_descriptor_proposal_t;
-using DescriptorToken = rodaq_descriptor_token_t;
-using SubmitResult = rodaq_submit_result_t;
-using SourceEvent = rodaq_source_event_t;
+using RecordAttempt = rodaq_acquisition_record_attempt_t;
+using RecordDisposition = rodaq_record_disposition_t;
+using Descriptor = rodaq_acquisition_descriptor_t;
 using AcquisitionEvent = rodaq_acquisition_event_t;
+using CallbacksTable = rodaq_acquisition_callbacks_t;
 
 }  // namespace rodaq::acquisition

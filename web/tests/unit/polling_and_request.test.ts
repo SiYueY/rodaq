@@ -3,8 +3,8 @@ import { ApiFailure } from '../../src/api/errors';
 import { usePolling } from '../../src/composables/usePolling';
 import { useRequest } from '../../src/composables/useRequest';
 
-describe('usePolling scheduler (WEB-E2E-013)', () => {
-  it('schedules post-completion, honors floor, hidden cadence, and Retry-After', async () => {
+describe('usePolling scheduler and generation isolation (WEB-E2E-007)', () => {
+  it('schedules post-completion, honors floor, hidden cadence, and 503 Retry-After', async () => {
     vi.useFakeTimers();
     let now = 10_000;
     let hidden = false;
@@ -18,13 +18,13 @@ describe('usePolling scheduler (WEB-E2E-013)', () => {
         calls += 1;
         if (calls === 2) {
           throw new ApiFailure({
-            message: 'Too many requests',
-            httpStatus: 429,
-            requestId: 'req-429',
+            message: 'Server busy',
+            httpStatus: 503,
+            requestId: 'req-503',
             retryAfterMs: 7_000,
             apiError: {
-              code: 'rate_limited',
-              message: 'slow down',
+              code: 'server_busy',
+              message: 'saturated',
               retryability: 'after_backoff',
               failure_domain: 'request',
               data_impact: 'none',
@@ -49,19 +49,16 @@ describe('usePolling scheduler (WEB-E2E-013)', () => {
     expect(handle.state.phase).toBe('success');
     expect(handle.state.data).toBe(1);
 
-    // Advance by 1s -> 2nd call throws 429 with Retry-After 7s.
     now += 1_000;
     await vi.advanceTimersByTimeAsync(1_000);
     expect(calls).toBe(2);
     expect(handle.state.phase).toBe('stale');
     expect(handle.state.data).toBe(1);
 
-    // Must NOT poll at +1s, +3s, or +6s during Retry-After suppression.
     now += 6_000;
     await vi.advanceTimersByTimeAsync(6_000);
     expect(calls).toBe(2);
 
-    // Switch to hidden before call 3 completes so its post-completion timer uses hiddenMs (10s).
     hidden = true;
     floorMs = 1_000;
     now += 1_000;
@@ -70,7 +67,6 @@ describe('usePolling scheduler (WEB-E2E-013)', () => {
     expect(handle.state.phase).toBe('success');
     expect(handle.state.data).toBe(3);
 
-    // Must NOT fire at +5s under hidden 10s cadence.
     now += 5_000;
     await vi.advanceTimersByTimeAsync(5_000);
     expect(calls).toBe(3);
@@ -82,7 +78,64 @@ describe('usePolling scheduler (WEB-E2E-013)', () => {
     vi.useRealTimers();
   });
 
-  it('stops polling immediately on 401 unauthenticated and discards late stop responses', async () => {
+  it('prevents an old in-flight stop() finally from stalling a newly started generation (WEB-E2E-007)', async () => {
+    vi.useFakeTimers();
+    let resolveGen1!: (v: string) => void;
+    let resolveGen2!: (v: string) => void;
+    let call = 0;
+
+    const handle = usePolling<string>({
+      resourceKey: 'race-check',
+      enabled: () => true,
+      fetcher: () => {
+        call += 1;
+        if (call === 1) {
+          return new Promise<string>((r) => {
+            resolveGen1 = r;
+          });
+        }
+        if (call === 2) {
+          return new Promise<string>((r) => {
+            resolveGen2 = r;
+          });
+        }
+        return Promise.resolve(`gen2-tick-${call}`);
+      },
+      foregroundMs: 500,
+      hiddenMs: 5_000,
+      maxBackoffMs: 10_000,
+    });
+
+    // Start gen 1 -> request 1 is in-flight.
+    handle.start();
+    expect(call).toBe(1);
+
+    // Stop gen 1 and immediately start gen 2 while request 1 is still unresolved!
+    handle.stop();
+    handle.start();
+    expect(call).toBe(2);
+
+    // Old gen 1 finally settles late: must NOT overwrite data or break gen 2!
+    resolveGen1('stale-gen1');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(handle.state.data).toBeNull();
+
+    // Gen 2 first response arrives and schedules next tick cleanly.
+    resolveGen2('fresh-gen2');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(handle.state.data).toBe('fresh-gen2');
+
+    // Gen 2 continues polling normally on timer.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(call).toBe(3);
+    expect(handle.state.data).toBe('gen2-tick-3');
+
+    handle.stop();
+    vi.useRealTimers();
+  });
+
+  it('stops polling immediately on 401 unauthenticated', async () => {
     vi.useFakeTimers();
     let calls = 0;
     const handle = usePolling<string>({

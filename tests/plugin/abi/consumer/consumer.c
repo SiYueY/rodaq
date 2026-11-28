@@ -10,18 +10,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static rodaq_status_code_t no_service(
-    rodaq_service_registry_context_t* context, const rodaq_interface_query_t* query,
-    rodaq_interface_reference_t* reference, rodaq_error_t* error) {
-    (void)context;
-    (void)query;
-    if (error != NULL) {
-        error->message.size = 0;
-    }
-    memset(reference, 0, sizeof(*reference));
-    return RODAQ_STATUS_NOT_FOUND;
-}
-
 int main(int argc, char** argv) {
     assert(argc == 2);
     void* library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -53,17 +41,11 @@ int main(int argc, char** argv) {
     assert(
         instance.vtable->header.struct_size >=
         offsetof(rodaq_plugin_instance_vtable_t, destroy) + sizeof(instance.vtable->destroy));
-    const rodaq_service_registry_vtable_t registry = {
-        {offsetof(rodaq_service_registry_vtable_t, query) + sizeof(registry.query)},
-        no_service,
-        NULL,
-        NULL};
-    int registry_context = 0;
-    const rodaq_service_registry_reference_t services = {
-        (rodaq_service_registry_context_t*)&registry_context, &registry};
+    const rodaq_application_callbacks_t application = {{sizeof(application)}, NULL, NULL};
     const rodaq_config_t config = {{sizeof(rodaq_config_t)}, {NULL, 0}};
     assert(
-        instance.vtable->configure(instance.context, &services, &config, NULL) == RODAQ_STATUS_OK);
+        instance.vtable->configure(instance.context, &application, &config, NULL) ==
+        RODAQ_STATUS_OK);
 
     rodaq_interface_query_t request = {
         {RODAQ_COUNTER_INTERFACE_ID, sizeof(RODAQ_COUNTER_INTERFACE_ID) - 1}, 1, 0, FIXTURE_MINOR};

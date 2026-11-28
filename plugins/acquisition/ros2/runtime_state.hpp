@@ -23,29 +23,26 @@ struct Backend::State {
     struct Facts {
         std::string type;
         std::vector<rodaq_ros2_qos_profile_t> offers;
-        std::vector<rodaq_source_id_t> sources;
+        std::size_t compatible_publishers{0};
     };
 
+    // Immutable bind-once Descriptor & subscription snapshot created during prepare().
     struct Snapshot {
         ros2::Schema schema;
         Facts facts;
         ros2::RequestedQos installed;
         rodaq_ros2_qos_profile_t actual_request{};
-        acquisition::DescriptorToken token{};
-        std::uint64_t generation{0};
+        rodaq_descriptor_id_t descriptor_id{0};
     };
 
     struct Stream {
         StreamConfig config;
         rodaq_stream_id_t id{0};
-        // Native objects have a single control owner. Callback views contain no
-        // native objects and are copied once under mutex with their generation.
         rclcpp::CallbackGroup::SharedPtr group;
         rclcpp::GenericSubscription::SharedPtr subscription;
         std::shared_ptr<const Snapshot> snapshot;
-        std::optional<Facts> candidate;
-        std::chrono::steady_clock::time_point candidate_since;
         bool gate{false};
+        bool ready_reported{false};
         std::uint32_t active{0};
         std::uint64_t overflow{0};
         std::uint64_t lost{0};
@@ -73,19 +70,16 @@ struct Backend::State {
 
     Result<void> enter_control(Phase expected, Phase next);
     Permit control_permit(plugin::Deadline deadline);
-    Permit data_permit(Stream& stream, std::uint64_t generation);
-    Result<void> event(
+    Permit data_permit(Stream& stream);
+    void report_event(
         rodaq_acquisition_event_kind_t kind, rodaq_stream_id_t stream,
-        StatusCode status = StatusCode::Ok, std::uint64_t count = 0);
-    Result<void> sources(Stream& stream, const Facts* previous, const Facts& current);
-    Result<void> flush_events(Stream& stream);
+        StatusCode status = StatusCode::Ok, std::uint64_t count = 0) noexcept;
+    void flush_events(Stream& stream) noexcept;
     Result<Facts> inspect(const Stream& stream);
-    static bool same_facts(const Facts& left, const Facts& right);
-    Result<void> install(Stream& stream, Facts facts, plugin::Deadline deadline);
+    Result<void> bind_stream(Stream& stream, Facts facts, plugin::Deadline deadline);
     rclcpp::GenericSubscription::SharedPtr subscribe(Stream& stream, const Snapshot& snapshot);
     void dispatch(
-        Stream& stream, std::uint64_t generation,
-        const std::shared_ptr<rclcpp::SerializedMessage>& message,
+        Stream& stream, const std::shared_ptr<rclcpp::SerializedMessage>& message,
         const rmw_message_info_t* metadata) noexcept;
     void spin() noexcept;
     void observe() noexcept;
@@ -93,7 +87,7 @@ struct Backend::State {
     void cancel() noexcept;
 
     std::optional<Config> config;
-    std::optional<acquisition::ServiceReference> service;
+    acquisition::Callbacks callbacks;
     std::vector<std::unique_ptr<Stream>> streams;
     std::shared_ptr<Context> context;
     rclcpp::Node::SharedPtr node;

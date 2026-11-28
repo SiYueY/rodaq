@@ -4,8 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <exception>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -17,42 +17,44 @@
 #include <vector>
 
 #include <rodaq/acquisition/interface.hpp>
-#include <rodaq/acquisition/service.hpp>
-#include <rodaq/plugin/registry.hpp>
 
-#include "pipeline_controller_state.hpp"
 #include "../work_id.hpp"
+#include "pipeline_controller_state.hpp"
 
 namespace rodaq::pipeline {
+
+std::uint64_t effective_segment_reservation(const PipelineOptions& options) noexcept {
+    constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+    const auto envelope_sum =
+        options.manifest_limits.max_bytes > kMax - options.envelope.max_segment_physical_bytes
+            ? kMax
+            : options.envelope.max_segment_physical_bytes + options.manifest_limits.max_bytes;
+    return std::min(options.segment_reservation_bytes, envelope_sum);
+}
+
 PipelineController::PipelineController(std::shared_ptr<State> state) noexcept
 : state_(std::move(state)) {}
 
-bool PipelineController::matches_configuration(
-    std::string_view config_version, std::string_view effective_config_id) const noexcept {
+bool PipelineController::matches_configuration(std::string_view config_version) const noexcept {
     std::lock_guard<std::mutex> lock(state_->open_mutex);
-    return state_->options.manifest.config_version == config_version &&
-           state_->options.manifest.effective_config_id == effective_config_id;
+    return state_->options.manifest.config_version == config_version;
 }
 
 PipelineController::~PipelineController() noexcept {
-    // No destructor performs business quiesce or waits on unknown Native work.
-    // Composition must retain failed/timed-out owners until actual settlement.
     std::lock_guard<std::mutex> slots(state_->segments);
     if (state_->successor || state_->retained || state_->control.load() != 0 ||
         !state_->source_closed.load() || !state_->storage_closed.load() ||
-        state_->artifact_work.load() != 0 ||
-        (state_->creation_unresolved &&
-         state_->options.plugins->phase() != plugin::PluginManagerPhase::Stopped)) {
+        state_->artifact_work.load() != 0) {
         std::terminate();
     }
 }
 
 Result<std::shared_ptr<PipelineController>> PipelineController::create(PipelineOptions options) {
-    if (!options.plugins || !options.writer_lane || !options.clock || !options.volume ||
-        !options.capacity || !options.ledger || !options.receive_clock ||
-        options.identity.pipeline_id != options.definition.pipeline_id ||
+    if (!options.plugins || !options.writer_lane || !options.volume || !options.capacity ||
+        !options.receive_clock || options.identity.pipeline_id != options.definition.pipeline_id ||
         options.definition.streams.size() != options.streams.size() ||
-        options.max_prepared_descriptors == 0 || options.max_prepared_descriptors > 65536 ||
+        options.segment_reservation_bytes == 0 || options.max_prepared_descriptors == 0 ||
+        options.max_prepared_descriptors > 65536 ||
         options.native_timeout <= std::chrono::nanoseconds::zero() ||
         options.native_timeout > std::chrono::hours{1}) {
         return Status(StatusCode::InvalidArgument, {});
@@ -63,10 +65,6 @@ Result<std::shared_ptr<PipelineController>> PipelineController::create(PipelineO
         return Status(StatusCode::InvalidArgument, {});
     }
     try {
-        const auto anchor = options.clock->anchor();
-        options.envelope.system_boot_id = anchor.boot_id;
-        options.envelope.playback_anchor_monotonic = anchor.monotonic_ns;
-        options.envelope.playback_anchor_realtime = anchor.realtime_ns;
         auto state = std::make_shared<State>(std::move(options));
         state->output = std::make_shared<WriterDomain>();
         auto output = state->output;
@@ -79,20 +77,18 @@ Result<std::shared_ptr<PipelineController>> PipelineController::create(PipelineO
         std::weak_ptr<WriterDomain> weak = output;
         auto instance = RecordingInstance::create(
             state->options.identity, std::move(state->options.streams), state->options.limits,
-            state->options.clock,
-            [weak](auto segment, auto descriptor, auto now, auto deadline) -> Result<void> {
+            [weak](auto segment, auto descriptor, auto deadline) -> Result<void> {
                 auto owner = weak.lock();
                 if (!owner) {
                     return Status(StatusCode::InvalidState, {});
                 }
                 return owner->execute(
                     owner, [owner, segment = std::move(segment), descriptor = std::move(descriptor),
-                            now, deadline] {
+                            deadline] {
                         if (!owner->writer) {
                             return Result<void>(Status(StatusCode::InvalidState, {}));
                         }
-                        return owner->writer->prepare_descriptor(
-                            segment, descriptor, now, deadline);
+                        return owner->writer->prepare_descriptor(segment, descriptor, deadline);
                     });
             },
             state->options.receive_clock,
@@ -149,17 +145,11 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
             return storage.status();
         }
         state_->storage_library.emplace(std::move(storage.value()));
-        plugin::ServiceRegistry empty;
-        auto frozen = empty.freeze();
-        if (!frozen.ok()) {
-            return frozen.status();
-        }
         auto created_storage =
-            state_->storage_library->create_instance(empty, options.definition.storage.json);
+            state_->storage_library->create_instance(options.definition.storage.json);
         if (!created_storage.ok()) {
             state_->configuration_rejected =
                 created_storage.status().code() == StatusCode::InvalidArgument;
-            state_->creation_unresolved = true;
             return created_storage.status();
         }
         state_->storage_instance.emplace(std::move(created_storage.value()));
@@ -193,19 +183,15 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         }
         state_->acquisition_library.emplace(std::move(acquisition.value()));
         auto identity = options.manifest;
-        identity.acquisition = state_->acquisition_library->binary();
-        identity.storage = state_->storage_library->binary();
-        identity.playback_anchor = options.clock->anchor();
+        identity.acquisition = state_->acquisition_library->info();
+        identity.storage = state_->storage_library->info();
+        identity.playback_anchor = output->instance->playback_anchor();
         identity.volume_id = options.volume->identity();
         if (!(identity.task_id == options.identity.task_id) ||
             identity.pipeline_id != options.identity.pipeline_id ||
             identity.instance_id != to_string(options.identity.instance_id) ||
             identity.control_generation != options.identity.control_generation) {
             return Status(StatusCode::InvalidArgument, {});
-        }
-        auto registration = options.ledger->reserve_registration(identity.segment_id);
-        if (!registration.ok()) {
-            return registration.status();
         }
         std::vector<StreamId> streams;
         for (const auto& binding : output->instance->streams.bindings()) {
@@ -216,9 +202,8 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
             return sample.status();
         }
         auto segment = RecordingSegment::prepare(
-            std::move(identity), std::move(streams), options.envelope,
-            output->writer->capacity_model(), options.manifest_limits, *options.capacity,
-            std::move(registration.value()), sample.value().monotonic_ns);
+            std::move(identity), std::move(streams), options.envelope, options.manifest_limits,
+            *options.capacity, effective_segment_reservation(options), sample.value().monotonic_ns);
         if (!segment.ok()) {
             return segment.status();
         }
@@ -232,21 +217,11 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
             segment.value()->close_admission();
             return Status(StatusCode::Conflict, {});
         }
-        plugin::ServiceRegistry services;
-        auto provided = services.add_shared<acquisition::Service>(output->instance);
-        if (!provided.ok()) {
-            return provided.status();
-        }
-        frozen = services.freeze();
-        if (!frozen.ok()) {
-            return frozen.status();
-        }
-        auto created_source = state_->acquisition_library->create_instance(
-            services, options.definition.acquisition.json);
+        auto created_source =
+            state_->acquisition_library->create_instance(options.definition.acquisition.json);
         if (!created_source.ok()) {
             state_->configuration_rejected =
                 created_source.status().code() == StatusCode::InvalidArgument;
-            state_->creation_unresolved = true;
             return created_source.status();
         }
         state_->acquisition_instance.emplace(std::move(created_source.value()));
@@ -263,7 +238,8 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
             bindings.data(),
             static_cast<std::uint32_t>(bindings.size()),
             options.limits.callback_concurrency};
-        auto result = state_->acquisition->prepare(config, deadline);
+        const auto callbacks = output->instance->callbacks_table(deadline);
+        auto result = state_->acquisition->prepare(config, callbacks, deadline);
         if (!result.ok()) {
             return result.status();
         }
@@ -275,25 +251,15 @@ Result<PreparedPipeline> PipelineController::prepare(plugin::Deadline deadline) 
         if (!result.ok()) {
             return result.status();
         }
-        auto effective = state_->freeze_effective_configuration();
-        if (!effective.ok()) {
-            return effective.status();
-        }
-        // Prepared includes the frozen effective contract and its budget, not
-        // entry into Native preparation. Persist this actual boundary before Open.
         sample = options.receive_clock();
         if (!sample.ok()) {
             return sample.status();
         }
-        if (!options.clock->snapshot().ok()) {
-            return Status(StatusCode::InvalidState, {});
-        }
         state_->prepared_at = sample.value().monotonic_ns;
         state_->prepared = true;
         return PreparedPipeline{
-            options.identity.pipeline_id,        options.identity.instance_id,
-            options.identity.control_generation, sample.value().monotonic_ns,
-            options.clock->anchor().boot_id,     options.manifest.effective_config_id};
+            options.identity.pipeline_id, options.identity.instance_id,
+            options.identity.control_generation, sample.value().monotonic_ns};
     } catch (const std::bad_alloc&) {
         (void)state_->output->instance->establish_control_fence();
         return Status(StatusCode::ResourceExhausted, {});
@@ -307,13 +273,8 @@ GateOpenResult PipelineController::open_admission(const OpenAuthorization& autho
         authorization.pipeline_id != identity.pipeline_id ||
         !(authorization.instance_id == identity.instance_id) ||
         authorization.control_generation != identity.control_generation ||
-        authorization.effective_config_id != state_->options.manifest.effective_config_id ||
         authorization.prepared_monotonic != state_->prepared_at.load() ||
-        authorization.boot_id != state_->options.clock->anchor().boot_id ||
         authorization.opened_monotonic < authorization.prepared_monotonic) {
-        return GateOpenResult::Obsolete;
-    }
-    if (!state_->options.clock->snapshot().ok()) {
         return GateOpenResult::Obsolete;
     }
     if (state_->opened) {
@@ -407,8 +368,6 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     {
         std::lock_guard<std::mutex> slots(state_->segments);
         if (state_->retained) {
-            // Native source quiescence precedes waiting for old Artifact I/O.
-            // The same stable handoff may be replayed to its actual owner.
             return state_->retained->handoff;
         }
     }
@@ -430,8 +389,6 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     if (state_->artifact_handed_off) {
         return Status(StatusCode::Conflict, {});
     }
-    // A failed wake is still an owned accepted set. A final explicit Writer
-    // job drains it; an observer timeout never discards or classifies it.
     auto drained = output->execute(output, [output, segment, deadline] {
         while (output->instance->queue.snapshot().queued_records != 0) {
             auto step = output->writer->write_available(output->instance->queue, segment, deadline);
@@ -490,7 +447,7 @@ Result<void> PipelineController::acknowledge_artifact(
     if (state_->retained && state_->retained->work_id == work_id && work_id != 0 &&
         state_->retained->segment->metadata.segment_id() == segment_id) {
         auto& old = *state_->retained;
-        if (!old.handoff || !old.segment->capacity.snapshot().sealed) {
+        if (!old.handoff || !old.segment->capacity_snapshot().sealed) {
             return Status(StatusCode::InvalidState, {});
         }
         auto added = add_segment_records(state_->completed, old.segment->metadata.snapshot(), true);
@@ -508,7 +465,7 @@ Result<void> PipelineController::acknowledge_artifact(
         !state_->artifact_handed_off) {
         return Status(StatusCode::Conflict, {});
     }
-    if (!segment->capacity.snapshot().sealed) {
+    if (!segment->capacity_snapshot().sealed) {
         return Status(StatusCode::InvalidState, {});
     }
     auto expected = work_id;
@@ -575,14 +532,6 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
         }
         state_->source_closed = true;
     }
-    if (state_->creation_unresolved) {
-        if (!state_->options.plugins->initialization_cleanup_settled()) {
-            return Status(StatusCode::InvalidState, {});
-        }
-        // Latch the actual proof for this returned failed create. An unrelated
-        // future failed initialization must never resurrect this obligation.
-        state_->creation_unresolved = false;
-    }
     auto segment = std::atomic_load(&output->segment);
     if (segment && segment->metadata.snapshot().accepted == 0 && !state_->empty_settled) {
         auto verified = state_->options.volume->verify();
@@ -598,7 +547,7 @@ Result<void> PipelineController::cleanup(plugin::Deadline deadline) {
             return Status(StatusCode::DataLoss, {});
         }
         segment->close_admission();
-        auto settled = segment->capacity.settle_aborted_after_cleanup();
+        auto settled = segment->settle_aborted_after_cleanup();
         if (!settled.ok()) {
             return settled.status();
         }
@@ -628,7 +577,7 @@ Result<void> PipelineController::acknowledge_deleted(
         facts.unresolved_owners || state_->output->instance->queue.snapshot().queued_records != 0) {
         return Status(StatusCode::InvalidState, {});
     }
-    auto settled = segment->capacity.settle_aborted_after_cleanup();
+    auto settled = segment->settle_aborted_after_cleanup();
     if (!settled.ok()) {
         return settled.status();
     }
@@ -668,11 +617,11 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
         if (!added.ok()) {
             return added.status();
         }
-        result.quiescence.admission_candidates += segment->capacity.snapshot().candidates;
+        result.quiescence.admission_candidates += segment->capacity_snapshot().candidates;
     }
     if (current) {
         result.segment_id = current->metadata.segment_id();
-        result.capacity = current->capacity.snapshot();
+        result.capacity = current->capacity_snapshot();
     }
     result.segment_started_monotonic = state_->segment_started_at.load();
     auto callbacks = state_->output->instance->callback_facts();
@@ -692,8 +641,6 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     }
     quiet.source_quiesced = state_->source_quiesced.load() && state_->source_closed.load();
     quiet.storage_closed = state_->storage_closed.load();
-    // Segment/Ledger capacity remains owned until Artifact acknowledgement or
-    // verified empty abort, including after failed Native initialization ends.
     quiet.segment_resources_settled =
         !current || state_->artifact_settled.load() || state_->empty_settled.load();
     quiet.callbacks = callbacks.value().callbacks;
@@ -705,20 +652,16 @@ Result<PipelineSnapshot> PipelineController::snapshot() const {
     quiet.unsettled_records = outstanding.value();
     quiet.buffered_records = state_->output->instance->records.snapshot().records;
     quiet.unsettled_descriptors = result.records.pending_descriptors;
-    // A concurrent Segment cut invalidates this quiescence observation.
-    quiet.settled = quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
-                    quiet.control_inflight == 0 && quiet.writer_inflight == 0 &&
-                    quiet.source_quiesced && quiet.storage_closed &&
-                    quiet.segment_resources_settled && quiet.callbacks == 0 &&
-                    quiet.queued_records == 0 && result.queue.reserved_slots == 0 &&
-                    quiet.unsettled_records == 0 && result.records.pending_admissions == 0 &&
-                    result.records.unresolved_owners == 0 && result.records.native_inflight == 0 &&
-                    quiet.unsettled_descriptors == 0 && quiet.admission_candidates == 0 &&
-                    quiet.buffered_records == 0 && quiet.commit_inflight == 0 &&
-                    result.successor_segment_id == 0 &&
-                    (!state_->creation_unresolved ||
-                     state_->options.plugins->initialization_cleanup_settled()) &&
-                    std::atomic_load(&state_->output->segment) == current;
+    quiet.settled =
+        quiet.gate_closed && quiet.control_fenced && result.gate.commit_inflight == 0 &&
+        quiet.control_inflight == 0 && quiet.writer_inflight == 0 && quiet.source_quiesced &&
+        quiet.storage_closed && quiet.segment_resources_settled && quiet.callbacks == 0 &&
+        quiet.queued_records == 0 && result.queue.reserved_slots == 0 &&
+        quiet.unsettled_records == 0 && result.records.pending_admissions == 0 &&
+        result.records.unresolved_owners == 0 && result.records.native_inflight == 0 &&
+        quiet.unsettled_descriptors == 0 && quiet.admission_candidates == 0 &&
+        quiet.buffered_records == 0 && quiet.commit_inflight == 0 &&
+        result.successor_segment_id == 0 && std::atomic_load(&state_->output->segment) == current;
     return result;
 }
 

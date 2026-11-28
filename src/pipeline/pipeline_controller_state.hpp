@@ -114,8 +114,6 @@ struct PipelineController::WriterDomain {
                 return queued.status();
             }
             std::unique_lock<std::mutex> lock(job->mutex);
-            // Actual wait, not the Task caller's observation deadline. The
-            // bounded frame retains all Native inputs until the actual return.
             job->returned.wait(lock, [&] { return job->result.has_value(); });
             return std::move(*job->result);
         } catch (const std::bad_alloc&) {
@@ -172,8 +170,6 @@ struct PipelineController::WriterDomain {
             bool more = false;
             {
                 std::lock_guard<std::mutex> lock(owner->mutex);
-                // Publish happens before wake. The same lock serializes the
-                // empty->idle cut with a concurrent producer's next wake.
                 more = continue_draining && !owner->rotating &&
                        owner->instance->queue.snapshot().queued_records != 0;
                 if (!more) {
@@ -223,9 +219,10 @@ Result<void> add_segment_records(
     SegmentMetadataSnapshot& aggregate, const SegmentMetadataSnapshot& segment,
     bool completed_only = false);
 
+std::uint64_t effective_segment_reservation(const PipelineOptions& options) noexcept;
+
 struct PipelineController::State {
     explicit State(PipelineOptions value) : options(std::move(value)) {}
-    Result<void> freeze_effective_configuration();
 
     PipelineOptions options;
     std::shared_ptr<WriterDomain> output;
@@ -243,7 +240,6 @@ struct PipelineController::State {
     std::atomic<bool> storage_closed{true};
     std::atomic<bool> source_closed{true};
     std::atomic<bool> artifact_settled{false};
-    std::atomic<bool> creation_unresolved{false};
     std::atomic<std::uint64_t> artifact_work{0};
     std::atomic<std::uint64_t> prepared_at{0};
     std::mutex open_mutex;
@@ -253,14 +249,9 @@ struct PipelineController::State {
     bool prepare_attempted{false};
     std::atomic<bool> artifact_handed_off{false};
     std::atomic<bool> empty_settled{false};
-    // Fixed two-Segment envelope: current Native drain plus successor, or
-    // current writable Segment plus one retained Artifact handoff. No new
-    // rotation is admitted until that retained handoff actually settles.
     mutable std::mutex segments;
     std::shared_ptr<RecordingSegment> successor;
     std::shared_ptr<RotatedSegment> retained;
-    // Lifetime record counters only. Resource/Descriptor/Epoch gauges belong
-    // exclusively to the at-most-two currently retained Segment owners.
     SegmentMetadataSnapshot completed;
     std::atomic<std::uint64_t> segment_started_at{0};
     std::uint64_t successor_started_at{0};

@@ -10,18 +10,8 @@
 namespace storage = rodaq::storage;
 using rodaq::plugin::Deadline;
 
-// ABI qualification only. These file facts exercise caller buffers; no actual
-// format bytes are written and this DSO is never a recording backend.
 struct StorageProbe {
-    rodaq::Result<storage::CapacityModel> prepare(const storage::PrepareConfig&, Deadline) {
-        storage::CapacityModel model{};
-        model.header.struct_size = sizeof(model);
-        model.payload_expansion_numerator = 1;
-        model.payload_expansion_denominator = 1;
-        model.descriptor_expansion_numerator = 1;
-        model.descriptor_expansion_denominator = 1;
-        return model;
-    }
+    rodaq::Result<void> prepare(const storage::PrepareConfig&, Deadline) { return {}; }
 
     rodaq::Result<void> prepare_descriptor(const storage::StreamDescriptor&, Deadline) {
         return {};
@@ -49,7 +39,7 @@ struct StorageProbe {
     }
 
     rodaq::Result<storage::SegmentUsage> segment_usage() const {
-        return storage::SegmentUsage{{sizeof(storage::SegmentUsage)}, 1, 0, 1, 0};
+        return storage::SegmentUsage{{sizeof(storage::SegmentUsage)}, 1, 1, 0};
     }
 
     rodaq::Result<storage::SegmentSealResult> seal_segment(Deadline) {

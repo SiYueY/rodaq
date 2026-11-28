@@ -70,8 +70,6 @@ function(rodaq_register_plugin target)
             --output "${package}/manifest.json" VERBATIM)
     set(destination "lib/rodaq/plugins/${package_id}/${plugin_PLUGIN_VERSION}")
     install(TARGETS ${target} LIBRARY DESTINATION "${destination}/lib")
-    # install may edit RPATH or strip the ELF. Hash the final installed bytes,
-    # never copy a build-tree digest over a different installed artifact.
     install(CODE "
         execute_process(COMMAND \"${Python3_EXECUTABLE}\" \"${tool}\" manifest
             --metadata \"${generated}/metadata.json\"

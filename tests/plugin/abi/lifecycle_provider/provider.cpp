@@ -1,5 +1,4 @@
 #include "counter.hpp"
-#include "probe.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -8,9 +7,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <mutex>
-#include <optional>
 #include <string>
-#include <thread>
 #include <unistd.h>
 
 #include <nlohmann/json.hpp>
@@ -36,11 +33,8 @@ static void wait_at_gate(const char* gate, const char* entered) noexcept {
 class Counter {
 public:
     rodaq::Result<std::int64_t> increment(std::int64_t delta) {
-        if (probe) {
-            auto called = probe->invoke(delta);
-            if (!called.ok()) {
-                return called.status();
-            }
+        if (wait_on_increment && gate != nullptr) {
+            wait_at_gate(gate, entered);
         }
         std::lock_guard<std::mutex> lock(mutex_);
         if ((delta > 0 && value_ > std::numeric_limits<std::int64_t>::max() - delta) ||
@@ -56,7 +50,9 @@ public:
         return value_;
     }
 
-    std::optional<LifecycleProbeReference> probe;
+    bool wait_on_increment{false};
+    const char* gate{nullptr};
+    const char* entered{nullptr};
 
 private:
     mutable std::mutex mutex_;
@@ -87,37 +83,18 @@ public:
             return rodaq::Status(rodaq::StatusCode::InvalidArgument, "Invalid fixture JSON");
         }
         record("configure\n");
-        auto probe = setup.service<LifecycleProbeService>();
-        if (probe.ok()) {
-            probe_ = std::move(probe).value();
-        } else if (probe.status().code() != rodaq::StatusCode::NotFound) {
-            return probe.status();
-        }
         if (mode_ == "configure_wait") {
             wait_gate();
         }
         if (mode_ == "configure_fail" || mode_ == "configure_fail_wait") {
             return rodaq::Status(rodaq::StatusCode::Unavailable, "Primary configure failure");
         }
-        if (mode_ == "callback" || mode_ == "background_callback") {
-            if (!probe_) {
-                return rodaq::Status(rodaq::StatusCode::NotFound, "Probe Service required");
-            }
-            if (mode_ == "callback") {
-                counter_.probe = probe_;
-            }
+        if (mode_ == "operation_wait") {
+            counter_.wait_on_increment = true;
+            counter_.gate = gate_.c_str();
+            counter_.entered = entered_.c_str();
         }
-        auto provided = setup.provide<CounterInterface>(counter_);
-        if (!provided.ok()) {
-            return provided;
-        }
-        if (mode_ == "background_callback") {
-            worker_ = std::thread([this] {
-                const auto result = probe_->invoke(2);
-                (void)result;
-            });
-        }
-        return {};
+        return setup.provide<CounterInterface>(counter_);
     }
 
     rodaq::Result<void> shutdown(rodaq::plugin::Deadline) override {
@@ -127,9 +104,6 @@ public:
         }
         if (mode_ == "shutdown_fail") {
             return rodaq::Status(rodaq::StatusCode::DeadlineExceeded, "Native terminal failure");
-        }
-        if (worker_.joinable()) {
-            worker_.join();
         }
         return {};
     }
@@ -161,8 +135,6 @@ private:
 
     Counter counter_;
     const rodaq_counter_vtable_t counter_table_{*CounterProvider<Counter>::vtable()};
-    std::optional<LifecycleProbeReference> probe_;
-    std::thread worker_;
     std::string mode_;
     std::string gate_;
     std::string entered_;
@@ -192,9 +164,9 @@ static rodaq_status_code_t fixture_query(
 }
 
 static rodaq_status_code_t fixture_configure(
-    rodaq_plugin_context_t* context, const rodaq_service_registry_reference_t* services,
+    rodaq_plugin_context_t* context, const rodaq_application_callbacks_t* application,
     const rodaq_config_t* config, rodaq_error_t* error) noexcept {
-    const auto code = NativeInstance::configure(context, services, config, error);
+    const auto code = NativeInstance::configure(context, application, config, error);
     if (context == nullptr) {
         return code;
     }
@@ -214,7 +186,7 @@ static rodaq_status_code_t fixture_shutdown(
 
 static rodaq_status_code_t poisoned_shutdown(
     rodaq_plugin_context_t*, rodaq_deadline_t, rodaq_error_t*) {
-    std::_Exit(51);  // Any attempted cleanup through unvalidated output fails qualification.
+    std::_Exit(51);
 }
 
 static void poisoned_destroy(rodaq_plugin_context_t*) { std::_Exit(52); }
@@ -238,8 +210,6 @@ static const rodaq_plugin_instance_vtable_t kShortVtable{
     poisoned_shutdown,
     poisoned_destroy};
 
-// Private qualification hook: production export policy still exposes only the
-// two generated bootstrap symbols. Environment is fixed before Manager creation.
 extern "C" rodaq_status_code_t rodaq_plugin_create_instance(
     rodaq_plugin_instance_t* output, rodaq_error_t* error) noexcept {
     const auto* mode = std::getenv("RODAQ_FIXTURE_CREATE_MODE");

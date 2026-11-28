@@ -9,7 +9,7 @@ typedef const rodaq_plugin_entry_t* (*entry_fn)(void);
 typedef rodaq_status_code_t (*create_fn)(rodaq_plugin_instance_t*, rodaq_error_t*);
 typedef const rodaq_plugin_descriptor_t* (*descriptor_fn)(void);
 typedef rodaq_status_code_t (*configure_fn)(
-    rodaq_plugin_context_t*, const rodaq_service_registry_reference_t*, const rodaq_config_t*,
+    rodaq_plugin_context_t*, const rodaq_application_callbacks_t*, const rodaq_config_t*,
     rodaq_error_t*);
 typedef rodaq_status_code_t (*query_fn)(
     rodaq_plugin_context_t*, const rodaq_interface_query_t*, rodaq_interface_reference_t*,
@@ -17,27 +17,21 @@ typedef rodaq_status_code_t (*query_fn)(
 typedef rodaq_status_code_t (*shutdown_fn)(
     rodaq_plugin_context_t*, rodaq_deadline_t, rodaq_error_t*);
 typedef void (*destroy_fn)(rodaq_plugin_context_t*);
-typedef rodaq_status_code_t (*service_query_fn)(
-    rodaq_service_registry_context_t*, const rodaq_interface_query_t*, rodaq_interface_reference_t*,
-    rodaq_error_t*);
-typedef rodaq_status_code_t (*enter_fn)(rodaq_service_registry_context_t*, rodaq_error_t*);
-typedef void (*leave_fn)(rodaq_service_registry_context_t*);
+typedef void (*app_log_fn)(void*, rodaq_log_level_t, rodaq_string_t);
 typedef rodaq_status_code_t (*acquisition_prepare_fn)(
-    rodaq_interface_context_t*, const rodaq_acquisition_prepare_config_t*, rodaq_deadline_t,
-    rodaq_error_t*);
+    rodaq_interface_context_t*, const rodaq_acquisition_prepare_config_t*,
+    const rodaq_acquisition_callbacks_t*, rodaq_deadline_t, rodaq_error_t*);
 typedef rodaq_status_code_t (*control_fn)(
     rodaq_interface_context_t*, rodaq_deadline_t, rodaq_error_t*);
-typedef rodaq_status_code_t (*submit_fn)(
-    rodaq_interface_context_t*, const rodaq_record_attempt_t*, rodaq_submit_result_t*);
-typedef rodaq_status_code_t (*propose_fn)(
-    rodaq_interface_context_t*, const rodaq_descriptor_proposal_t*, rodaq_deadline_t,
-    rodaq_descriptor_token_t*, rodaq_error_t*);
-typedef rodaq_status_code_t (*source_fn)(rodaq_interface_context_t*, const rodaq_source_event_t*);
-typedef rodaq_status_code_t (*event_fn)(
-    rodaq_interface_context_t*, const rodaq_acquisition_event_t*);
+typedef rodaq_status_code_t (*cb_prepare_descriptor_fn)(
+    void*, rodaq_stream_id_t, const rodaq_acquisition_descriptor_t*, rodaq_descriptor_id_t*,
+    rodaq_error_t*);
+typedef rodaq_record_disposition_t (*cb_submit_fn)(
+    void*, const rodaq_acquisition_record_attempt_t*);
+typedef void (*cb_report_event_fn)(void*, const rodaq_acquisition_event_t*);
 typedef rodaq_status_code_t (*storage_prepare_fn)(
     rodaq_interface_context_t*, const rodaq_storage_prepare_config_t*, rodaq_deadline_t,
-    rodaq_storage_capacity_model_t*, rodaq_error_t*);
+    rodaq_error_t*);
 typedef rodaq_status_code_t (*prepare_descriptor_fn)(
     rodaq_interface_context_t*, const rodaq_storage_descriptor_t*, rodaq_deadline_t,
     rodaq_error_t*);
@@ -72,16 +66,14 @@ RODAQ_CHECK_SIGNATURE(((rodaq_plugin_instance_vtable_t*)0)->configure, configure
 RODAQ_CHECK_SIGNATURE(((rodaq_plugin_instance_vtable_t*)0)->query, query_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_plugin_instance_vtable_t*)0)->shutdown, shutdown_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_plugin_instance_vtable_t*)0)->destroy, destroy_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_service_registry_vtable_t*)0)->query, service_query_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_service_registry_vtable_t*)0)->enter_call, enter_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_service_registry_vtable_t*)0)->leave_call, leave_fn);
+RODAQ_CHECK_SIGNATURE(((rodaq_application_callbacks_t*)0)->log, app_log_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_interface_vtable_t*)0)->prepare, acquisition_prepare_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_interface_vtable_t*)0)->start, control_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_interface_vtable_t*)0)->quiesce, control_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_service_vtable_t*)0)->submit_record, submit_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_service_vtable_t*)0)->propose_descriptor, propose_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_service_vtable_t*)0)->report_source_event, source_fn);
-RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_service_vtable_t*)0)->report_acquisition_event, event_fn);
+RODAQ_CHECK_SIGNATURE(
+    ((rodaq_acquisition_callbacks_t*)0)->prepare_descriptor, cb_prepare_descriptor_fn);
+RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_callbacks_t*)0)->submit_record, cb_submit_fn);
+RODAQ_CHECK_SIGNATURE(((rodaq_acquisition_callbacks_t*)0)->report_event, cb_report_event_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->prepare, storage_prepare_fn);
 RODAQ_CHECK_SIGNATURE(
     ((rodaq_storage_interface_vtable_t*)0)->prepare_descriptor, prepare_descriptor_fn);
@@ -91,8 +83,6 @@ RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->segment_usage, usa
 RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->seal_segment, seal_fn);
 RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->quiesce, control_fn);
 
-RODAQ_STATIC_ASSERT(sizeof(rodaq_descriptor_token_t) == 16, "Descriptor token layout");
 RODAQ_STATIC_ASSERT(sizeof(rodaq_source_id_t) == 32, "Source ID layout");
-RODAQ_STATIC_ASSERT(sizeof(rodaq_record_timestamp_t) == 32, "Timestamp layout");
 RODAQ_STATIC_ASSERT(sizeof(rodaq_ros2_duration_t) == 16, "ROS 2 duration layout");
 RODAQ_STATIC_ASSERT(sizeof(rodaq_ros2_qos_profile_t) == 80, "ROS 2 QoS layout");

@@ -1,6 +1,7 @@
 #include "pipeline_controller.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -14,8 +15,8 @@
 #include <utility>
 #include <vector>
 
-#include "pipeline_controller_state.hpp"
 #include "../work_id.hpp"
+#include "pipeline_controller_state.hpp"
 
 namespace rodaq::pipeline {
 namespace {
@@ -45,7 +46,7 @@ Result<void> abort_unopened(
         actual.type() != std::filesystem::file_type::not_found) {
         return Status(StatusCode::DataLoss, {});
     }
-    return segment->capacity.settle_aborted_after_cleanup();
+    return segment->settle_aborted_after_cleanup();
 }
 
 }  // namespace
@@ -75,15 +76,16 @@ Result<bool> PipelineController::rotation_due(
     }
     const auto started = state_->segment_started_at.load();
     if (now_monotonic < started) {
-        // This observation preceded a concurrent successful cut. It cannot
-        // age the new Segment and must not poison newer clock authority.
         return false;
     }
-    if (policy.max_duration &&
-        now_monotonic - started >= static_cast<std::uint64_t>(policy.max_duration->count())) {
-        return true;
+    if (policy.max_duration) {
+        const auto limit_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(*policy.max_duration).count());
+        if (now_monotonic - started >= limit_ns) {
+            return true;
+        }
     }
-    const auto facts = current->capacity.snapshot();
+    const auto facts = current->capacity_snapshot();
     const auto& envelope = state_->options.envelope;
     if (facts.records == 0) {
         return false;
@@ -91,30 +93,13 @@ Result<bool> PipelineController::rotation_due(
     if (policy.max_physical_bytes && facts.actual_bytes >= *policy.max_physical_bytes) {
         return true;
     }
-    if (facts.records >= envelope.max_segment_records ||
+    if (facts.actual_bytes >= envelope.max_segment_physical_bytes ||
+        facts.records >= envelope.max_segment_records ||
         facts.input_bytes >= envelope.max_segment_input_bytes ||
         envelope.max_record_bytes > envelope.max_segment_input_bytes - facts.input_bytes) {
         return true;
     }
-    // Conservative one-more-record boundary, using the actual frozen model.
-    // Never use average compression or filesystem usage to widen Admission.
-    const auto& model = state_->output->writer->capacity_model();
-    constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
-    if (model.payload_expansion_numerator != 0 &&
-        envelope.max_record_bytes > kMax / model.payload_expansion_numerator) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    const auto product = envelope.max_record_bytes * model.payload_expansion_numerator;
-    if (model.payload_expansion_denominator == 0) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    auto bound = product / model.payload_expansion_denominator +
-                 (product % model.payload_expansion_denominator != 0 ? 1 : 0);
-    if (!add(bound, model.per_record_overhead_bytes) || !add(bound, model.seal_reserve_bytes)) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    const auto limit = envelope.max_segment_physical_bytes;
-    return facts.storage_bound >= limit || bound > limit - facts.storage_bound;
+    return false;
 }
 
 Result<void> add_segment_records(
@@ -129,11 +114,9 @@ Result<void> add_segment_records(
     if (!completed_only) {
         if (!add(result.native_inflight, segment.native_inflight) ||
             !add(result.unresolved_owners, segment.unresolved_owners) ||
-            !add(result.manifest_bytes_bound, segment.manifest_bytes_bound) ||
-            !add(result.high_water_manifest_bytes_bound, segment.high_water_manifest_bytes_bound) ||
             !add(result.pending_admissions, segment.pending_admissions) ||
             !add(result.pending_descriptors, segment.pending_descriptors) ||
-            !add(result.descriptors, segment.descriptors) || !add(result.epochs, segment.epochs)) {
+            !add(result.descriptors, segment.descriptors)) {
             return Status(StatusCode::ResourceExhausted, {});
         }
         result.closed = result.closed && segment.closed;
@@ -160,15 +143,11 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
             if (state_->successor->metadata.segment_id() != successor_segment_id) {
                 return Status(StatusCode::Conflict, {});
             }
-            // Native completion may be resumed after a superseding fence. It
-            // settles only the existing cut and never re-opens Admission.
         }
     }
     if (state_->successor) {
         return state_->finish_rotation(deadline);
     }
-    // The Gate is always acquired before Segment/Stream structure. Do not
-    // inspect it under the Segment registry lock (the cut takes the reverse).
     if (!state_->output->instance->gate.snapshot().open) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -192,42 +171,37 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
         for (const auto& binding : bindings) {
             auto* stream = output->instance->streams.find(binding.stream_id);
             std::lock_guard<std::mutex> lock(stream->mutex);
-            if (stream->descriptor_proposal_inflight || stream->segment != old) {
+            if (stream->segment != old) {
                 return Status(StatusCode::Conflict, {});
             }
             streams.push_back(stream);
             descriptors.push_back(stream->active_descriptor);
             ids.push_back(binding.stream_id);
         }
-        auto registration = state_->options.ledger->reserve_registration(successor_segment_id);
-        if (!registration.ok()) {
-            return registration.status();
-        }
         auto sample = state_->options.receive_clock();
         if (!sample.ok()) {
             return sample.status();
         }
         auto identity = state_->options.manifest;
-        identity.acquisition = state_->acquisition_library->binary();
-        identity.storage = state_->storage_library->binary();
-        identity.playback_anchor = state_->options.clock->anchor();
+        identity.acquisition = state_->acquisition_library->info();
+        identity.storage = state_->storage_library->info();
+        identity.playback_anchor = output->instance->playback_anchor();
         identity.volume_id = state_->options.volume->identity();
         identity.segment_id = successor_segment_id;
         ++identity.segment_sequence;
         auto next = RecordingSegment::prepare(
             std::move(identity), std::move(ids), state_->options.envelope,
-            output->writer->capacity_model(), state_->options.manifest_limits,
-            *state_->options.capacity, std::move(registration.value()),
-            sample.value().monotonic_ns);
+            state_->options.manifest_limits, *state_->options.capacity,
+            effective_segment_reservation(state_->options), sample.value().monotonic_ns);
         if (!next.ok()) {
             return next.status();
         }
         auto successor = std::move(next.value());
-        auto prepared = output->execute(output, [output, successor, descriptors, sample, deadline] {
+        auto prepared = output->execute(output, [output, successor, descriptors, deadline] {
             for (const auto& descriptor : descriptors) {
                 if (descriptor) {
-                    auto ready = output->writer->prepare_descriptor(
-                        successor, descriptor, sample.value().monotonic_ns, deadline);
+                    auto ready =
+                        output->writer->prepare_descriptor(successor, descriptor, deadline);
                     if (!ready.ok()) {
                         return ready;
                     }
@@ -240,17 +214,11 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
             return prepared.status();
         }
         auto cut_sample = state_->options.receive_clock();
-        auto time_ready = cut_sample.ok()
-                              ? state_->options.clock->capture_receive(cut_sample.value())
-                              : Result<time::ClockSnapshot>(cut_sample.status());
-        if (!time_ready.ok()) {
+        if (!cut_sample.ok()) {
             auto aborted = abort_unopened(successor, state_->options.volume);
-            output->fail(time_ready.status().code());
-            return aborted.ok() ? time_ready.status() : aborted.status();
+            output->fail(cut_sample.status().code());
+            return aborted.ok() ? cut_sample.status() : aborted.status();
         }
-        // Reserve the finite lock backing before the Gate. Gate -> all Stream
-        // locks freezes Descriptor identity and swaps every writable cursor in
-        // one short cut. There is no callback, allocation, Native or I/O here.
         std::vector<std::unique_lock<std::mutex>> locked;
         locked.reserve(streams.size());
         auto cut = output->instance->gate.enter_segment_cut(
@@ -264,8 +232,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
         }
         bool unchanged = true;
         for (std::size_t index = 0; index < streams.size(); ++index) {
-            unchanged = unchanged && !streams[index]->descriptor_proposal_inflight &&
-                        streams[index]->active_descriptor == descriptors[index] &&
+            unchanged = unchanged && streams[index]->active_descriptor == descriptors[index] &&
                         streams[index]->segment == old;
         }
         if (!unchanged) {
@@ -311,9 +278,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::State::finish_r
     if (!idle.ok()) {
         return idle.status();
     }
-    // Old candidates captured before the cut are rejected and unwind their
-    // own backing. An observation bound is not permission to seal over them.
-    if (old->capacity.snapshot().candidates != 0) {
+    if (old->capacity_snapshot().candidates != 0) {
         return Status(StatusCode::Unavailable, {});
     }
     auto drained = output->execute(output, [owner = output, old, deadline] {

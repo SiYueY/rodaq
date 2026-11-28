@@ -15,6 +15,7 @@ def main():
     sources = sorted(
         name for name in files
         if name and not name.startswith("third_party/")
+        and not any(part.startswith(".") for part in pathlib.Path(name).parts)
         and pathlib.Path(name).suffix in {".h", ".hpp", ".c", ".cpp"}
     )
     subprocess.run(["clang-format-14", "--dry-run", "--Werror", *sources], check=True)

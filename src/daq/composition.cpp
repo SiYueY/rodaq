@@ -13,10 +13,11 @@
 #include <utility>
 #include <vector>
 
+#include "../artifact/artifact_catalog.hpp"
+#include "../artifact/startup_scan.hpp"
+#include "../system/system_service.hpp"
 #include "run_configuration.hpp"
 #include "startup.hpp"
-#include "../artifact/artifact_catalog.hpp"
-#include "../system/system_service.hpp"
 
 #ifndef RODAQ_APPLICATION_VERSION
 #define RODAQ_APPLICATION_VERSION "0.1.0"
@@ -48,26 +49,6 @@ VolumePressure to_volume_pressure(
     return VolumePressure::Normal;
 }
 
-SystemRecoveryStatus build_recovery_status(
-    const std::optional<artifact::VolumeRecoveryReport>& report, bool ready) {
-    SystemRecoveryStatus status;
-    status.complete = ready;
-    if (!ready) {
-        status.reason = std::string("recovering");
-        return status;
-    }
-    if (report) {
-        if (report->health != StatusCode::Ok) {
-            status.reason = std::string("volume_recovery_protected");
-        } else if (report->corrupted_committed_count > 0) {
-            status.reason = std::string("corrupted_committed_artifacts");
-        } else if (!report->quarantined.empty()) {
-            status.reason = std::string("quarantined_artifacts_present");
-        }
-    }
-    return status;
-}
-
 Result<SystemCapabilities> build_system_capabilities(const CompositionOptions& o) {
     auto installed = o.plugins->plugins();
     if (!installed.ok()) {
@@ -83,7 +64,6 @@ Result<SystemCapabilities> build_system_capabilities(const CompositionOptions& o
              static_cast<std::uint32_t>(o.settings.tasks.config.max_streams_per_pipeline)});
     }
     caps.limits.max_page_size = 256;
-    caps.limits.idempotency_retention = std::chrono::hours{24};
     caps.limits.recommended_polling_floor = std::chrono::seconds{1};
 
     auto find_backend = [&](const std::string& id,
@@ -154,23 +134,18 @@ Result<SystemCapabilities> build_system_capabilities(const CompositionOptions& o
 }
 
 bool valid(const CompositionOptions& o) {
-    const auto boot = time::parse_boot_identity(o.boot.kernel_uuid);
-    if (!o.plugins || !o.clock || !o.volume || !o.capacity || !o.ledger || !o.segment_ids ||
-        !o.sample || !boot.ok() || boot.value().id != o.boot.id ||
-        o.clock->anchor().boot_id != o.boot.id || o.task_root.empty() ||
+    if (!o.plugins || !o.volume || !o.capacity || !o.sample || o.task_root.empty() ||
         o.settings.deployment_generation == 0 || o.settings.qualified_runtime_profile_id.empty() ||
         o.settings.qualified_runtime_profile_id.size() > 256 || o.settings.output_root.empty() ||
         o.settings.profiles.empty() || o.settings.profiles.size() > 64 ||
         o.settings.storage.empty() || o.settings.storage.size() > 64 ||
         o.settings.tasks.config.max_pipelines == 0 || o.settings.tasks.config.max_pipelines > 64 ||
         o.settings.max_tasks == 0 || o.settings.max_tasks > 16 ||
-        o.settings.create_recovery_slots > 1024 ||
+        o.settings.max_artifacts_per_volume == 0 || o.settings.max_artifacts_per_volume > 65536 ||
         o.settings.max_tasks * o.settings.tasks.config.max_pipelines > 256 ||
         o.settings.native_timeout <= std::chrono::nanoseconds::zero() ||
-        o.settings.artifact_audit_window <= std::chrono::nanoseconds::zero() ||
         o.settings.system_snapshot_max_age <= std::chrono::nanoseconds::zero() ||
-        o.settings.system_snapshot_max_age > std::chrono::hours{24} ||
-        !task::valid_runtime_recovery_policy(o.settings.runtime_recovery)) {
+        o.settings.system_snapshot_max_age > std::chrono::hours{24}) {
         return false;
     }
     for (auto i = o.settings.backend_qualifications.begin();
@@ -183,9 +158,8 @@ bool valid(const CompositionOptions& o) {
         }
     }
     for (auto i = o.settings.profiles.begin(); i != o.settings.profiles.end(); ++i) {
-        if (i->name.empty() || i->name.size() > 128 || i->sequence_reservation == 0 ||
-            i->descriptor_reservation == 0 || i->instance.callback_concurrency == 0 ||
-            i->instance.callback_concurrency > 4094 ||
+        if (i->name.empty() || i->name.size() > 128 || i->segment_reservation_bytes == 0 ||
+            i->instance.callback_concurrency == 0 || i->instance.callback_concurrency > 4094 ||
             !artifact::validate_manifest_limits(i->manifest).ok() ||
             std::any_of(
                 o.settings.profiles.begin(), i, [&](const auto& p) { return p.name == i->name; })) {
@@ -267,7 +241,6 @@ struct Composition::State {
     std::unique_ptr<TaskService> tasks;
     std::unique_ptr<SystemService> system;
     std::vector<std::shared_ptr<ExecutionLane>> lanes;
-    // Only serializes explicit lifecycle/maintenance calls, never Task APIs.
     std::mutex lifecycle;
     std::mutex observation;
     bool started{false};
@@ -281,7 +254,6 @@ struct Composition::State {
             std::terminate();
         }
         if (!started) {
-            // Construction submitted no work. Roll back idle prepared domains.
             for (const auto& lane : lanes) {
                 (void)lane->shutdown(std::chrono::steady_clock::now());
             }
@@ -303,7 +275,6 @@ void Composition::publish_system_observation(
                            !state_->stopping.load(std::memory_order_acquire);
         system::SystemObservation obs;
         obs.core_ready = ready;
-        obs.recovery = build_recovery_status(o.recovery_report, ready);
         VolumeStatus volume;
         volume.name = o.settings.output_root;
         volume.total_bytes = total_bytes;
@@ -338,19 +309,15 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         if (!verified.ok()) {
             return verified.status();
         }
-        auto clock = options.clock->snapshot();
-        if (!clock.ok()) {
-            return clock.status();
-        }
         auto state = std::make_unique<State>();
         state->resources = std::make_shared<RunResources>();
         state->resources->options = std::move(options);
         const auto& o = state->resources->options;
-        // Reserve before creating any thread so every domain has an owner even
-        // if a later allocation fails. Six distinct business scheduling domains:
-        // [0] create (1 worker), [1] control (max_tasks workers, per-Task serial),
-        // [2] prepare/rotate (max_tasks), [3] task cleanup (max_tasks),
-        // [4] per-pipeline cleanup (bounded parallel), [5] single-Volume commit (1).
+
+        // Six bounded business domains + per-Pipeline Writers:
+        // [0] create (1), [1] control (max_tasks), [2] prepare/rotate (max_tasks),
+        // [3] task cleanup (max_tasks), [4] parallel per-pipeline cleanup,
+        // [5] single-Volume commit (1).
         const auto writer_count = o.settings.max_tasks * o.settings.tasks.config.max_pipelines;
         constexpr std::size_t kCoreDomains = 6;
         state->lanes.reserve(kCoreDomains + writer_count);
@@ -398,34 +365,34 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 state->resources->writers.push_back(std::move(lane.value()));
             }
         }
+
+        // Synchronous bounded startup scan before Server becomes Ready.
         artifact::CatalogOptions catalog;
         catalog.volume = o.volume;
         catalog.capacity = o.capacity;
-        catalog.ledger = o.ledger;
-        catalog.max_artifacts = o.ledger->capacity();
+        catalog.max_artifacts = o.settings.max_artifacts_per_volume;
         catalog.manifest = catalog_manifest_limits(o.settings);
         auto index = artifact::ArtifactCatalog::create(std::move(catalog));
         if (!index.ok()) {
             return index.status();
         }
         state->catalog = std::move(index.value());
-        auto rebuilt = o.recovery_report ? state->catalog->rebuild(*o.recovery_report)
-                                         : state->catalog->rebuild();
-        if (!rebuilt.ok()) {
-            return rebuilt.status();
+        auto scanned = state->catalog->startup_scan();
+        if (!scanned.ok()) {
+            return scanned.status();
         }
         auto artifacts = ArtifactService::create(state->catalog);
         if (!artifacts.ok()) {
             return artifacts.status();
         }
         state->artifacts = std::move(artifacts.value());
+
         task::ServiceOptions service;
         service.root = o.task_root;
         service.plugin_manager = o.plugins;
         service.create_lane = state->lanes[0];
         service.control_lane = state->lanes[1];
         service.max_tasks = o.settings.max_tasks;
-        service.create_recovery_slots = o.settings.create_recovery_slots;
         service.store = o.settings.tasks;
         service.file_faults = o.task_file_faults;
         service.allowed_plugins = o.settings.allowed_plugins;
@@ -435,24 +402,23 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 {profile.name, profile.storage.max_segment_physical_bytes});
         }
         auto execution = std::make_shared<task::RunExecutionOptions>();
-        execution->boot = o.boot;
         execution->sample = o.sample;
         execution->preparation_lane = state->lanes[2];
         execution->cleanup_lane = state->lanes[3];
         execution->pipeline_cleanup_lane = state->lanes[4];
         execution->native_timeout = o.settings.native_timeout;
-        execution->runtime_recovery = o.settings.runtime_recovery;
         execution->resolve = [resources = std::shared_ptr<const RunResources>(state->resources)](
-                                 const auto& control, const auto& config, auto& identities) {
-            return resolve_run(*resources, control, config, identities);
+                                 TaskId task_id, std::string_view config_version,
+                                 ControlGeneration gen, const TaskConfig& config) {
+            return resolve_run(*resources, task_id, config_version, gen, config);
         };
         execution->release_task_resources =
             [resources = std::shared_ptr<const RunResources>(state->resources)](
                 TaskId task_id) noexcept { release_writer_slot(*resources, task_id); };
-        auto dispatch_commit = [catalog = state->catalog, commit_lane = state->lanes[5],
-                                timeout = o.settings.native_timeout](
-                                   const pipeline::SealedPipelineSegment& sealed,
-                                   std::function<void()> on_committed) -> Result<void> {
+        execution->commit_with_ack = [catalog = state->catalog, commit_lane = state->lanes[5],
+                                      timeout = o.settings.native_timeout](
+                                         const pipeline::SealedPipelineSegment& sealed,
+                                         std::function<void()> on_committed) -> Result<void> {
             try {
                 auto job = std::make_shared<CommitJob>();
                 job->catalog = catalog;
@@ -469,36 +435,20 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 return Status(StatusCode::ResourceExhausted, {});
             }
         };
-        execution->commit = [dispatch_commit](const pipeline::SealedPipelineSegment& sealed) {
-            return dispatch_commit(sealed, {});
-        };
-        execution->commit_with_ack = std::move(dispatch_commit);
-        execution->reserve_segment = [ids = o.segment_ids]() -> Result<std::uint64_t> {
-            auto reserved = ids->reserve(1);
-            return reserved.ok() ? Result<std::uint64_t>(reserved.value().begin)
-                                 : Result<std::uint64_t>(reserved.status());
+        execution->allocate_segment_id = [volume = o.volume]() {
+            return volume->allocate_segment_id();
         };
         execution->artifacts.volume_id = o.volume->identity();
-        execution->artifacts.reset_targets = [catalog = state->catalog](
-                                                 TaskId task_id, ControlGeneration max_gen) {
-            return catalog->reset_targets(task_id, max_gen);
+        execution->artifacts.reset_targets = [catalog = state->catalog](TaskId task_id) {
+            return catalog->reset_targets(task_id);
         };
         execution->artifacts.delete_for_reset =
             [catalog = state->catalog](
-                ArtifactId artifact_id, std::uint64_t gen, WallTime now,
-                std::chrono::steady_clock::time_point deadline) {
-                return catalog->delete_artifact(
-                    artifact_id, gen, artifact::DeleteReason::Reset, now, deadline);
-            };
-        execution->artifacts.purge_quarantined_for_reset =
-            [catalog = state->catalog](TaskId task_id, ControlGeneration max_gen) {
-                return catalog->purge_quarantined_for_reset(task_id, max_gen);
+                ArtifactId artifact_id, std::chrono::steady_clock::time_point deadline) {
+                return catalog->delete_artifact(artifact_id, deadline);
             };
         execution->artifacts.retire_eligible = [catalog = state->catalog](TaskId task_id) {
             return catalog->retire_eligible(task_id);
-        };
-        execution->artifacts.has_task_references = [catalog = state->catalog](TaskId task_id) {
-            return catalog->has_task_references(task_id);
         };
         service.execution = std::move(execution);
         auto tasks = TaskService::open(std::move(service));
@@ -506,6 +456,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return tasks.status();
         }
         state->tasks = std::move(tasks.value());
+
         auto capabilities = build_system_capabilities(o);
         if (!capabilities.ok()) {
             return capabilities.status();
@@ -518,7 +469,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return system.status();
         }
         state->system = std::move(system.value());
-        // Allocate the final facade before enabling its mandatory-shutdown rule.
+
         auto composition = std::unique_ptr<Composition>(new Composition(std::move(state)));
         auto observed = composition->observe();
         if (!observed.ok()) {
@@ -530,11 +481,6 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         }
         const auto boot_space = composition->state_->resources->options.capacity->space_snapshot(
             boot_sample.value().monotonic_ns);
-        auto reconciled = composition->state_->tasks->reconcile_boot(
-            boot_space.condition, boot_sample.value().monotonic_ns);
-        if (!reconciled.ok()) {
-            return reconciled.status();
-        }
         composition->state_->core_ready.store(true, std::memory_order_release);
         composition->publish_system_observation(
             boot_space, composition->state_->last_total_bytes.load(std::memory_order_acquire),
@@ -579,16 +525,6 @@ Result<void> Composition::observe() {
             {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
         return sample.status();
     }
-    auto observed = o.clock->observe(sample.value());
-    if (!observed.ok()) {
-        o.capacity->invalidate_space_sample();
-        (void)state_->tasks->refresh_execution_facts(true);
-        (void)state_->tasks->reconcile_volume(
-            artifact::VolumeSpaceCondition::Unknown, sample.value().monotonic_ns);
-        publish_system_observation(
-            {}, state_->last_total_bytes.load(std::memory_order_acquire), true);
-        return observed.status();
-    }
     auto probe = o.capacity->begin_space_sample(sample.value().monotonic_ns);
     if (!probe.ok()) {
         return probe.status();
@@ -628,8 +564,6 @@ Result<void> Composition::observe() {
         publish_system_observation(space, stats.value().total_bytes, true);
         return refreshed.status();
     }
-    // One actual cleanup worker and one per-Task flight. Retry only retained,
-    // fenced cleanup; never manufacture a new lifecycle request or re-open Run.
     auto cleanup = state_->tasks->drain_shutdown(true);
     if (!cleanup.ok()) {
         publish_system_observation(space, stats.value().total_bytes, false);
@@ -647,15 +581,8 @@ Result<void> Composition::observe() {
         return rotated.status();
     }
     auto retained = state_->tasks->apply_retention(*state_->catalog);
-    auto collected =
-        state_->tasks->collect_artifacts(*state_->catalog, o.settings.artifact_audit_window);
-    auto destructive =
-        state_->tasks->reconcile_destructive(*state_->catalog, o.settings.artifact_audit_window);
     publish_system_observation(space, stats.value().total_bytes, false);
-    if (!retained.ok()) {
-        return retained;
-    }
-    return !collected.ok() ? collected : destructive;
+    return retained;
 }
 
 Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadline) {
@@ -671,17 +598,13 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         return closed.status();
     }
     state_->catalog->cancel_readers();
-    // Initiate drain/seal/commit for all healthy active executions BEFORE
-    // waiting on global Create/Control idle so a hung Control/Create fsync on
-    // one Task never prevents healthy sibling Tasks from settling cleanly.
+    // Initiate drain/seal/commit BEFORE waiting on global Create/Control idle (IC-T03).
     auto draining = state_->tasks->drain_shutdown();
     const Status initial_drain = draining.ok() ? Status{} : draining.status();
-    auto cleaned = state_->lanes[3]->wait_idle(deadline);
-    auto pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
-    auto committed = state_->lanes[5]->wait_idle(deadline);
-    // Keep create, control and cleanup lanes open while in-flight cleanup or
-    // post-retirement receipt removal settles; close_admission() already blocks
-    // new user Create/Lifecycle requests.
+    (void)state_->lanes[3]->wait_idle(deadline);
+    (void)state_->lanes[4]->wait_idle(deadline);
+    (void)state_->lanes[5]->wait_idle(deadline);
+
     auto created = state_->lanes[0]->wait_idle(deadline);
     if (!created.ok()) {
         return created.status();
@@ -701,15 +624,15 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
     if (!initial_drain.ok()) {
         return initial_drain;
     }
-    cleaned = state_->lanes[3]->wait_idle(deadline);
+    auto cleaned = state_->lanes[3]->wait_idle(deadline);
     if (!cleaned.ok()) {
         return cleaned.status();
     }
-    pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
+    auto pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
     if (!pipeline_cleaned.ok()) {
         return pipeline_cleaned.status();
     }
-    committed = state_->lanes[5]->wait_idle(deadline);
+    auto committed = state_->lanes[5]->wait_idle(deadline);
     if (!committed.ok()) {
         return committed.status();
     }
@@ -722,39 +645,7 @@ Result<void> Composition::shutdown(std::chrono::steady_clock::time_point deadlin
         return controls.status();
     }
     if (!state_->tasks->shutdown_settled()) {
-        // Private failed-initialization cleanup is still unproven. Observe
-        // actual Manager shutdown while cleanup/Writer/Commit domains remain
-        // available. Let the same Task owners reconcile that evidence rather
-        // than asserting that a failed create necessarily left no instance.
-        auto native_deadline = plugin::Deadline::after(std::max(
-            std::chrono::nanoseconds::zero(), std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                  deadline - std::chrono::steady_clock::now())));
-        if (!native_deadline.ok()) {
-            return native_deadline.status();
-        }
-        auto native = state_->resources->options.plugins->shutdown(native_deadline.value());
-        if (!native.ok()) {
-            return native.status();
-        }
-        draining = state_->tasks->drain_shutdown();
-        if (!draining.ok()) {
-            return draining.status();
-        }
-        cleaned = state_->lanes[3]->wait_idle(deadline);
-        if (!cleaned.ok()) {
-            return cleaned.status();
-        }
-        pipeline_cleaned = state_->lanes[4]->wait_idle(deadline);
-        if (!pipeline_cleaned.ok()) {
-            return pipeline_cleaned.status();
-        }
-        committed = state_->lanes[5]->wait_idle(deadline);
-        if (!committed.ok()) {
-            return committed.status();
-        }
-        if (!state_->tasks->shutdown_settled()) {
-            return Status(StatusCode::Unavailable, {});
-        }
+        return Status(StatusCode::Unavailable, {});
     }
     for (const std::size_t idx :
          {std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{5}, std::size_t{0},

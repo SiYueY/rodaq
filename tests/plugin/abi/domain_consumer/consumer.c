@@ -13,91 +13,33 @@ struct host_context {
 };
 
 #if !DOMAIN_STORAGE
-static rodaq_status_code_t submit_record(
-    rodaq_interface_context_t* context, const rodaq_record_attempt_t* record,
-    rodaq_submit_result_t* output) {
-    struct host_context* host = (struct host_context*)context;
-    assert(output->header.struct_size >= sizeof(rodaq_submit_result_t));
-    assert(record->payload.logical_size == sizeof(host->copied));
-    memcpy(host->copied, record->payload.data, sizeof(host->copied));
-    ++host->submissions;
-    output->disposition = RODAQ_SUBMIT_ACCEPTED;
-    output->reserved0 = 0;
-#if FIXTURE_MINOR > 0
-    if (output->header.struct_size >= sizeof(domain_submission_t)) {
-        ((domain_submission_t*)output)->optional_fact = 77;
-    }
-#endif
-    return RODAQ_STATUS_OK;
-}
-
-static rodaq_status_code_t propose_descriptor(
-    rodaq_interface_context_t* context, const rodaq_descriptor_proposal_t* proposal,
-    rodaq_deadline_t deadline, rodaq_descriptor_token_t* token, rodaq_error_t* error) {
+static rodaq_status_code_t prepare_descriptor(
+    void* context, rodaq_stream_id_t stream_id, const rodaq_acquisition_descriptor_t* descriptor,
+    rodaq_descriptor_id_t* descriptor_id, rodaq_error_t* error) {
     (void)context;
-    (void)deadline;
     if (error != NULL) {
         error->message.size = 0;
     }
-    assert(proposal->stream_id == 42);
-    *token = (rodaq_descriptor_token_t){21, 31};
+    assert(stream_id == 42 && descriptor->stream_id == 42);
+    *descriptor_id = 21;
     return RODAQ_STATUS_OK;
 }
 
-static rodaq_status_code_t report_source_event(
-    rodaq_interface_context_t* context, const rodaq_source_event_t* event) {
-    (void)context;
-    (void)event;
-    return RODAQ_STATUS_OK;
+static rodaq_record_disposition_t submit_record(
+    void* context, const rodaq_acquisition_record_attempt_t* record) {
+    struct host_context* host = (struct host_context*)context;
+    assert(record->payload.size == sizeof(host->copied));
+    memcpy(host->copied, record->payload.data, sizeof(host->copied));
+    ++host->submissions;
+    return RODAQ_SUBMIT_ACCEPTED;
 }
 
-static rodaq_status_code_t report_acquisition_event(
-    rodaq_interface_context_t* context, const rodaq_acquisition_event_t* event) {
+static void report_event(void* context, const rodaq_acquisition_event_t* event) {
     struct host_context* host = (struct host_context*)context;
     assert(event->kind == RODAQ_ACQUISITION_EVENT_STREAM_READY && event->stream_id == 42);
     host->ready = 1;
-    return RODAQ_STATUS_OK;
 }
-
-static const domain_services_t kServices = {
-    {sizeof(domain_services_t)},
-    submit_record,
-    propose_descriptor,
-    report_source_event,
-    report_acquisition_event
-#if FIXTURE_MINOR > 0
-    ,
-    NULL /* Optional but byte-readable is a supported unavailable capability. */
 #endif
-};
-#endif
-
-static rodaq_status_code_t query_service(
-    rodaq_service_registry_context_t* context, const rodaq_interface_query_t* query,
-    rodaq_interface_reference_t* output, rodaq_error_t* error) {
-    if (error != NULL) {
-        error->message.size = 0;
-    }
-    memset(output, 0, sizeof(*output));
-#if DOMAIN_STORAGE
-    (void)context;
-    (void)query;
-    return RODAQ_STATUS_NOT_FOUND;
-#else
-    if (query->major != 1 || query->min_minor > FIXTURE_MINOR ||
-        query->interface_id.size != sizeof(RODAQ_ACQUISITION_SERVICE_ID) - 1 ||
-        memcmp(query->interface_id.data, RODAQ_ACQUISITION_SERVICE_ID, query->interface_id.size) !=
-            0) {
-        return RODAQ_STATUS_UNAVAILABLE;
-    }
-    output->context = (rodaq_interface_context_t*)context;
-    output->vtable = (const rodaq_interface_vtable_t*)&kServices;
-    output->vtable_size = sizeof(kServices);
-    output->negotiated_version = (rodaq_interface_version_t){
-        1, query->max_minor > FIXTURE_MINOR ? FIXTURE_MINOR : query->max_minor};
-    return RODAQ_STATUS_OK;
-#endif
-}
 
 int main(int argc, char** argv) {
     assert(argc == 3);
@@ -119,17 +61,11 @@ int main(int argc, char** argv) {
     assert(entry != NULL && entry->create != NULL);
     rodaq_plugin_instance_t instance = {0};
     assert(entry->create(&instance, NULL) == RODAQ_STATUS_OK);
-    struct host_context host = {{0}, 0, 0};
-    const rodaq_service_registry_vtable_t registry = {
-        {offsetof(rodaq_service_registry_vtable_t, query) + sizeof(registry.query)},
-        query_service,
-        NULL,
-        NULL};
-    const rodaq_service_registry_reference_t services = {
-        (rodaq_service_registry_context_t*)&host, &registry};
+    const rodaq_application_callbacks_t application = {{sizeof(application)}, NULL, NULL};
     const rodaq_config_t config = {{sizeof(config)}, {NULL, 0}};
     assert(
-        instance.vtable->configure(instance.context, &services, &config, NULL) == RODAQ_STATUS_OK);
+        instance.vtable->configure(instance.context, &application, &config, NULL) ==
+        RODAQ_STATUS_OK);
     rodaq_interface_query_t request = {
         {DOMAIN_INTERFACE_ID, sizeof(DOMAIN_INTERFACE_ID) - 1}, 1, 0, FIXTURE_MINOR};
     rodaq_interface_reference_t reference = {0};
@@ -151,27 +87,8 @@ int main(int argc, char** argv) {
     const rodaq_deadline_t deadline = {RODAQ_DEADLINE_INFINITE};
 #if DOMAIN_STORAGE
     const rodaq_storage_prepare_config_t prepare = {
-        {sizeof(prepare)}, 8, 16, 2, 2, 100, 1024, 4096, 2, 31, 1, 1, 1};
-    struct {
-        domain_capacity_t value;
-        uint8_t guard[16];
-    } capacity = {0};
-    capacity.value.header.struct_size = sizeof(capacity.value);
-    memset(capacity.guard, 0xa5, sizeof(capacity.guard));
-    assert(
-        table->prepare(
-            reference.context, &prepare, deadline, (rodaq_storage_capacity_model_t*)&capacity.value,
-            NULL) == RODAQ_STATUS_OK);
-    assert(capacity.value.header.struct_size == sizeof(capacity.value));
-    assert(capacity.value.payload_expansion_denominator == 1);
-    for (size_t i = 0; i < sizeof(capacity.guard); ++i) {
-        assert(capacity.guard[i] == 0xa5);
-    }
-#if FIXTURE_MINOR > 0
-    if (reference.negotiated_version.minor >= 1) {
-        assert(capacity.value.optional_fact == 77);
-    }
-#endif
+        {sizeof(prepare)}, 8, 16, 2, 2, 100, 1024, 4096, 2, 31};
+    assert(table->prepare(reference.context, &prepare, deadline, NULL) == RODAQ_STATUS_OK);
     rodaq_storage_descriptor_t descriptor = {0};
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.descriptor_id = 5;
@@ -191,9 +108,7 @@ int main(int argc, char** argv) {
         records[i].header.struct_size = sizeof(records[i]);
         records[i].stream_id = 42;
         records[i].descriptor_id = 5;
-        records[i].acceptance_sequence = i + 1;
-        records[i].system_boot_id = 1;
-        records[i].clock_epoch_id = 1;
+        records[i].recording_time = 1000 + i;
         records[i].payload = (rodaq_bytes_t){payload, sizeof(payload)};
     }
     struct {
@@ -229,7 +144,7 @@ int main(int argc, char** argv) {
             NULL) == RODAQ_STATUS_UNAVAILABLE);
     assert(
         batch.value.confirmed_prefix == 1 && batch.value.tail_state == RODAQ_STORAGE_TAIL_UNKNOWN);
-    rodaq_segment_usage_t usage = {{sizeof(usage)}, 0, 0, 0, 0};
+    rodaq_segment_usage_t usage = {{sizeof(usage)}, 0, 0, 0};
     assert(
         table->segment_usage(reference.context, &usage, NULL) == RODAQ_STATUS_OK &&
         usage.physical_bytes == 9);
@@ -247,9 +162,13 @@ int main(int argc, char** argv) {
     assert(files[1].relative_path.size == 0 && files[1].physical_size == 0);
     assert(strcmp(path, "compat.bin") == 0);
 #else
+    struct host_context host = {{0}, 0, 0};
+    const rodaq_acquisition_callbacks_t callbacks = {
+        {sizeof(callbacks)}, &host, prepare_descriptor, submit_record, report_event};
     const rodaq_acquisition_stream_binding_t stream = {{sizeof(stream)}, 42, {"sample", 6}, 8};
     const rodaq_acquisition_prepare_config_t prepare = {{sizeof(prepare)}, &stream, 1, 1};
-    assert(table->prepare(reference.context, &prepare, deadline, NULL) == RODAQ_STATUS_OK);
+    assert(
+        table->prepare(reference.context, &prepare, &callbacks, deadline, NULL) == RODAQ_STATUS_OK);
     assert(table->start(reference.context, deadline, NULL) == RODAQ_STATUS_OK);
     assert(
         host.ready == 1 && host.submissions == 1 && host.copied[0] == 3 && host.copied[1] == 2 &&
@@ -278,6 +197,5 @@ int main(int argc, char** argv) {
     assert(required_minor == (provider_minor == 0 ? RODAQ_STATUS_UNAVAILABLE : RODAQ_STATUS_OK));
     assert(instance.vtable->shutdown(instance.context, deadline, NULL) == RODAQ_STATUS_OK);
     instance.vtable->destroy(instance.context);
-    /* Successful DSO is intentionally resident until this process exits. */
     return 0;
 }

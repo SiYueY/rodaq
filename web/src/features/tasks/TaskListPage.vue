@@ -20,7 +20,6 @@ const nowMs = ref(Date.now());
 const cursorStack = ref<(string | undefined)[]>([undefined]);
 const currentCursor = computed(() => cursorStack.value[cursorStack.value.length - 1]);
 
-// Raw UTF-8 import preserves duplicate keys and exact bytes for Server strict parser (WEB-E2E-012).
 const showImport = ref(false);
 const importRawText = ref('');
 const importError = ref<ApiFailure | null>(null);
@@ -85,7 +84,19 @@ async function submitRawImport(): Promise<void> {
     return;
   }
   try {
-    // Submit exact raw UTF-8 string without JSON.parse -> JSON.stringify!
+    JSON.parse(importRawText.value);
+  } catch {
+    importError.value = new ApiFailure({
+      message: 'Import body is not valid JSON.',
+      httpStatus: null,
+      requestId: null,
+      retryAfterMs: null,
+      apiError: null,
+      kind: 'validation',
+    });
+    return;
+  }
+  try {
     const created = await mutation.submitCreateTask(importRawText.value);
     showImport.value = false;
     importRawText.value = '';
@@ -94,6 +105,7 @@ async function submitRawImport(): Promise<void> {
     if (err instanceof ApiFailure) {
       importError.value = err;
     }
+    tasksPoll.refreshNow();
   }
 }
 
@@ -132,29 +144,29 @@ onBeforeUnmount(() => {
     <div class="page-header">
       <h1>Tasks</h1>
       <div class="row-actions">
-        <template v-if="session.hasScope('control')">
-          <RouterLink to="/tasks/new" class="btn btn-primary">Create Task</RouterLink>
-          <button type="button" class="btn" @click="showImport = !showImport">
-            {{ showImport ? 'Close Import' : 'Import Raw JSON' }}
-          </button>
-        </template>
+        <RouterLink to="/tasks/new" class="btn btn-primary">Create Task</RouterLink>
+        <button type="button" class="btn" @click="showImport = !showImport">
+          {{ showImport ? 'Close Import' : 'Import JSON' }}
+        </button>
         <button type="button" class="btn" @click="tasksPoll.refreshNow()">Refresh</button>
       </div>
     </div>
 
     <article v-if="showImport" class="card">
-      <h2 class="card-title">Import Portable TaskConfig (Raw UTF-8)</h2>
+      <h2 class="card-title">Import Portable TaskConfig JSON</h2>
       <p class="muted" style="margin: 0 0 10px 0; font-size: 0.85rem">
-        Submitted byte-for-byte to the Server strict JSON parser without frontend re-serialization so
-        duplicate keys and uint64 strings are validated authoritatively.
+        Server validates Portable TaskConfig V1 fields authoritatively.
       </p>
       <ErrorPanel v-if="importError" :error="importError" title="Import Rejected" />
+      <div v-if="mutation.outcomeUnknownMessage.value" class="banner banner-warning" role="status">
+        <span>{{ mutation.outcomeUnknownMessage.value }}</span>
+      </div>
       <div class="form-field">
         <label for="raw-import-file">Load JSON file</label>
         <input id="raw-import-file" type="file" accept=".json,application/json" @change="onFileSelected" />
       </div>
       <div class="form-field">
-        <label for="raw-import-json">Raw Portable TaskConfig JSON</label>
+        <label for="raw-import-json">Portable TaskConfig JSON</label>
         <textarea
           id="raw-import-json"
           v-model="importRawText"
@@ -170,7 +182,7 @@ onBeforeUnmount(() => {
           :disabled="mutation.submitting.value"
           @click="submitRawImport"
         >
-          {{ mutation.submitting.value ? 'Importing…' : 'Submit Raw Import' }}
+          {{ mutation.submitting.value ? 'Importing…' : 'Submit Import' }}
         </button>
       </div>
     </article>
@@ -223,7 +235,7 @@ onBeforeUnmount(() => {
           <td>
             <FreshnessBadge
               :freshness="tasksPoll.state.phase === 'stale' ? 'stale' : row.freshness.state"
-              :server-age="row.freshness.age"
+              :server-age-ms="row.freshness.age_ms"
               :received-at-ms="tasksPoll.state.receivedAt"
               :now-ms="nowMs"
             />

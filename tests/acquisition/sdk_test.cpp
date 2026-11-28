@@ -1,12 +1,10 @@
 #include <rodaq/acquisition/interface.hpp>
-#include <rodaq/acquisition/service.hpp>
 #include <rodaq/plugin/authoring.hpp>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -15,226 +13,120 @@ namespace {
 namespace acq = rodaq::acquisition;
 namespace plugin = rodaq::plugin;
 
-acq::RecordAttempt record() {
+acq::RecordAttempt make_record() {
     acq::RecordAttempt result{};
     result.header.struct_size = sizeof(result);
     result.stream_id = 1;
-    result.descriptor_token = {1, 1};
-    result.payload.header.struct_size = sizeof(result.payload);
+    result.descriptor_id = 1;
     return result;
 }
 
-class Host {
-public:
-    rodaq::Result<acq::SubmitResult> submit_record(const acq::RecordAttempt& value) {
-        ++calls;
-        if (throw_error) {
-            throw std::runtime_error("callback failure");
+struct HostCallbacks {
+    static rodaq_status_code_t prepare_descriptor(
+        void* ctx, rodaq_stream_id_t stream_id, const rodaq_acquisition_descriptor_t* descriptor,
+        rodaq_descriptor_id_t* descriptor_id, rodaq_error_t*) noexcept {
+        auto& self = *reinterpret_cast<HostCallbacks*>(ctx);
+        ++self.prepare_calls;
+        if (self.fail_prepare || descriptor == nullptr || stream_id == 0) {
+            return RODAQ_STATUS_UNAVAILABLE;
         }
-        if (failure) {
-            return rodaq::Status(rodaq::StatusCode::Unavailable, "callback unavailable");
-        }
-        if (value.payload.logical_size == 0) {
-            copied.clear();
+        *descriptor_id = self.next_descriptor_id;
+        return RODAQ_STATUS_OK;
+    }
+
+    static rodaq_record_disposition_t submit_record(
+        void* ctx, const rodaq_acquisition_record_attempt_t* value) noexcept {
+        auto& self = *reinterpret_cast<HostCallbacks*>(ctx);
+        ++self.submit_calls;
+        if (value->payload.size == 0) {
+            self.copied.clear();
         } else {
-            copied.assign(value.payload.data, value.payload.data + value.payload.logical_size);
+            self.copied.assign(value->payload.data, value->payload.data + value->payload.size);
         }
-        return acq::SubmitResult{{sizeof(acq::SubmitResult)}, disposition, 0};
+        return self.disposition;
     }
 
-    rodaq::Result<acq::DescriptorToken> propose_descriptor(
-        const acq::DescriptorProposal&, plugin::Deadline) {
-        return acq::DescriptorToken{1, 1};
+    static void report_event(void* ctx, const rodaq_acquisition_event_t* event) noexcept {
+        auto& self = *reinterpret_cast<HostCallbacks*>(ctx);
+        ++self.event_calls;
+        self.last_event_kind = event->kind;
     }
 
-    rodaq::Result<void> report_source_event(const acq::SourceEvent&) { return {}; }
+    acq::CallbacksTable table() noexcept {
+        return {
+            {sizeof(acq::CallbacksTable)}, this, prepare_descriptor, submit_record, report_event};
+    }
 
-    rodaq::Result<void> report_acquisition_event(const acq::AcquisitionEvent&) { return {}; }
-
-    bool failure{false};
-    bool throw_error{false};
-    std::uint32_t calls{0};
-    rodaq_submit_disposition_t disposition{RODAQ_SUBMIT_ACCEPTED};
+    bool fail_prepare{false};
+    rodaq_descriptor_id_t next_descriptor_id{42};
+    rodaq_record_disposition_t disposition{RODAQ_SUBMIT_ACCEPTED};
+    std::uint32_t prepare_calls{0};
+    std::uint32_t submit_calls{0};
+    std::uint32_t event_calls{0};
+    rodaq_acquisition_event_kind_t last_event_kind{RODAQ_ACQUISITION_EVENT_INVALID};
     std::vector<std::uint8_t> copied;
 };
 
-class Reader final : public plugin::PluginBase {
-public:
-    rodaq::Result<void> configure(plugin::PluginSetup& setup) override {
-        const std::uint16_t minimum = setup.config() == "minor1"          ? 1
-                                      : setup.config() == "invalid-minor" ? 2
-                                                                          : 0;
-        auto result = setup.service<acq::Service>(minimum);
-        if (!result.ok()) {
-            return result.status();
-        }
-        reference = std::move(result).value();
-        return {};
-    }
+TEST(AcquisitionCallbacks, CopyCompletesBeforeCallbackReturnsAndRejectIsSuccessfulDisposition) {
+    HostCallbacks host;
+    acq::Callbacks cb(host.table());
+    ASSERT_TRUE(static_cast<bool>(cb));
 
-    rodaq::Result<void> shutdown(plugin::Deadline) override { return {}; }
-
-    std::optional<acq::ServiceReference> reference;
-};
-
-class AcquisitionSdk : public testing::Test {
-protected:
-    static rodaq_status_code_t query(
-        rodaq_service_registry_context_t* context, const rodaq_interface_query_t* request,
-        rodaq_interface_reference_t* result, rodaq_error_t* error) noexcept {
-        auto& fixture = *reinterpret_cast<AcquisitionSdk*>(context);
-        ++fixture.queries_;
-        fixture.minimum_ = request->min_minor;
-        auto code = plugin::authoring::query_interface(fixture.entries_, request, result, error);
-        if (code == RODAQ_STATUS_OK && fixture.corrupt_version_) {
-            result->negotiated_version.minor = 0;
-        }
-        return code;
-    }
-
-    void SetUp() override {
-        auto binding = plugin::authoring::bind_interface<acq::Service>(host_);
-        ASSERT_TRUE(binding.ok());
-        entries_.push_back(std::move(binding).value());
-        ASSERT_EQ(
-            plugin::authoring::Instance<Reader>::create(&instance_, nullptr), RODAQ_STATUS_OK);
-        const rodaq_config_t config{{sizeof(config)}, {nullptr, 0}};
-        ASSERT_EQ(
-            instance_.vtable->configure(instance_.context, &registry_, &config, nullptr),
-            RODAQ_STATUS_OK);
-    }
-
-    void TearDown() override {
-        if (instance_.context != nullptr) {
-            EXPECT_EQ(
-                instance_.vtable->shutdown(instance_.context, {RODAQ_DEADLINE_INFINITE}, nullptr),
-                RODAQ_STATUS_OK);
-            instance_.vtable->destroy(instance_.context);
-        }
-    }
-
-    acq::ServiceReference& reference() {
-        return *reinterpret_cast<plugin::authoring::Instance<Reader>*>(instance_.context)
-                    ->plugin.reference;
-    }
-
-    rodaq_status_code_t configure_reader(std::string_view configuration) {
-        rodaq_plugin_instance_t reader{};
-        auto created = plugin::authoring::Instance<Reader>::create(&reader, nullptr);
-        if (created != RODAQ_STATUS_OK) {
-            return created;
-        }
-        struct ActualOwner {
-            rodaq_plugin_instance_t instance;
-            ~ActualOwner() {
-                EXPECT_EQ(
-                    instance.vtable->shutdown(instance.context, {RODAQ_DEADLINE_INFINITE}, nullptr),
-                    RODAQ_STATUS_OK);
-                instance.vtable->destroy(instance.context);
-            }
-        } owner{reader};
-        const rodaq_config_t config{
-            {sizeof(config)},
-            {configuration.data(), static_cast<std::uint32_t>(configuration.size())}};
-        return reader.vtable->configure(reader.context, &registry_, &config, nullptr);
-    }
-
-    unsigned queries_{0};
-    std::uint16_t minimum_{0};
-    bool corrupt_version_{false};
-    Host host_;
-    std::vector<plugin::authoring::InterfaceEntry> entries_;
-    rodaq_plugin_instance_t instance_{};
-    const rodaq_service_registry_vtable_t table_{
-        {offsetof(rodaq_service_registry_vtable_t, query) + sizeof(table_.query)},
-        query,
-        nullptr,
-        nullptr};
-    const rodaq_service_registry_reference_t registry_{
-        reinterpret_cast<rodaq_service_registry_context_t*>(this), &table_};
-};
-
-TEST_F(AcquisitionSdk, CopyCompletesBeforeCallbackReturnsAndRejectIsSuccessfulDisposition) {
     std::array<std::uint8_t, 4> source{1, 2, 3, 4};
-    auto value = record();
-    value.payload.data = source.data();
-    value.payload.logical_size = source.size();
-    auto result = reference().submit_record(value);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value().disposition, RODAQ_SUBMIT_ACCEPTED);
+    auto value = make_record();
+    value.payload = {source.data(), source.size()};
+    EXPECT_EQ(cb.submit_record(value), RODAQ_SUBMIT_ACCEPTED);
     source.fill(9);
-    EXPECT_EQ(host_.copied, (std::vector<std::uint8_t>{1, 2, 3, 4}));
-    host_.disposition = RODAQ_SUBMIT_GATE_CLOSED;
-    result = reference().submit_record(value);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value().disposition, RODAQ_SUBMIT_GATE_CLOSED);
+    EXPECT_EQ(host.copied, (std::vector<std::uint8_t>{1, 2, 3, 4}));
+
+    host.disposition = RODAQ_SUBMIT_GATE_CLOSED;
+    EXPECT_EQ(cb.submit_record(value), RODAQ_SUBMIT_GATE_CLOSED);
+
+    host.disposition = 999;
+    EXPECT_EQ(cb.submit_record(value), RODAQ_SUBMIT_INVALID);
 }
 
-TEST_F(AcquisitionSdk, NonOkKeepsDefaultInvalidAndExceptionsDoNotEscape) {
-    auto value = record();
-    acq::SubmitResult output{{sizeof(output)}, RODAQ_SUBMIT_ACCEPTED, 99};
-    auto* context = reinterpret_cast<rodaq_interface_context_t*>(&host_);
-    const auto* table = acq::ServiceProvider<Host>::vtable();
-    host_.failure = true;
-    EXPECT_EQ(table->submit_record(context, &value, &output), RODAQ_STATUS_UNAVAILABLE);
-    EXPECT_EQ(output.disposition, RODAQ_SUBMIT_INVALID);
-    EXPECT_EQ(output.reserved0, 0);
-    host_.throw_error = true;
-    EXPECT_EQ(reference().submit_record(value).status().code(), rodaq::StatusCode::Internal);
-    host_.throw_error = false;
-    host_.failure = false;
-    host_.disposition = 999;
-    EXPECT_EQ(reference().submit_record(value).status().code(), rodaq::StatusCode::Internal);
+TEST(AcquisitionCallbacks, PrepareDescriptorRejectsZeroIdAndReportsHostErrors) {
+    HostCallbacks host;
+    acq::Callbacks cb(host.table());
+
+    acq::Descriptor descriptor{};
+    descriptor.header.struct_size = sizeof(descriptor);
+    descriptor.stream_id = 1;
+    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
+    descriptor.channel_name = {"sample", 6};
+    descriptor.message_encoding = {"raw", 3};
+
+    auto bound = cb.prepare_descriptor(1, descriptor);
+    ASSERT_TRUE(bound.ok());
+    EXPECT_EQ(bound.value(), 42ULL);
+
+    host.next_descriptor_id = 0;
+    EXPECT_EQ(cb.prepare_descriptor(1, descriptor).status().code(), rodaq::StatusCode::Internal);
+
+    host.fail_prepare = true;
+    EXPECT_EQ(cb.prepare_descriptor(1, descriptor).status().code(), rodaq::StatusCode::Unavailable);
 }
 
-TEST_F(AcquisitionSdk, RequiredServiceMinorNeverSilentlyDowngradesToAnOlderHost) {
-    entries_[0].reference.negotiated_version.minor = 0;
-    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_UNAVAILABLE);
-    EXPECT_EQ(minimum_, 1);
-    EXPECT_EQ(configure_reader({}), RODAQ_STATUS_OK);
-    EXPECT_EQ(minimum_, 0);
-    entries_[0].reference.negotiated_version.minor = 1;
-    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_OK);
-    const auto before = queries_;
-    EXPECT_EQ(configure_reader("invalid-minor"), RODAQ_STATUS_INVALID_ARGUMENT);
-    EXPECT_EQ(queries_, before);
-    corrupt_version_ = true;
-    EXPECT_EQ(configure_reader("minor1"), RODAQ_STATUS_INTERNAL);
-}
-
-TEST_F(AcquisitionSdk, CallerCapacityIsCheckedBeforeAnyOutputWrite) {
-    auto value = record();
-    acq::SubmitResult output{{0}, 123, 456};
-    const auto* table = acq::ServiceProvider<Host>::vtable();
-    EXPECT_EQ(
-        table->submit_record(reinterpret_cast<rodaq_interface_context_t*>(&host_), &value, &output),
-        RODAQ_STATUS_INVALID_ARGUMENT);
-    EXPECT_EQ(output.disposition, 123);
-    EXPECT_EQ(output.reserved0, 456);
-    EXPECT_EQ(host_.calls, 0);
-}
-
-TEST_F(AcquisitionSdk, HealthyReadinessReportReturnsSuccess) {
-    acq::AcquisitionEvent event{};
-    event.header.struct_size = sizeof(event);
-    event.kind = RODAQ_ACQUISITION_EVENT_TRANSPORT_READY;
-    EXPECT_TRUE(reference().report_acquisition_event(event).ok());
-}
-
-TEST(AcquisitionValidation, RecordFlagsUnusedTimestampsAndAbsentFactsFailClosed) {
-    const auto original = record();
+TEST(AcquisitionValidation, RecordReservedBytesAndAbsentFieldsFailClosed) {
+    const auto original = make_record();
     ASSERT_TRUE(acq::abi::valid_record(&original));
     auto value = original;
-    value.delivery_flags = 2;
+    value.stream_id = 0;
     EXPECT_FALSE(acq::abi::valid_record(&value));
     value = original;
-    value.timestamps[3].value = 1;
+    value.descriptor_id = 0;
     EXPECT_FALSE(acq::abi::valid_record(&value));
     value = original;
-    value.source_sequence = 1;
+    value.source_publish_time = 1;
+    EXPECT_FALSE(acq::abi::valid_record(&value));
+    value.has_source_publish_time = 1;
+    EXPECT_TRUE(acq::abi::valid_record(&value));
+    value = original;
+    value.has_source_publish_time = 2;
     EXPECT_FALSE(acq::abi::valid_record(&value));
     value = original;
-    value.has_source_id = 2;
+    value.reserved[0] = 1;
     EXPECT_FALSE(acq::abi::valid_record(&value));
     value = original;
     value.header.struct_size = sizeof(value) - 1;
@@ -261,66 +153,45 @@ TEST(AcquisitionValidation, EventScopeAndStatusVocabularyAreExplicit) {
     EXPECT_FALSE(acq::abi::valid_acquisition_event(&event));
 }
 
-TEST(AcquisitionValidation, ScopeRequiresItsDeclaredIdentityAndOpaqueCannotProveGaps) {
-    auto value = record();
-    value.has_source_sequence = 1;
-    value.sequence_scope = RODAQ_SEQUENCE_SCOPE_OPAQUE;
-    EXPECT_TRUE(acq::abi::valid_record(&value));
-    value.sequence_scope = RODAQ_SEQUENCE_SCOPE_SOURCE;
-    EXPECT_FALSE(acq::abi::valid_record(&value));
-    value.has_source_id = 1;
-    value.source_id.kind = RODAQ_SOURCE_ID_RTPS_GUID;
-    value.source_id.size = 16;
-    EXPECT_TRUE(acq::abi::valid_record(&value));
-    value.sequence_scope = RODAQ_SEQUENCE_SCOPE_SOURCE_SESSION;
-    EXPECT_FALSE(acq::abi::valid_record(&value));
-    value.has_source_session_id = 1;
-    value.source_session_id = 1;
-    EXPECT_TRUE(acq::abi::valid_record(&value));
-    acq::SourceEvent event{};
-    event.header.struct_size = sizeof(event);
-    event.stream_id = 1;
-    event.kind = RODAQ_SOURCE_EVENT_SEQUENCE_GAP;
-    event.has_source_sequence = 1;
-    event.sequence_scope = RODAQ_SEQUENCE_SCOPE_OPAQUE;
-    EXPECT_FALSE(acq::abi::valid_source_event(&event));
-}
-
 TEST(AcquisitionValidation, GenericSchemaSupportStaysWithBackendWhileRos2RequiresSchema) {
-    acq::DescriptorProposal proposal{};
-    proposal.header.struct_size = sizeof(proposal);
-    proposal.stream_id = 1;
-    proposal.channel_name = {"sample", 6};
-    proposal.message_encoding = {"raw", 3};
-    proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
-    EXPECT_TRUE(acq::abi::valid_descriptor(&proposal));
-    proposal.data_profile = RODAQ_DATA_PROFILE_ROS2;
-    proposal.message_encoding = {"cdr", 3};
-    EXPECT_FALSE(acq::abi::valid_descriptor(&proposal));
-    proposal.schema_name = {"std_msgs/msg/Int32", 18};
-    proposal.schema_encoding = {"ros2msg", 7};
+    acq::Descriptor descriptor{};
+    descriptor.header.struct_size = sizeof(descriptor);
+    descriptor.stream_id = 1;
+    descriptor.channel_name = {"sample", 6};
+    descriptor.message_encoding = {"raw", 3};
+    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
+    EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
+    descriptor.data_profile = RODAQ_DATA_PROFILE_ROS2;
+    descriptor.message_encoding = {"cdr", 3};
+    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
+    descriptor.schema_name = {"std_msgs/msg/Int32", 18};
+    descriptor.schema_encoding = {"ros2msg", 7};
     const std::uint8_t schema[] = {'i', 'n', 't'};
-    proposal.schema = {schema, sizeof(schema)};
-    EXPECT_TRUE(acq::abi::valid_descriptor(&proposal));
+    descriptor.schema = {schema, sizeof(schema)};
+    EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
     rodaq_ros2_qos_profile_t qos{};
-    proposal.ros2_offered_qos_profiles = &qos;
-    proposal.ros2_offered_qos_profile_count = 1;
-    EXPECT_TRUE(acq::abi::valid_descriptor(&proposal));
+    descriptor.ros2_offered_qos_profiles = &qos;
+    descriptor.ros2_offered_qos_profile_count = 1;
+    EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
     qos.reliability = 99;
-    EXPECT_FALSE(acq::abi::valid_descriptor(&proposal));
+    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
     qos.reliability = RODAQ_ROS2_QOS_RELIABILITY_RELIABLE;
     qos.deadline.nsec = 1000000000;
-    EXPECT_FALSE(acq::abi::valid_descriptor(&proposal));
+    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
 }
 
 struct ControlBackend {
-    rodaq::Result<void> prepare(const acq::PrepareConfig&, plugin::Deadline budget) {
+    rodaq::Result<void> prepare(
+        const acq::PrepareConfig&, acq::Callbacks, plugin::Deadline budget) {
         deadline = budget.native().monotonic_deadline;
         return {};
     }
 
     rodaq::Result<void> start(plugin::Deadline budget) {
         deadline = budget.native().monotonic_deadline;
+        if (throw_on_start) {
+            throw std::runtime_error("boom");
+        }
         return {};
     }
 
@@ -330,6 +201,7 @@ struct ControlBackend {
     }
 
     std::int64_t deadline{0};
+    bool throw_on_start{false};
 };
 
 TEST(AcquisitionSdkControl, NativeAbsoluteBudgetIsPreservedAndNegativeBudgetRejected) {
@@ -340,6 +212,8 @@ TEST(AcquisitionSdkControl, NativeAbsoluteBudgetIsPreservedAndNegativeBudgetReje
     EXPECT_EQ(backend.deadline, 12345);
     EXPECT_EQ(table->quiesce(context, {-1}, nullptr), RODAQ_STATUS_INVALID_ARGUMENT);
     EXPECT_EQ(backend.deadline, 12345);
+    backend.throw_on_start = true;
+    EXPECT_EQ(table->start(context, {12345}, nullptr), RODAQ_STATUS_INTERNAL);
 }
 
 }  // namespace

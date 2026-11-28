@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -8,34 +7,12 @@
 #include <vector>
 
 #include <rodaq/acquisition/types.hpp>
+#include <rodaq/result.hpp>
 #include <rodaq/storage/types.hpp>
+
 #include "../ros2_subscription.hpp"
 
 namespace rodaq::pipeline {
-
-struct DescriptorRegistryState;
-class DescriptorRegistry;
-
-// The lease is destroyed after owned facts, keeping accounting/backing until
-// actual descriptor access ends. It has no dependency on the registry facade.
-class DescriptorReservation {
-public:
-    DescriptorReservation(const DescriptorReservation&) = delete;
-    DescriptorReservation& operator=(const DescriptorReservation&) = delete;
-    DescriptorReservation(DescriptorReservation&& other) noexcept;
-    DescriptorReservation& operator=(DescriptorReservation&&) = delete;
-    ~DescriptorReservation() noexcept;
-
-private:
-    friend class DescriptorRegistry;
-    DescriptorReservation(
-        std::shared_ptr<DescriptorRegistryState> state, std::size_t stream_index,
-        std::size_t slot_index, std::size_t bytes) noexcept;
-    std::shared_ptr<DescriptorRegistryState> state_;
-    std::size_t stream_index_;
-    std::size_t slot_index_;
-    std::size_t bytes_;
-};
 
 struct DescriptorFacts {
     rodaq_data_profile_t data_profile{RODAQ_DATA_PROFILE_INVALID};
@@ -48,23 +25,18 @@ struct DescriptorFacts {
     std::vector<rodaq_ros2_qos_profile_t> offered_qos;
     std::string schema_digest;
     std::optional<canonical::Ros2SubscriptionFacts> ros2_subscription;
-    // Private normalized-fact fingerprint; never used as persistent ID.
-    std::string fingerprint;
 };
 
+// Immutable bind-once Stream Descriptor owned by a Recording Instance and
+// retained by accepted Records through actual Storage return.
 class Descriptor {
-private:
-    // First member is destroyed last, after all variable-size facts.
-    DescriptorReservation reservation_;
-    friend class DescriptorRegistry;
-    Descriptor(
-        DescriptorReservation reservation, rodaq_stream_id_t stream, rodaq_descriptor_id_t identity,
-        acquisition::DescriptorToken token, DescriptorFacts facts) noexcept;
-
 public:
+    static Result<std::shared_ptr<const Descriptor>> create(
+        const acquisition::Descriptor& proposal, rodaq_descriptor_id_t descriptor_id,
+        std::uint32_t max_schema_bytes = 1024 * 1024, std::uint32_t max_qos_profiles = 256);
+
     const rodaq_stream_id_t stream_id;
     const rodaq_descriptor_id_t descriptor_id;
-    const acquisition::DescriptorToken token;
     const DescriptorFacts facts;
 
     Descriptor(const Descriptor&) = delete;
@@ -76,6 +48,10 @@ public:
     // All views remain valid while this immutable owner remains referenced,
     // including beyond an observer timeout until actual Storage call return.
     storage::StreamDescriptor view() const noexcept;
+
+private:
+    Descriptor(
+        rodaq_stream_id_t stream, rodaq_descriptor_id_t identity, DescriptorFacts owned) noexcept;
 };
 
 using DescriptorRef = std::shared_ptr<const Descriptor>;

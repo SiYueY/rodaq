@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { DurationValue, SnapshotFreshnessState } from '../api/generated';
-import { formatAgeSeconds, formatDuration } from '../format/time';
+import type { SnapshotFreshnessState } from '../api/generated';
+import { formatAgeSeconds, formatDurationMs } from '../format/time';
 import StatusBadge from './StatusBadge.vue';
 
 const props = defineProps<{
   freshness: SnapshotFreshnessState;
-  serverAge?: DurationValue | null;
+  serverAgeMs?: number | null;
   receivedAtMs?: number | null;
   nowMs?: number;
 }>();
@@ -29,8 +29,8 @@ const text = computed(() => {
     props.freshness === 'stale'
       ? props.receivedAtMs && props.nowMs
         ? ` (${formatAgeSeconds(props.nowMs, props.receivedAtMs)})`
-        : props.serverAge
-          ? ` (${formatDuration(props.serverAge)})`
+        : props.serverAgeMs !== null && props.serverAgeMs !== undefined
+          ? ` (${formatDurationMs(props.serverAgeMs)})`
           : ''
       : '';
   return props.freshness === 'fresh' ? 'Fresh' : `Stale${ageSuffix}`;

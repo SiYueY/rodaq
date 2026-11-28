@@ -57,8 +57,6 @@ struct PipelineRuntimeFacts {
     std::string instance_id;
     ControlGeneration control_generation{0};
     std::optional<StatusCode> prepare_status;
-    // Present only after actual successful Prepare returned the frozen binding.
-    std::optional<std::string> effective_config_id;
     bool admission_open{false};
     bool quiescent{false};
     StatusCode writer_failure{StatusCode::Ok};

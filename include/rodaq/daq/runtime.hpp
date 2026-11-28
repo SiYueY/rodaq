@@ -38,6 +38,8 @@ struct DaqResourceProfile {
     std::uint32_t queue_capacity{1024};
     std::uint32_t callback_concurrency{4};
     std::uint64_t max_segment_physical_bytes{512ull * 1024 * 1024};
+    // Coarse per-segment disk reservation covering soft target + safety margin.
+    std::uint64_t segment_reservation_bytes{640ull * 1024 * 1024};
     std::uint64_t max_segment_records{1000000};
     std::uint64_t max_segment_input_bytes{512ull * 1024 * 1024};
     std::uint32_t max_batch_records{256};
@@ -47,8 +49,6 @@ struct DaqResourceProfile {
     std::uint32_t max_sealed_files{8};
     std::uint64_t max_manifest_bytes{1024 * 1024};
     std::uint32_t max_prepared_descriptors{1024};
-    std::uint32_t sequence_reservation{65536};
-    std::uint32_t descriptor_reservation{256};
 };
 
 struct DaqVolumePolicy {
@@ -62,8 +62,7 @@ struct DaqVolumePolicy {
     std::chrono::nanoseconds recovery_stable_window{std::chrono::seconds{1}};
     std::uint32_t max_segments{64};
     std::uint32_t max_commit_slots{16};
-    std::uint32_t max_artifact_slots{4096};
-    std::uint32_t ledger_records{4096};
+    std::uint32_t max_artifacts_per_volume{10000};
 };
 
 struct DaqOpenOptions {
@@ -79,9 +78,7 @@ struct DaqOpenOptions {
     std::string qualified_runtime_profile_id;
     std::size_t max_tasks{4};
     std::size_t max_pipelines_per_task{8};
-    std::size_t create_recovery_slots{8};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
-    std::chrono::nanoseconds artifact_audit_window{std::chrono::hours{24}};
     std::chrono::nanoseconds system_snapshot_max_age{std::chrono::seconds{2}};
     DaqVolumePolicy volume;
     std::vector<DaqResourceProfile> profiles;
@@ -103,9 +100,8 @@ public:
     ArtifactService& artifacts() noexcept;
     SystemService& system() noexcept;
 
-    // Periodic maintenance tick (clock/volume sampling, retention, GC, system
-    // projection refresh). Call from a bounded maintenance thread, never from
-    // an HTTP event loop.
+    // Periodic maintenance tick (volume sampling, retention, system projection
+    // refresh). Call from a bounded maintenance thread, never from an HTTP loop.
     Result<void> observe();
 
     // Deadline bounds observer wait; failure retains live owners so the caller

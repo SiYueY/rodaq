@@ -1,65 +1,24 @@
-import type { DurationValue, Rfc3339Timestamp } from '../api/generated';
-import { parseUint64BigInt } from './decimal';
+import type { Rfc3339Timestamp } from '../api/generated';
 
-const UNIT_NS: Record<DurationValue['unit'], bigint> = {
-  ns: 1n,
-  us: 1_000n,
-  ms: 1_000_000n,
-  s: 1_000_000_000n,
-};
-
-export function durationToNanoseconds(d: DurationValue | null | undefined): bigint | null {
-  if (!d) {
-    return null;
-  }
-  const v = parseUint64BigInt(d.value);
-  if (v === null) {
-    return null;
-  }
-  const mult = UNIT_NS[d.unit];
-  if (!mult) {
-    return null;
-  }
-  return v * mult;
-}
-
-export function durationToMsClamped(d: DurationValue | null | undefined, fallbackMs: number): number {
-  const ns = durationToNanoseconds(d);
-  if (ns === null) {
-    return fallbackMs;
-  }
-  const ms = ns / 1_000_000n;
-  if (ms > BigInt(Number.MAX_SAFE_INTEGER)) {
-    return Number.MAX_SAFE_INTEGER;
-  }
-  return Number(ms);
-}
-
-export function formatDuration(d: DurationValue | null | undefined): string {
-  const ns = durationToNanoseconds(d);
-  if (ns === null) {
+export function formatDurationMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
     return '—';
   }
-  if (ns === 0n) {
+  const whole = Math.floor(ms);
+  if (whole === 0) {
     return '0 ms';
   }
-  if (ns < 1_000n) {
-    return `${ns.toString()} ns`;
+  if (whole < 1_000) {
+    return `${whole} ms`;
   }
-  if (ns < 1_000_000n) {
-    return `${(ns / 1_000n).toString()} µs`;
+  const totalSec = Math.floor(whole / 1_000);
+  const remTenths = Math.floor((whole % 1_000) / 10);
+  if (totalSec < 60) {
+    return `${totalSec}.${remTenths.toString().padStart(2, '0')} s`;
   }
-  if (ns < 1_000_000_000n) {
-    return `${(ns / 1_000_000n).toString()} ms`;
-  }
-  const wholeSec = ns / 1_000_000_000n;
-  const remMs = (ns % 1_000_000_000n) / 10_000_000n;
-  if (wholeSec < 60n) {
-    return `${wholeSec.toString()}.${remMs.toString().padStart(2, '0')} s`;
-  }
-  const mins = wholeSec / 60n;
-  const secs = wholeSec % 60n;
-  return `${mins.toString()}m ${secs.toString()}s`;
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${mins}m ${secs}s`;
 }
 
 export function formatTimestampUtc(ts: Rfc3339Timestamp | null | undefined): string {

@@ -14,7 +14,6 @@ import { usePolling } from '../../composables/usePolling';
 import { useRequest } from '../../composables/useRequest';
 import { useSessionStore } from '../../composables/useSession';
 import { formatTimestampUtc } from '../../format/time';
-import { deletePendingMutation } from './pendingMutations';
 import { useTaskMutation } from './useTaskMutation';
 import StatusBadge from '../../components/StatusBadge.vue';
 import FreshnessBadge from '../../components/FreshnessBadge.vue';
@@ -45,7 +44,6 @@ const nowMs = ref(Date.now());
 const opCursorStack = ref<(string | undefined)[]>([undefined]);
 const opCursor = computed(() => opCursorStack.value[opCursorStack.value.length - 1]);
 const activePendingOpId = ref<string | null>(null);
-const activePendingOpKey = ref<string | null>(null);
 
 let clockTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
@@ -81,25 +79,32 @@ const runtimePoll = usePolling<TaskRuntimeData>({
   getFloorMs: () => session.pollingFloorMs,
 });
 
-const trackedOpId = computed(
-  () => activePendingOpId.value ?? taskPoll.state.data?.current_operation_id ?? null,
+// Strictly match current route taskId so route A -> B transitions NEVER expose A's stale snapshot
+// or permit sending mutations against A before B's snapshot arrives (Web §2.3, WEB-E2E-005).
+const task = computed(() =>
+  taskPoll.state.data && taskPoll.state.data.task_id === taskId.value ? taskPoll.state.data : null,
 );
+const runtime = computed(() =>
+  runtimePoll.state.data && runtimePoll.state.data.task_id === taskId.value
+    ? runtimePoll.state.data
+    : null,
+);
+
+const trackedOpId = computed(() => activePendingOpId.value ?? task.value?.current_operation_id ?? null);
 
 const currentOpPoll = usePolling<OperationData>({
   resourceKey: 'task.current_op',
-  enabled: () => session.lifecycle === 'AuthenticatedReady' && trackedOpId.value !== null,
+  enabled: () =>
+    session.lifecycle === 'AuthenticatedReady' && task.value !== null && trackedOpId.value !== null,
   fetcher: async (signal) => {
+    const targetTaskId = taskId.value;
     const op = await session.api.request<OperationData>({
       method: 'GET',
-      path: `/api/tasks/${encodeURIComponent(taskId.value)}/operations/${encodeURIComponent(trackedOpId.value!)}`,
+      path: `/api/tasks/${encodeURIComponent(targetTaskId)}/operations/${encodeURIComponent(trackedOpId.value!)}`,
       timeoutMs: CLIENT_TIMEOUTS.query,
       signal,
     });
     if (isTerminalOperationState(op.state)) {
-      if (activePendingOpKey.value) {
-        deletePendingMutation(activePendingOpKey.value);
-        activePendingOpKey.value = null;
-      }
       if (activePendingOpId.value === op.operation_id) {
         activePendingOpId.value = null;
       }
@@ -132,11 +137,8 @@ const configReq = useRequest((signal) =>
 );
 
 const isTaskNotFound = computed(
-  () => taskPoll.state.error?.httpStatus === 404 && taskPoll.state.data === null,
+  () => taskPoll.state.error?.httpStatus === 404 && task.value === null,
 );
-
-const task = computed(() => taskPoll.state.data);
-const runtime = computed(() => runtimePoll.state.data);
 
 function setTab(tab: TabKey): void {
   void router.replace({ query: { ...route.query, tab } });
@@ -148,7 +150,7 @@ function setTab(tab: TabKey): void {
 }
 
 async function handleOperate(kind: OperationKind): Promise<void> {
-  if (!task.value) {
+  if (!task.value || task.value.task_id !== taskId.value) {
     return;
   }
   try {
@@ -157,7 +159,7 @@ async function handleOperate(kind: OperationKind): Promise<void> {
       kind,
       task.value.control_generation,
     );
-    // HTTP 202 NEVER overwrites server Task state — only tracks accepted Operation ID!
+    // HTTP 202 NEVER overwrites server Task state — only tracks accepted Operation ID.
     activePendingOpId.value = accepted.operation_id;
     currentOpPoll.refreshNow();
     taskPoll.refreshNow();
@@ -165,7 +167,12 @@ async function handleOperate(kind: OperationKind): Promise<void> {
       void opsReq.refresh();
     }
   } catch {
-    // Error displayed via mutation.lastError.
+    // On unknown outcome (504/network) or conflict, immediately refresh authoritative Server state.
+    taskPoll.refreshNow();
+    runtimePoll.refreshNow();
+    if (activeTab.value === 'operations') {
+      void opsReq.refresh();
+    }
   }
 }
 
@@ -200,16 +207,22 @@ function prevOpsPage(): void {
 }
 
 watch(taskId, () => {
-  taskPoll.stop();
-  runtimePoll.stop();
-  currentOpPoll.stop();
+  taskPoll.reset();
+  runtimePoll.reset();
+  currentOpPoll.reset();
   opsReq.abort();
   configReq.abort();
+  mutation.reset();
   activePendingOpId.value = null;
   opCursorStack.value = [undefined];
   taskPoll.start();
   runtimePoll.start();
   currentOpPoll.start();
+  if (activeTab.value === 'operations') {
+    void opsReq.run();
+  } else if (activeTab.value === 'configuration') {
+    void configReq.run();
+  }
 });
 
 onMounted(() => {
@@ -261,9 +274,19 @@ onBeforeUnmount(() => {
 
     <ErrorPanel v-if="taskPoll.state.error" :error="taskPoll.state.error" title="Task Snapshot Error" />
     <ErrorPanel v-if="mutation.lastError.value" :error="mutation.lastError.value" title="Control Operation Error" />
+    <div v-if="mutation.outcomeUnknownMessage.value" class="banner banner-warning" role="status">
+      <span>{{ mutation.outcomeUnknownMessage.value }}</span>
+      <button type="button" class="btn" @click="taskPoll.refreshNow(); runtimePoll.refreshNow()">
+        Refresh Now
+      </button>
+    </div>
 
-    <!-- TaskHeader: Four Orthogonal Facts (Web §1.1, §2.3) -->
-    <article v-if="task" class="card" data-testid="task-header">
+    <article v-if="!task" class="card">
+      <p class="muted">Loading authoritative snapshot for Task <code class="mono">{{ taskId }}</code>…</p>
+      <div class="skeleton" aria-hidden="true" />
+    </article>
+
+    <article v-else class="card" data-testid="task-header">
       <div class="grid-4">
         <div>
           <div class="muted" style="font-size: 0.8rem">Desired State</div>
@@ -304,7 +327,7 @@ onBeforeUnmount(() => {
             />
             <FreshnessBadge
               :freshness="taskPoll.state.phase === 'stale' ? 'stale' : task.freshness.state"
-              :server-age="task.freshness.age"
+              :server-age-ms="task.freshness.age_ms"
               :received-at-ms="taskPoll.state.receivedAt"
               :now-ms="nowMs"
             />
@@ -321,8 +344,6 @@ onBeforeUnmount(() => {
     <TaskControlPanel
       v-if="task"
       :task="task"
-      :can-control="session.hasScope('control')"
-      :can-admin="session.hasScope('admin')"
       :busy="mutation.submitting.value"
       @operate="handleOperate"
     />
@@ -430,7 +451,7 @@ onBeforeUnmount(() => {
               Export JSON
             </button>
             <RouterLink
-              v-if="session.hasScope('control') && task?.desired_state === 'stopped' && task?.execution_condition === 'idle'"
+              v-if="task?.desired_state === 'stopped' && task?.execution_condition === 'idle'"
               :to="`/tasks/${encodeURIComponent(taskId)}/config`"
               class="btn btn-primary"
             >

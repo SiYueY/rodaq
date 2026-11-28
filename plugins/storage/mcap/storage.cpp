@@ -8,12 +8,10 @@
 #include <tuple>
 #include <unistd.h>
 
-#include <rodaq/storage/capacity.hpp>
 #include <rodaq/storage/validation.hpp>
 
 #include "config.hpp"
 #include "qos.hpp"
-#include "rodaqmeta.hpp"
 
 namespace rodaq::mcap_storage {
 namespace {
@@ -36,7 +34,6 @@ bool add(std::uint64_t& target, std::uint64_t amount) noexcept {
 }
 
 bool same_schema(const mcap::Schema& a, const mcap::Schema& b) {
-    // Exact bytes provide a stronger equality proof than a digest alone.
     return a.name == b.name && a.encoding == b.encoding && a.data == b.data;
 }
 
@@ -60,6 +57,7 @@ struct StorageBackend::Descriptor {
     std::uint64_t segment{0};
     mcap::SchemaId schema_id{0};
     mcap::ChannelId channel_id{0};
+    std::uint32_t next_sequence{0};
 };
 
 bool StorageBackend::SchemaLess::operator()(const Descriptor* left, const Descriptor* right) const {
@@ -67,34 +65,8 @@ bool StorageBackend::SchemaLess::operator()(const Descriptor* left, const Descri
            std::tie(right->schema.name, right->schema.encoding, right->schema.data);
 }
 
-storage::CapacityModel capacity_model(std::string_view recorder_distro) noexcept {
-    static_assert(sizeof(rodaq_ros2_qos_profile_t) == 80);
-    constexpr auto kQosExpansion = (kMaxEncodedQosBytes + 79) / 80;
-    // Schema + Channel framing, both metadata key/value length prefixes and
-    // the empty QoS sequence. Every variable input byte is covered by expansion.
-    constexpr auto kDescriptorFraming =
-        23 + 25 + 8 + kOfferedQosKey.size() + 8 + kTypeHashKey.size() + 3;
-    // Magic/Header + one fixed rosbag2 metadata record + sidecar Header.
-    const auto fixed = 8 + 9 + 4 + kProfile.size() + 4 + kLibrary.size() + 9 + 4 +
-                       std::string_view("rosbag2").size() + 4 + 4 +
-                       std::string_view("ROS_DISTRO").size() + 4 + recorder_distro.size() +
-                       kMetaHeaderBytes;
-    // DataEnd + Footer + trailing magic + sidecar Footer, with no Summary.
-    constexpr auto kSeal = (9 + 4) + (9 + 20) + 8 + kMetaFooterBytes;
-    return {
-        {sizeof(storage::CapacityModel)},
-        1,
-        1,
-        31 + kMetaMaxEntryBytes,
-        kQosExpansion,
-        1,
-        kDescriptorFraming,
-        fixed,
-        kSeal};
-}
-
-StorageBackend::StorageBackend(CheckedSink::Write mcap_write, CheckedSink::Write meta_write)
-: mcap_write_(std::move(mcap_write)), meta_write_(std::move(meta_write)) {}
+StorageBackend::StorageBackend(CheckedSink::Write mcap_write)
+: mcap_write_(std::move(mcap_write)) {}
 
 StorageBackend::~StorageBackend() noexcept {
     if (writer_) {
@@ -121,7 +93,7 @@ Result<void> StorageBackend::configure(std::string_view input) {
     return valid;
 }
 
-Result<storage::CapacityModel> StorageBackend::prepare(
+Result<void> StorageBackend::prepare(
     const storage::PrepareConfig& config, plugin::Deadline deadline) {
     if (phase_ != Phase::Configured) {
         return Status(StatusCode::InvalidState, {});
@@ -132,24 +104,13 @@ Result<storage::CapacityModel> StorageBackend::prepare(
     if (auto ok = check_deadline(deadline); !ok.ok()) {
         return ok.status();
     }
-    if (config.max_descriptors_per_segment > kMaxDescriptors || config.max_segment_file_count < 2 ||
-        config.max_relative_path_bytes < 30) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    auto model = capacity_model(kDistro);
-    auto maximum = storage::record_bound(model, config.max_record_bytes);
-    if (!maximum.ok()) {
-        return maximum.status();
-    }
-    auto fixed = model.fixed_segment_overhead_bytes;
-    if (!add(fixed, model.seal_reserve_bytes) || !add(fixed, maximum.value()) ||
-        fixed > config.max_segment_physical_bytes) {
+    if (config.max_descriptors_per_segment > kMaxDescriptors || config.max_segment_file_count < 1 ||
+        config.max_relative_path_bytes < 25) {
         return Status(StatusCode::ResourceExhausted, {});
     }
     limits_ = config;
-    model_ = model;
     phase_ = Phase::Prepared;
-    return model_;
+    return {};
 }
 
 Result<void> StorageBackend::prepare_descriptor(
@@ -209,15 +170,11 @@ Result<void> StorageBackend::prepare_descriptor(
                    ? Result<void>{}
                    : Result<void>{Status(StatusCode::Conflict, {})};
     }
-    auto bound = storage::descriptor_bound(model_, descriptor.input_bytes);
-    if (!bound.ok()) {
-        return bound.status();
-    }
-    if (bound.value() > kMaxCatalogBytes - catalog_bytes_) {
+    if (descriptor.input_bytes > kMaxCatalogBytes - catalog_bytes_) {
         return Status(StatusCode::ResourceExhausted, {});
     }
+    catalog_bytes_ += descriptor.input_bytes;
     descriptors_.emplace(key, std::move(descriptor));
-    catalog_bytes_ += bound.value();
     return {};
 }
 
@@ -234,7 +191,7 @@ Result<void> StorageBackend::open_segment(
         return ok.status();
     }
     // Once any file effect can happen, every exceptional/failed exit is a
-    // contaminated Segment until actual quiesce. No retry or ordinary Seal.
+    // failed Segment until actual quiesce. No retry or ordinary Seal.
     phase_ = Phase::Failed;
     try {
         if (writer_) {
@@ -242,10 +199,8 @@ Result<void> StorageBackend::open_segment(
             writer_.reset();
         }
         mcap_ = std::make_unique<CheckedSink>(mcap_write_);
-        meta_ = std::make_unique<CheckedSink>(meta_write_);
         writer_ = std::make_unique<mcap::McapWriter>();
         mcap_name_ = std::to_string(segment.segment_id) + ".mcap";
-        meta_name_ = std::to_string(segment.segment_id) + ".rodaqmeta";
         const auto directory_name = text(segment.staging_directory);
         const int directory =
             ::open(directory_name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -254,12 +209,6 @@ Result<void> StorageBackend::open_segment(
             return Status(failure_, {});
         }
         auto opened = mcap_->open(directory, mcap_name_.c_str());
-        if (opened.ok()) {
-            opened = check_deadline(deadline);
-        }
-        if (opened.ok()) {
-            opened = meta_->open(directory, meta_name_.c_str());
-        }
         ::close(directory);
         if (!opened.ok()) {
             fail(opened.status().code());
@@ -285,18 +234,8 @@ Result<void> StorageBackend::open_segment(
             fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
             return Status(failure_, {});
         }
-        if (auto ok = check_deadline(deadline); !ok.ok()) {
-            fail(ok.status().code());
-            return ok.status();
-        }
-        const auto header = encode_meta_header();
-        meta_->write(header.data(), header.size());
-        if (meta_->status() != StatusCode::Ok) {
-            fail(meta_->status());
-            return Status(failure_, {});
-        }
         segment_id_ = segment.segment_id;
-        paired_records_ = 0;
+        written_records_ = 0;
         input_bytes_ = 0;
         channel_count_ = 0;
         schemas_.clear();
@@ -308,32 +247,6 @@ Result<void> StorageBackend::open_segment(
         fail(StatusCode::Internal);
     }
     return Status(failure_, {});
-}
-
-Result<std::uint64_t> StorageBackend::playback_time(const storage::Record& record) const {
-    if (record.system_boot_id != limits_.system_boot_id ||
-        record.receive_monotonic < limits_.playback_anchor_monotonic) {
-        return Status(StatusCode::InvalidArgument, {});
-    }
-    const auto offset = record.receive_monotonic - limits_.playback_anchor_monotonic;
-    const auto anchor = limits_.playback_anchor_realtime;
-    std::uint64_t result;
-    if (anchor < 0) {
-        const auto magnitude = static_cast<std::uint64_t>(-(anchor + 1)) + 1;
-        if (offset < magnitude) {
-            return Status(StatusCode::InvalidArgument, {});
-        }
-        result = offset - magnitude;
-    } else {
-        result = static_cast<std::uint64_t>(anchor);
-        if (!add(result, offset)) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-    }
-    if (result > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    return result;
 }
 
 Result<void> StorageBackend::materialize(Descriptor& descriptor) {
@@ -363,6 +276,7 @@ Result<void> StorageBackend::materialize(Descriptor& descriptor) {
     writer_->addChannel(native);
     descriptor.channel_id = native.id;
     descriptor.segment = segment_id_;
+    descriptor.next_sequence = 0;
     ++channel_count_;
     return {};
 }
@@ -372,7 +286,7 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
         return Status(StatusCode::InvalidState, {});
     }
     if (batch.count > limits_.max_batch_records ||
-        batch.count > limits_.max_segment_records - paired_records_) {
+        batch.count > limits_.max_segment_records - written_records_) {
         return Status(StatusCode::ResourceExhausted, {});
     }
     if (!storage::abi::valid_batch(batch)) {
@@ -381,11 +295,6 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
     std::uint64_t bytes = 0;
     for (std::uint32_t i = 0; i < batch.count; ++i) {
         const auto& record = batch.records[i];
-        const auto projected = playback_time(record);
-        const auto encoded = encode_meta_entry(record, 0);
-        if (!projected.ok() || !encoded.ok()) {
-            return projected.ok() ? encoded.status() : projected.status();
-        }
         if (record.payload.size > limits_.max_record_bytes || !add(bytes, record.payload.size) ||
             descriptors_.find({record.stream_id, record.descriptor_id}) == descriptors_.end()) {
             return Status(StatusCode::InvalidArgument, {});
@@ -406,26 +315,9 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
             }
             const auto& record = batch.records[i];
             auto& descriptor = descriptors_.at({record.stream_id, record.descriptor_id});
-            const auto record_bytes = storage::record_bound(model_, record.payload.size);
-            if (!record_bytes.ok()) {
-                return {record_bytes.status(), outcome};
-            }
-            auto bound = record_bytes.value();
-            if (descriptor.segment != segment_id_) {
-                const auto descriptor_bytes =
-                    storage::descriptor_bound(model_, descriptor.input_bytes);
-                if (!descriptor_bytes.ok() || !add(bound, descriptor_bytes.value())) {
-                    return {Status(StatusCode::ResourceExhausted, {}), outcome};
-                }
-            }
-            const auto usage = segment_usage();
-            if (!usage.ok()) {
-                return {usage.status(), outcome};
-            }
-            auto maximum = usage.value().physical_bytes;
-            if (!add(maximum, bound) || !add(maximum, model_.seal_reserve_bytes) ||
-                maximum > limits_.max_segment_physical_bytes) {
-                return {Status(StatusCode::ResourceExhausted, {}), outcome};
+            if (descriptor.segment == segment_id_ &&
+                descriptor.next_sequence == std::numeric_limits<std::uint32_t>::max()) {
+                return {Status(StatusCode::ResourceExhausted, "MCAP sequence limit"), outcome};
             }
             outcome.tail_state = RODAQ_STORAGE_TAIL_UNKNOWN;
             auto ready = materialize(descriptor);
@@ -433,21 +325,13 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
                 fail(ready.status().code());
                 return {ready.status(), outcome};
             }
-            const auto sidecar = encode_meta_entry(record, paired_records_).value();
+            const std::uint32_t sequence = ++descriptor.next_sequence;
             mcap::Message message;
             message.channelId = descriptor.channel_id;
-            message.sequence = 0;
-            message.logTime = playback_time(record).value();
-            message.publishTime = message.logTime;
-            for (std::uint32_t t = 0; t < record.timestamp_count; ++t) {
-                const auto& timestamp = record.timestamps[t];
-                if (timestamp.role == RODAQ_TIMESTAMP_ROLE_SOURCE_PUBLICATION &&
-                    timestamp.clock_domain == RODAQ_CLOCK_DOMAIN_UNIX_EPOCH &&
-                    timestamp.value >= 0) {
-                    message.publishTime = static_cast<std::uint64_t>(timestamp.value);
-                    break;
-                }
-            }
+            message.sequence = sequence;
+            message.logTime = record.recording_time;
+            message.publishTime =
+                record.has_publish_time != 0 ? record.publish_time : record.recording_time;
             message.data = reinterpret_cast<const std::byte*>(record.payload.data);
             message.dataSize = record.payload.size;
             const auto written = writer_->write(message);
@@ -455,16 +339,7 @@ storage::WriteOutcome StorageBackend::write_batch(storage::Batch batch, plugin::
                 fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
                 return {Status(failure_, {}), outcome};
             }
-            if (auto ok = check_deadline(deadline); !ok.ok()) {
-                fail(ok.status().code());
-                return {Status(failure_, {}), outcome};
-            }
-            meta_->write(sidecar.bytes.data(), sidecar.size);
-            if (meta_->status() != StatusCode::Ok) {
-                fail(meta_->status());
-                return {Status(failure_, {}), outcome};
-            }
-            ++paired_records_;
+            ++written_records_;
             input_bytes_ += record.payload.size;
             ++outcome.confirmed_prefix;
             outcome.tail_state = outcome.confirmed_prefix == batch.count
@@ -485,20 +360,16 @@ Result<storage::SegmentUsage> StorageBackend::segment_usage() const {
     if (phase_ == Phase::New || phase_ == Phase::Configured) {
         return Status(StatusCode::InvalidState, {});
     }
-    storage::SegmentUsage usage{{sizeof(storage::SegmentUsage)}, 0, 0, 0, 0};
-    for (const auto* sink : {mcap_.get(), meta_.get()}) {
-        if (sink && sink->file_created()) {
-            if (!add(usage.physical_bytes, sink->confirmed_bytes())) {
-                return Status(StatusCode::ResourceExhausted, {});
-            }
-            ++usage.file_count;
-        }
+    storage::SegmentUsage usage{{sizeof(storage::SegmentUsage)}, 0, 0, 0};
+    if (mcap_ && mcap_->file_created()) {
+        usage.physical_bytes = mcap_->confirmed_bytes();
+        usage.file_count = 1;
     }
     return usage;
 }
 
 Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline deadline) {
-    if (phase_ != Phase::Open || paired_records_ == 0) {
+    if (phase_ != Phase::Open || written_records_ == 0) {
         return Status(StatusCode::InvalidState, {});
     }
     if (auto ok = check_deadline(deadline); !ok.ok()) {
@@ -506,34 +377,18 @@ Result<storage::SegmentSealResult> StorageBackend::seal_segment(plugin::Deadline
     }
     phase_ = Phase::Failed;
     try {
-        auto footer = encode_meta_footer({paired_records_, meta_->confirmed_bytes()});
-        if (!footer.ok()) {
-            fail(footer.status().code());
-            return footer.status();
-        }
         writer_->close();
         if (mcap_->status() != StatusCode::Ok) {
             fail(mcap_->status());
             return Status(failure_, {});
         }
-        if (auto ok = check_deadline(deadline); !ok.ok()) {
-            fail(ok.status().code());
+        mcap_->end();
+        if (mcap_->status() != StatusCode::Ok) {
+            fail(mcap_->status());
             return Status(failure_, {});
         }
-        meta_->write(footer.value().data(), footer.value().size());
-        meta_->end();
-        if (meta_->status() != StatusCode::Ok) {
-            fail(meta_->status());
-            return Status(failure_, {});
-        }
-        const auto total = segment_usage();
-        if (!total.ok() || total.value().physical_bytes > limits_.max_segment_physical_bytes) {
-            fail(StatusCode::DataLoss);
-            return Status(failure_, {});
-        }
-        storage::SegmentSealResult sealed{
-            {{mcap_name_, mcap_->confirmed_bytes()}, {meta_name_, meta_->confirmed_bytes()}},
-            total.value().physical_bytes};
+        const auto bytes = mcap_->confirmed_bytes();
+        storage::SegmentSealResult sealed{{{mcap_name_, bytes}}, bytes};
         phase_ = Phase::Sealed;
         return sealed;
     } catch (const std::bad_alloc&) {
@@ -553,9 +408,6 @@ Result<void> StorageBackend::quiesce(plugin::Deadline deadline) {
     }
     if (mcap_) {
         mcap_->end();
-    }
-    if (meta_) {
-        meta_->end();
     }
     phase_ = Phase::Stopped;
     return {};

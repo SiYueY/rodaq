@@ -5,18 +5,22 @@
 #include <string_view>
 #include <utility>
 
-#include "../../../src/persistence/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace rodaq::mcap_storage {
 
 Result<void> validate_config(std::string_view input) {
-    auto parsed = persistence::parse_json(input, {4096, 4, 256, 16, 1, 64});
-    if (!parsed.ok()) {
-        return parsed.status();
+    if (input.empty() || input.size() > 4096) {
+        return Status(StatusCode::InvalidArgument, "Invalid MCAP config size");
     }
-    const auto& config = parsed.value();
+    nlohmann::json config;
+    try {
+        config = nlohmann::json::parse(input.begin(), input.end());
+    } catch (const nlohmann::json::exception&) {
+        return Status(StatusCode::InvalidArgument, "Malformed MCAP config JSON");
+    }
     if (!config.is_object() || !config.contains("format_version")) {
-        return Status(StatusCode::InvalidArgument, {});
+        return Status(StatusCode::InvalidArgument, "Missing MCAP format_version");
     }
     constexpr std::array<std::pair<std::string_view, std::string_view>, 4> kStrings{{
         {"format_version", "1.0"},
@@ -34,7 +38,7 @@ Result<void> validate_config(std::string_view input) {
             valid = item.value().is_boolean() && !item.value().get<bool>();
         }
         if (!valid) {
-            return Status(StatusCode::InvalidArgument, {});
+            return Status(StatusCode::InvalidArgument, "Unsupported MCAP config field/value");
         }
     }
     return {};

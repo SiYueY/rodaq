@@ -90,14 +90,7 @@ void run_close(
     instance->functions = {};
 
     close_stage(*instance, CloseStage::BackingRelease);
-    std::shared_ptr<RegistryState> registry;
-    {
-        std::lock_guard<std::mutex> lock(instance->mutex);
-        registry = std::move(instance->services.registry);
-    }
-    // A provider custom deleter may block or reenter Framework. The close worker
-    // retains State and its execution slot, and the independent monitor sees this stage.
-    registry.reset();
+    instance->application_callbacks = {};
     close_stage(*instance, CloseStage::TerminalPublication);
     {
         std::lock_guard<std::mutex> manager_lock(manager->mutex);

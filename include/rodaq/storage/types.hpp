@@ -11,7 +11,6 @@
 namespace rodaq::storage {
 
 using PrepareConfig = rodaq_storage_prepare_config_t;
-using CapacityModel = rodaq_storage_capacity_model_t;
 using Record = rodaq_storage_record_t;
 using BatchResult = rodaq_storage_batch_result_t;
 using StreamDescriptor = rodaq_storage_descriptor_t;

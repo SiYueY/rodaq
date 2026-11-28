@@ -14,7 +14,7 @@
 
 namespace rodaq::plugin::authoring {
 
-// SDK-local bounded binding table; providers remain owned by their plugin/Registry.
+// SDK-local bounded binding table; providers remain owned by their plugin instance.
 inline constexpr std::size_t kMaxInterfaces = 64;
 
 struct InterfaceEntry {
@@ -118,25 +118,9 @@ inline rodaq_status_code_t query_interface(
     return found ? RODAQ_STATUS_UNAVAILABLE : RODAQ_STATUS_NOT_FOUND;
 }
 
-inline bool valid_registry(const rodaq_service_registry_reference_t& registry) noexcept {
-    if (registry.context == nullptr || registry.vtable == nullptr ||
-        reinterpret_cast<std::uintptr_t>(registry.vtable) %
-                alignof(rodaq_service_registry_vtable_t) !=
-            0) {
-        return false;
-    }
-    const auto* table = registry.vtable;
-    const auto size = table->header.struct_size;
-    if (size < offsetof(rodaq_service_registry_vtable_t, query) + sizeof(table->query) ||
-        table->query == nullptr) {
-        return false;
-    }
-    const bool has_enter = abi::readable_slot(
-        size, offsetof(rodaq_service_registry_vtable_t, enter_call), sizeof(table->enter_call));
-    const bool has_leave = abi::readable_slot(
-        size, offsetof(rodaq_service_registry_vtable_t, leave_call), sizeof(table->leave_call));
-    return (!has_enter && !has_leave) ||
-           (has_enter && has_leave && table->enter_call != nullptr && table->leave_call != nullptr);
+inline bool valid_application_callbacks(const rodaq_application_callbacks_t* callbacks) noexcept {
+    return abi::readable(
+        callbacks, offsetof(rodaq_application_callbacks_t, log) + sizeof(callbacks->log));
 }
 
 }  // namespace rodaq::plugin::authoring

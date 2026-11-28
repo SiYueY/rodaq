@@ -1,7 +1,7 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
-#include <functional>
 #include <string>
 
 #include "commit_reservation.hpp"
@@ -9,44 +9,30 @@
 
 namespace rodaq::artifact {
 
-// One actual Commit-lane frame owns Volume/Commit capacity and registration.
-// Its caller must retain authorized Task work until actual return, including
-// after observer expiry. No Storage calls, Task locks or Catalog authority live
-// here. A failed attempt requires recovery; it cannot be retried as new work.
+// One Commit-lane frame owns Volume capacity and sealed staging files.
+// Validates sealed files, writes manifest.json, syncs tree, and performs
+// same-parent atomic no-replace publication (<id>.tmp -> <id>).
 class SegmentCommitter {
 public:
-    // Exclusive startup/reconciliation execution. The existing committing row
-    // is the sole publication authority; the caller supplies current Task/Reset
-    // proof twice, outside all structure locks. No Plugin or new reservation.
-    static Result<void> recover(
-        std::shared_ptr<ManagedVolume> volume, LedgerStore& ledger, std::uint64_t segment_id,
-        const ManifestLimits& limits,
-        const std::function<Result<void>(const LedgerRecord&, const SegmentManifest&)>& authorize,
-        persistence::FileFaultHook faults = {});
-    // Transfer only on success. Validation/allocation failure leaves both
-    // actual file backing and registration/Volume capacity with the caller.
     static Result<std::unique_ptr<SegmentCommitter>> create(
         std::unique_ptr<SealedFiles>& files, const SegmentManifest& manifest,
         const ManifestLimits& limits, CommitReservation& reservation);
     SegmentCommitter(const SegmentCommitter&) = delete;
     SegmentCommitter& operator=(const SegmentCommitter&) = delete;
 
-    Result<void> commit(LedgerStore& ledger);
-    // Call only after Catalog publication (or verified quarantine/recovery).
-    // Ledger success alone never removes retained actual disk/metadata charges.
+    Result<void> commit();
     Result<ArtifactCharge> take_committed_charge();
-    const LedgerRecord& ledger_record() const noexcept { return record_; }
+    Result<void> abort_after_cleanup();
     std::uint64_t storage_bytes() const noexcept { return files_->storage_bytes(); }
     std::uint64_t manifest_bytes() const noexcept { return encoded_manifest_.size(); }
     bool committed() const noexcept { return committed_; }
 
 private:
     SegmentCommitter(
-        std::unique_ptr<SealedFiles> files, std::string encoded, LedgerRecord record,
+        std::unique_ptr<SealedFiles> files, std::string encoded,
         CommitReservation reservation) noexcept;
     std::unique_ptr<SealedFiles> files_;
     std::string encoded_manifest_;
-    LedgerRecord record_;
     CommitReservation reservation_;
     bool attempted_{false};
     bool committed_{false};

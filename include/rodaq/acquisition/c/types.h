@@ -1,8 +1,8 @@
 #ifndef RODAQ_ACQUISITION_C_TYPES_H
 #define RODAQ_ACQUISITION_C_TYPES_H
 
-#include <rodaq/canonical/c/types.h>
 #include <rodaq/canonical/c/ros2.h>
+#include <rodaq/canonical/c/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +32,7 @@ typedef struct rodaq_acquisition_prepare_config {
     uint32_t max_callback_concurrency;
 } rodaq_acquisition_prepare_config_t;
 
-typedef uint32_t rodaq_submit_disposition_t;
+typedef uint32_t rodaq_record_disposition_t;
 
 enum {
     RODAQ_SUBMIT_INVALID = 0,
@@ -44,31 +44,6 @@ enum {
     RODAQ_SUBMIT_INVALID_RECORD = 6,
     RODAQ_SUBMIT_RECORD_TOO_LARGE = 7,
     RODAQ_SUBMIT_RESOURCE_EXHAUSTED = 8
-};
-
-/**
- * EXTENSIBLE_STRUCT caller output. Initialize header capacity and disposition INVALID. SuccessOnly:
- * non-OK has no readable disposition. OK may express business rejection; only ACCEPTED means
- * admission committed. reserved0 is zero.
- */
-typedef struct rodaq_submit_result {
-    rodaq_struct_header_t header;
-    rodaq_submit_disposition_t disposition;
-    uint32_t reserved0;
-} rodaq_submit_result_t;
-
-#define RODAQ_RECORD_TIMESTAMP_CAPACITY 4u
-
-typedef uint32_t rodaq_source_event_kind_t;
-
-enum {
-    RODAQ_SOURCE_EVENT_INVALID = 0,
-    RODAQ_SOURCE_EVENT_DISCOVERED = 1,
-    RODAQ_SOURCE_EVENT_LOST = 2,
-    RODAQ_SOURCE_EVENT_SESSION_STARTED = 3,
-    RODAQ_SOURCE_EVENT_SESSION_ENDED = 4,
-    RODAQ_SOURCE_EVENT_SEQUENCE_GAP = 5,
-    RODAQ_SOURCE_EVENT_SEQUENCE_RESET = 6
 };
 
 typedef uint32_t rodaq_acquisition_event_kind_t;
@@ -106,9 +81,10 @@ typedef struct rodaq_acquisition_event {
 
 /**
  * EXTENSIBLE_STRUCT, pointer-only subscription observation. Strings are borrowed for the actual
- * proposal call, nonempty UTF-8 without NUL (distribution <=64, RMW <=128 bytes). The request is
- * from an actually installed subscription, never an adapt candidate. Nonzero generation does not
- * wrap. executor_kind=1 is rclcpp MultiThreadedExecutor; actual thread count is 1..8.
+ * prepare_descriptor call, nonempty UTF-8 without NUL (distribution <=64, RMW <=128 bytes). The
+ * requested QoS is from an actually installed subscription, never an adapt candidate. Nonzero
+ * generation does not wrap. executor_kind=1 is rclcpp MultiThreadedExecutor; actual thread count is
+ * 1..8.
  */
 typedef struct rodaq_ros2_subscription_facts {
     rodaq_struct_header_t header;
@@ -121,11 +97,11 @@ typedef struct rodaq_ros2_subscription_facts {
 } rodaq_ros2_subscription_facts_t;
 
 /**
- * EXTENSIBLE_STRUCT. Borrowed immutable proposal during the call; strings/schema/QoS arrays must be
- * copied for retention. Generic profile has no ROS2 hash/QoS. ROS2 requires cdr plus supported
- * ros2msg/ros2idl schema. Provider never supplies a schema digest.
+ * EXTENSIBLE_STRUCT. Borrowed immutable bind-once descriptor during prepare_descriptor; strings,
+ * schema and QoS arrays must be copied for retention. Generic profile has no ROS2 hash/QoS. ROS2
+ * requires cdr plus supported ros2msg/ros2idl schema. Provider never supplies a schema digest.
  */
-typedef struct rodaq_descriptor_proposal {
+typedef struct rodaq_acquisition_descriptor {
     rodaq_struct_header_t header;
     rodaq_stream_id_t stream_id;
     rodaq_data_profile_t data_profile;
@@ -139,65 +115,44 @@ typedef struct rodaq_descriptor_proposal {
     const rodaq_ros2_qos_profile_t* ros2_offered_qos_profiles;
     uint32_t ros2_offered_qos_profile_count;
     uint32_t reserved1;
-    // Service minor 1 tail. Absent for an older complete prefix or NULL pointer.
     const rodaq_ros2_subscription_facts_t* ros2_subscription;
-} rodaq_descriptor_proposal_t;
+} rodaq_acquisition_descriptor_t;
 
 /**
- * EXTENSIBLE_STRUCT. Producer identity/session/sequence facts. Presence flags are 0/1; absent
- * fields and reserved bytes are zero. Report failures mark evidence incomplete rather than relying
- * on logs.
+ * EXTENSIBLE_STRUCT pointer-only input. Valid nonzero stream_id and bind-once descriptor_id.
+ * Payload backing is COPY-only and remains borrowed until submit_record actually returns.
+ * source_publish_time is nanoseconds (0 when !has_source_publish_time); reserved bytes are zero.
  */
-typedef struct rodaq_source_event {
+typedef struct rodaq_acquisition_record_attempt {
     rodaq_struct_header_t header;
     rodaq_stream_id_t stream_id;
-    rodaq_source_id_t source_id;
-    rodaq_source_session_id_t source_session_id;
-    uint64_t source_sequence;
-    rodaq_source_event_kind_t kind;
-    rodaq_sequence_scope_t sequence_scope;
-    uint8_t has_source_id;
-    uint8_t has_source_session_id;
-    uint8_t has_source_sequence;
-    uint8_t reserved[5];
-} rodaq_source_event_t;
+    rodaq_descriptor_id_t descriptor_id;
+    rodaq_bytes_t payload;
+    uint64_t source_publish_time;
+    uint8_t has_source_publish_time;
+    uint8_t reserved[7];
+} rodaq_acquisition_record_attempt_t;
 
 /**
- * FROZEN_VALUE borrowed COPY-only payload. logical_size is bytes; positive size requires non-NULL
- * data. Valid until submit_record actually returns, including after observer timeout. No ownership
- * transfer, acquire/release or plugin-owned payload survives return.
+ * EXTENSIBLE_STRUCT. Application-owned callback table passed to Acquisition prepare(). Valid for
+ * the prepared Recording Instance until quiesce completes. prepare_descriptor runs during prepare
+ * only (bind-once per stream); submit_record is bounded/non-blocking COPY ingress; report_event is
+ * bounded readiness/fault reporting.
  */
-typedef struct rodaq_payload {
+typedef struct rodaq_acquisition_callbacks {
     rodaq_struct_header_t header;
-    const uint8_t* data;
-    uint64_t logical_size;
-} rodaq_payload_t;
+    void* context;
 
-/**
- * EXTENSIBLE_STRUCT pointer-only input. Valid nonzero stream/token; timestamp_count <= 4. Unused
- * timestamps, absent source facts and reserved fields are zero. Unknown enum/flag values fail
- * closed. Payload backing remains borrowed until native return.
- */
-typedef struct rodaq_record_attempt {
-    rodaq_struct_header_t header;
+    rodaq_status_code_t (*prepare_descriptor)(
+        void* context, rodaq_stream_id_t stream_id,
+        const rodaq_acquisition_descriptor_t* descriptor, rodaq_descriptor_id_t* descriptor_id,
+        rodaq_error_t* error);
 
-    rodaq_stream_id_t stream_id;
-    rodaq_descriptor_token_t descriptor_token;
-    rodaq_source_id_t source_id;
-    rodaq_source_session_id_t source_session_id;
-    uint64_t source_sequence;
+    rodaq_record_disposition_t (*submit_record)(
+        void* context, const rodaq_acquisition_record_attempt_t* record);
 
-    rodaq_payload_t payload;
-    rodaq_record_timestamp_t timestamps[RODAQ_RECORD_TIMESTAMP_CAPACITY];
-
-    rodaq_sequence_scope_t sequence_scope;
-    uint32_t timestamp_count;
-    rodaq_record_delivery_flags_t delivery_flags;
-    uint8_t has_source_id;
-    uint8_t has_source_session_id;
-    uint8_t has_source_sequence;
-    uint8_t reserved[5];
-} rodaq_record_attempt_t;
+    void (*report_event)(void* context, const rodaq_acquisition_event_t* event);
+} rodaq_acquisition_callbacks_t;
 
 #ifdef __cplusplus
 }

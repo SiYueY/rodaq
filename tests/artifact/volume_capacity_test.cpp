@@ -126,7 +126,7 @@ TEST(VolumeCapacity, OutOfOrderOrOtherVolumeSamplesCannotReplaceCurrentFactsOrCl
     EXPECT_EQ(first.value().reserve(1, 105).status().code(), StatusCode::DataLoss);
 }
 
-TEST(VolumeCapacity, RetainedActualAndTombstoneSlotOutliveCommitUntilExplicitDeleteAndGcProof) {
+TEST(VolumeCapacity, RetainedActualAndArtifactSlotOutliveCommitUntilExplicitDeleteProof) {
     auto created = artifact::VolumeCapacity::create(options());
     ASSERT_TRUE(created.ok());
     auto& volume = created.value();
@@ -136,17 +136,14 @@ TEST(VolumeCapacity, RetainedActualAndTombstoneSlotOutliveCommitUntilExplicitDel
     ASSERT_TRUE(acquired.value().record_usage(100, 0).ok());
     auto artifact = acquired.value().settle_retained();
     ASSERT_TRUE(artifact.ok());
-    EXPECT_EQ(volume.snapshot().commit_slots, 0);
-    EXPECT_EQ(volume.snapshot().commit_bytes, 0);
-    EXPECT_EQ(volume.snapshot().actual_bytes, 100);
-    EXPECT_EQ(volume.snapshot().artifact_slots, 1);
-    EXPECT_EQ(artifact.value().release_after_gc().status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(volume.snapshot().commit_slots, 0U);
+    EXPECT_EQ(volume.snapshot().commit_bytes, 0U);
+    EXPECT_EQ(volume.snapshot().actual_bytes, 100U);
+    EXPECT_EQ(volume.snapshot().artifact_slots, 1U);
     ASSERT_TRUE(artifact.value().release_after_delete().ok());
-    EXPECT_EQ(volume.snapshot().actual_bytes, 0);
-    EXPECT_EQ(volume.snapshot().artifact_slots, 1);
-    ASSERT_TRUE(artifact.value().release_after_gc().ok());
-    EXPECT_EQ(volume.snapshot().artifact_slots, 0);
-    EXPECT_EQ(artifact.value().release_after_gc().status().code(), StatusCode::InvalidState);
+    EXPECT_EQ(volume.snapshot().actual_bytes, 0U);
+    EXPECT_EQ(volume.snapshot().artifact_slots, 0U);
+    EXPECT_EQ(artifact.value().release_after_delete().status().code(), StatusCode::InvalidState);
 }
 
 TEST(
@@ -203,10 +200,8 @@ TEST(
     ASSERT_TRUE(second.ok());
     ASSERT_TRUE(first.value().release_after_delete().ok());
     ASSERT_TRUE(second.value().release_after_delete().ok());
-    ASSERT_TRUE(first.value().release_after_gc().ok());
-    ASSERT_TRUE(second.value().release_after_gc().ok());
-    EXPECT_EQ(recovered.value().snapshot().actual_bytes, 0);
-    EXPECT_EQ(recovered.value().snapshot().artifact_slots, 0);
+    EXPECT_EQ(recovered.value().snapshot().actual_bytes, 0U);
+    EXPECT_EQ(recovered.value().snapshot().artifact_slots, 0U);
     EXPECT_TRUE(recovered.value().reserve(50, 100).ok());
 }
 
@@ -236,18 +231,16 @@ TEST(VolumeCapacity, ConcurrentSegmentsShareCommitAndSpaceBudgetWithoutLeakingPr
     EXPECT_EQ(volume.snapshot().artifact_slots, 0);
 }
 
-TEST(VolumeCapacity, EmptyArtifactStillRequiresDeleteProofBeforeTombstoneGc) {
+TEST(VolumeCapacity, EmptyArtifactStillRequiresDeleteProofToReleaseSlot) {
     auto created = artifact::VolumeCapacity::create(options(), 0, 1);
     ASSERT_TRUE(created.ok());
     auto recovered = created.value().claim_recovered_artifact(0);
     ASSERT_TRUE(recovered.ok());
     auto owner = std::move(recovered.value());
-    EXPECT_EQ(owner.release_after_gc().status().code(), StatusCode::InvalidState);
-    EXPECT_EQ(created.value().snapshot().artifact_slots, 1);
-    ASSERT_TRUE(owner.release_after_delete().ok());
+    EXPECT_EQ(created.value().snapshot().artifact_slots, 1U);
     auto transferred = std::move(owner);
-    ASSERT_TRUE(transferred.release_after_gc().ok());
-    EXPECT_EQ(created.value().snapshot().artifact_slots, 0);
+    ASSERT_TRUE(transferred.release_after_delete().ok());
+    EXPECT_EQ(created.value().snapshot().artifact_slots, 0U);
 }
 
 TEST(VolumeCapacity, SampleFailureInvalidatesOldAndOutstandingEvidenceButAllowsFreshRecovery) {

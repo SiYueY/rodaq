@@ -25,8 +25,7 @@ typedef struct rodaq_storage_interface_vtable {
 
     rodaq_status_code_t (*prepare)(
         rodaq_interface_context_t* context, const rodaq_storage_prepare_config_t* config,
-        rodaq_deadline_t deadline, rodaq_storage_capacity_model_t* capacity_model,
-        rodaq_error_t* error);
+        rodaq_deadline_t deadline, rodaq_error_t* error);
 
     rodaq_status_code_t (*prepare_descriptor)(
         rodaq_interface_context_t* context, const rodaq_storage_descriptor_t* descriptor,
@@ -51,6 +50,7 @@ typedef struct rodaq_storage_interface_vtable {
     rodaq_status_code_t (*quiesce)(
         rodaq_interface_context_t* context, rodaq_deadline_t deadline, rodaq_error_t* error);
 } rodaq_storage_interface_vtable_t;
+
 #ifdef __cplusplus
 }
 #endif

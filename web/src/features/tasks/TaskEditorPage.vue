@@ -40,7 +40,6 @@ const conflictError = ref<ApiFailure | null>(null);
 const submitError = ref<ApiFailure | null>(null);
 const validationIssues = ref<FieldIssue[]>([]);
 
-// Raw JSON string buffers per pipeline for non-official or unknown plugin versions.
 const acqRawJson = ref<Record<number, string>>({});
 const stoRawJson = ref<Record<number, string>>({});
 const rawJsonParseErrors = ref<Record<string, string>>({});
@@ -48,6 +47,18 @@ const rawJsonParseErrors = ref<Record<string, string>>({});
 const acqBackends = computed(() => eligibleBackendsForRole(session.capabilities, 'acquisition'));
 const stoBackends = computed(() => eligibleBackendsForRole(session.capabilities, 'storage'));
 const diffSummary = computed(() => computeIdentityDiff(originalConfig.value, draft.value));
+
+function parseOptionalPositiveInt(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n <= 0) {
+    return -1;
+  }
+  return n;
+}
 
 function syncRawBuffersFromDraft(): void {
   const aMap: Record<number, string> = {};
@@ -123,7 +134,6 @@ function removeStream(p: PortablePipelineConfig, pIdx: number, sIdx: number): vo
   syncRos2StreamsIfOfficial(p, pIdx);
 }
 
-// Existing stream identity cannot rebind stream_key in place; Replace deletes old identity + adds new stream (WEB-E2E-016).
 function replaceStream(p: PortablePipelineConfig, pIdx: number, sIdx: number): void {
   dirty.value = true;
   const old = p.streams[sIdx];
@@ -277,7 +287,6 @@ async function submit(): Promise<void> {
   } catch (err) {
     if (err instanceof ApiFailure) {
       if (err.httpStatus === 409 && mode.value === 'configure') {
-        // Never overwrite user draft automatically on 409 generation conflict (WEB-E2E-016).
         conflictError.value = err;
       } else {
         submitError.value = err;
@@ -329,6 +338,9 @@ onBeforeUnmount(() => {
 
     <ErrorPanel v-if="loadError" :error="loadError" title="Failed to Load Active Config" />
     <ErrorPanel v-if="submitError" :error="submitError" title="Submission Failed" />
+    <div v-if="mutation.outcomeUnknownMessage.value" class="banner banner-warning" role="status">
+      <span>{{ mutation.outcomeUnknownMessage.value }}</span>
+    </div>
 
     <section v-if="conflictError" class="card" role="alert" style="border-color: #f59e0b">
       <h2 class="card-title">Control Generation Conflict (409)</h2>
@@ -341,9 +353,7 @@ onBeforeUnmount(() => {
         <button type="button" class="btn btn-primary" @click="loadExistingForConfigure">
           Reload Latest Server Config
         </button>
-        <button type="button" class="btn" @click="conflictError = null">
-          Keep Editing Draft
-        </button>
+        <button type="button" class="btn" @click="conflictError = null">Keep Editing Draft</button>
       </div>
     </section>
 
@@ -360,50 +370,37 @@ onBeforeUnmount(() => {
 
     <form v-else @submit.prevent="submit" @input="dirty = true">
       <article class="card">
-        <h2 class="card-title">Recording &amp; Policy</h2>
-        <div class="grid-3">
+        <h2 class="card-title">Segment &amp; Retention Policy</h2>
+        <div class="grid-4">
           <div class="form-field">
             <label for="task-name">Task Name (optional, ≤ 128 UTF-8 bytes)</label>
             <input id="task-name" v-model="draft.name" type="text" placeholder="e.g. bench-run-1" />
           </div>
           <div class="form-field">
-            <label for="recording-mode">Recording Mode</label>
-            <select id="recording-mode" v-model="draft.recording_mode">
-              <option value="continuous">continuous</option>
+            <label for="retention-mode">Retention Mode</label>
+            <select id="retention-mode" v-model="draft.retention_policy.mode">
+              <option value="keep_all">keep_all</option>
               <option value="rolling">rolling</option>
             </select>
           </div>
           <div class="form-field">
-            <label for="start-policy">Start Policy</label>
-            <select id="start-policy" v-model="draft.start_policy.mode">
-              <option value="all_required">all_required</option>
-              <option value="best_effort">best_effort</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label for="recovery-policy">Recovery Policy (Auto Re-admission After Restart)</label>
-            <select id="recovery-policy" v-model="draft.recovery_policy.mode">
-              <option value="manual">manual</option>
-              <option value="resume">resume</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label for="seg-duration">Segment Max Duration (seconds, optional)</label>
+            <label for="seg-duration-ms">Segment Max Duration (ms, optional)</label>
             <input
-              id="seg-duration"
-              :value="draft.segment_policy.max_duration?.value ?? ''"
+              id="seg-duration-ms"
+              :value="draft.segment_policy.max_duration_ms ?? ''"
               type="text"
-              placeholder="60"
+              placeholder="60000"
               @input="
                 (ev) => {
-                  const v = (ev.target as HTMLInputElement).value.trim();
-                  draft.segment_policy.max_duration = v ? { value: v, unit: 's' } : null;
+                  draft.segment_policy.max_duration_ms = parseOptionalPositiveInt(
+                    (ev.target as HTMLInputElement).value,
+                  );
                 }
               "
             />
           </div>
           <div class="form-field">
-            <label for="seg-bytes">Segment Max Physical Bytes (decimal uint64, optional)</label>
+            <label for="seg-bytes">Segment Max Physical Bytes (optional)</label>
             <input
               id="seg-bytes"
               :value="draft.segment_policy.max_physical_bytes ?? ''"
@@ -411,41 +408,44 @@ onBeforeUnmount(() => {
               placeholder="e.g. 536870912"
               @input="
                 (ev) => {
-                  const v = (ev.target as HTMLInputElement).value.trim();
-                  draft.segment_policy.max_physical_bytes = v || null;
+                  draft.segment_policy.max_physical_bytes = parseOptionalPositiveInt(
+                    (ev.target as HTMLInputElement).value,
+                  );
                 }
               "
             />
           </div>
         </div>
 
-        <div v-if="draft.recording_mode === 'rolling'" class="grid-3" style="margin-top: 8px">
+        <div v-if="draft.retention_policy.mode === 'rolling'" class="grid-2" style="margin-top: 8px">
           <div class="form-field">
-            <label for="ret-dur">Retention Max Duration (seconds)</label>
+            <label for="ret-dur-ms">Retention Max Duration (ms)</label>
             <input
-              id="ret-dur"
-              :value="draft.retention_policy.max_duration?.value ?? ''"
+              id="ret-dur-ms"
+              :value="draft.retention_policy.max_duration_ms ?? ''"
               type="text"
+              placeholder="3600000"
               @input="
                 (ev) => {
-                  const v = (ev.target as HTMLInputElement).value.trim();
-                  draft.retention_policy.mode = 'rolling';
-                  draft.retention_policy.max_duration = v ? { value: v, unit: 's' } : null;
+                  draft.retention_policy.max_duration_ms = parseOptionalPositiveInt(
+                    (ev.target as HTMLInputElement).value,
+                  );
                 }
               "
             />
           </div>
           <div class="form-field">
-            <label for="ret-bytes">Retention Max Physical Bytes (decimal uint64)</label>
+            <label for="ret-bytes">Retention Max Physical Bytes</label>
             <input
               id="ret-bytes"
               :value="draft.retention_policy.max_physical_bytes ?? ''"
               type="text"
+              placeholder="1073741824"
               @input="
                 (ev) => {
-                  const v = (ev.target as HTMLInputElement).value.trim();
-                  draft.retention_policy.mode = 'rolling';
-                  draft.retention_policy.max_physical_bytes = v || null;
+                  draft.retention_policy.max_physical_bytes = parseOptionalPositiveInt(
+                    (ev.target as HTMLInputElement).value,
+                  );
                 }
               "
             />
@@ -506,7 +506,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Acquisition Plugin Selection -->
         <div class="grid-2">
           <div class="form-field">
             <label :for="`acq-id-${pIdx}`">Acquisition Plugin ID</label>
@@ -543,7 +542,7 @@ onBeforeUnmount(() => {
           class="card"
           style="background: var(--bg-subtle)"
         >
-          <strong>Official ROS 2 Acquisition Editor (format_version 1.0)</strong>
+          <strong>Official ROS 2 Acquisition Editor (bind-once per recording instance)</strong>
           <div class="grid-2" style="margin-top: 8px">
             <div class="form-field">
               <label>Domain ID (0..232)</label>
@@ -556,7 +555,7 @@ onBeforeUnmount(() => {
           </div>
           <div style="margin-top: 8px">
             <div class="muted" style="font-size: 0.85rem; margin-bottom: 6px">
-              ROS 2 Topic &amp; QoS Bindings (per stream_key)
+              ROS 2 Topic &amp; QoS Bindings (bound at Prepare; incompatible mid-run changes fail closed)
             </div>
             <div
               v-for="(rs, rIdx) in getRos2Streams(p)"
@@ -580,7 +579,7 @@ onBeforeUnmount(() => {
                 </select>
               </div>
               <div class="form-field" style="margin-bottom: 0">
-                <label :for="`ros2-depth-${pIdx}-${rIdx}`">QoS Depth (decimal)</label>
+                <label :for="`ros2-depth-${pIdx}-${rIdx}`">QoS Depth</label>
                 <input :id="`ros2-depth-${pIdx}-${rIdx}`" v-model="rs.qos.depth" type="text" class="mono" />
               </div>
               <div v-if="rs.qos.mode === 'explicit'" class="form-field" style="margin-bottom: 0">
@@ -613,7 +612,6 @@ onBeforeUnmount(() => {
           </span>
         </div>
 
-        <!-- Storage Plugin Selection -->
         <div class="grid-2">
           <div class="form-field">
             <label :for="`sto-id-${pIdx}`">Storage Plugin ID</label>
@@ -650,9 +648,9 @@ onBeforeUnmount(() => {
           class="card"
           style="background: var(--bg-subtle)"
         >
-          <strong>Qualified MCAP Baseline (format_version 1.0 · read-only)</strong>
+          <strong>Qualified Single-File MCAP Baseline (format_version 1.0 · read-only)</strong>
           <div class="mono muted" style="margin-top: 4px">
-            compression=none · chunk_mode=none · chunk_crc=false · message_index=false · summary=false · rosbag2_metadata=legacy_ros_distro
+            single-file .mcap · compression=none · chunk_mode=none · rosbag2_metadata=legacy_ros_distro
           </div>
         </div>
         <div v-else class="form-field">
@@ -669,7 +667,6 @@ onBeforeUnmount(() => {
           </span>
         </div>
 
-        <!-- Streams -->
         <div class="row-actions" style="justify-content: space-between; margin: 12px 0 8px 0">
           <strong>Streams ({{ p.streams.length }})</strong>
           <button type="button" class="btn" @click="addStream(p, pIdx)">Add Stream</button>
@@ -726,12 +723,13 @@ onBeforeUnmount(() => {
         <button type="button" class="btn" @click="addPipeline">Add Pipeline</button>
       </div>
 
-      <!-- Review Summary -->
       <article class="card">
         <h2 class="card-title">Review Summary</h2>
         <div style="font-size: 0.875rem">
           <div>
-            Mode: <strong>{{ draft.recording_mode }}</strong> · Start: <strong>{{ draft.start_policy.mode }}</strong> · Recovery: <strong>{{ draft.recovery_policy.mode }}</strong> · Pipelines: <strong>{{ draft.pipelines.length }}</strong>
+            Retention: <strong>{{ draft.retention_policy.mode }}</strong> ·
+            Pipelines: <strong>{{ draft.pipelines.length }}</strong> (Required:
+            <strong>{{ draft.pipelines.filter((p) => p.required).length }}</strong>)
           </div>
           <div v-if="mode === 'configure'" class="mono muted" style="margin-top: 6px">
             Preserved pipelines: {{ diffSummary.preservedPipelines.join(', ') || 'none' }} ·

@@ -1,12 +1,11 @@
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
-#include <rodaq/plugin/registry.hpp>
 
 #include <cassert>
 #include <chrono>
-#include <filesystem>
 #include <fcntl.h>
+#include <filesystem>
 #include <future>
 #include <thread>
 #include <unistd.h>
@@ -29,9 +28,7 @@ int main(int argc, char** argv) {
     auto manager = std::move(created).value();
     auto healthy_library = manager.load("com.example.lifecycle", "1.0.0");
     assert(healthy_library.ok());
-    plugin::ServiceRegistry services;
-    assert(services.freeze().ok());
-    auto initialized = healthy_library.value().create_instance(services, {});
+    auto initialized = healthy_library.value().create_instance({});
     assert(initialized.ok());
     auto healthy = std::move(initialized).value();
     auto loading = std::async(

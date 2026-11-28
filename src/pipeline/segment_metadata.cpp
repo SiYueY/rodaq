@@ -16,38 +16,8 @@ namespace {
 
 struct DescriptorEntry {
     std::optional<artifact::ManifestDescriptor> facts;
-    std::uint64_t size_bound{0};
     bool ready{false};
 };
-
-struct EpochEntry {
-    std::optional<artifact::ManifestEpoch> facts;
-    std::uint32_t pending{0};
-};
-
-bool same_jump(
-    const std::optional<time::ClockJump>& left,
-    const std::optional<time::ClockJump>& right) noexcept {
-    return left.has_value() == right.has_value() &&
-           (!left || (left->previous_epoch_id == right->previous_epoch_id &&
-                      left->delta_ns == right->delta_ns &&
-                      left->detected_monotonic_ns == right->detected_monotonic_ns));
-}
-
-bool valid_clock(const time::ClockSnapshot& received, const time::PlaybackAnchor& anchor) noexcept {
-    if (received.boot_id != anchor.boot_id || received.epoch_id == 0 ||
-        received.sample.monotonic_ns < anchor.monotonic_ns) {
-        return false;
-    }
-    if (received.origin == time::ClockEpochOrigin::RealtimeJump) {
-        return received.jump && received.jump->previous_epoch_id != 0 &&
-               received.jump->previous_epoch_id != received.epoch_id &&
-               received.jump->delta_ns != 0 &&
-               received.jump->detected_monotonic_ns <= received.sample.monotonic_ns;
-    }
-    return !received.jump && (received.origin == time::ClockEpochOrigin::Boot ||
-                              received.origin == time::ClockEpochOrigin::AuthorityRestart);
-}
 
 }  // namespace
 
@@ -68,7 +38,6 @@ struct SegmentMetadataState {
     std::uint32_t max_path_bytes{0};
     std::vector<artifact::StreamCoverage> streams;
     std::vector<DescriptorEntry> descriptors;
-    std::vector<EpochEntry> epochs;
     mutable std::mutex mutex;
     SegmentMetadataSnapshot facts;
     std::uint64_t first_receive{std::numeric_limits<std::uint64_t>::max()};
@@ -77,27 +46,6 @@ struct SegmentMetadataState {
     std::int64_t max_realtime{std::numeric_limits<std::int64_t>::min()};
     std::uint64_t first_recording{std::numeric_limits<std::uint64_t>::max()};
     std::uint64_t last_recording{0};
-
-    bool fits(std::uint64_t bytes) const noexcept {
-        return bytes <= limits.max_bytes - facts.manifest_bytes_bound;
-    }
-
-    void charge(std::uint64_t bytes) noexcept {
-        facts.manifest_bytes_bound += bytes;
-        facts.high_water_manifest_bytes_bound =
-            std::max(facts.high_water_manifest_bytes_bound, facts.manifest_bytes_bound);
-    }
-
-    void cancel_record(std::size_t epoch) noexcept {
-        --facts.pending_admissions;
-        auto& entry = epochs[epoch];
-        --entry.pending;
-        if (entry.pending == 0 && entry.facts->accepted_records == 0) {
-            entry.facts.reset();
-            --facts.epochs;
-            facts.manifest_bytes_bound -= artifact::kManifestEpochSizeBound;
-        }
-    }
 };
 
 RecordSettlement::RecordSettlement(
@@ -126,8 +74,6 @@ void RecordSettlement::abandon() noexcept {
     auto state = std::move(state_);
     std::lock_guard<std::mutex> lock(state->mutex);
     ++state->facts.unresolved_owners;
-    // Do not invent KnownFailed/Unknown or actual Native return. An entered
-    // owner's native_inflight remains visible until reconciliation/restart.
 }
 
 RecordSettlement::operator bool() const noexcept { return static_cast<bool>(state_); }
@@ -184,11 +130,10 @@ Result<void> RecordSettlement::finish(RecordSettlementKind kind, std::uint64_t l
 
 RecordMetadataReservation::RecordMetadataReservation(
     std::shared_ptr<SegmentMetadataState> state, std::size_t stream, std::size_t descriptor,
-    std::size_t epoch, time::ClockSnapshot received, std::uint64_t recording_ns) noexcept
+    time::ClockSample received, std::uint64_t recording_ns) noexcept
 : state_(std::move(state)),
   stream_(stream),
   descriptor_(descriptor),
-  epoch_(epoch),
   received_(received),
   recording_ns_(recording_ns) {}
 
@@ -196,14 +141,13 @@ RecordMetadataReservation::RecordMetadataReservation(RecordMetadataReservation&&
 : state_(std::move(other.state_)),
   stream_(other.stream_),
   descriptor_(other.descriptor_),
-  epoch_(other.epoch_),
   received_(other.received_),
   recording_ns_(other.recording_ns_) {}
 
 RecordMetadataReservation::~RecordMetadataReservation() noexcept {
     if (state_) {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        state_->cancel_record(epoch_);
+        --state_->facts.pending_admissions;
     }
 }
 
@@ -225,20 +169,10 @@ RecordSettlement RecordMetadataReservation::accept(std::uint64_t sequence) noexc
         coverage.last_sequence = sequence;
         ++state->descriptors[descriptor_].facts->accepted_records;
 
-        auto& epoch = state->epochs[epoch_];
-        --epoch.pending;
-        ++epoch.facts->accepted_records;
-        epoch.facts->first_receive_monotonic =
-            std::min(epoch.facts->first_receive_monotonic, received_.sample.monotonic_ns);
-        epoch.facts->last_receive_monotonic =
-            std::max(epoch.facts->last_receive_monotonic, received_.sample.monotonic_ns);
-        epoch.facts->max_sample_error_bound_ns =
-            std::max(epoch.facts->max_sample_error_bound_ns, received_.sample.error_bound_ns);
-
-        state->first_receive = std::min(state->first_receive, received_.sample.monotonic_ns);
-        state->last_receive = std::max(state->last_receive, received_.sample.monotonic_ns);
-        state->min_realtime = std::min(state->min_realtime, received_.sample.realtime_ns);
-        state->max_realtime = std::max(state->max_realtime, received_.sample.realtime_ns);
+        state->first_receive = std::min(state->first_receive, received_.monotonic_ns);
+        state->last_receive = std::max(state->last_receive, received_.monotonic_ns);
+        state->min_realtime = std::min(state->min_realtime, received_.realtime_ns);
+        state->max_realtime = std::max(state->max_realtime, received_.realtime_ns);
         state->first_recording = std::min(state->first_recording, recording_ns_);
         state->last_recording = std::max(state->last_recording, recording_ns_);
     }
@@ -263,9 +197,7 @@ DescriptorMetadataReservation::~DescriptorMetadataReservation() noexcept {
     --state_->facts.pending_descriptors;
     if (!transferred_) {
         auto& entry = state_->descriptors[descriptor_];
-        state_->facts.manifest_bytes_bound -= entry.size_bound;
         entry.facts.reset();
-        entry.size_bound = 0;
         --state_->facts.descriptors;
     }
 }
@@ -289,56 +221,6 @@ Result<void> DescriptorMetadataReservation::mark_prepared() {
 SegmentMetadata::SegmentMetadata(std::shared_ptr<SegmentMetadataState> state) noexcept
 : state_(std::move(state)) {}
 
-Result<void> SegmentMetadata::bind_effective_configuration(
-    std::string identity, persistence::Json configuration) {
-    try {
-        artifact::ManifestIdentity candidate;
-        {
-            std::lock_guard<std::mutex> lock(state_->mutex);
-            if (state_->facts.closed || state_->facts.accepted ||
-                state_->facts.pending_admissions) {
-                return Status(StatusCode::InvalidState, {});
-            }
-            candidate = state_->identity;
-        }
-        const auto previous_identity = candidate.effective_config_id;
-        const auto old_base = artifact::manifest_base_size_bound(candidate, state_->limits);
-        if (!old_base.ok()) {
-            return old_base.status();
-        }
-        candidate.effective_config_id = std::move(identity);
-        candidate.effective_configuration = std::move(configuration);
-        const auto new_base = artifact::manifest_base_size_bound(candidate, state_->limits);
-        if (!new_base.ok()) {
-            return new_base.status();
-        }
-        // Retired JSON/string backing is destroyed outside the metadata lock.
-        std::optional<persistence::Json> old_configuration;
-        std::string old_identity;
-        {
-            std::lock_guard<std::mutex> lock(state_->mutex);
-            if (state_->facts.closed || state_->facts.accepted ||
-                state_->facts.pending_admissions ||
-                state_->identity.effective_config_id != previous_identity) {
-                return Status(StatusCode::Conflict, {});
-            }
-            const auto other_bytes = state_->facts.manifest_bytes_bound - old_base.value();
-            if (new_base.value() > state_->limits.max_bytes - other_bytes) {
-                return Status(StatusCode::ResourceExhausted, {});
-            }
-            old_configuration = std::move(state_->identity.effective_configuration);
-            old_identity = std::move(state_->identity.effective_config_id);
-            state_->identity.effective_configuration = std::move(candidate.effective_configuration);
-            state_->identity.effective_config_id = std::move(candidate.effective_config_id);
-            state_->facts.manifest_bytes_bound = other_bytes;
-            state_->charge(new_base.value());
-        }
-        return {};
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
 Result<SegmentMetadata> SegmentMetadata::create(
     artifact::ManifestIdentity identity, std::vector<StreamId> streams,
     const storage::PrepareConfig& envelope, artifact::ManifestLimits limits) {
@@ -348,17 +230,13 @@ Result<SegmentMetadata> SegmentMetadata::create(
         envelope.max_relative_path_bytes == 0 || envelope.max_relative_path_bytes > 4096) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    auto base = artifact::manifest_base_size_bound(identity, limits);
-    if (!base.ok()) {
-        return base.status();
+    auto valid_limits = artifact::validate_manifest_limits(limits);
+    if (!valid_limits.ok()) {
+        return valid_limits.status();
     }
-    const auto files = static_cast<std::uint64_t>(envelope.max_segment_file_count) *
-                       artifact::manifest_file_size_bound(envelope.max_relative_path_bytes);
-    const auto coverage =
-        static_cast<std::uint64_t>(streams.size()) * artifact::kManifestStreamSizeBound;
-    if (base.value() > limits.max_bytes || files > limits.max_bytes - base.value() ||
-        coverage > limits.max_bytes - base.value() - files) {
-        return Status(StatusCode::ResourceExhausted, {});
+    auto valid_id = artifact::validate_manifest_identity(identity);
+    if (!valid_id.ok()) {
+        return valid_id.status();
     }
     try {
         std::sort(streams.begin(), streams.end());
@@ -379,8 +257,6 @@ Result<SegmentMetadata> SegmentMetadata::create(
             state->streams.push_back(entry);
         }
         state->descriptors.resize(limits.max_descriptors);
-        state->epochs.resize(limits.max_epochs);
-        state->charge(base.value() + files + coverage);
         return SegmentMetadata(std::move(state));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
@@ -392,12 +268,6 @@ Result<DescriptorMetadataReservation> SegmentMetadata::reserve_descriptor(
     if (facts.accepted_records != 0) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    auto bound = artifact::manifest_descriptor_size_bound(facts, state_->limits);
-    if (!bound.ok()) {
-        return bound.status();
-    }
-    // Include a comma even for the first entry, keeping the bound conservative.
-    const auto charged = static_cast<std::uint64_t>(bound.value()) + 1;
     std::lock_guard<std::mutex> lock(state_->mutex);
     if (state_->facts.closed) {
         return Status(StatusCode::InvalidState, {});
@@ -413,16 +283,11 @@ Result<DescriptorMetadataReservation> SegmentMetadata::reserve_descriptor(
             return Status(StatusCode::Conflict, {});
         }
     }
-    if (!state_->fits(charged)) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
     for (std::size_t index = 0; index < state_->descriptors.size(); ++index) {
         auto& entry = state_->descriptors[index];
         if (!entry.facts) {
             entry.facts.emplace(std::move(facts));
-            entry.size_bound = charged;
             entry.ready = false;
-            state_->charge(charged);
             ++state_->facts.descriptors;
             ++state_->facts.pending_descriptors;
             return DescriptorMetadataReservation(state_, index);
@@ -432,15 +297,10 @@ Result<DescriptorMetadataReservation> SegmentMetadata::reserve_descriptor(
 }
 
 Result<RecordMetadataReservation> SegmentMetadata::reserve_record(
-    StreamId stream_id, rodaq_descriptor_id_t descriptor_id, const time::ClockSnapshot& received,
+    StreamId stream_id, rodaq_descriptor_id_t descriptor_id, const time::ClockSample& received,
     std::uint64_t recording_ns) {
-    if (!valid_clock(received, state_->identity.playback_anchor)) {
+    if (received.monotonic_ns < state_->identity.playback_anchor.monotonic_ns) {
         return Status(StatusCode::InvalidArgument, {});
-    }
-    auto projected = time::project_playback_time(
-        state_->identity.playback_anchor, received.boot_id, received.sample.monotonic_ns);
-    if (!projected.ok()) {
-        return projected.status();
     }
     std::lock_guard<std::mutex> lock(state_->mutex);
     if (state_->facts.closed) {
@@ -462,34 +322,10 @@ Result<RecordMetadataReservation> SegmentMetadata::reserve_record(
         state_->facts.pending_admissions >= state_->max_records - state_->facts.accepted) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    auto epoch = std::find_if(state_->epochs.begin(), state_->epochs.end(), [&](const auto& entry) {
-        return entry.facts && entry.facts->epoch_id == received.epoch_id;
-    });
-    if (epoch == state_->epochs.end()) {
-        if (!state_->fits(artifact::kManifestEpochSizeBound)) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-        epoch = std::find_if(state_->epochs.begin(), state_->epochs.end(), [](const auto& entry) {
-            return !entry.facts;
-        });
-        if (epoch == state_->epochs.end()) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-        epoch->facts.emplace(artifact::ManifestEpoch{
-            received.epoch_id, received.origin, received.jump, 0,
-            std::numeric_limits<std::uint64_t>::max(), 0, 0});
-        state_->charge(artifact::kManifestEpochSizeBound);
-        ++state_->facts.epochs;
-    } else if (
-        epoch->facts->origin != received.origin || !same_jump(epoch->facts->jump, received.jump)) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    ++epoch->pending;
     ++state_->facts.pending_admissions;
     return RecordMetadataReservation(
         state_, static_cast<std::size_t>(stream - state_->streams.begin()),
-        static_cast<std::size_t>(descriptor - state_->descriptors.begin()),
-        static_cast<std::size_t>(epoch - state_->epochs.begin()), received, recording_ns);
+        static_cast<std::size_t>(descriptor - state_->descriptors.begin()), received, recording_ns);
 }
 
 void SegmentMetadata::close_admission() {
@@ -503,7 +339,7 @@ SegmentMetadataSnapshot SegmentMetadata::snapshot() const {
 }
 
 Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
-    std::vector<artifact::FileEvidence> files) const {
+    std::vector<artifact::FileEvidence> files, WallTime committed_at) const {
     try {
         if (files.size() > state_->max_files ||
             std::any_of(files.begin(), files.end(), [&](const auto& file) {
@@ -512,7 +348,6 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
             return Status(StatusCode::DataLoss, {});
         }
         artifact::SegmentManifest manifest;
-        std::uint64_t reserved_bound = 0;
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             const auto& facts = state_->facts;
@@ -523,9 +358,8 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
                 facts.unknown != facts.accepted - facts.written - facts.known_failed) {
                 return Status(StatusCode::InvalidState, {});
             }
-
-            reserved_bound = facts.manifest_bytes_bound;
             manifest.identity = state_->identity;
+            manifest.identity.committed_at = committed_at;
             manifest.logical_bytes = facts.logical_bytes;
             manifest.files = std::move(files);
             for (const auto& stream : state_->streams) {
@@ -533,19 +367,11 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
                     manifest.coverage.push_back(stream);
                 }
             }
-
             for (const auto& descriptor : state_->descriptors) {
                 if (descriptor.facts && descriptor.facts->accepted_records != 0) {
                     manifest.descriptors.push_back(*descriptor.facts);
                 }
             }
-
-            for (const auto& epoch : state_->epochs) {
-                if (epoch.facts && epoch.facts->accepted_records != 0) {
-                    manifest.epochs.push_back(*epoch.facts);
-                }
-            }
-
             manifest.first_receive_monotonic = state_->first_receive;
             manifest.last_receive_monotonic = state_->last_receive;
             manifest.min_receive_realtime = state_->min_realtime;
@@ -553,14 +379,11 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
             manifest.recording_begin_ns = state_->first_recording;
             manifest.recording_end_ns = state_->last_recording;
         }
-        auto encoded = artifact::encode_manifest(manifest, state_->limits);
-        if (!encoded.ok()) {
-            return encoded.status().code() == StatusCode::InvalidArgument
+        auto valid = artifact::validate_manifest(manifest, state_->limits);
+        if (!valid.ok()) {
+            return valid.status().code() == StatusCode::InvalidArgument
                        ? Status(StatusCode::DataLoss, {})
-                       : encoded.status();
-        }
-        if (encoded.value().size() > reserved_bound) {
-            return Status(StatusCode::DataLoss, {});
+                       : valid.status();
         }
         return manifest;
     } catch (const std::bad_alloc&) {

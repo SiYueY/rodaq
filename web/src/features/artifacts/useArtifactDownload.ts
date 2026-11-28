@@ -4,10 +4,10 @@ import { ApiFailure } from '../../api/errors';
 import { useSessionStore } from '../../composables/useSession';
 
 /**
- * Artifact download helper (Web §2.6, WEB-E2E-009):
- * 1. Validates same-origin relative `/api/artifacts/...` download_url (never filesystem paths).
- * 2. Runs authenticated HEAD preflight to surface common auth/committed/lease errors in-SPA.
- * 3. Triggers native browser navigation download via anchor element — never buffers file in JS Blob/memory.
+ * Artifact download helper (Web §2.6, §3.3):
+ * 1. Validates same-origin relative `/api/artifacts/...` download_url.
+ * 2. Runs authenticated HEAD preflight with memory-only Bearer token.
+ * 3. Fetches file with explicit Bearer header and triggers browser save.
  */
 export function useArtifactDownload() {
   const session = useSessionStore();
@@ -26,7 +26,7 @@ export function useArtifactDownload() {
 
   async function downloadFile(
     file: ArtifactFileData,
-    triggerNavigation?: (url: string) => void,
+    triggerDownload?: (url: string, blob?: Blob) => void,
   ): Promise<boolean> {
     if (!file.download_url.startsWith('/api/artifacts/')) {
       error.value = new ApiFailure({
@@ -49,19 +49,24 @@ export function useArtifactDownload() {
 
     try {
       await session.api.head(file.download_url, controller.signal);
-      if (triggerNavigation) {
-        triggerNavigation(file.download_url);
+      if (triggerDownload) {
+        triggerDownload(file.download_url);
       } else {
-        const anchor = document.createElement('a');
-        anchor.href = file.download_url;
-        anchor.download = file.display_name;
-        anchor.rel = 'noopener';
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
+        const { blob } = await session.api.downloadBlob(file.download_url, controller.signal);
+        const objectUrl = URL.createObjectURL(blob);
+        try {
+          const anchor = document.createElement('a');
+          anchor.href = objectUrl;
+          anchor.download = file.display_name;
+          anchor.rel = 'noopener';
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
       }
-      notice.value =
-        'Browser download started. Note: if concurrent Retention/Reset occurs before the server acquires a ReadLease, the final browser GET may fail — refresh artifact status and retry.';
+      notice.value = 'Download completed.';
       return true;
     } catch (err) {
       if (controller.signal.aborted) {
@@ -71,7 +76,7 @@ export function useArtifactDownload() {
         err instanceof ApiFailure
           ? err
           : new ApiFailure({
-              message: err instanceof Error ? err.message : 'Download preflight failed',
+              message: err instanceof Error ? err.message : 'Download failed',
               httpStatus: null,
               requestId: null,
               retryAfterMs: null,

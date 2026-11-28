@@ -7,7 +7,7 @@
 #include <rclcpp/version.h>
 #include <rmw/rmw.h>
 
-#include "../../../src/ros2_qos.hpp"
+#include <rodaq/canonical/validation.hpp>
 
 namespace rodaq::ros2_acquisition {
 namespace {
@@ -38,39 +38,7 @@ rodaq_ros2_qos_profile_t project(const rmw_qos_profile_t& native) {
     return qos;
 }
 
-bool source_less(const rodaq_source_id_t& left, const rodaq_source_id_t& right) {
-    return std::memcmp(left.data, right.data, RODAQ_SOURCE_ID_DATA_CAPACITY) < 0;
-}
-
-bool source_equal(const rodaq_source_id_t& left, const rodaq_source_id_t& right) {
-    return left.size == right.size && !source_less(left, right) && !source_less(right, left);
-}
-
-template <typename Gid>
-rodaq_source_id_t source_id(const Gid& gid) {
-    static_assert(sizeof(gid) <= RODAQ_SOURCE_ID_DATA_CAPACITY);
-    rodaq_source_id_t id{};
-    if (std::any_of(std::begin(gid), std::end(gid), [](auto byte) { return byte != 0; })) {
-        id.kind = RODAQ_SOURCE_ID_ROS2_GID;
-        id.size = sizeof(gid);
-        std::copy(std::begin(gid), std::end(gid), id.data);
-    }
-    return id;
-}
-
 }  // namespace
-
-bool Backend::State::same_facts(const Facts& left, const Facts& right) {
-    return left.type == right.type && left.offers.size() == right.offers.size() &&
-           std::equal(
-               left.offers.begin(), left.offers.end(), right.offers.begin(),
-               [](const auto& a, const auto& b) {
-                   return canonical::qos_key(a) == canonical::qos_key(b);
-               }) &&
-           left.sources.size() == right.sources.size() &&
-           std::equal(
-               left.sources.begin(), left.sources.end(), right.sources.begin(), source_equal);
-}
 
 Result<Backend::State::Facts> Backend::State::inspect(const Stream& stream) {
     const auto endpoints = node->get_publishers_info_by_topic(stream.config.topic);
@@ -93,11 +61,10 @@ Result<Backend::State::Facts> Backend::State::inspect(const Stream& stream) {
         }
         auto qos = project(endpoint.qos_profile().get_rmw_qos_profile());
         facts.offers.push_back(qos);
-        if (stream.config.adapt || ros2::qos_compatible(stream.config.requested, {qos})) {
-            auto id = source_id(endpoint.endpoint_gid());
-            if (id.size != 0) {
-                facts.sources.push_back(id);
-            }
+        const auto& effective_req =
+            stream.snapshot ? stream.snapshot->installed : stream.config.requested;
+        if (ros2::qos_compatible(effective_req, {qos})) {
+            ++facts.compatible_publishers;
         }
     }
     if (facts.type.empty()) {
@@ -108,110 +75,34 @@ Result<Backend::State::Facts> Backend::State::inspect(const Stream& stream) {
         return normalized.status();
     }
     facts.offers = std::move(normalized.value());
-    std::sort(facts.sources.begin(), facts.sources.end(), source_less);
-    facts.sources.erase(
-        std::unique(facts.sources.begin(), facts.sources.end(), source_equal), facts.sources.end());
     return facts;
 }
 
-Result<void> Backend::State::sources(Stream& stream, const Facts* previous, const Facts& current) {
-    const auto report = [&](const rodaq_source_id_t& source, rodaq_source_event_kind_t kind) {
-        acquisition::SourceEvent event{};
-        event.header.struct_size = sizeof(event);
-        event.stream_id = stream.id;
-        event.source_id = source;
-        event.has_source_id = 1;
-        event.kind = kind;
-
-        return service->report_source_event(event);
-    };
-    if (previous != nullptr) {
-        for (const auto& source : previous->sources) {
-            if (!std::binary_search(
-                    current.sources.begin(), current.sources.end(), source, source_less)) {
-                auto result = report(source, RODAQ_SOURCE_EVENT_LOST);
-                if (!result.ok()) {
-                    return result;
-                }
-            }
-        }
-    }
-    for (const auto& source : current.sources) {
-        if (previous == nullptr ||
-            !std::binary_search(
-                previous->sources.begin(), previous->sources.end(), source, source_less)) {
-            auto result = report(source, RODAQ_SOURCE_EVENT_DISCOVERED);
-            if (!result.ok()) {
-                return result;
-            }
-        }
-    }
-    return {};
-}
-
-Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadline deadline) {
+Result<void> Backend::State::bind_stream(Stream& stream, Facts facts, plugin::Deadline deadline) {
     try {
-        auto next = std::make_shared<Snapshot>();
-        auto old = stream.snapshot;
-        const bool rebuild =
-            !old || old->facts.type != facts.type ||
-            (stream.config.adapt && !ros2::qos_compatible(old->installed, facts.offers));
-        next->facts = std::move(facts);
-        next->installed = !rebuild ? old->installed
-                          : stream.config.adapt
-                              ? ros2::adapt_qos(next->facts.offers, stream.config.requested.depth)
-                              : stream.config.requested;
-        next->generation = old ? old->generation + static_cast<unsigned>(rebuild) : 1;
-        if (next->generation == 0) {
-            return Status(StatusCode::ResourceExhausted, "ROS 2 subscription generation exhausted");
-        }
-        if (old && old->facts.type == next->facts.type) {
-            next->schema = old->schema;
-        } else {
-            auto schema = ros2::resolve_schema(next->facts.type);
-            if (!schema.ok()) {
-                return schema.status();
-            }
-            // Validate loadability before offering an interpretation to Core.
-            auto library = resident_typesupport(next->facts.type, deadline);
-            if (!library.ok()) {
-                return library.status();
-            }
-            next->schema = std::move(schema.value());
-        }
+        auto snapshot = std::make_shared<Snapshot>();
+        snapshot->facts = std::move(facts);
+        snapshot->installed =
+            stream.config.adapt
+                ? ros2::adapt_qos(snapshot->facts.offers, stream.config.requested.depth)
+                : stream.config.requested;
 
-        {
-            std::unique_lock<std::mutex> lock(mutex);
-            stream.gate = false;
-            const auto drained = [&] { return stopping || stream.active == 0; };
-            if (deadline.is_infinite()) {
-                changed.wait(lock, drained);
-            } else {
-                auto remaining = deadline.remaining();
-                if (!remaining.ok() || !changed.wait_for(lock, remaining.value(), drained)) {
-                    return Status(
-                        StatusCode::DeadlineExceeded, "ROS 2 stream callbacks remain active");
-                }
-            }
-            if (stopping) {
-                return Status(StatusCode::Conflict, "ROS 2 preparation stopped");
-            }
+        auto schema = ros2::resolve_schema(snapshot->facts.type);
+        if (!schema.ok()) {
+            return schema.status();
         }
-        if (old && rebuild) {
-            auto unavailable = event(RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE, stream.id);
-            if (!unavailable.ok()) {
-                return unavailable;
-            }
-            stream.subscription.reset();
+        auto library = resident_typesupport(snapshot->facts.type, deadline);
+        if (!library.ok()) {
+            return library.status();
         }
+        snapshot->schema = std::move(schema.value());
 
-        if (rebuild) {
-            stream.subscription = subscribe(stream, *next);
-            next->actual_request =
-                project(stream.subscription->get_actual_qos().get_rmw_qos_profile());
-        } else {
-            next->actual_request = old->actual_request;
-        }
+        // Create subscription before proposing Descriptor so actual installed
+        // requested QoS is observed and recorded in the bind-once Descriptor.
+        stream.subscription = subscribe(stream, *snapshot);
+        snapshot->actual_request =
+            project(stream.subscription->get_actual_qos().get_rmw_qos_profile());
+
         const auto* rmw = rmw_get_implementation_identifier();
         if (rmw == nullptr) {
             return Status(StatusCode::Unavailable, "ROS 2 runtime identity unavailable");
@@ -227,54 +118,48 @@ Result<void> Backend::State::install(Stream& stream, Facts facts, plugin::Deadli
 #else
 #error Unsupported ROS 2 distribution for the qualified backend
 #endif
-        const rodaq_ros2_subscription_facts_t subscription{
+        const rodaq_ros2_subscription_facts_t subscription_facts{
             {sizeof(rodaq_ros2_subscription_facts_t)},
             distribution,
             {rmw, static_cast<std::uint32_t>(std::strlen(rmw))},
-            next->actual_request,
-            next->generation,
+            snapshot->actual_request,
+            1,
             1,
             static_cast<std::uint32_t>(actual_threads)};
-        acquisition::DescriptorProposal proposal{};
-        proposal.header.struct_size = sizeof(proposal);
-        proposal.stream_id = stream.id;
-        proposal.data_profile = RODAQ_DATA_PROFILE_ROS2;
-        proposal.channel_name = view(stream.config.topic);
-        proposal.message_encoding = {"cdr", 3};
-        proposal.schema_name = view(next->schema.name);
-        proposal.schema_encoding = view(next->schema.encoding);
-        proposal.schema = {
-            reinterpret_cast<const std::uint8_t*>(next->schema.text.data()),
-            static_cast<std::uint32_t>(next->schema.text.size())};
-        proposal.ros2_offered_qos_profiles =
-            next->facts.offers.empty() ? nullptr : next->facts.offers.data();
-        proposal.ros2_offered_qos_profile_count =
-            static_cast<std::uint32_t>(next->facts.offers.size());
-        proposal.ros2_subscription = &subscription;
-        auto token = service->propose_descriptor(proposal, deadline);
-        if (!token.ok()) {
-            return token.status();
+
+        acquisition::Descriptor descriptor{};
+        descriptor.header.struct_size = sizeof(descriptor);
+        descriptor.stream_id = stream.id;
+        descriptor.data_profile = RODAQ_DATA_PROFILE_ROS2;
+        descriptor.channel_name = view(stream.config.topic);
+        descriptor.message_encoding = {"cdr", 3};
+        descriptor.schema_name = view(snapshot->schema.name);
+        descriptor.schema_encoding = view(snapshot->schema.encoding);
+        descriptor.schema = {
+            reinterpret_cast<const std::uint8_t*>(snapshot->schema.text.data()),
+            static_cast<std::uint32_t>(snapshot->schema.text.size())};
+        descriptor.ros2_offered_qos_profiles =
+            snapshot->facts.offers.empty() ? nullptr : snapshot->facts.offers.data();
+        descriptor.ros2_offered_qos_profile_count =
+            static_cast<std::uint32_t>(snapshot->facts.offers.size());
+        descriptor.ros2_subscription = &subscription_facts;
+
+        auto descriptor_id = callbacks.prepare_descriptor(stream.id, descriptor);
+        if (!descriptor_id.ok()) {
+            stream.subscription.reset();
+            return descriptor_id.status();
         }
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (stopping) {
-                return Status(StatusCode::Conflict, "Late ROS 2 descriptor result after stop");
+                stream.subscription.reset();
+                return Status(StatusCode::Conflict, "ROS 2 stopped during bind_stream");
             }
+            snapshot->descriptor_id = descriptor_id.value();
+            stream.snapshot = std::move(snapshot);
+            stream.ready_reported = true;
         }
-        next->token = token.value();
-        auto source_result = sources(stream, old ? &old->facts : nullptr, next->facts);
-        if (!source_result.ok()) {
-            return source_result;
-        }
-        auto ready = event(RODAQ_ACQUISITION_EVENT_STREAM_READY, stream.id);
-        if (!ready.ok()) {
-            return ready;
-        }
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            stream.snapshot = std::move(next);
-            stream.gate = phase == Phase::Running && !stopping;
-        }
+        report_event(RODAQ_ACQUISITION_EVENT_STREAM_READY, stream.id);
         return {};
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, "ROS 2 subscription allocation failed");
@@ -307,17 +192,15 @@ rclcpp::GenericSubscription::SharedPtr Backend::State::subscribe(
                 std::min(increment, std::numeric_limits<std::uint64_t>::max() - stream.lost);
         }
     };
-    const auto generation = snapshot.generation;
 #if RCLCPP_VERSION_MAJOR >= 28
-    auto callback = [this, &stream, generation](
+    auto callback = [this, &stream](
                         std::shared_ptr<rclcpp::SerializedMessage> message,
                         const rclcpp::MessageInfo& info) {
-        dispatch(stream, generation, message, &info.get_rmw_message_info());
+        dispatch(stream, message, &info.get_rmw_message_info());
     };
 #else
-    auto callback = [this, &stream,
-                     generation](std::shared_ptr<rclcpp::SerializedMessage> message) {
-        dispatch(stream, generation, message, nullptr);
+    auto callback = [this, &stream](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        dispatch(stream, message, nullptr);
     };
 #endif
     return node->create_generic_subscription(
@@ -325,93 +208,59 @@ rclcpp::GenericSubscription::SharedPtr Backend::State::subscribe(
 }
 
 void Backend::State::dispatch(
-    Stream& stream, std::uint64_t generation,
-    const std::shared_ptr<rclcpp::SerializedMessage>& message,
+    Stream& stream, const std::shared_ptr<rclcpp::SerializedMessage>& message,
     const rmw_message_info_t* metadata) noexcept {
-    auto permit = data_permit(stream, generation);
+    auto permit = data_permit(stream);
     if (!permit) {
         return;
     }
     try {
         if (!message) {
-            (void)event(RODAQ_ACQUISITION_EVENT_INVALID_PAYLOAD, stream.id, StatusCode::Ok, 1);
+            report_event(RODAQ_ACQUISITION_EVENT_INVALID_PAYLOAD, stream.id, StatusCode::Ok, 1);
             return;
         }
         const auto& raw = message->get_rcl_serialized_message();
         acquisition::RecordAttempt attempt{};
         attempt.header.struct_size = sizeof(attempt);
         attempt.stream_id = stream.id;
-        attempt.descriptor_token = permit.snapshot->token;
-
-        attempt.payload = {{sizeof(attempt.payload)}, raw.buffer, raw.buffer_length};
+        attempt.descriptor_id = permit.snapshot->descriptor_id;
+        attempt.payload = {raw.buffer, static_cast<std::uint32_t>(raw.buffer_length)};
 #if RCLCPP_VERSION_MAJOR >= 28
-        if (metadata != nullptr) {
-            attempt.source_id = source_id(metadata->publisher_gid.data);
-            attempt.has_source_id = attempt.source_id.size != 0;
-            if (attempt.has_source_id &&
-                !std::binary_search(
-                    permit.snapshot->facts.sources.begin(), permit.snapshot->facts.sources.end(),
-                    attempt.source_id, source_less)) {
-                // Public callback evidence can precede the graph snapshot.
-                // Announce that actual GID before the record; no identity or
-                // session is synthesized, and no per-message owner is retained.
-                acquisition::SourceEvent discovered{};
-                discovered.header.struct_size = sizeof(discovered);
-                discovered.stream_id = stream.id;
-                discovered.source_id = attempt.source_id;
-                discovered.has_source_id = 1;
-                discovered.kind = RODAQ_SOURCE_EVENT_DISCOVERED;
-                (void)service->report_source_event(discovered);
-            }
-            if (attempt.has_source_id && metadata->publication_sequence_number !=
-                                             RMW_MESSAGE_INFO_SEQUENCE_NUMBER_UNSUPPORTED) {
-                attempt.source_sequence = metadata->publication_sequence_number;
-                attempt.has_source_sequence = 1;
-                attempt.sequence_scope = RODAQ_SEQUENCE_SCOPE_SOURCE;
-            }
-            // No publication clock origin is assumed from the numeric timestamp.
+        if (metadata != nullptr && metadata->source_timestamp > 0) {
+            attempt.source_publish_time = static_cast<std::uint64_t>(metadata->source_timestamp);
+            attempt.has_source_publish_time = 1;
         }
 #else
         (void)metadata;
 #endif
-        auto result = service->submit_record(attempt);
-        if (!result.ok()) {
-            (void)event(
-                RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream.id, result.status().code());
+        const auto disposition = callbacks.submit_record(attempt);
+        if (disposition == RODAQ_SUBMIT_INVALID) {
+            report_event(RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream.id, StatusCode::Internal);
             std::lock_guard<std::mutex> lock(mutex);
             stopping = true;
             changed.notify_all();
         }
     } catch (...) {
-        try {
-            (void)event(RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream.id, StatusCode::Internal);
-        } catch (...) {
-        }
+        report_event(RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream.id, StatusCode::Internal);
         std::lock_guard<std::mutex> lock(mutex);
         stopping = true;
         changed.notify_all();
     }
 }
 
-Result<void> Backend::State::flush_events(Stream& stream) {
+void Backend::State::flush_events(Stream& stream) noexcept {
     for (const auto kind : {RODAQ_ACQUISITION_EVENT_OVERFLOW, RODAQ_ACQUISITION_EVENT_DROPPED}) {
-        std::uint64_t count;
+        std::uint64_t count = 0;
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            count = kind == RODAQ_ACQUISITION_EVENT_OVERFLOW ? stream.overflow : stream.lost;
-        }
-        if (count != 0) {
-            auto reported = event(kind, stream.id, StatusCode::Ok, count);
-            if (!reported.ok()) {
-                return reported;
-            }
             std::lock_guard<std::mutex> lock(mutex);
             auto& counter =
                 kind == RODAQ_ACQUISITION_EVENT_OVERFLOW ? stream.overflow : stream.lost;
-            counter -= count;
+            count = std::exchange(counter, 0);
+        }
+        if (count != 0) {
+            report_event(kind, stream.id, StatusCode::Ok, count);
         }
     }
-    return {};
 }
 
 void Backend::State::observe() noexcept {
@@ -429,51 +278,40 @@ void Backend::State::observe() noexcept {
                 if (!permit) {
                     continue;
                 }
-                auto flushed = flush_events(*stream);
-                if (!flushed.ok()) {
-                    continue;
-                }
+                flush_events(*stream);
                 auto facts = inspect(*stream);
                 if (!facts.ok()) {
+                    // Incompatible topic type or endpoint overflow after Gate Open:
+                    // fail-closed; do not hot-rebuild subscription or cut Descriptor.
                     {
                         std::lock_guard<std::mutex> lock(mutex);
                         stream->gate = false;
                     }
-                    (void)event(RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE, stream->id);
-                    (void)event(
-                        RODAQ_ACQUISITION_EVENT_RECOVERABLE_FAILURE, stream->id,
+                    report_event(RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE, stream->id);
+                    report_event(
+                        RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream->id,
                         facts.status().code());
-                    stream->candidate.reset();
                     continue;
                 }
-                bool gate;
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    gate = stream->gate;
-                }
-                if (gate && same_facts(stream->snapshot->facts, facts.value())) {
-                    stream->candidate.reset();
-                    continue;
-                }
-                const auto now = std::chrono::steady_clock::now();
-                if (!stream->candidate || !same_facts(*stream->candidate, facts.value())) {
-                    stream->candidate = std::move(facts.value());
-                    stream->candidate_since = now;
-                }
-                if (now - stream->candidate_since < config->qos_change_debounce) {
-                    continue;
-                }
-                auto result = install(*stream, std::move(*stream->candidate), deadline);
-                stream->candidate.reset();
-                if (!result.ok()) {
+                const auto& bound = *stream->snapshot;
+                const bool type_changed = facts.value().type != bound.facts.type;
+                const bool qos_incompatible =
+                    !facts.value().offers.empty() &&
+                    !ros2::qos_compatible(bound.installed, facts.value().offers);
+                if (type_changed || (stream->config.adapt && qos_incompatible)) {
                     {
                         std::lock_guard<std::mutex> lock(mutex);
                         stream->gate = false;
                     }
-                    (void)event(RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE, stream->id);
-                    (void)event(
-                        RODAQ_ACQUISITION_EVENT_RECOVERABLE_FAILURE, stream->id,
-                        result.status().code());
+                    report_event(RODAQ_ACQUISITION_EVENT_STREAM_UNAVAILABLE, stream->id);
+                    report_event(
+                        RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, stream->id, StatusCode::Conflict);
+                    continue;
+                }
+                // Compatible publisher join/leave does not rebuild subscription.
+                if (!stream->ready_reported) {
+                    stream->ready_reported = true;
+                    report_event(RODAQ_ACQUISITION_EVENT_STREAM_READY, stream->id);
                 }
             }
         }

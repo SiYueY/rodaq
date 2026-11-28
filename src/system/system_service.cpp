@@ -229,7 +229,6 @@ Result<void> SystemService::refresh(const system::SystemObservation& observation
         }
         auto next = std::make_shared<State::Published>();
         next->snapshot.core_ready = observation.core_ready;
-        next->snapshot.recovery = observation.recovery;
         next->snapshot.resources = sample_process_resources(state_->last_cpu);
         next->snapshot.volumes = observation.volumes;
         next->snapshot.backlog = observation.backlog;

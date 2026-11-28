@@ -63,14 +63,13 @@ static const rodaq_counter_vtable_t counter = {
 #endif
 
 static rodaq_status_code_t configure(
-    rodaq_plugin_context_t* context, const rodaq_service_registry_reference_t* services,
+    rodaq_plugin_context_t* context, const rodaq_application_callbacks_t* application,
     const rodaq_config_t* config, rodaq_error_t* error) {
     clear_error(error);
-    if (context == NULL || services == NULL || services->context == NULL ||
-        services->vtable == NULL ||
-        services->vtable->header.struct_size <
-            offsetof(rodaq_service_registry_vtable_t, query) + sizeof(services->vtable->query) ||
-        services->vtable->query == NULL || config == NULL ||
+    if (context == NULL || application == NULL ||
+        application->header.struct_size <
+            offsetof(rodaq_application_callbacks_t, log) + sizeof(application->log) ||
+        config == NULL ||
         config->header.struct_size < offsetof(rodaq_config_t, json) + sizeof(config->json)) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }

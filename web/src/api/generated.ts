@@ -1,8 +1,8 @@
 /**
  * Wire DTO contract strictly projected from server/api/openapi.yaml (OpenAPI 3.1.0)
  * and server/src/api/dto.cpp.
- * Checked automatically by tests/unit/api_contract.test.ts and live Playwright E2E.
- * All uint64 fields are DecimalString and must never be cast to JS Number.
+ * Bounded counts, bytes, and millisecond durations use JSON number;
+ * 64-bit identifiers and control_generation/snapshot_sequence use DecimalString.
  */
 
 export type DecimalString = string;
@@ -12,11 +12,6 @@ export type Rfc3339Timestamp = string;
 export interface ApiVersion {
   major: number;
   minor: number;
-}
-
-export interface DurationValue {
-  value: DecimalString;
-  unit: 'ns' | 'us' | 'ms' | 's';
 }
 
 export type Retryability =
@@ -41,8 +36,7 @@ export type DataImpact =
   | 'pre_admission_only'
   | 'accepted_known_failed'
   | 'persistence_unknown'
-  | 'artifact_quarantined'
-  | 'historical_artifact_lost_or_corrupt';
+  | 'artifact_unavailable_or_corrupt';
 
 export type DesiredState = 'stopped' | 'running' | 'paused';
 
@@ -53,7 +47,6 @@ export type ExecutionCondition =
   | 'degraded'
   | 'draining'
   | 'protected'
-  | 'pending_cleanup'
   | 'failed';
 
 export type OperationKind =
@@ -73,8 +66,7 @@ export type OperationState =
   | 'failed'
   | 'superseded';
 
-export type Scope = 'read' | 'control' | 'admin';
-export type ServerPhase = 'recovering' | 'ready' | 'draining' | 'failed';
+export type ServerPhase = 'starting' | 'ready' | 'draining' | 'failed';
 export type SnapshotFreshnessState = 'fresh' | 'stale' | 'unknown';
 export type VolumePressure = 'normal' | 'low' | 'critical' | 'protected';
 export type BackendRole = 'acquisition' | 'storage';
@@ -83,7 +75,7 @@ export type QualificationStatus = 'qualified' | 'not_qualified';
 
 export interface FreshnessInfo {
   state: SnapshotFreshnessState;
-  age: DurationValue | null;
+  age_ms: number | null;
 }
 
 export interface ErrorDetail {
@@ -113,39 +105,28 @@ export interface ErrorEnvelope {
   error: ApiErrorBody;
 }
 
-export interface SessionData {
-  principal: string;
-  scopes: Scope[];
-  api_version: ApiVersion;
-  csrf_token: string;
-}
-
 export interface VolumeStatusData {
   name: string;
-  total_bytes: DecimalString;
-  free_bytes: DecimalString;
+  total_bytes: number;
+  free_bytes: number;
   pressure: VolumePressure;
 }
 
 export interface SystemData {
   server_phase: ServerPhase;
   core_ready: boolean;
-  recovery: {
-    complete: boolean;
-    reason: string | null;
-    progress: number | null;
-  };
+  deployment_error?: string;
   resources: {
     cpu_cores: number;
-    rss_bytes: DecimalString;
-    threads: DecimalString;
-    open_fds: DecimalString;
+    rss_bytes: number;
+    threads: number;
+    open_fds: number;
   };
   volumes: VolumeStatusData[];
   backlog: {
-    commit_items: DecimalString;
-    commit_bytes: DecimalString;
-    active_downloads: DecimalString;
+    commit_items: number;
+    commit_bytes: number;
+    active_downloads: number;
   };
   captured_at: Rfc3339Timestamp;
   snapshot_sequence: DecimalString;
@@ -166,15 +147,15 @@ export interface OutputRootCapabilityData {
   name: string;
   allowed: boolean;
   writable: boolean;
-  free_bytes: DecimalString;
+  free_bytes: number;
   pressure: VolumePressure;
 }
 
 export interface ResourceProfileCapabilityData {
   name: string;
   allowed: boolean;
-  max_segment_physical_bytes: DecimalString;
-  max_streams_per_pipeline: DecimalString;
+  max_segment_physical_bytes: number;
+  max_streams_per_pipeline: number;
 }
 
 export interface CapabilitiesData {
@@ -183,10 +164,9 @@ export interface CapabilitiesData {
   output_roots: OutputRootCapabilityData[];
   resource_profiles: ResourceProfileCapabilityData[];
   api_limits: {
-    max_request_body_bytes: DecimalString;
-    max_page_size: DecimalString;
-    idempotency_retention: DurationValue;
-    recommended_polling_floor: DurationValue;
+    max_request_body_bytes: number;
+    max_page_size: number;
+    recommended_polling_floor_ms: number;
   };
 }
 
@@ -215,9 +195,9 @@ export interface TaskSummaryData {
   data_impact: DataImpact;
   runtime_summary: {
     accepted_records_per_second: number;
-    commit_lag: DurationValue | null;
-    receiving_streams: DecimalString;
-    total_streams: DecimalString;
+    commit_lag_ms: number | null;
+    receiving_streams: number;
+    total_streams: number;
   };
   captured_at: Rfc3339Timestamp;
   freshness: FreshnessInfo;
@@ -236,8 +216,6 @@ export interface PageData<T> {
 
 export interface OperationPageData extends PageData<OperationData> {
   history_truncated: boolean;
-  oldest_retained_control_generation: DecimalString | null;
-  oldest_retained_at: Rfc3339Timestamp | null;
 }
 
 export interface MutationAcceptedData {
@@ -262,7 +240,7 @@ export interface OperationData {
 
 export interface RejectReasonCount {
   reason: string;
-  records: DecimalString;
+  records: number;
 }
 
 export interface StreamRuntimeData {
@@ -273,16 +251,16 @@ export interface StreamRuntimeData {
   source_ready: boolean;
   receiving: boolean;
   last_receive_at: Rfc3339Timestamp | null;
-  window: DurationValue;
+  window_ms: number;
   received: {
-    records: DecimalString;
-    logical_bytes: DecimalString;
+    records: number;
+    logical_bytes: number;
     records_per_second: number;
     logical_bytes_per_second: number;
   };
   admission: {
-    accepted_records: DecimalString;
-    rejected_records: DecimalString;
+    accepted_records: number;
+    rejected_records: number;
     reject_reasons: RejectReasonCount[];
   };
   captured_at: Rfc3339Timestamp;
@@ -296,37 +274,37 @@ export interface PipelineRuntimeData {
   condition: ExecutionCondition;
   gate_state: 'open' | 'closed';
   received: {
-    records: DecimalString;
-    logical_bytes: DecimalString;
+    records: number;
+    logical_bytes: number;
     records_per_second: number;
     logical_bytes_per_second: number;
   };
   admission: {
-    accepted_records: DecimalString;
-    rejected_records: DecimalString;
+    accepted_records: number;
+    rejected_records: number;
     reject_reasons: RejectReasonCount[];
   };
   queue: {
-    records: DecimalString;
-    bytes: DecimalString;
-    high_watermark_records: DecimalString;
-    high_watermark_bytes: DecimalString;
-    oldest_age: DurationValue | null;
+    records: number;
+    bytes: number;
+    high_watermark_records: number;
+    high_watermark_bytes: number;
+    oldest_age_ms: number | null;
   };
   writer: {
     logical_bytes_per_second: number;
-    pending_records: DecimalString;
+    pending_records: number;
     last_progress_at: Rfc3339Timestamp | null;
   };
   storage: {
     physical_bytes_per_second: number;
-    pending_bytes: DecimalString;
+    pending_bytes: number;
     last_progress_at: Rfc3339Timestamp | null;
   };
   commit: {
-    lag: DurationValue | null;
+    lag_ms: number | null;
     durable_bytes_per_second: number;
-    pending_segments: DecimalString;
+    pending_segments: number;
     last_committed_artifact_id: EntityId | null;
     last_progress_at: Rfc3339Timestamp | null;
   };
@@ -342,8 +320,8 @@ export interface TaskRuntimeData {
 }
 
 export interface RecordingRangeData {
-  begin: DurationValue;
-  end: DurationValue;
+  begin_ms: number;
+  end_ms: number;
 }
 
 export interface ArtifactSummaryData {
@@ -354,15 +332,15 @@ export interface ArtifactSummaryData {
   committed_at: Rfc3339Timestamp;
   recording_range: RecordingRangeData;
   format: string;
-  logical_bytes: DecimalString;
-  physical_bytes: DecimalString;
+  logical_bytes: number;
+  physical_bytes: number;
   data_impact: DataImpact;
 }
 
 export interface ArtifactFileData {
   file_id: EntityId;
   display_name: string;
-  size: DecimalString;
+  size: number;
   media_type: string;
   etag: string;
   download_url: string;
@@ -378,11 +356,11 @@ export type CoverageGapKind =
 
 export interface CoverageData {
   complete: boolean;
-  gap_count: DecimalString;
+  gap_count: number;
   gaps: {
     kind: CoverageGapKind;
-    recording_begin: DurationValue | null;
-    recording_end: DurationValue | null;
+    recording_begin_ms: number | null;
+    recording_end_ms: number | null;
     message: string | null;
   }[];
 }
@@ -418,18 +396,14 @@ export interface PortablePipelineConfig {
 export interface PortableTaskConfig {
   format_version: '1.0';
   name?: string;
-  recording_mode: 'continuous' | 'rolling';
-  start_policy: { mode: 'all_required' | 'best_effort' };
-  recovery_policy: { mode: 'manual' | 'resume' };
   segment_policy: {
-    max_duration: DurationValue | null;
-    max_physical_bytes: DecimalString | null;
+    max_duration_ms: number | null;
+    max_physical_bytes: number | null;
   };
   retention_policy: {
     mode: 'keep_all' | 'rolling';
-    max_duration: DurationValue | null;
-    max_physical_bytes: DecimalString | null;
-    include_previous_continuous?: boolean;
+    max_duration_ms: number | null;
+    max_physical_bytes: number | null;
   };
   pipelines: PortablePipelineConfig[];
 }
@@ -457,8 +431,7 @@ export const CLOSED_ENUM_VALUES = {
     'pre_admission_only',
     'accepted_known_failed',
     'persistence_unknown',
-    'artifact_quarantined',
-    'historical_artifact_lost_or_corrupt',
+    'artifact_unavailable_or_corrupt',
   ] as const,
   DesiredState: ['stopped', 'running', 'paused'] as const,
   ExecutionCondition: [
@@ -468,7 +441,6 @@ export const CLOSED_ENUM_VALUES = {
     'degraded',
     'draining',
     'protected',
-    'pending_cleanup',
     'failed',
   ] as const,
   OperationKind: ['configure', 'start', 'pause', 'resume', 'stop', 'reset', 'retire'] as const,

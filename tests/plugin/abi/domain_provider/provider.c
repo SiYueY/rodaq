@@ -6,8 +6,8 @@
 
 /* Fixed-memory ABI fixture; returned file facts do not represent real format I/O. */
 struct rodaq_plugin_context {
-    rodaq_service_registry_reference_t services;
-    rodaq_interface_reference_t acquisition_service;
+    rodaq_acquisition_callbacks_t callbacks;
+    rodaq_descriptor_id_t descriptor_id;
     uint64_t calls;
     uint64_t bytes;
     uint8_t copied[8];
@@ -40,27 +40,13 @@ static rodaq_status_code_t optional_fact(
 #if DOMAIN_STORAGE
 static rodaq_status_code_t prepare(
     rodaq_interface_context_t* context, const rodaq_storage_prepare_config_t* config,
-    rodaq_deadline_t deadline, rodaq_storage_capacity_model_t* model, rodaq_error_t* error) {
+    rodaq_deadline_t deadline, rodaq_error_t* error) {
     (void)context;
     (void)deadline;
     clear_error(error);
-    if (config == NULL || model == NULL ||
-        model->header.struct_size < sizeof(rodaq_storage_capacity_model_t)) {
+    if (config == NULL || config->header.struct_size < sizeof(rodaq_storage_prepare_config_t)) {
         return RODAQ_STATUS_INVALID_ARGUMENT;
     }
-    model->payload_expansion_numerator = 1;
-    model->payload_expansion_denominator = 1;
-    model->per_record_overhead_bytes = 0;
-    model->descriptor_expansion_numerator = 1;
-    model->descriptor_expansion_denominator = 1;
-    model->per_descriptor_overhead_bytes = 0;
-    model->fixed_segment_overhead_bytes = 0;
-    model->seal_reserve_bytes = 0;
-#if FIXTURE_MINOR > 0
-    if (model->header.struct_size >= sizeof(domain_capacity_t)) {
-        ((domain_capacity_t*)model)->optional_fact = 77;
-    }
-#endif
     return RODAQ_STATUS_OK;
 }
 
@@ -104,7 +90,6 @@ static rodaq_status_code_t segment_usage(
     clear_error(error);
     assert(output->header.struct_size >= sizeof(rodaq_segment_usage_t));
     output->physical_bytes = ((const struct rodaq_plugin_context*)context)->bytes;
-    output->pending_physical_upper_bound = 0;
     output->file_count = 1;
     output->reserved0 = 0;
     return RODAQ_STATUS_OK;
@@ -129,57 +114,36 @@ static rodaq_status_code_t seal_segment(
 #else
 static rodaq_status_code_t prepare(
     rodaq_interface_context_t* context, const rodaq_acquisition_prepare_config_t* config,
-    rodaq_deadline_t deadline, rodaq_error_t* error) {
+    const rodaq_acquisition_callbacks_t* callbacks, rodaq_deadline_t deadline,
+    rodaq_error_t* error) {
+    (void)deadline;
     clear_error(error);
     struct rodaq_plugin_context* state = (struct rodaq_plugin_context*)context;
     assert(config->stream_count == 1 && config->streams[0].stream_id == 42);
-    rodaq_interface_query_t query = {
-        {RODAQ_ACQUISITION_SERVICE_ID, sizeof(RODAQ_ACQUISITION_SERVICE_ID) - 1},
-        1,
-        0,
-        FIXTURE_MINOR};
-    const rodaq_status_code_t code = state->services.vtable->query(
-        state->services.context, &query, &state->acquisition_service, error);
-    if (code != RODAQ_STATUS_OK) {
-        return code;
-    }
-    const rodaq_acquisition_service_vtable_t* service =
-        (const rodaq_acquisition_service_vtable_t*)state->acquisition_service.vtable;
-    const size_t required = offsetof(rodaq_acquisition_service_vtable_t, report_acquisition_event) +
-                            sizeof(service->report_acquisition_event);
     assert(
-        state->acquisition_service.vtable_size >= required &&
-        service->header.struct_size >= required);
-#if FIXTURE_MINOR > 0
-    if (state->acquisition_service.negotiated_version.minor >= 1 &&
-        state->acquisition_service.vtable_size >= sizeof(domain_services_t) &&
-        service->header.struct_size >= sizeof(domain_services_t)) {
-        const domain_services_t* extended = (const domain_services_t*)service;
-        assert(
-            extended->optional_fact ==
-            NULL); /* NULL optional tail does not invalidate the required prefix. */
-    }
-#endif
-    rodaq_descriptor_proposal_t proposal = {0};
-    proposal.header.struct_size = sizeof(proposal);
-    proposal.stream_id = 42;
-    proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
-    proposal.channel_name = (rodaq_string_t){"sample", 6};
-    proposal.message_encoding = (rodaq_string_t){"raw", 3};
-    rodaq_descriptor_token_t token = {0};
+        callbacks != NULL && callbacks->prepare_descriptor != NULL &&
+        callbacks->submit_record != NULL && callbacks->report_event != NULL);
+    state->callbacks = *callbacks;
+
+    rodaq_acquisition_descriptor_t descriptor = {0};
+    descriptor.header.struct_size = sizeof(descriptor);
+    descriptor.stream_id = 42;
+    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
+    descriptor.channel_name = (rodaq_string_t){"sample", 6};
+    descriptor.message_encoding = (rodaq_string_t){"raw", 3};
+    rodaq_descriptor_id_t descriptor_id = 0;
     assert(
-        service->propose_descriptor(
-            state->acquisition_service.context, &proposal, deadline, &token, error) ==
-        RODAQ_STATUS_OK);
-    assert(token.value == 21 && token.generation == 31);
+        state->callbacks.prepare_descriptor(
+            state->callbacks.context, 42, &descriptor, &descriptor_id, error) == RODAQ_STATUS_OK);
+    assert(descriptor_id == 21);
+    state->descriptor_id = descriptor_id;
+
     rodaq_acquisition_event_t event = {0};
     event.header.struct_size = sizeof(event);
     event.kind = RODAQ_ACQUISITION_EVENT_STREAM_READY;
     event.has_stream_id = 1;
     event.stream_id = 42;
-    assert(
-        service->report_acquisition_event(state->acquisition_service.context, &event) ==
-        RODAQ_STATUS_OK);
+    state->callbacks.report_event(state->callbacks.context, &event);
     return RODAQ_STATUS_OK;
 }
 
@@ -188,34 +152,14 @@ static rodaq_status_code_t start(
     (void)deadline;
     clear_error(error);
     struct rodaq_plugin_context* state = (struct rodaq_plugin_context*)context;
-    const rodaq_acquisition_service_vtable_t* service =
-        (const rodaq_acquisition_service_vtable_t*)state->acquisition_service.vtable;
     uint8_t bytes[3] = {3, 2, 1};
-    rodaq_record_attempt_t record = {0};
+    rodaq_acquisition_record_attempt_t record = {0};
     record.header.struct_size = sizeof(record);
     record.stream_id = 42;
-    record.descriptor_token = (rodaq_descriptor_token_t){21, 31};
-    record.payload = (rodaq_payload_t){{sizeof(record.payload)}, bytes, sizeof(bytes)};
-    struct {
-        domain_submission_t value;
-        uint8_t guard[16];
-    } output = {0};
-    output.value.header.struct_size = sizeof(output.value);
-    memset(output.guard, 0xa5, sizeof(output.guard));
+    record.descriptor_id = state->descriptor_id;
+    record.payload = (rodaq_bytes_t){bytes, sizeof(bytes)};
     assert(
-        service->submit_record(
-            state->acquisition_service.context, &record, (rodaq_submit_result_t*)&output.value) ==
-        RODAQ_STATUS_OK);
-    assert(output.value.disposition == RODAQ_SUBMIT_ACCEPTED);
-    assert(output.value.header.struct_size == sizeof(output.value));
-    for (size_t i = 0; i < sizeof(output.guard); ++i) {
-        assert(output.guard[i] == 0xa5);
-    }
-#if FIXTURE_MINOR > 0
-    if (state->acquisition_service.negotiated_version.minor >= 1) {
-        assert(output.value.optional_fact == 77);
-    }
-#endif
+        state->callbacks.submit_record(state->callbacks.context, &record) == RODAQ_SUBMIT_ACCEPTED);
     memset(bytes, 0xee, sizeof(bytes));
     ++state->calls;
     return RODAQ_STATUS_OK;
@@ -242,11 +186,12 @@ static const domain_operations_t kOperations = {
 };
 
 static rodaq_status_code_t configure(
-    rodaq_plugin_context_t* context, const rodaq_service_registry_reference_t* services,
+    rodaq_plugin_context_t* context, const rodaq_application_callbacks_t* application,
     const rodaq_config_t* config, rodaq_error_t* error) {
+    (void)context;
+    (void)application;
     (void)config;
     clear_error(error);
-    context->services = *services;
     return RODAQ_STATUS_OK;
 }
 

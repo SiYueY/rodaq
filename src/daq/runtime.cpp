@@ -1,13 +1,13 @@
 #include <rodaq/daq/runtime.hpp>
 
-#include "composition.hpp"
-#include "startup.hpp"
-
 #include <chrono>
 #include <limits>
 #include <memory>
 #include <new>
 #include <utility>
+
+#include "composition.hpp"
+#include "startup.hpp"
 
 namespace rodaq {
 
@@ -50,17 +50,15 @@ Result<std::unique_ptr<DaqRuntime>> DaqRuntime::open(DaqOpenOptions options) {
             static_cast<std::uint64_t>(options.volume.recovery_stable_window.count());
         startup.capacity.max_segments = options.volume.max_segments;
         startup.capacity.max_commit_slots = options.volume.max_commit_slots;
-        startup.capacity.max_artifact_slots = options.volume.max_artifact_slots;
-        startup.ledger_records = options.volume.ledger_records;
+        startup.capacity.max_artifact_slots = options.volume.max_artifacts_per_volume;
 
         auto& settings = startup.settings;
         settings.deployment_generation = options.deployment_generation;
         settings.qualified_runtime_profile_id = std::move(options.qualified_runtime_profile_id);
         settings.output_root = std::move(options.volume.name);
         settings.max_tasks = options.max_tasks;
-        settings.create_recovery_slots = options.create_recovery_slots;
+        settings.max_artifacts_per_volume = options.volume.max_artifacts_per_volume;
         settings.native_timeout = options.native_timeout;
-        settings.artifact_audit_window = options.artifact_audit_window;
         settings.system_snapshot_max_age = options.system_snapshot_max_age;
         settings.tasks.config.max_pipelines = options.max_pipelines_per_task;
 
@@ -91,13 +89,9 @@ Result<std::unique_ptr<DaqRuntime>> DaqRuntime::open(DaqOpenOptions options) {
             target.storage.max_segment_physical_bytes = profile.max_segment_physical_bytes;
             target.storage.max_segment_file_count = profile.max_sealed_files;
             target.storage.max_relative_path_bytes = 256;
-            target.storage.system_boot_id = 1;
-            target.storage.playback_anchor_monotonic = 1;
-            target.storage.playback_anchor_realtime = 1;
+            target.segment_reservation_bytes = profile.segment_reservation_bytes;
             target.manifest.max_bytes = profile.max_manifest_bytes;
             target.max_prepared_descriptors = profile.max_prepared_descriptors;
-            target.sequence_reservation = profile.sequence_reservation;
-            target.descriptor_reservation = profile.descriptor_reservation;
             settings.profiles.push_back(std::move(target));
         }
 

@@ -5,7 +5,7 @@ import type { ArtifactData, ArtifactSummaryData, PageData } from '../../api/gene
 import { useRequest } from '../../composables/useRequest';
 import { useSessionStore } from '../../composables/useSession';
 import { formatIecBytes } from '../../format/decimal';
-import { formatDuration, formatTimestampUtc } from '../../format/time';
+import { formatDurationMs, formatTimestampUtc } from '../../format/time';
 import StatusBadge from '../../components/StatusBadge.vue';
 import ErrorPanel from '../../components/ErrorPanel.vue';
 import DataTable, { type TableColumn } from '../../components/DataTable.vue';
@@ -37,11 +37,11 @@ const listReq = useRequest<PageData<ArtifactSummaryData>>((signal) => {
     format: formatFilter.value.trim() || undefined,
   };
   if (timeMode.value === 'committed_wall') {
-    query.committed_after = fromFilter.value.trim() || undefined;
-    query.committed_before = toFilter.value.trim() || undefined;
+    query.committed_begin = fromFilter.value.trim() || undefined;
+    query.committed_end = toFilter.value.trim() || undefined;
   } else {
-    query.recording_begin_ns = fromFilter.value.trim() || undefined;
-    query.recording_end_ns = toFilter.value.trim() || undefined;
+    query.recording_begin = fromFilter.value.trim() || undefined;
+    query.recording_end = toFilter.value.trim() || undefined;
   }
   return session.api.request<PageData<ArtifactSummaryData>>({
     method: 'GET',
@@ -76,7 +76,6 @@ const columns: TableColumn[] = [
 ];
 
 function applyFilters(): void {
-  // Filter change resets cursor chain per Web §4.6.
   cursorStack.value = [undefined];
   selectedArtifactId.value = null;
   void listReq.run();
@@ -145,15 +144,15 @@ onBeforeUnmount(() => {
           <label for="art-time-mode">Time Filter Semantics</label>
           <select id="art-time-mode" v-model="timeMode">
             <option value="committed_wall">Wall-Clock Committed (RFC 3339)</option>
-            <option value="recording_local">Task-Local Recording Duration (ns)</option>
+            <option value="recording_local">Task-Local Recording Duration (e.g. 5000ms / 10s)</option>
           </select>
         </div>
         <div class="form-field" style="margin-bottom: 0">
-          <label for="art-from-filter">{{ timeMode === 'committed_wall' ? 'Committed After (RFC 3339)' : 'Recording Begin (ns)' }}</label>
+          <label for="art-from-filter">{{ timeMode === 'committed_wall' ? 'Committed Begin (RFC 3339)' : 'Recording Begin' }}</label>
           <input id="art-from-filter" v-model="fromFilter" type="text" />
         </div>
         <div class="form-field" style="margin-bottom: 0">
-          <label for="art-to-filter">{{ timeMode === 'committed_wall' ? 'Committed Before (RFC 3339)' : 'Recording End (ns)' }}</label>
+          <label for="art-to-filter">{{ timeMode === 'committed_wall' ? 'Committed End (RFC 3339)' : 'Recording End' }}</label>
           <input id="art-to-filter" v-model="toFilter" type="text" />
         </div>
         <div class="row-actions" style="align-self: end">
@@ -168,7 +167,7 @@ onBeforeUnmount(() => {
     <article class="card">
       <div class="row-actions" style="justify-content: space-between; margin-bottom: 10px">
         <span class="muted" style="font-size: 0.85rem">
-          Committed artifacts only (staging/quarantined segments never appear in normal list).
+          Committed artifacts only (staging, deleting, and corrupt segments never appear in normal list).
         </span>
         <div class="row-actions">
           <button type="button" class="btn" :disabled="cursorStack.length <= 1" @click="prevPage">
@@ -205,7 +204,7 @@ onBeforeUnmount(() => {
           <td class="mono">{{ row.task_id.slice(0, 8) }}… / p.{{ row.pipeline_id }}</td>
           <td class="mono">{{ formatTimestampUtc(row.committed_at) }}</td>
           <td class="mono">
-            {{ formatDuration(row.recording_range.begin) }} → {{ formatDuration(row.recording_range.end) }}
+            {{ formatDurationMs(row.recording_range.begin_ms) }} → {{ formatDurationMs(row.recording_range.end_ms) }}
           </td>
           <td>{{ row.format }}</td>
           <td class="num">{{ formatIecBytes(row.logical_bytes) }}</td>

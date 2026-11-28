@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <string_view>
@@ -19,37 +20,18 @@ inline bool valid_prepare(const PrepareConfig* config) noexcept {
            config->max_batch_records != 0 && config->max_descriptors_per_segment != 0 &&
            config->max_segment_records != 0 && config->max_segment_input_bytes != 0 &&
            config->max_segment_physical_bytes != 0 && config->max_segment_file_count != 0 &&
-           config->max_relative_path_bytes != 0 && config->max_relative_path_bytes < UINT32_MAX &&
-           config->system_boot_id != 0;
-}
-
-inline bool valid_capacity(const CapacityModel& model) noexcept {
-    return model.header.struct_size >= sizeof(model) && model.payload_expansion_denominator != 0 &&
-           model.descriptor_expansion_denominator != 0;
+           config->max_relative_path_bytes != 0 && config->max_relative_path_bytes < UINT32_MAX;
 }
 
 inline bool valid_record(const Record& record) noexcept {
-    if (record.header.struct_size != sizeof(record) || record.stream_id == 0 ||
-        record.descriptor_id == 0 || record.acceptance_sequence == 0 ||
-        record.system_boot_id == 0 || record.clock_epoch_id == 0 ||
-        (record.payload.size != 0 && record.payload.data == nullptr) ||
-        record.timestamp_count > RODAQ_STORAGE_TIMESTAMP_CAPACITY ||
-        (record.delivery_flags & ~RODAQ_RECORD_DELIVERY_RETAINED) != 0 ||
-        !canonical::valid_source_facts(
-            record.source_id, record.source_session_id, record.source_sequence,
-            record.sequence_scope, record.has_source_id, record.has_source_session_id,
-            record.has_source_sequence) ||
-        !std::all_of(std::begin(record.reserved), std::end(record.reserved), [](auto byte) {
-            return byte == 0;
-        })) {
-        return false;
-    }
-    for (std::uint32_t i = 0; i < RODAQ_STORAGE_TIMESTAMP_CAPACITY; ++i) {
-        if (!canonical::valid_timestamp(record.timestamps[i], i < record.timestamp_count)) {
-            return false;
-        }
-    }
-    return true;
+    return record.header.struct_size == sizeof(record) && record.stream_id != 0 &&
+           record.descriptor_id != 0 &&
+           (record.payload.size == 0 || record.payload.data != nullptr) &&
+           record.has_publish_time <= 1 &&
+           (record.has_publish_time != 0 || record.publish_time == 0) &&
+           std::all_of(std::begin(record.reserved), std::end(record.reserved), [](auto byte) {
+               return byte == 0;
+           });
 }
 
 inline bool valid_batch(Batch batch) noexcept {

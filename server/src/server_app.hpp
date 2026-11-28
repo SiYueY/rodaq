@@ -1,20 +1,11 @@
 #pragma once
 
-#include "api/error_response.hpp"
 #include "config.hpp"
 #include "download/download_registry.hpp"
-#include "security/auth.hpp"
 #include "service_call_executor.hpp"
-#include "static_assets.hpp"
 
-#include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <string>
-#include <thread>
 
 #include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/result.hpp>
@@ -23,15 +14,15 @@
 
 namespace rodaq::server {
 
+// Non-owning public Core service pointers injected into ServerApp.
 struct ServerServices {
     TaskService* tasks{nullptr};
     SystemService* system{nullptr};
     ArtifactService* artifacts{nullptr};
 };
 
-// Process-level HTTP server application owning Drogon listener lifecycle,
-// AuthState, bounded ServiceCallExecutor, DownloadRegistry, and StaticAssetService.
-// Never owns Core domain state; only references formal public service facades.
+// Owns Drogon HTTP listener, BearerAuthenticator, ControlExecutor,
+// DownloadRegistry, StaticAssetService, and ordered shutdown.
 class ServerApp {
 public:
     ServerApp();
@@ -39,26 +30,17 @@ public:
     ServerApp& operator=(const ServerApp&) = delete;
     ~ServerApp() noexcept;
 
-    // Starts the loopback Drogon HTTP listener. When initial_phase is Recovering,
-    // only /api/session and GET /api/system are served until mark_ready() is called.
-    Result<void> start(
-        ServerConfig config, ServerServices services,
-        ServerPhase initial_phase = ServerPhase::Ready);
+    // Starts loopback listener directly in Ready once Core + Catalog are ready.
+    Result<void> start(ServerConfig config, ServerServices services);
 
-    // Atomically installs ready Core services and transitions Recovering -> Ready.
-    Result<void> mark_ready(ServerServices services);
-
-    // Explicit ordered shutdown: transitions to Draining, cancels active
-    // downloads and unstarted queued work, waits bounded settlement, stops Drogon.
+    // Drains downloads and in-flight control calls within deadline, then stops Drogon.
     Result<void> shutdown(std::chrono::steady_clock::time_point deadline);
 
     ServerPhase phase() const noexcept;
 
-    ExecutorMetrics executor_metrics() const;
+    ControlMetrics control_metrics() const;
 
     DownloadMetrics download_metrics() const;
-
-    std::size_t active_sessions() const;
 
 private:
     struct Impl;

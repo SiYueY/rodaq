@@ -13,9 +13,9 @@
 #include <utility>
 #include <vector>
 
+#include "../persistence/file_descriptor.hpp"
 #include "artifact_catalog.hpp"
 #include "segment_committer.hpp"
-#include "../persistence/file_descriptor.hpp"
 
 namespace rodaq::artifact {
 
@@ -27,21 +27,12 @@ struct CatalogFile {
 struct CatalogEntry {
     ArtifactInfo info;
     std::string config_version;
-    // Absent after recovering a Deleted row whose Manifest no longer exists.
-    // Never manufacture a recording boundary from tombstone identity alone.
-    std::optional<std::uint64_t> committed_recording_end_ns;
     std::vector<CatalogFile> files;
     struct stat directory {};
     struct stat manifest {};
     std::optional<ArtifactCharge> charge;
     bool read_blocked{false};
     std::uint32_t readers{0};
-};
-
-// Content/identity proof only; no committed authority or public visibility.
-struct VerifiedArtifactTree {
-    std::shared_ptr<CatalogEntry> entry;
-    SegmentManifest manifest;
 };
 
 struct CommitFrame {
@@ -53,7 +44,7 @@ struct CommitFrame {
     std::unique_ptr<SegmentCommitter> committer;
 };
 
-enum class CatalogWork { None, Commit, Delete, Collect };
+enum class CatalogWork { None, Commit, Delete };
 
 struct CatalogSlot {
     std::uint64_t segment_id{0};
@@ -62,7 +53,7 @@ struct CatalogSlot {
     std::shared_ptr<CommitFrame> frame;
     CatalogWork work{CatalogWork::None};
     bool visible{false};
-    bool collection_pending{false};
+    bool deleting_pending{false};
     StatusCode failure{StatusCode::Ok};
 };
 
@@ -70,11 +61,6 @@ struct ReadSlot {
     bool busy{false};
     std::uint64_t generation{0};
     std::weak_ptr<ReadBacking> reader;
-};
-
-struct RetainedQuarantine {
-    QuarantinedArtifact info;
-    std::optional<ArtifactCharge> charge;
 };
 
 struct CatalogState {
@@ -87,15 +73,14 @@ struct CatalogState {
     std::vector<CatalogSlot> slots;
     std::vector<ReadSlot> readers;
     std::vector<std::shared_ptr<ReadBacking>> cancel_scratch;
-    std::vector<std::shared_ptr<RetainedQuarantine>> quarantined;
     bool accepting_reads{true};
-    bool rebuilding{false};
+    bool scanning{false};
     std::uint32_t read_leases{0};
+    std::uint32_t startup_corrupt_count{0};
     std::atomic<std::uint32_t> active_reads{0};
-    StatusCode recovery_health{StatusCode::Ok};
+    StatusCode startup_health{StatusCode::Ok};
 
     std::size_t find(std::uint64_t id) const noexcept;
-    Result<bool> public_entry(const CatalogSlot& slot) const;
     void corrupt(std::uint64_t id) noexcept;
 };
 
@@ -118,10 +103,9 @@ bool same_regular_file(const struct stat& expected, const struct stat& actual) n
 bool same_segment_directory(const struct stat& expected, const struct stat& actual) noexcept;
 Result<persistence::FileDescriptor> open_final_directory(
     const std::shared_ptr<ManagedVolume>& volume, std::uint64_t segment);
-Result<std::shared_ptr<CatalogEntry>> verify_committed(
-    const CatalogOptions& options, const LedgerRecord& record);
-Result<VerifiedArtifactTree> verify_artifact_tree(
-    const CatalogOptions& options, const std::filesystem::path& directory);
-Result<void> prove_artifact_absence(const CatalogOptions& options, std::uint64_t segment);
+Result<std::shared_ptr<CatalogEntry>> verify_final_artifact(
+    const CatalogOptions& options, std::uint64_t segment_id);
+Result<void> remove_tree_bounded(
+    int parent_fd, const char* name, std::uint32_t depth, std::uint32_t& remaining);
 
 }  // namespace rodaq::artifact

@@ -58,7 +58,7 @@ TEST_F(
     const auto bytes = marker();
     EXPECT_TRUE(artifact::parse_volume_id(artifact::to_string(identity)).ok());
     EXPECT_TRUE(fs::is_empty(root_ / ".rodaq/artifacts"));
-    EXPECT_TRUE(fs::is_empty(root_ / ".rodaq/quarantine"));
+    EXPECT_FALSE(fs::exists(root_ / ".rodaq/quarantine"));
     EXPECT_TRUE(owner->verify().ok());
     EXPECT_TRUE(owner->available_bytes().ok());
     EXPECT_NE(owner->runtime_identity().mount_id, 0);
@@ -186,6 +186,7 @@ TEST_F(ManagedVolumeTest, ChangedMarkerContentsAndLostLeaseIdentityProtectTheAct
     ASSERT_TRUE(opened.ok());
     auto document = persistence::parse_json(marker());
     ASSERT_TRUE(document.ok());
+    document.value().erase("content_digest");
     document.value()["created_at"] = "2026-01-01T00:00:00.000000000Z";
     auto altered = persistence::encode_integrity(document.value(), "rodaq.volume.v1");
     ASSERT_TRUE(altered.ok());

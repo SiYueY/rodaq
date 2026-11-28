@@ -3,29 +3,68 @@ import { CLIENT_TIMEOUTS } from '../../api/client';
 import type {
   DecimalString,
   MutationAcceptedData,
-  OperationData,
   OperationKind,
   TaskCreateData,
 } from '../../api/generated';
-import { isTerminalOperationState, requiredScopeForOperation } from '../../api/types';
 import { ApiFailure } from '../../api/errors';
 import { useSessionStore } from '../../composables/useSession';
-import {
-  deletePendingMutation,
-  generateIdempotencyKey,
-  savePendingMutation,
-  updatePendingMutationOperationId,
-  type PendingMutation,
-} from './pendingMutations';
 
+export type MutationPhase = 'idle' | 'submitting' | 'accepted' | 'error' | 'unknown';
+
+function generateIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function isOutcomeUnknown(err: ApiFailure): boolean {
+  return err.kind === 'network' || err.kind === 'timeout' || err.httpStatus === 504;
+}
+
+/**
+ * Memory-only mutation composable (Web §3.5):
+ * - Generates a fresh UUID Idempotency-Key per explicit user action.
+ * - Never persists mutations to sessionStorage/localStorage and never auto-replays.
+ * - Network/timeout/504 errors enter `unknown` phase so the UI refreshes authoritative Server state.
+ */
 export function useTaskMutation() {
   const session = useSessionStore();
+  const phase = ref<MutationPhase>('idle');
   const submitting = ref(false);
   const lastError = ref<ApiFailure | null>(null);
   const lastAccepted = ref<MutationAcceptedData | null>(null);
+  const outcomeUnknownMessage = ref<string | null>(null);
+
+  function reset(): void {
+    phase.value = 'idle';
+    submitting.value = false;
+    lastError.value = null;
+    lastAccepted.value = null;
+    outcomeUnknownMessage.value = null;
+  }
+
+  function recordFailure(err: unknown): void {
+    if (err instanceof ApiFailure) {
+      if (isOutcomeUnknown(err)) {
+        phase.value = 'unknown';
+        outcomeUnknownMessage.value =
+          'Request outcome is unknown (timeout or network error). Authoritative Task state will be refreshed — do not blindly resend.';
+        lastError.value = null;
+      } else {
+        phase.value = 'error';
+        lastError.value = err;
+        outcomeUnknownMessage.value = null;
+      }
+    } else {
+      phase.value = 'unknown';
+      outcomeUnknownMessage.value =
+        'Request outcome is unknown. Refresh authoritative Task state before retrying.';
+    }
+  }
 
   async function submitCreateTask(rawJsonBody: string): Promise<TaskCreateData> {
-    if (!session.identity) {
+    if (!session.authenticated) {
       throw new ApiFailure({
         message: 'Not authenticated',
         httpStatus: 401,
@@ -36,33 +75,10 @@ export function useTaskMutation() {
       });
     }
     const key = generateIdempotencyKey();
-    const persisted = savePendingMutation({
-      method: 'POST',
-      path: '/api/tasks',
-      idempotencyKey: key,
-      originPrincipal: session.identity.principal,
-      requiredScope: 'control',
-      operationKind: 'create',
-      taskId: null,
-      controlGeneration: null,
-      bodyUtf8: rawJsonBody,
-      createdAt: new Date().toISOString(),
-      operationId: null,
-    });
-    if (!persisted.ok) {
-      const err = new ApiFailure({
-        message: persisted.reason,
-        httpStatus: null,
-        requestId: null,
-        retryAfterMs: null,
-        apiError: null,
-        kind: 'validation',
-      });
-      lastError.value = err;
-      throw err;
-    }
+    phase.value = 'submitting';
     submitting.value = true;
     lastError.value = null;
+    outcomeUnknownMessage.value = null;
     try {
       const created = await session.api.request<TaskCreateData>({
         method: 'POST',
@@ -71,16 +87,10 @@ export function useTaskMutation() {
         idempotencyKey: key,
         timeoutMs: CLIENT_TIMEOUTS.mutation,
       });
-      deletePendingMutation(key);
+      phase.value = 'accepted';
       return created;
     } catch (err) {
-      if (err instanceof ApiFailure) {
-        lastError.value = err;
-        // Client/server definite 4xx (not 504/network) settles the pending record.
-        if (err.httpStatus !== null && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401) {
-          deletePendingMutation(key);
-        }
-      }
+      recordFailure(err);
       throw err;
     } finally {
       submitting.value = false;
@@ -92,36 +102,15 @@ export function useTaskMutation() {
     rawJsonBody: string,
     controlGeneration: DecimalString | null,
   ): Promise<MutationAcceptedData> {
-    if (!session.identity) {
+    if (!session.authenticated) {
       throw new Error('Not authenticated');
     }
     const key = generateIdempotencyKey();
     const path = `/api/tasks/${encodeURIComponent(taskId)}/config`;
-    const persisted = savePendingMutation({
-      method: 'PUT',
-      path,
-      idempotencyKey: key,
-      originPrincipal: session.identity.principal,
-      requiredScope: 'control',
-      operationKind: 'configure',
-      taskId,
-      controlGeneration,
-      bodyUtf8: rawJsonBody,
-      createdAt: new Date().toISOString(),
-      operationId: null,
-    });
-    if (!persisted.ok) {
-      throw new ApiFailure({
-        message: persisted.reason,
-        httpStatus: null,
-        requestId: null,
-        retryAfterMs: null,
-        apiError: null,
-        kind: 'validation',
-      });
-    }
+    phase.value = 'submitting';
     submitting.value = true;
     lastError.value = null;
+    outcomeUnknownMessage.value = null;
     try {
       const accepted = await session.api.request<MutationAcceptedData>({
         method: 'PUT',
@@ -131,16 +120,11 @@ export function useTaskMutation() {
         controlGeneration,
         timeoutMs: CLIENT_TIMEOUTS.mutation,
       });
-      updatePendingMutationOperationId(key, accepted.operation_id);
       lastAccepted.value = accepted;
+      phase.value = 'accepted';
       return accepted;
     } catch (err) {
-      if (err instanceof ApiFailure) {
-        lastError.value = err;
-        if (err.httpStatus !== null && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401) {
-          deletePendingMutation(key);
-        }
-      }
+      recordFailure(err);
       throw err;
     } finally {
       submitting.value = false;
@@ -152,37 +136,16 @@ export function useTaskMutation() {
     kind: OperationKind,
     controlGeneration: DecimalString | null,
   ): Promise<MutationAcceptedData> {
-    if (!session.identity) {
+    if (!session.authenticated) {
       throw new Error('Not authenticated');
     }
     const key = generateIdempotencyKey();
     const path = `/api/tasks/${encodeURIComponent(taskId)}/operations`;
     const bodyUtf8 = JSON.stringify({ kind, parameters: {} });
-    const persisted = savePendingMutation({
-      method: 'POST',
-      path,
-      idempotencyKey: key,
-      originPrincipal: session.identity.principal,
-      requiredScope: requiredScopeForOperation(kind),
-      operationKind: kind,
-      taskId,
-      controlGeneration,
-      bodyUtf8,
-      createdAt: new Date().toISOString(),
-      operationId: null,
-    });
-    if (!persisted.ok) {
-      throw new ApiFailure({
-        message: persisted.reason,
-        httpStatus: null,
-        requestId: null,
-        retryAfterMs: null,
-        apiError: null,
-        kind: 'validation',
-      });
-    }
+    phase.value = 'submitting';
     submitting.value = true;
     lastError.value = null;
+    outcomeUnknownMessage.value = null;
     try {
       const accepted = await session.api.request<MutationAcceptedData>({
         method: 'POST',
@@ -192,82 +155,26 @@ export function useTaskMutation() {
         controlGeneration,
         timeoutMs: CLIENT_TIMEOUTS.mutation,
       });
-      updatePendingMutationOperationId(key, accepted.operation_id);
       lastAccepted.value = accepted;
+      phase.value = 'accepted';
       return accepted;
     } catch (err) {
-      if (err instanceof ApiFailure) {
-        lastError.value = err;
-        if (err.httpStatus !== null && err.httpStatus >= 400 && err.httpStatus < 500 && err.httpStatus !== 401) {
-          deletePendingMutation(key);
-        }
-      }
+      recordFailure(err);
       throw err;
     } finally {
       submitting.value = false;
     }
   }
 
-  async function replayPendingMutation(record: PendingMutation): Promise<void> {
-    if (record.operationId && record.taskId) {
-      try {
-        const op = await session.api.request<OperationData>({
-          method: 'GET',
-          path: `/api/tasks/${encodeURIComponent(record.taskId)}/operations/${encodeURIComponent(record.operationId)}`,
-          timeoutMs: CLIENT_TIMEOUTS.query,
-        });
-        if (isTerminalOperationState(op.state)) {
-          deletePendingMutation(record.idempotencyKey);
-        }
-      } catch (err) {
-        if (err instanceof ApiFailure && err.httpStatus === 404) {
-          deletePendingMutation(record.idempotencyKey);
-        }
-      }
-      return;
-    }
-
-    try {
-      if (record.operationKind === 'create') {
-        await session.api.request<TaskCreateData>({
-          method: record.method,
-          path: record.path,
-          rawJsonBody: record.bodyUtf8,
-          idempotencyKey: record.idempotencyKey,
-          timeoutMs: CLIENT_TIMEOUTS.mutation,
-        });
-        deletePendingMutation(record.idempotencyKey);
-      } else {
-        const accepted = await session.api.request<MutationAcceptedData>({
-          method: record.method,
-          path: record.path,
-          rawJsonBody: record.bodyUtf8,
-          idempotencyKey: record.idempotencyKey,
-          controlGeneration: record.controlGeneration,
-          timeoutMs: CLIENT_TIMEOUTS.mutation,
-        });
-        updatePendingMutationOperationId(record.idempotencyKey, accepted.operation_id);
-      }
-    } catch (err) {
-      if (
-        err instanceof ApiFailure &&
-        err.httpStatus !== null &&
-        err.httpStatus >= 400 &&
-        err.httpStatus < 500 &&
-        err.httpStatus !== 401
-      ) {
-        deletePendingMutation(record.idempotencyKey);
-      }
-    }
-  }
-
   return {
+    phase,
     submitting,
     lastError,
     lastAccepted,
+    outcomeUnknownMessage,
+    reset,
     submitCreateTask,
     submitConfigureTask,
     submitOperation,
-    replayPendingMutation,
   };
 }

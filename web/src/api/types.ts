@@ -3,7 +3,6 @@ import type {
   ApiVersion,
   OperationKind,
   OperationState,
-  Scope,
   ServerPhase,
 } from './generated';
 
@@ -12,7 +11,6 @@ export type AppLifecycleState =
   | 'ServerUnavailable'
   | 'Unauthenticated'
   | 'Authenticating'
-  | 'AuthenticatedRecovering'
   | 'AuthenticatedReady'
   | 'ApiIncompatible';
 
@@ -42,12 +40,6 @@ export interface ConfigExportResult {
   requestId: string | null;
 }
 
-export interface SessionIdentity {
-  principal: string;
-  scopes: Scope[];
-  apiVersion: ApiVersion;
-}
-
 export function isTerminalOperationState(state: OperationState): boolean {
   return (
     state === 'succeeded' ||
@@ -57,19 +49,8 @@ export function isTerminalOperationState(state: OperationState): boolean {
   );
 }
 
-export function requiredScopeForOperation(kind: OperationKind): Scope {
-  if (kind === 'reset' || kind === 'retire') {
-    return 'admin';
-  }
-  return 'control';
-}
-
 export function isApiPhaseReady(phase: ServerPhase): boolean {
   return phase === 'ready';
 }
 
-export function hasScope(scopes: readonly Scope[], required: Scope): boolean {
-  return scopes.includes(required);
-}
-
-export type { ApiErrorBody, ApiVersion, OperationKind, OperationState, Scope, ServerPhase };
+export type { ApiErrorBody, ApiVersion, OperationKind, OperationState, ServerPhase };

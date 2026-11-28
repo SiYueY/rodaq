@@ -8,10 +8,10 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -22,7 +22,7 @@
 
 namespace rodaq::server {
 
-enum class DownloadAdmissionFailure { PrincipalQuota, GlobalSaturation, ShuttingDown };
+enum class DownloadAdmissionFailure { GlobalSaturation, ShuttingDown };
 
 struct DownloadMetrics {
     std::uint64_t active{0};
@@ -31,7 +31,6 @@ struct DownloadMetrics {
     std::uint64_t total_completed{0};
     std::uint64_t total_cancelled{0};
     std::uint64_t total_bytes_sent{0};
-    std::uint64_t rejected_principal{0};
     std::uint64_t rejected_global{0};
 };
 
@@ -51,8 +50,12 @@ public:
     DownloadRegistry& operator=(const DownloadRegistry&) = delete;
     ~DownloadRegistry() noexcept;
 
+    // Runs bounded artifact file open / ReadLease acquisition on the download
+    // worker pool so filesystem open never runs on the Drogon event loop.
+    bool submit_open(std::function<void()> work);
+
     DownloadAdmitResult create_session(
-        const std::string& principal, ByteRange range, std::shared_ptr<ArtifactReadHandle> handle,
+        ByteRange range, std::shared_ptr<ArtifactReadHandle> handle,
         std::weak_ptr<trantor::TcpConnection> connection);
 
     void notify_connection_closed(const trantor::TcpConnection* raw_conn) noexcept;
@@ -83,16 +86,19 @@ private:
         std::unordered_map<std::uint64_t, std::shared_ptr<DownloadSession>> active_sessions;
         std::unordered_map<std::uint64_t, const trantor::TcpConnection*> session_conns;
         std::unordered_map<const trantor::TcpConnection*, std::vector<std::uint64_t>> conn_sessions;
-        std::unordered_map<std::string, std::size_t> principal_sessions;
         std::vector<std::shared_ptr<DownloadSession>> cancel_scratch;
         DownloadMetrics metrics;
         bool stopping{false};
 
         std::mutex worker_mutex;
         std::condition_variable worker_cv;
+        std::condition_variable open_settled_cv;
         std::vector<ReadJob> read_ring;
         std::size_t ring_head{0};
         std::size_t ring_count{0};
+        std::deque<std::function<void()>> open_queue;
+        std::size_t max_open_queue{16};
+        std::size_t active_opens{0};
         bool workers_stopping{false};
     };
 
@@ -106,7 +112,6 @@ private:
         std::uint64_t bytes_sent, bool cancelled);
 
     DownloadConfig config_;
-    std::size_t max_per_principal_{2};
     std::shared_ptr<SharedState> state_;
     bool stopped_{false};
     std::vector<std::thread> workers_;

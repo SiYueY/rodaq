@@ -15,31 +15,27 @@ namespace {
 namespace pipeline = rodaq::pipeline;
 using rodaq::StatusCode;
 
-std::vector<pipeline::StreamPreparation> prepared() {
-    return {{2, "/right", 8, {100, 103}, {1, 3}}, {1, "/left", 4, {10, 13}, {1, 3}}};
-}
+std::vector<pipeline::StreamPreparation> prepared() { return {{2, "/right", 8}, {1, "/left", 4}}; }
 
 TEST(StreamTable, FixedLookupAndPrepareViewsKeepExactTaskBindingAndIndependentStreamIdentities) {
     auto created = pipeline::StreamTable::create(prepared());
     ASSERT_TRUE(created.ok());
     auto& table = created.value();
     const auto& bindings = table.bindings();
-    ASSERT_EQ(bindings.size(), 2);
-    EXPECT_EQ(bindings[0].stream_id, 1);
+    ASSERT_EQ(bindings.size(), 2U);
+    EXPECT_EQ(bindings[0].stream_id, 1ULL);
     EXPECT_EQ(std::string_view(bindings[0].stream_key.data, bindings[0].stream_key.size), "/left");
-    EXPECT_EQ(bindings[0].max_record_bytes, 4);
-    EXPECT_EQ(bindings[1].stream_id, 2);
-    EXPECT_EQ(bindings[1].max_record_bytes, 8);
+    EXPECT_EQ(bindings[0].max_record_bytes, 4ULL);
+    EXPECT_EQ(bindings[1].stream_id, 2ULL);
+    EXPECT_EQ(bindings[1].max_record_bytes, 8ULL);
     const rodaq::acquisition::PrepareConfig config{{sizeof(config)}, bindings.data(), 2, 1};
     EXPECT_TRUE(rodaq::acquisition::abi::valid_prepare(&config));
-    EXPECT_EQ(table.find(1)->stream_id, 1);
-    EXPECT_EQ(table.find(2)->max_record_bytes, 8);
+    EXPECT_EQ(table.find(1)->stream_id, 1ULL);
+    EXPECT_EQ(table.find(2)->max_record_bytes, 8ULL);
     EXPECT_EQ(table.find(0), nullptr);
     EXPECT_EQ(table.find(3), nullptr);
-    EXPECT_EQ(table.find(1)->descriptor_ids.allocate().value(), 1);
-    EXPECT_EQ(table.find(2)->descriptor_ids.allocate().value(), 1);
-    EXPECT_EQ(table.find(1)->sequences.allocate().value(), 10);
-    EXPECT_EQ(table.find(2)->sequences.allocate().value(), 100);
+    EXPECT_EQ(table.find(1)->next_sequence, 1ULL);
+    EXPECT_EQ(table.find(2)->next_sequence, 1ULL);
 }
 
 TEST(StreamTable, MovingTheOwnerPreservesEntryAndShortAndLongKeyBacking) {
@@ -51,7 +47,7 @@ TEST(StreamTable, MovingTheOwnerPreservesEntryAndShortAndLongKeyBacking) {
     const auto* short_key = created.value().bindings()[0].stream_key.data;
     const auto* long_key = created.value().bindings()[1].stream_key.data;
     auto moved = std::move(created.value());
-    auto target = pipeline::StreamTable::create({{9, "/unused", 8, {1, 2}, {1, 2}}});
+    auto target = pipeline::StreamTable::create({{9, "/unused", 8}});
     ASSERT_TRUE(target.ok());
     target.value() = std::move(moved);
     EXPECT_EQ(target.value().find(1), original);
@@ -61,12 +57,12 @@ TEST(StreamTable, MovingTheOwnerPreservesEntryAndShortAndLongKeyBacking) {
     EXPECT_EQ(std::string_view(long_key, 128), std::string(128, 'x'));
 }
 
-TEST(StreamTable, InvalidStructureAndRangesFailBeforePublishingAnyBinding) {
+TEST(StreamTable, InvalidStructureAndBoundsFailBeforePublishingAnyBinding) {
     EXPECT_FALSE(pipeline::StreamTable::create({}).ok());
     EXPECT_FALSE(pipeline::StreamTable::create(prepared(), 0).ok());
     EXPECT_FALSE(pipeline::StreamTable::create(prepared(), 1).ok());
     EXPECT_FALSE(pipeline::StreamTable::create(prepared(), 4097).ok());
-    for (int invalid = 0; invalid != 10; ++invalid) {
+    for (int invalid = 0; invalid != 8; ++invalid) {
         auto input = prepared();
         switch (invalid) {
             case 0:
@@ -94,30 +90,11 @@ TEST(StreamTable, InvalidStructureAndRangesFailBeforePublishingAnyBinding) {
                 input[0].max_record_bytes =
                     std::uint64_t{1} + std::numeric_limits<std::uint32_t>::max();
                 break;
-            case 8:
-                input[0].sequences = {2, 2};
-                break;
-            case 9:
-                input[0].descriptors = {0, 1};
-                break;
         }
         EXPECT_EQ(
             pipeline::StreamTable::create(std::move(input)).status().code(),
             StatusCode::InvalidArgument);
     }
-}
-
-TEST(StreamTable, DescriptorConsumptionNeverConsumesTheAcceptanceRange) {
-    auto created = pipeline::StreamTable::create(prepared());
-    ASSERT_TRUE(created.ok());
-    auto& stream = *created.value().find(1);
-    std::lock_guard<std::mutex> lock(stream.mutex);
-    EXPECT_EQ(stream.descriptor_ids.allocate().value(), 1);
-    EXPECT_EQ(stream.descriptor_ids.allocate().value(), 2);
-    EXPECT_EQ(stream.descriptor_ids.allocate().status().code(), StatusCode::ResourceExhausted);
-    EXPECT_EQ(stream.sequences.snapshot().active_remaining, 3);
-    EXPECT_EQ(stream.sequences.allocate().value(), 10);
-    EXPECT_EQ(stream.descriptor_ids.snapshot().active_remaining, 0);
 }
 
 TEST(StreamTable, ActualPrepareWorkRetainsAllBorrowedBindingBackingAfterFacadeRelease) {

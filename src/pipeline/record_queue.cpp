@@ -175,8 +175,8 @@ RecordQueueSnapshot RecordQueue::snapshot() const {
     // Public queries consume the separately published Pipeline Facts snapshot.
     for (const auto& slot : state_->slots) {
         if (slot && (!result.oldest_receive_monotonic ||
-                     slot->received.sample.monotonic_ns < *result.oldest_receive_monotonic)) {
-            result.oldest_receive_monotonic = slot->received.sample.monotonic_ns;
+                     slot->received.monotonic_ns < *result.oldest_receive_monotonic)) {
+            result.oldest_receive_monotonic = slot->received.monotonic_ns;
         }
     }
     return result;

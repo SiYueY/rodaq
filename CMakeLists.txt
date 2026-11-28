@@ -50,15 +50,12 @@ find_package(Threads REQUIRED)
 add_library(rodaq_plugin SHARED
     src/logging.cpp
     src/plugin/catalog.cpp
-    src/plugin/registry.cpp
     src/plugin/loader.cpp
     src/plugin/invocation.cpp
     src/plugin/lifecycle.cpp
     src/plugin/initialize.cpp
     src/plugin/close.cpp
-    src/plugin/manager.cpp
-    src/acquisition/interface.cpp
-    src/storage/interface.cpp)
+    src/plugin/manager.cpp)
 add_library(rodaq::plugin ALIAS rodaq_plugin)
 set_target_properties(rodaq_plugin PROPERTIES EXPORT_NAME plugin)
 target_compile_features(rodaq_plugin PUBLIC cxx_std_17)
@@ -68,55 +65,39 @@ target_include_directories(rodaq_plugin PUBLIC
 target_include_directories(rodaq_plugin SYSTEM PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include>)
 target_link_libraries(rodaq_plugin PUBLIC fmt::fmt
-    PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads ${CMAKE_DL_LIBS})
+    PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
 rodaq_enable_project_warnings(rodaq_plugin)
 
 add_library(rodaq_daq SHARED
     src/execution_lane.cpp
     src/uuid.cpp
     src/persistence/atomic_file.cpp
-    src/persistence/strict_json.cpp
-    src/persistence/canonical_json.cpp
     src/persistence/digest.cpp
     src/ros2_subscription.cpp)
 target_sources(rodaq_daq PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/runtime.cpp src/daq/startup.cpp
-    src/system/system_service.cpp src/task/task_maintenance.cpp
-    src/task/task_rotation.cpp
-    src/task/task_volume_recovery.cpp
-    src/task/task_retention.cpp
+    src/system/system_service.cpp
+    src/task/config.cpp src/task/identity.cpp src/task/operation_history.cpp
+    src/task/task_store.cpp src/task/task_service.cpp src/task/task_execution.cpp
     src/task/task_runtime.cpp
-    src/task/cleanup_execution.cpp
-    src/task/failed_pipeline_cleanup.cpp
-    src/task/run_authorization.cpp
-    src/task/task_execution.cpp src/task/task_drain.cpp src/task/task_lifecycle.cpp src/task/task_control.cpp
-    src/task/task_reset_retire.cpp
-    src/time/clock.cpp src/time/playback_anchor_store.cpp src/time/clock_correlation.cpp
+    src/time/clock.cpp
     src/time/wall_time.cpp)
-target_sources(rodaq_daq PRIVATE src/task/config.cpp src/task/identity.cpp src/task/create_store.cpp
-    src/task/operation_history.cpp src/task/control_record.cpp src/task/task_store.cpp src/task/config_identity.cpp
-    src/task/recovery_record.cpp src/task/recovery_store.cpp src/task/retirement_store.cpp src/task/task_controller.cpp src/task/control_work.cpp src/task/task_service.cpp src/task/task_query.cpp src/task/task_configure.cpp)
-target_sources(rodaq_daq PRIVATE src/pipeline/stream_identity.cpp src/pipeline/stream_identity_store.cpp
-    src/pipeline/sequence_allocator.cpp src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
-    src/pipeline/descriptor.cpp src/pipeline/descriptor_registry.cpp
-    src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp src/pipeline/pipeline_controller.cpp src/pipeline/pipeline_configuration.cpp src/pipeline/pipeline_rotation.cpp)
+target_sources(rodaq_daq PRIVATE
+    src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
+    src/pipeline/descriptor.cpp
+    src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp
+    src/pipeline/pipeline_controller.cpp src/pipeline/pipeline_rotation.cpp)
 target_sources(rodaq_daq PRIVATE
     src/artifact/volume_capacity.cpp
-    src/artifact/segment_id_store.cpp
     src/artifact/managed_volume.cpp
     src/artifact/sealed_files.cpp
     src/artifact/segment_committer.cpp
     src/artifact/artifact_catalog.cpp src/artifact/artifact_service.cpp
-    src/artifact/artifact_query.cpp src/artifact/artifact_reader.cpp src/artifact/artifact_verification.cpp
-    src/artifact/recovery_scan.cpp
-    src/artifact/artifact_quarantine.cpp
+    src/artifact/artifact_query.cpp src/artifact/artifact_reader.cpp
+    src/artifact/startup_scan.cpp
     src/artifact/artifact_delete.cpp
     src/artifact/artifact_retention.cpp
-    src/artifact/artifact_collection.cpp
     src/artifact/manifest.cpp
-    src/artifact/ledger_record.cpp
-    src/artifact/ledger_store.cpp
-    src/pipeline/segment_capacity.cpp
     src/pipeline/segment_metadata.cpp
     src/pipeline/recording_segment.cpp
     src/pipeline/admission.cpp

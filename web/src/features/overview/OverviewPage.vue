@@ -6,7 +6,7 @@ import type { PageData, SystemData, TaskSummaryData } from '../../api/generated'
 import { usePolling } from '../../composables/usePolling';
 import { useSessionStore } from '../../composables/useSession';
 import { formatIecBytes, formatRatePerSec } from '../../format/decimal';
-import { formatDuration } from '../../format/time';
+import { formatDurationMs } from '../../format/time';
 import StatusBadge from '../../components/StatusBadge.vue';
 import FreshnessBadge from '../../components/FreshnessBadge.vue';
 import ErrorPanel from '../../components/ErrorPanel.vue';
@@ -21,8 +21,7 @@ let clockTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
 const systemPoll = usePolling<SystemData>({
   resourceKey: 'overview.system',
-  enabled: () =>
-    session.lifecycle === 'AuthenticatedReady' || session.lifecycle === 'AuthenticatedRecovering',
+  enabled: () => session.lifecycle === 'AuthenticatedReady',
   fetcher: async (signal) => {
     const sys = await session.api.request<SystemData>({
       method: 'GET',
@@ -75,14 +74,8 @@ const issues = computed(() => {
   const list: { tone: 'warning' | 'danger'; text: string }[] = [];
   const sys = system.value;
   if (sys) {
-    if (!sys.recovery.complete) {
-      list.push({
-        tone: 'warning',
-        text: `Core recovery incomplete: ${sys.recovery.reason ?? 'in progress'}`,
-      });
-    }
-    if (sys.recovery.reason) {
-      list.push({ tone: 'warning', text: `Recovery detail: ${sys.recovery.reason}` });
+    if (sys.deployment_error) {
+      list.push({ tone: 'warning', text: `Deployment warning: ${sys.deployment_error}` });
     }
     for (const v of sys.volumes) {
       if (v.pressure !== 'normal') {
@@ -107,7 +100,7 @@ const issues = computed(() => {
 function conditionTone(c: string): 'neutral' | 'info' | 'success' | 'warning' | 'danger' {
   if (c === 'active') return 'success';
   if (c === 'preparing' || c === 'draining') return 'info';
-  if (c === 'degraded' || c === 'protected' || c === 'pending_cleanup') return 'warning';
+  if (c === 'degraded' || c === 'protected') return 'warning';
   if (c === 'failed') return 'danger';
   return 'neutral';
 }
@@ -149,13 +142,7 @@ onBeforeUnmount(() => {
     <div class="page-header">
       <h1>Overview</h1>
       <div class="row-actions">
-        <RouterLink
-          v-if="session.lifecycle === 'AuthenticatedReady' && session.hasScope('control')"
-          to="/tasks/new"
-          class="btn btn-primary"
-        >
-          Create Task
-        </RouterLink>
+        <RouterLink to="/tasks/new" class="btn btn-primary">Create Task</RouterLink>
         <button type="button" class="btn" @click="systemPoll.refreshNow(); tasksPoll.refreshNow()">
           Refresh
         </button>
@@ -166,7 +153,6 @@ onBeforeUnmount(() => {
     <ErrorPanel v-if="tasksPoll.state.error" :error="tasksPoll.state.error" title="Task Summary Error" />
 
     <div class="grid-3">
-      <!-- ServiceStatusCard -->
       <article class="card">
         <h2 class="card-title">Service Status</h2>
         <div v-if="!system && systemPoll.state.phase === 'loading'" class="skeleton" aria-hidden="true" />
@@ -182,18 +168,14 @@ onBeforeUnmount(() => {
             />
             <FreshnessBadge
               :freshness="systemPoll.state.phase === 'stale' ? 'stale' : system.freshness.state"
-              :server-age="system.freshness.age"
+              :server-age-ms="system.freshness.age_ms"
               :received-at-ms="systemPoll.state.receivedAt"
               :now-ms="nowMs"
             />
           </div>
-          <div class="muted" style="font-size: 0.85rem">
-            Recovery: <strong>{{ system.recovery.complete ? 'Complete' : system.recovery.reason ?? 'Pending' }}</strong>
-          </div>
         </template>
       </article>
 
-      <!-- VolumePressurePanel -->
       <article class="card">
         <div class="row-actions" style="justify-content: space-between; margin-bottom: 8px">
           <h2 class="card-title" style="margin: 0">Volume Pressure</h2>
@@ -220,7 +202,6 @@ onBeforeUnmount(() => {
         </div>
       </article>
 
-      <!-- ResourceSummary -->
       <article class="card">
         <h2 class="card-title">Process &amp; Backlog</h2>
         <div v-if="!system" class="skeleton" aria-hidden="true" />
@@ -239,9 +220,8 @@ onBeforeUnmount(() => {
       </article>
     </div>
 
-    <!-- IssuePanel -->
     <article v-if="issues.length > 0" class="card">
-      <h2 class="card-title">Structured Diagnostics &amp; Active Issues</h2>
+      <h2 class="card-title">Active Issues</h2>
       <ul style="margin: 0; padding-left: 18px">
         <li v-for="(item, idx) in issues" :key="idx" style="margin-bottom: 4px">
           <StatusBadge :label="item.tone === 'danger' ? 'Alert' : 'Warning'" :tone="item.tone" />
@@ -250,7 +230,6 @@ onBeforeUnmount(() => {
       </ul>
     </article>
 
-    <!-- ActiveTaskTable -->
     <article class="card">
       <div class="row-actions" style="justify-content: space-between; margin-bottom: 12px">
         <h2 class="card-title" style="margin: 0">Tasks</h2>
@@ -269,10 +248,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="session.lifecycle === 'AuthenticatedRecovering'" class="muted">
-        Task listing is paused while server is in Recovering mode.
-      </div>
-      <div v-else-if="tasksPoll.state.phase === 'loading' && !tasksPoll.state.data" class="skeleton" aria-hidden="true" />
+      <div v-if="tasksPoll.state.phase === 'loading' && !tasksPoll.state.data" class="skeleton" aria-hidden="true" />
       <div v-else-if="tasks.length === 0" class="muted" data-testid="zero-task-state">
         Service is healthy. No tasks are configured yet.
       </div>
@@ -304,7 +280,7 @@ onBeforeUnmount(() => {
           <td class="num">
             {{ formatRatePerSec(row.runtime_summary.accepted_records_per_second, 'rec/s') }}
           </td>
-          <td class="num">{{ formatDuration(row.runtime_summary.commit_lag) }}</td>
+          <td class="num">{{ formatDurationMs(row.runtime_summary.commit_lag_ms) }}</td>
           <td>
             <StatusBadge
               :label="row.data_impact"
@@ -314,7 +290,7 @@ onBeforeUnmount(() => {
           <td>
             <FreshnessBadge
               :freshness="tasksPoll.state.phase === 'stale' ? 'stale' : row.freshness.state"
-              :server-age="row.freshness.age"
+              :server-age-ms="row.freshness.age_ms"
               :received-at-ms="tasksPoll.state.receivedAt"
               :now-ms="nowMs"
             />

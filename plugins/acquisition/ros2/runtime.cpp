@@ -71,12 +71,12 @@ Backend::State::Permit Backend::State::control_permit(plugin::Deadline deadline)
     return Permit(this, nullptr);
 }
 
-Backend::State::Permit Backend::State::data_permit(Stream& stream, std::uint64_t generation) {
+Backend::State::Permit Backend::State::data_permit(Stream& stream) {
     std::lock_guard<std::mutex> lock(mutex);
     if (stopping || phase != Phase::Running) {
         return {};
     }
-    if (!stream.gate || stream.snapshot->generation != generation) {
+    if (!stream.gate || !stream.snapshot) {
         if (stream.lost != std::numeric_limits<std::uint64_t>::max()) {
             ++stream.lost;
         }
@@ -93,24 +93,24 @@ Backend::State::Permit Backend::State::data_permit(Stream& stream, std::uint64_t
     return Permit(this, &stream, stream.snapshot);
 }
 
-Result<void> Backend::State::event(
+void Backend::State::report_event(
     rodaq_acquisition_event_kind_t kind, rodaq_stream_id_t stream, StatusCode status,
-    std::uint64_t count) {
+    std::uint64_t count) noexcept {
     acquisition::AcquisitionEvent report{};
     report.header.struct_size = sizeof(report);
     report.kind = kind;
     report.status = static_cast<rodaq_status_code_t>(status);
     report.stream_id = stream;
-    report.has_stream_id = stream != 0;
+    report.has_stream_id = stream != 0 ? 1 : 0;
     report.count = count;
-    return service->report_acquisition_event(report);
+    callbacks.report_event(report);
 }
 
 Backend::Backend() : state_(std::make_unique<State>()) {}
 
 Backend::~Backend() noexcept { (void)quiesce(plugin::Deadline::infinite()); }
 
-Result<void> Backend::configure(std::string_view input, acquisition::ServiceReference service) {
+Result<void> Backend::configure(std::string_view input) {
     auto parsed = parse_config(input);
     if (!parsed.ok()) {
         return parsed.status();
@@ -120,19 +120,20 @@ Result<void> Backend::configure(std::string_view input, acquisition::ServiceRefe
         return Status(StatusCode::Conflict, "ROS 2 already configured or stopped");
     }
     state_->config.emplace(std::move(parsed.value()));
-    state_->service.emplace(std::move(service));
     state_->phase = State::Phase::Configured;
     return {};
 }
 
-Result<void> Backend::prepare(const acquisition::PrepareConfig& limits, plugin::Deadline deadline) {
+Result<void> Backend::prepare(
+    const acquisition::PrepareConfig& limits, acquisition::Callbacks callbacks,
+    plugin::Deadline deadline) {
     auto& state = *state_;
     auto entered = state.enter_control(State::Phase::Configured, State::Phase::Preparing);
     if (!entered.ok()) {
         return entered;
     }
     State::Control control{state};
-    if (limits.stream_count > 256 || limits.max_callback_concurrency > 256 ||
+    if (!callbacks || limits.stream_count > 256 || limits.max_callback_concurrency > 256 ||
         !acquisition::abi::valid_prepare(&limits) ||
         limits.stream_count != state.config->streams.size()) {
         return Status(StatusCode::InvalidArgument, "Invalid ROS 2 prepare bounds");
@@ -154,6 +155,7 @@ Result<void> Backend::prepare(const acquisition::PrepareConfig& limits, plugin::
     }
     {
         std::lock_guard<std::mutex> lock(state.mutex);
+        state.callbacks = callbacks;
         state.capacity = limits.max_callback_concurrency;
     }
     try {
@@ -194,17 +196,13 @@ Result<void> Backend::prepare(const acquisition::PrepareConfig& limits, plugin::
         if (!permit) {
             return timeout();
         }
-        auto ready = state.event(RODAQ_ACQUISITION_EVENT_TRANSPORT_READY, 0);
-        if (!ready.ok()) {
-            return ready;
-        }
+        state.report_event(RODAQ_ACQUISITION_EVENT_TRANSPORT_READY, 0);
         for (auto& stream : state.streams) {
             stream->group =
                 state.node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
             auto facts = state.inspect(*stream);
-            // Discovery is asynchronous. With no configured interpretation,
-            // wait within this prepare budget; an explicit type remains an
-            // immediately valid zero-publisher/zero-Hz preparation.
+            // Discovery is asynchronous. With no configured type, wait within
+            // prepare budget; an explicit type allows 0-publisher/0-Hz prepare.
             while (!facts.ok() && facts.status().code() == StatusCode::Unavailable &&
                    !stream->config.type) {
                 auto budget = deadline.remaining();
@@ -224,9 +222,9 @@ Result<void> Backend::prepare(const acquisition::PrepareConfig& limits, plugin::
             if (!facts.ok()) {
                 return facts.status();
             }
-            auto installed = state.install(*stream, std::move(facts.value()), deadline);
-            if (!installed.ok()) {
-                return installed;
+            auto bound = state.bind_stream(*stream, std::move(facts.value()), deadline);
+            if (!bound.ok()) {
+                return bound;
             }
         }
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -291,7 +289,6 @@ void Backend::State::cancel() noexcept {
             context->shutdown("RoDAQ instance stopped");
         }
     } catch (...) {
-        // The participants remain owned until their actual completion below.
     }
 }
 
@@ -332,22 +329,16 @@ Result<void> Backend::quiesce(plugin::Deadline deadline) {
     if (state.graph_thread.joinable()) {
         state.graph_thread.join();
     }
-    // Workers are gone. Preserve evidence of drops that preceded stop without
-    // reopening data admission. Failed reports retain counters for retry.
-    if (state.service && state.capacity != 0) {
+    if (state.callbacks && state.capacity != 0) {
         {
             std::lock_guard<std::mutex> lock(state.mutex);
             ++state.active;
         }
         State::Permit permit(&state, nullptr);
         for (auto& stream : state.streams) {
-            auto reported = state.flush_events(*stream);
-            if (!reported.ok()) {
-                return reported;
-            }
+            state.flush_events(*stream);
         }
     }
-    // No actual native execution can observe these objects now.
     state.streams.clear();
     state.executor.reset();
     state.node.reset();
@@ -359,6 +350,7 @@ Result<void> Backend::quiesce(plugin::Deadline deadline) {
     }
     state.context.reset();
     std::lock_guard<std::mutex> lock(state.mutex);
+    state.callbacks = {};
     state.phase = State::Phase::Stopped;
     return {};
 }
@@ -379,7 +371,7 @@ void Backend::State::fail(StatusCode status) noexcept {
         auto permit =
             control_permit(plugin::Deadline::after(std::chrono::milliseconds{100}).value());
         if (permit) {
-            (void)event(RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, 0, status);
+            report_event(RODAQ_ACQUISITION_EVENT_TERMINAL_FAILURE, 0, status);
         }
     } catch (...) {
     }

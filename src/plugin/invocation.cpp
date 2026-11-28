@@ -13,6 +13,8 @@
 #include <time.h>
 #include <utility>
 
+#include <rodaq/logging.hpp>
+
 namespace rodaq::plugin {
 namespace {
 
@@ -21,98 +23,37 @@ thread_local std::size_t current_call_count = 0;
 thread_local ManagerState* lifecycle_manager = nullptr;
 thread_local InstanceState* lifecycle_instance = nullptr;
 
-rodaq_status_code_t query_service(
-    rodaq_service_registry_context_t* context, const rodaq_interface_query_t* query,
-    rodaq_interface_reference_t* reference, rodaq_error_t* error) noexcept {
-    if (reference != nullptr) {
-        *reference = {};
-    }
-    abi::write_error(error, {});
-    if (context == nullptr) {
-        return RODAQ_STATUS_INVALID_ARGUMENT;
-    }
-    const auto& access = *reinterpret_cast<InstanceServices*>(context);
-    return registry_query(*access.registry, query, reference, error);
-}
-
-rodaq_status_code_t enter_service(
-    rodaq_service_registry_context_t* context, rodaq_error_t* error) noexcept {
-    abi::write_error(error, {});
-    if (context == nullptr || !abi::valid_error_input(error)) {
-        return RODAQ_STATUS_INVALID_ARGUMENT;
-    }
-    auto& instance = *reinterpret_cast<InstanceServices*>(context)->instance;
-    try {
-        std::lock_guard<std::mutex> lock(instance.mutex);
-        if (instance.phase != PluginInstancePhase::Open &&
-            instance.phase != PluginInstancePhase::Initializing) {
-            return RODAQ_STATUS_INVALID_STATE;
-        }
-        const auto thread = std::this_thread::get_id();
-        ServiceThread* available = nullptr;
-        for (auto& entry : instance.service_threads) {
-            if (entry.count != 0 && entry.id == thread) {
-                available = &entry;
-                break;
-            }
-            if (entry.count == 0 && available == nullptr) {
-                available = &entry;
-            }
-        }
-        if (available == nullptr ||
-            instance.active_calls == std::numeric_limits<std::size_t>::max() ||
-            available->count == std::numeric_limits<std::size_t>::max()) {
-            return RODAQ_STATUS_RESOURCE_EXHAUSTED;
-        }
-        available->id = thread;
-        ++available->count;
-        ++instance.active_calls;
-        return RODAQ_STATUS_OK;
-    } catch (...) {
-        instance.manager_identity->call_violation.store(true);
-        return RODAQ_STATUS_INTERNAL;
+logging::Level to_logging_level(rodaq_log_level_t level) noexcept {
+    switch (level) {
+        case RODAQ_LOG_TRACE:
+            return logging::Level::Trace;
+        case RODAQ_LOG_DEBUG:
+            return logging::Level::Debug;
+        case RODAQ_LOG_INFO:
+            return logging::Level::Info;
+        case RODAQ_LOG_WARNING:
+            return logging::Level::Warning;
+        case RODAQ_LOG_ERROR:
+            return logging::Level::Error;
+        case RODAQ_LOG_CRITICAL:
+            return logging::Level::Critical;
+        default:
+            return logging::Level::Warning;
     }
 }
 
-void leave_service(rodaq_service_registry_context_t* context) noexcept {
-    if (context == nullptr) {
+void application_log_callback(
+    void* /*context*/, rodaq_log_level_t level, rodaq_string_t message) noexcept {
+    if (message.size == 0 || message.data == nullptr) {
         return;
     }
-    auto& instance = *reinterpret_cast<InstanceServices*>(context)->instance;
-    try {
-        const auto owner = instance.shared_from_this();
-        {
-            std::lock_guard<std::mutex> lock(instance.mutex);
-            ServiceThread* selected = nullptr;
-            const auto thread = std::this_thread::get_id();
-            for (auto& entry : instance.service_threads) {
-                if (entry.count != 0 && entry.id == thread) {
-                    selected = &entry;
-                    break;
-                }
-                if (entry.count != 0 && selected == nullptr) {
-                    selected = &entry;
-                }
-            }
-            // Raw permits may transfer threads. They are interchangeable within
-            // one Registry, but must never consume an Operation's call count.
-            if (selected == nullptr || instance.active_calls == 0) {
-                instance.manager_identity->call_violation.store(true);
-                return;
-            }
-            if (--selected->count == 0) {
-                selected->id = {};
-            }
-            --instance.active_calls;
-        }
-        instance.changed.notify_all();
-    } catch (...) {
-        instance.manager_identity->call_violation.store(true);
+    constexpr std::size_t kMaxPluginLogBytes = 4096;
+    const auto bounded = abi::utf8_prefix({message.data, message.size}, kMaxPluginLogBytes);
+    if (bounded == 0) {
+        return;
     }
+    logging::write(to_logging_level(level), {}, {message.data, bounded});
 }
-
-const rodaq_service_registry_vtable_t kRegistryVtable{
-    {sizeof(rodaq_service_registry_vtable_t)}, query_service, enter_service, leave_service};
 
 }  // namespace
 
@@ -132,13 +73,11 @@ std::int64_t monotonic_now() noexcept {
 
 InstanceState::InstanceState(
     const std::shared_ptr<ManagerState>& owner, std::shared_ptr<LibraryState> provider,
-    std::shared_ptr<RegistryState> registry, std::string configuration, std::size_t capacity_slot,
-    PluginInstanceId identity)
+    std::string configuration, std::size_t capacity_slot, PluginInstanceId identity)
 : manager(owner),
   manager_identity(owner.get()),
   library(std::move(provider)),
-  services{this, std::move(registry)},
-  native_services{reinterpret_cast<rodaq_service_registry_context_t*>(&services), &kRegistryVtable},
+  application_callbacks{{sizeof(rodaq_application_callbacks_t)}, nullptr, application_log_callback},
   config(std::move(configuration)),
   slot(capacity_slot),
   id(identity) {}
@@ -172,15 +111,6 @@ bool current_manager_invocation(const ManagerState& manager) noexcept {
     }
     for (std::size_t i = 0; i < current_call_count; ++i) {
         if (current_calls[i]->manager_identity == &manager) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool current_service_locked(const InstanceState& instance) noexcept {
-    for (const auto& entry : instance.service_threads) {
-        if (entry.count != 0 && entry.id == std::this_thread::get_id()) {
             return true;
         }
     }
@@ -309,7 +239,7 @@ Result<void> PluginInstance::close(Deadline deadline) {
     assert(state_);
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        if (current_invocation(*state_) || current_service_locked(*state_)) {
+        if (current_invocation(*state_)) {
             return Status(StatusCode::InvalidState, "Close would await current invocation");
         }
     }
@@ -340,7 +270,7 @@ CloseWaitStatus CloseFuture::wait(Deadline deadline) const noexcept {
     try {
         std::unique_lock<std::mutex> lock(state_->mutex);
         while (!state_->terminal) {
-            if (current_invocation(*state_) || current_service_locked(*state_)) {
+            if (current_invocation(*state_)) {
                 return CloseWaitStatus::TimedOut;
             }
             if (deadline.is_infinite()) {

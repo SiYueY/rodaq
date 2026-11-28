@@ -52,10 +52,8 @@ void fail_initialization(
         instance->functions.shutdown != nullptr && instance->functions.destroy != nullptr &&
         instance->native.context != nullptr;
     if (!owned_native) {
-        // No Service/config was given to unvalidated create output. Drop only
-        // Framework-owned input backing; never guess how to destroy that output.
-        auto registry = std::move(instance->services.registry);
-        registry.reset();
+        // No config was given to unvalidated create output. Drop only Framework-owned
+        // input backing; never guess how to destroy that output.
         std::string{}.swap(instance->config);
     }
     {
@@ -139,7 +137,7 @@ void run_initialization(
         {instance->config.empty() ? nullptr : instance->config.data(),
          static_cast<std::uint32_t>(instance->config.size())}};
     const auto configured = instance->functions.configure(
-        instance->native.context, &instance->native_services, &configuration, &error);
+        instance->native.context, &instance->application_callbacks, &configuration, &error);
     stage(manager, *instance, WorkStage::OperationFreeze);
     auto configure_status = abi::status_from_abi(configured, error, expected);
     const bool configure_violation =

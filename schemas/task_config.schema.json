@@ -1,11 +1,11 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rodaq:task-config:1.0",
+  "$comment": "Executable projection of frozen Notion Task 2.1 Portable TaskConfig. Task owner additionally validates UTF-8 byte/deployment bounds, Task-scoped identities, installed exact Plugin versions/roles and private semantics.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "format_version",
-    "recording_mode",
-    "start_policy",
-    "recovery_policy",
     "segment_policy",
     "retention_policy",
     "pipelines"
@@ -19,42 +19,6 @@
       "minLength": 1,
       "maxLength": 128,
       "x-rodaq-max-utf8-bytes": 128
-    },
-    "recording_mode": {
-      "enum": [
-        "continuous",
-        "rolling"
-      ]
-    },
-    "start_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "mode"
-      ],
-      "properties": {
-        "mode": {
-          "enum": [
-            "all_required",
-            "best_effort"
-          ]
-        }
-      }
-    },
-    "recovery_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "mode"
-      ],
-      "properties": {
-        "mode": {
-          "enum": [
-            "manual",
-            "resume"
-          ]
-        }
-      }
     },
     "segment_policy": {
       "$ref": "#/$defs/segment"
@@ -71,135 +35,41 @@
       "x-rodaq-cardinality-limit": "max_pipelines"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:rodaq:task-config:1.0",
-  "$comment": "Executable projection of Notion Task 2.1. Task owner additionally validates UTF-8 byte/deployment bounds, Task-scoped identities, installed exact Plugin roles and private semantics. Strict JSON parsing must precede schema validation.",
   "$defs": {
-    "positive_uint64": {
-      "type": "string",
-      "pattern": "^(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)(?![\\s\\S])",
-      "maxLength": 20
+    "positive_safe_integer": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
-    "duration": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "value",
-            "unit"
-          ],
-          "properties": {
-            "value": {
-              "type": "string",
-              "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)(?![\\s\\S])"
-            },
-            "unit": {
-              "const": "ns"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "value",
-            "unit"
-          ],
-          "properties": {
-            "value": {
-              "type": "string",
-              "pattern": "^(?:[1-9][0-9]{0,14}|[1-8][0-9]{15}|9[0-1][0-9]{14}|92[0-1][0-9]{13}|922[0-2][0-9]{12}|9223[0-2][0-9]{11}|92233[0-6][0-9]{10}|922337[0-1][0-9]{9}|92233720[0-2][0-9]{7}|922337203[0-5][0-9]{6}|9223372036[0-7][0-9]{5}|92233720368[0-4][0-9]{4}|922337203685[0-3][0-9]{3}|9223372036854[0-6][0-9]{2}|92233720368547[0-6][0-9]{1}|922337203685477[0-4]|9223372036854775)(?![\\s\\S])"
-            },
-            "unit": {
-              "const": "us"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "value",
-            "unit"
-          ],
-          "properties": {
-            "value": {
-              "type": "string",
-              "pattern": "^(?:[1-9][0-9]{0,11}|[1-8][0-9]{12}|9[0-1][0-9]{11}|92[0-1][0-9]{10}|922[0-2][0-9]{9}|9223[0-2][0-9]{8}|92233[0-6][0-9]{7}|922337[0-1][0-9]{6}|92233720[0-2][0-9]{4}|922337203[0-5][0-9]{3}|9223372036[0-7][0-9]{2}|92233720368[0-4][0-9]{1}|922337203685[0-3]|9223372036854)(?![\\s\\S])"
-            },
-            "unit": {
-              "const": "ms"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "value",
-            "unit"
-          ],
-          "properties": {
-            "value": {
-              "type": "string",
-              "pattern": "^(?:[1-9][0-9]{0,8}|[1-8][0-9]{9}|9[0-1][0-9]{8}|92[0-1][0-9]{7}|922[0-2][0-9]{6}|9223[0-2][0-9]{5}|92233[0-6][0-9]{4}|922337[0-1][0-9]{3}|92233720[0-2][0-9]{1}|922337203[0-5]|9223372036)(?![\\s\\S])"
-            },
-            "unit": {
-              "const": "s"
-            }
-          }
-        }
-      ]
+    "positive_uint64_string": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$",
+      "maxLength": 20
     },
     "segment": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "max_duration",
+        "max_duration_ms",
         "max_physical_bytes"
       ],
       "properties": {
-        "max_duration": {
+        "max_duration_ms": {
           "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/duration"
-            }
+            { "type": "null" },
+            { "$ref": "#/$defs/positive_safe_integer" }
           ]
         },
         "max_physical_bytes": {
           "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/positive_uint64"
-            }
+            { "type": "null" },
+            { "$ref": "#/$defs/positive_safe_integer" }
           ]
         }
       },
       "anyOf": [
-        {
-          "properties": {
-            "max_duration": {
-              "not": {
-                "type": "null"
-              }
-            }
-          }
-        },
-        {
-          "properties": {
-            "max_physical_bytes": {
-              "not": {
-                "type": "null"
-              }
-            }
-          }
-        }
+        { "properties": { "max_duration_ms": { "not": { "type": "null" } } } },
+        { "properties": { "max_physical_bytes": { "not": { "type": "null" } } } }
       ]
     },
     "retention": {
@@ -207,41 +77,43 @@
       "additionalProperties": false,
       "required": [
         "mode",
-        "max_duration",
+        "max_duration_ms",
         "max_physical_bytes"
       ],
       "properties": {
         "mode": {
-          "enum": [
-            "keep_all",
-            "rolling"
-          ]
+          "enum": ["keep_all", "rolling"]
         },
-        "max_duration": {
+        "max_duration_ms": {
           "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/duration"
-            }
+            { "type": "null" },
+            { "$ref": "#/$defs/positive_safe_integer" }
           ]
         },
         "max_physical_bytes": {
           "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/positive_uint64"
-            }
+            { "type": "null" },
+            { "$ref": "#/$defs/positive_safe_integer" }
           ]
-        },
-        "include_previous_continuous": {
-          "type": "boolean",
-          "default": false
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "keep_all" } } },
+          "then": {
+            "properties": {
+              "max_duration_ms": { "type": "null" },
+              "max_physical_bytes": { "type": "null" }
+            }
+          },
+          "else": {
+            "anyOf": [
+              { "properties": { "max_duration_ms": { "not": { "type": "null" } } } },
+              { "properties": { "max_physical_bytes": { "not": { "type": "null" } } } }
+            ]
+          }
+        }
+      ]
     },
     "plugin": {
       "type": "object",
@@ -254,16 +126,15 @@
       "properties": {
         "plugin_id": {
           "type": "string",
-          "pattern": "^[a-z0-9._-]{1,255}(?![\\s\\S])"
+          "pattern": "^[a-z0-9._-]{1,255}$"
         },
         "plugin_version": {
           "type": "string",
           "maxLength": 128,
-          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![\\s\\S])"
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
         },
         "config": {
-          "type": "object",
-          "x-rodaq-max-canonical-bytes-from": "max_plugin_config_bytes"
+          "type": "object"
         }
       }
     },
@@ -276,11 +147,11 @@
       ],
       "properties": {
         "stream_id": {
-          "$ref": "#/$defs/positive_uint64"
+          "$ref": "#/$defs/positive_uint64_string"
         },
         "stream_key": {
           "type": "string",
-          "pattern": "^[!-~]{1,128}(?![\\s\\S])"
+          "pattern": "^[!-~]{1,128}$"
         },
         "name": {
           "type": "string",
@@ -289,10 +160,7 @@
           "x-rodaq-max-utf8-bytes": 128
         },
         "readiness_policy": {
-          "enum": [
-            "entry_ready",
-            "source_ready"
-          ]
+          "enum": ["entry_ready", "source_ready"]
         }
       }
     },
@@ -309,18 +177,18 @@
       ],
       "properties": {
         "pipeline_id": {
-          "$ref": "#/$defs/positive_uint64"
+          "$ref": "#/$defs/positive_uint64_string"
         },
         "required": {
           "type": "boolean"
         },
         "resource_profile": {
           "type": "string",
-          "pattern": "^[!-~]{1,128}(?![\\s\\S])"
+          "pattern": "^[!-~]{1,128}$"
         },
         "output_root": {
           "type": "string",
-          "pattern": "^[!-~]{1,128}(?![\\s\\S])"
+          "pattern": "^[!-~]{1,128}$"
         },
         "acquisition": {
           "$ref": "#/$defs/plugin"
@@ -338,67 +206,5 @@
         }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "recording_mode": {
-            "const": "continuous"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "retention_policy": {
-            "properties": {
-              "mode": {
-                "const": "keep_all"
-              },
-              "max_duration": {
-                "type": "null"
-              },
-              "max_physical_bytes": {
-                "type": "null"
-              },
-              "include_previous_continuous": {
-                "const": false
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "retention_policy": {
-            "properties": {
-              "mode": {
-                "const": "rolling"
-              }
-            },
-            "anyOf": [
-              {
-                "properties": {
-                  "max_duration": {
-                    "not": {
-                      "type": "null"
-                    }
-                  }
-                }
-              },
-              {
-                "properties": {
-                  "max_physical_bytes": {
-                    "not": {
-                      "type": "null"
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        }
-      }
-    }
-  ]
+  }
 }

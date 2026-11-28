@@ -12,10 +12,10 @@
 #include <string_view>
 #include <vector>
 
-#include "catalog_state.hpp"
 #include "../persistence/decimal.hpp"
 #include "../persistence/json.hpp"
 #include "../uuid.hpp"
+#include "catalog_state.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -50,7 +50,8 @@ Result<std::string> filter_digest(const ArtifactQuery& query) {
     };
     return persistence::semantic_digest(
         {{"task_id", query.task_id ? Json(to_string(*query.task_id)) : Json(nullptr)},
-         {"pipeline_id", query.pipeline_id ? Json(std::to_string(*query.pipeline_id)) : Json(nullptr)},
+         {"pipeline_id",
+          query.pipeline_id ? Json(std::to_string(*query.pipeline_id)) : Json(nullptr)},
          {"format", query.format ? Json(*query.format) : Json(nullptr)},
          {"recording_range", query.recording_range
                                  ? Json{{"begin", std::to_string(query.recording_range->begin_ns)},
@@ -120,19 +121,10 @@ Result<ArtifactPage> ArtifactCatalog::query(const ArtifactQuery& query) const {
             if (state->options.volume->protection() != StatusCode::Ok) {
                 return Status(state->options.volume->protection(), {});
             }
-            if (state->options.ledger->protection() != StatusCode::Ok) {
-                return Status(state->options.ledger->protection(), {});
-            }
             for (const auto& slot : state->slots) {
                 if (slot.visible && slot.entry &&
                     matches(slot.entry->info.summary, query, key.value())) {
-                    auto published = state->public_entry(slot);
-                    if (!published.ok()) {
-                        return published.status();
-                    }
-                    if (published.value()) {
-                        selected.push_back(slot.entry);
-                    }
+                    selected.push_back(slot.entry);
                 }
             }
         }
@@ -168,19 +160,12 @@ Result<ArtifactInfo> ArtifactCatalog::get(ArtifactId id) const {
         if (state->options.volume->protection() != StatusCode::Ok) {
             return Status(state->options.volume->protection(), {});
         }
-        if (state->options.ledger->protection() != StatusCode::Ok) {
-            return Status(state->options.ledger->protection(), {});
-        }
         const auto at = state->find(id.value);
         if (at == state->slots.size()) {
             return Status(StatusCode::NotFound, {});
         }
         const auto& slot = state->slots[at];
-        auto published = state->public_entry(slot);
-        if (!published.ok()) {
-            return published.status();
-        }
-        if (!published.value()) {
+        if (!slot.visible || !slot.entry) {
             return Status(slot.failure == StatusCode::Ok ? StatusCode::NotFound : slot.failure, {});
         }
         return slot.entry->info;

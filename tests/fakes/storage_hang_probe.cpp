@@ -1,7 +1,6 @@
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
-#include <rodaq/plugin/registry.hpp>
 #include <rodaq/storage/interface.hpp>
 
 #include <chrono>
@@ -28,17 +27,16 @@ int main(int argc, char** argv) {
         return 3;
     }
     auto library = manager.value().load("rodaq.fake.storage", "1.0.0");
-    plugin::ServiceRegistry services;
-    if (!library.ok() || !services.freeze().ok()) {
+    if (!library.ok()) {
         return 4;
     }
-    auto instance = library.value().create_instance(services, R"({"mode":"hang_write"})");
+    auto instance = library.value().create_instance(R"({"mode":"hang_write"})");
     if (!instance.ok()) {
         return 5;
     }
     auto handle = instance.value().query<storage::Interface>();
     const storage::PrepareConfig limits{
-        {sizeof(storage::PrepareConfig)}, 64, 256, 4, 4, 100, 4096, 65536, 1, 32, 7, 100, 1000};
+        {sizeof(storage::PrepareConfig)}, 64, 256, 4, 4, 100, 4096, 65536, 1, 32};
     if (!handle.ok() || !handle.value().prepare(limits, deadline).ok()) {
         return 6;
     }
@@ -60,10 +58,7 @@ int main(int argc, char** argv) {
     record.header.struct_size = sizeof(record);
     record.stream_id = 1;
     record.descriptor_id = 1;
-    record.acceptance_sequence = 1;
-    record.system_boot_id = 7;
-    record.clock_epoch_id = 3;
-    record.receive_monotonic = 200;
+    record.recording_time = 200;
     (void)handle.value().write_batch({&record, 1}, deadline);
     return 99;  // A hung Native call must never report a fabricated return.
 }

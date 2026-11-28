@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
 #include <rodaq/acquisition/types.hpp>
 
@@ -17,17 +17,11 @@ struct StreamPreparation {
     StreamId stream_id{0};
     std::string stream_key;
     std::uint64_t max_record_bytes{0};
-    // Supplied only after StreamIdentityStore actually published these ranges.
-    // Construction failure burns those reserved tails; it does not roll back
-    // persistent identity authority or manufacture replacement ranges.
-    IdentityRange sequences;
-    IdentityRange descriptors;
 };
 
 // One Recording Instance's immutable structure. All entries/key backing are
 // prepared before publishing callbacks; no lookup/insertion growth or table
-// lock exists on the hot path. Retain this owner through actual callback and
-// Acquisition prepare return. Per-Stream mutable facts use their own mutex.
+// lock exists on the hot path.
 class StreamTable {
 public:
     static Result<StreamTable> create(
@@ -38,7 +32,6 @@ public:
     StreamTable& operator=(StreamTable&&) noexcept = default;
 
     StreamAdmission* find(StreamId id) noexcept;
-    // Native views stay valid while this owner/actual prepare frame is held.
     const std::vector<acquisition::StreamBinding>& bindings() const noexcept { return bindings_; }
 
 private:

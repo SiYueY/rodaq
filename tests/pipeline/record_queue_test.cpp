@@ -1,5 +1,5 @@
 #include "pipeline/record_queue.hpp"
-#include "pipeline/descriptor_registry.hpp"
+#include "pipeline/descriptor.hpp"
 
 #include <gtest/gtest.h>
 
@@ -26,29 +26,28 @@ protected:
     void SetUp() override {
         auto budget = pipeline::RecordBudget::create(16, 64);
         auto pool = pipeline::PayloadPool::create({4096, 256, 16, 16});
-        auto registry = pipeline::DescriptorRegistry::create({1});
         auto queue = pipeline::RecordQueue::create(8);
         ASSERT_TRUE(budget.ok());
         ASSERT_TRUE(pool.ok());
-        ASSERT_TRUE(registry.ok());
         ASSERT_TRUE(queue.ok());
         budget_.emplace(std::move(budget).value());
         pool_.emplace(std::move(pool).value());
-        registry_.emplace(std::move(registry).value());
         queue_.emplace(std::move(queue).value());
-        rodaq::acquisition::DescriptorProposal proposal{};
+
+        rodaq::acquisition::Descriptor proposal{};
         proposal.header.struct_size = sizeof(proposal);
         proposal.stream_id = 1;
         proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         proposal.channel_name = {"/data", 5};
         proposal.message_encoding = {"json", 4};
-        auto descriptor = registry_->capture(proposal, 100);
+        auto descriptor = pipeline::Descriptor::create(proposal, 100);
         ASSERT_TRUE(descriptor.ok());
         descriptor_ = std::move(descriptor).value();
         task_id_ = rodaq::parse_task_id("01234567-89ab-4cde-8fab-0123456789ab").value();
     }
 
-    rodaq::Result<pipeline::Record> record(std::uint64_t sequence, std::uint64_t received = 100) {
+    rodaq::Result<pipeline::Record> make_record(
+        std::uint64_t sequence, std::uint64_t received = 100) {
         auto charge = budget_->reserve(4);
         if (!charge.ok()) {
             return std::move(charge).status();
@@ -72,15 +71,13 @@ protected:
         value.segment_id = 7;
         value.stream_id = 1;
         value.acceptance_sequence = sequence;
-        value.received.boot_id = 1;
-        value.received.epoch_id = 1;
-        value.received.sample = {received, 1000, 1};
+        value.received = {received, 1000, 1};
+        value.recording_time_ns = 1000 + received;
         return value;
     }
 
     std::optional<pipeline::RecordBudget> budget_;
     std::optional<pipeline::PayloadPool> pool_;
-    std::optional<pipeline::DescriptorRegistry> registry_;
     pipeline::DescriptorRef descriptor_;
     std::optional<pipeline::RecordQueue> queue_;
     rodaq::TaskId task_id_;
@@ -97,16 +94,16 @@ TEST(RecordBudget, ZeroRecordsRemainBoundedAndFullWidthBytesNeverOverflow) {
     ASSERT_TRUE(empty.ok());
     EXPECT_EQ(budget.reserve(0).status().code(), StatusCode::ResourceExhausted);
     all_bytes.value().reset();
-    EXPECT_EQ(budget.snapshot().logical_bytes, 0);
-    EXPECT_EQ(budget.snapshot().records, 1);
+    EXPECT_EQ(budget.snapshot().logical_bytes, 0ULL);
+    EXPECT_EQ(budget.snapshot().records, 1U);
     auto replacement = budget.reserve(std::numeric_limits<std::uint64_t>::max());
     ASSERT_TRUE(replacement.ok());
     auto moved = std::move(replacement).value();
     moved = std::move(empty).value();
-    EXPECT_EQ(budget.snapshot().records, 1);
-    EXPECT_EQ(budget.snapshot().logical_bytes, 0);
+    EXPECT_EQ(budget.snapshot().records, 1U);
+    EXPECT_EQ(budget.snapshot().logical_bytes, 0ULL);
     moved.reset();
-    EXPECT_EQ(budget.snapshot().records, 0);
+    EXPECT_EQ(budget.snapshot().records, 0U);
     EXPECT_EQ(
         budget.snapshot().high_water_logical_bytes, std::numeric_limits<std::uint64_t>::max());
 }
@@ -120,36 +117,36 @@ TEST_F(RecordQueueTest, ReservationOrderDoesNotDeterminePublishPositionAndReject
     ASSERT_TRUE(first_reserved.ok());
     ASSERT_TRUE(second_reserved.ok());
     EXPECT_EQ(queue.reserve().status().code(), StatusCode::ResourceExhausted);
-    EXPECT_EQ(queue.snapshot().reserved_slots, 2);
-    auto first_commit = record(1, 100);
-    auto second_commit = record(2, 50);
+    EXPECT_EQ(queue.snapshot().reserved_slots, 2U);
+    auto first_commit = make_record(1, 100);
+    auto second_commit = make_record(2, 50);
     ASSERT_TRUE(first_commit.ok());
     ASSERT_TRUE(second_commit.ok());
     queue.publish(std::move(second_reserved).value(), std::move(first_commit).value());
     queue.publish(std::move(first_reserved).value(), std::move(second_commit).value());
     const auto snapshot = queue.snapshot();
-    EXPECT_EQ(snapshot.reserved_slots, 0);
-    EXPECT_EQ(snapshot.queued_records, 2);
-    EXPECT_EQ(snapshot.queued_logical_bytes, 8);
-    EXPECT_EQ(snapshot.oldest_receive_monotonic, 50);
+    EXPECT_EQ(snapshot.reserved_slots, 0U);
+    EXPECT_EQ(snapshot.queued_records, 2U);
+    EXPECT_EQ(snapshot.queued_logical_bytes, 8ULL);
+    EXPECT_EQ(snapshot.oldest_receive_monotonic, 50ULL);
     auto first = queue.pop();
     auto second = queue.pop();
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
-    EXPECT_EQ(first->acceptance_sequence, 1);
-    EXPECT_EQ(second->acceptance_sequence, 2);
+    EXPECT_EQ(first->acceptance_sequence, 1ULL);
+    EXPECT_EQ(second->acceptance_sequence, 2ULL);
     EXPECT_FALSE(queue.pop());
     EXPECT_FALSE(queue.snapshot().oldest_receive_monotonic);
-    EXPECT_EQ(budget_->snapshot().records, 2);
+    EXPECT_EQ(budget_->snapshot().records, 2U);
     first.reset();
     second.reset();
-    EXPECT_EQ(budget_->snapshot().records, 0);
-    EXPECT_EQ(pool_->snapshot().used_physical_bytes, 0);
+    EXPECT_EQ(budget_->snapshot().records, 0U);
+    EXPECT_EQ(pool_->snapshot().used_physical_bytes, 0ULL);
     {
         auto abandoned = queue.reserve();
         ASSERT_TRUE(abandoned.ok());
     }
-    EXPECT_EQ(queue.snapshot().reserved_slots, 0);
+    EXPECT_EQ(queue.snapshot().reserved_slots, 0U);
 }
 
 TEST_F(RecordQueueTest, StopSeparatesProducerReservationFromGuaranteedExistingPublicationAndDrain) {
@@ -157,37 +154,36 @@ TEST_F(RecordQueueTest, StopSeparatesProducerReservationFromGuaranteedExistingPu
     ASSERT_TRUE(reserved.ok());
     queue_->stop_reservations();
     EXPECT_EQ(queue_->reserve().status().code(), StatusCode::InvalidState);
-    auto accepted = record(1);
+    auto accepted = make_record(1);
     ASSERT_TRUE(accepted.ok());
     queue_->publish(std::move(reserved).value(), std::move(accepted).value());
     auto drain = queue_->pop();
     ASSERT_TRUE(drain);
-    EXPECT_EQ(drain->segment_id, 7);
-    EXPECT_EQ(queue_->snapshot().queued_records, 0);
+    EXPECT_EQ(drain->segment_id, 7ULL);
+    EXPECT_EQ(queue_->snapshot().queued_records, 0U);
     EXPECT_FALSE(queue_->snapshot().accepting);
-    EXPECT_EQ(budget_->snapshot().records, 1);
-    EXPECT_EQ(pool_->snapshot().live_buffers, 1);
+    EXPECT_EQ(budget_->snapshot().records, 1U);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 1U);
     drain.reset();
-    EXPECT_EQ(budget_->snapshot().records, 0);
-    EXPECT_EQ(pool_->snapshot().live_buffers, 0);
+    EXPECT_EQ(budget_->snapshot().records, 0U);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 0U);
 }
 
-TEST_F(RecordQueueTest, StorageViewBorrowRemainsOwnedThroughActualCallAndPreservesSourceFacts) {
+TEST_F(RecordQueueTest, StorageViewBorrowRemainsOwnedThroughActualCallAndPreservesPublishTime) {
     auto reserved = queue_->reserve();
-    auto accepted = record(1);
+    auto accepted = make_record(1);
     ASSERT_TRUE(reserved.ok());
     ASSERT_TRUE(accepted.ok());
-    accepted.value().timestamps[0] = {
-        RODAQ_TIMESTAMP_ROLE_SOURCE_PUBLICATION, RODAQ_CLOCK_DOMAIN_UNIX_EPOCH, 0, -10, 0, 0};
-    accepted.value().timestamp_count = 1;
+    accepted.value().has_publish_time = 1;
+    accepted.value().publish_time_ns = 987654321ULL;
     queue_->publish(std::move(reserved).value(), std::move(accepted).value());
     auto drain = queue_->pop();
     ASSERT_TRUE(drain);
     const auto view = drain->view();
     EXPECT_TRUE(rodaq::storage::abi::valid_record(view));
-    EXPECT_EQ(view.receive_monotonic, 100);
-    EXPECT_EQ(view.receive_realtime, 1000);
-    EXPECT_EQ(view.timestamps[0].value, -10);
+    EXPECT_EQ(view.recording_time, 1100ULL);
+    EXPECT_EQ(view.has_publish_time, 1U);
+    EXPECT_EQ(view.publish_time, 987654321ULL);
     std::promise<void> release;
     auto permission = release.get_future();
     auto actual_call = std::async(
@@ -199,13 +195,13 @@ TEST_F(RecordQueueTest, StorageViewBorrowRemainsOwnedThroughActualCallAndPreserv
                    borrowed.payload.data[3] == 4;
         });
     drain.reset();
-    EXPECT_EQ(queue_->snapshot().queued_records, 0);
-    EXPECT_EQ(budget_->snapshot().records, 1);
-    EXPECT_EQ(pool_->snapshot().live_buffers, 1);
+    EXPECT_EQ(queue_->snapshot().queued_records, 0U);
+    EXPECT_EQ(budget_->snapshot().records, 1U);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 1U);
     release.set_value();
     EXPECT_TRUE(actual_call.get());
-    EXPECT_EQ(budget_->snapshot().records, 0);
-    EXPECT_EQ(pool_->snapshot().live_buffers, 0);
+    EXPECT_EQ(budget_->snapshot().records, 0U);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 0U);
 }
 
 TEST_F(RecordQueueTest, ConcurrentCapacityReservationAndStreamCommitPreserveSequenceWithoutGrowth) {
@@ -242,7 +238,7 @@ TEST_F(RecordQueueTest, ConcurrentCapacityReservationAndStreamCommitPreserveSequ
                     valid = false;
                     break;
                 }
-                auto pending = record(0);
+                auto pending = make_record(0);
                 if (!pending.ok()) {
                     valid = false;
                     break;
@@ -257,18 +253,18 @@ TEST_F(RecordQueueTest, ConcurrentCapacityReservationAndStreamCommitPreserveSequ
     for (auto& producer : producers) {
         producer.get();
     }
-    EXPECT_EQ(consumer.get(), 400);
+    EXPECT_EQ(consumer.get(), 400ULL);
     EXPECT_TRUE(valid.load());
-    EXPECT_EQ(queue_->snapshot().capacity, 8);
-    EXPECT_EQ(queue_->snapshot().reserved_slots, 0);
-    EXPECT_EQ(budget_->snapshot().records, 0);
-    EXPECT_EQ(pool_->snapshot().live_buffers, 0);
-    EXPECT_LE(queue_->snapshot().high_water_records, 8);
+    EXPECT_EQ(queue_->snapshot().capacity, 8U);
+    EXPECT_EQ(queue_->snapshot().reserved_slots, 0U);
+    EXPECT_EQ(budget_->snapshot().records, 0U);
+    EXPECT_EQ(pool_->snapshot().live_buffers, 0U);
+    EXPECT_LE(queue_->snapshot().high_water_records, 8U);
 }
 
 TEST_F(RecordQueueTest, BatchPopNeedsPreparedBackingAndNeverCrossesSegmentOrByteBoundaries) {
     for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
-        auto pending = record(sequence);
+        auto pending = make_record(sequence);
         auto credit = queue_->reserve();
         ASSERT_TRUE(pending.ok());
         ASSERT_TRUE(credit.ok());
@@ -279,31 +275,31 @@ TEST_F(RecordQueueTest, BatchPopNeedsPreparedBackingAndNeverCrossesSegmentOrByte
     }
     std::vector<pipeline::Record> batch;
     EXPECT_EQ(queue_->pop_batch(7, 2, 8, batch).status().code(), StatusCode::InvalidArgument);
-    EXPECT_EQ(queue_->snapshot().queued_records, 3);
+    EXPECT_EQ(queue_->snapshot().queued_records, 3U);
     batch.reserve(2);
     EXPECT_EQ(queue_->pop_batch(7, 2, 3, batch).status().code(), StatusCode::DataLoss);
-    EXPECT_EQ(queue_->snapshot().queued_records, 3);
+    EXPECT_EQ(queue_->snapshot().queued_records, 3U);
     auto first = queue_->pop_batch(7, 2, 4, batch);
     ASSERT_TRUE(first.ok());
-    ASSERT_EQ(batch.size(), 1);
-    EXPECT_EQ(batch[0].acceptance_sequence, 1);
-    EXPECT_EQ(first.value(), 7);
-    EXPECT_EQ(budget_->snapshot().records, 3);
+    ASSERT_EQ(batch.size(), 1U);
+    EXPECT_EQ(batch[0].acceptance_sequence, 1ULL);
+    EXPECT_EQ(first.value(), 7ULL);
+    EXPECT_EQ(budget_->snapshot().records, 3U);
     batch.clear();
     auto second = queue_->pop_batch(7, 2, 8, batch);
     ASSERT_TRUE(second.ok());
-    ASSERT_EQ(batch.size(), 1);
-    EXPECT_EQ(batch[0].acceptance_sequence, 2);
-    EXPECT_EQ(second.value(), 8);
-    EXPECT_EQ(queue_->snapshot().queued_records, 1);
+    ASSERT_EQ(batch.size(), 1U);
+    EXPECT_EQ(batch[0].acceptance_sequence, 2ULL);
+    EXPECT_EQ(second.value(), 8ULL);
+    EXPECT_EQ(queue_->snapshot().queued_records, 1U);
     batch.clear();
     auto third = queue_->pop_batch(8, 2, 8, batch);
     ASSERT_TRUE(third.ok());
-    ASSERT_EQ(batch.size(), 1);
-    EXPECT_EQ(batch[0].acceptance_sequence, 3);
+    ASSERT_EQ(batch.size(), 1U);
+    EXPECT_EQ(batch[0].acceptance_sequence, 3ULL);
     EXPECT_FALSE(third.value());
     batch.clear();
-    EXPECT_EQ(budget_->snapshot().records, 0);
+    EXPECT_EQ(budget_->snapshot().records, 0U);
 }
 
 }  // namespace

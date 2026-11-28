@@ -63,7 +63,7 @@ async function runLookup(): Promise<void> {
 <template>
   <article class="card">
     <div class="row-actions" style="justify-content: space-between; margin-bottom: 12px">
-      <h2 class="card-title" style="margin: 0">Operation History</h2>
+      <h2 class="card-title" style="margin: 0">Operation History (Current Daemon)</h2>
       <div class="row-actions">
         <button type="button" class="btn" :disabled="!hasPrev" @click="emit('prevPage')">
           Previous Page
@@ -89,9 +89,8 @@ async function runLookup(): Promise<void> {
 
     <div v-if="lookupNotFound" class="banner banner-info" role="status">
       <span>
-        <strong>Not found or expired:</strong> Operation ID is not in retained history. This does not
-        prove the operation failed or never existed; inspect current Task generation, Desired/Execution
-        state, and committed Artifacts above.
+        <strong>Not found or expired:</strong> Operation ID is not in retained history. Inspect
+        current Task generation, Desired/Execution state, and committed Artifacts above.
       </span>
     </div>
     <ErrorPanel v-if="lookupError" :error="lookupError" title="Operation Lookup Error" />
@@ -107,10 +106,7 @@ async function runLookup(): Promise<void> {
     <ErrorPanel v-if="error" :error="error" title="Operation History Error" />
 
     <div v-if="page?.history_truncated" class="banner banner-warning" role="status">
-      <span>
-        Older operation history exceeds the retained window (oldest retained control generation:
-        <code class="mono">{{ page.oldest_retained_control_generation ?? '—' }}</code>).
-      </span>
+      <span>Older operation history exceeds the current daemon's retained window.</span>
     </div>
 
     <div class="table-wrap">
@@ -130,7 +126,7 @@ async function runLookup(): Promise<void> {
         </thead>
         <tbody>
           <tr v-if="!page || page.items.length === 0">
-            <td colspan="9" class="muted">No operations recorded.</td>
+            <td colspan="9" class="muted">No operations recorded in this daemon session.</td>
           </tr>
           <template v-for="op in page?.items ?? []" :key="op.operation_id">
             <tr>

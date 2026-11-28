@@ -1,6 +1,5 @@
 #include "pipeline_writer.hpp"
 
-#include <array>
 #include <algorithm>
 #include <limits>
 #include <new>
@@ -48,7 +47,6 @@ Result<std::unique_ptr<PipelineWriter>> PipelineWriter::prepare(
             writer->fail(prepared.status().code());
             return prepared.status();
         }
-        writer->model_ = prepared.value();
         return writer;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
@@ -65,11 +63,11 @@ void PipelineWriter::fail(StatusCode failure) noexcept {
 Result<void> PipelineWriter::observe_usage(RecordingSegment& segment) {
     auto usage = storage_.segment_usage();
     if (!usage.ok()) {
-        segment.capacity.invalidate_usage();
+        segment.invalidate_usage();
         fail(usage.status().code());
         return usage.status();
     }
-    auto observed = segment.capacity.observe_usage(usage.value());
+    auto observed = segment.observe_usage(usage.value());
     if (!observed.ok()) {
         fail(observed.status().code());
     }
@@ -77,7 +75,7 @@ Result<void> PipelineWriter::observe_usage(RecordingSegment& segment) {
 }
 
 Result<void> PipelineWriter::prepare_descriptor(
-    std::shared_ptr<RecordingSegment> segment, DescriptorRef descriptor, std::uint64_t now,
+    std::shared_ptr<RecordingSegment> segment, DescriptorRef descriptor,
     plugin::Deadline deadline) {
     if (!segment || !descriptor || quiescent_ || failure_ != StatusCode::Ok ||
         gate_.admission_fenced() || !(segment->instance_id == instance_) ||
@@ -93,9 +91,6 @@ Result<void> PipelineWriter::prepare_descriptor(
         return entry->stream_id == descriptor->stream_id &&
                entry->descriptor_id == descriptor->descriptor_id;
     });
-    if (cached != catalog_.end() && (*cached)->facts.fingerprint != descriptor->facts.fingerprint) {
-        return Status(StatusCode::Conflict, {});
-    }
     if (cached == catalog_.end()) {
         if (catalog_.size() == catalog_capacity_) {
             return Status(StatusCode::ResourceExhausted, {});
@@ -104,58 +99,24 @@ Result<void> PipelineWriter::prepare_descriptor(
             return Status(StatusCode::InvalidState, {});
         }
     }
-    const auto& facts = descriptor->facts;
-    const std::array<std::uint64_t, 8> sizes{
-        facts.channel_name.size(),
-        facts.message_encoding.size(),
-        facts.schema_name.size(),
-        facts.schema_encoding.size(),
-        facts.schema.size(),
-        facts.ros2_type_description_hash.size(),
-        facts.offered_qos.size() * sizeof(rodaq_ros2_qos_profile_t),
-        facts.ros2_subscription ? facts.ros2_subscription->data_bytes() : 0};
-    std::uint64_t bytes = 0;
-    for (const auto size : sizes) {
-        if (size > std::numeric_limits<std::uint64_t>::max() - bytes) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-        bytes += size;
-    }
     auto captured = artifact::capture_manifest_descriptor(descriptor->view(), 0);
     if (!captured.ok()) {
         return captured.status();
     }
-    captured.value().ros2_subscription = facts.ros2_subscription;
+    captured.value().ros2_subscription = descriptor->facts.ros2_subscription;
     auto metadata = segment->metadata.reserve_descriptor(std::move(captured.value()));
     if (!metadata.ok()) {
         return metadata.status();
     }
-    auto physical = segment->capacity.reserve_descriptor(bytes, now);
-    if (!physical.ok()) {
-        return physical.status();
-    }
-    auto transferred = physical.value().transfer();
-    if (!transferred.ok()) {
-        return transferred.status();
-    }
     metadata.value().transfer();
     if (cached != catalog_.end()) {
-        // Backend catalog is reusable across Segments. A successor reserves its
-        // own physical/Manifest slots without misattributing the active file's
-        // usage or repeating a Native mutation against that old Segment.
+        // Backend catalog is reusable across rotated Segments.
         return metadata.value().mark_prepared();
     }
-    segment->capacity.mark_effects_possible();
     auto prepared = storage_.prepare_descriptor(descriptor->view(), deadline);
     if (!prepared.ok()) {
         fail(prepared.status().code());
-    }
-    auto observed = observe_usage(*segment);
-    if (!prepared.ok()) {
         return prepared.status();
-    }
-    if (!observed.ok()) {
-        return observed.status();
     }
     catalog_.push_back(std::move(descriptor));
     return metadata.value().mark_prepared();
@@ -169,7 +130,7 @@ Result<void> PipelineWriter::open(
                                   : Result<void>{Status(StatusCode::InvalidState, {})};
     }
     active_ = segment;
-    segment->capacity.mark_effects_possible();
+    segment->mark_effects_possible();
     auto staging = volume_->create_staging(identity);
     if (!staging.ok()) {
         return staging.status();
@@ -209,7 +170,7 @@ Result<void> PipelineWriter::settle(WriterStep& progress, std::uint32_t prefix, 
             ++progress.known_failed;
         }
     }
-    batch_.clear();  // Actual Storage access ended before any payload/charge release.
+    batch_.clear();
     return {};
 }
 
@@ -273,8 +234,6 @@ Result<WriterStep> PipelineWriter::write_available(
     if (!outcome.status.ok()) {
         fail(outcome.status.code());
     }
-    // Even a non-OK call may confirm its whole prefix. The SDK conservatively
-    // converts invalid/throwing native output into an entire Unknown batch.
     const auto settled = settle(
         progress, outcome.batch_result.confirmed_prefix,
         outcome.batch_result.tail_state == RODAQ_STORAGE_TAIL_UNKNOWN);
@@ -292,7 +251,7 @@ Result<storage::SegmentSealResult> PipelineWriter::seal(
         return Status(StatusCode::InvalidArgument, {});
     }
     const auto metadata = segment->metadata.snapshot();
-    const auto physical = segment->capacity.snapshot();
+    const auto physical = segment->capacity_snapshot();
     if (!batch_.empty() || quiescent_ || seal_attempted_ || active_ != segment ||
         !(segment->instance_id == instance_) || !metadata.closed || physical.writable ||
         physical.candidates != 0 || metadata.pending_admissions != 0 ||
@@ -303,9 +262,8 @@ Result<storage::SegmentSealResult> PipelineWriter::seal(
             StatusCode::InvalidState,
             fmt::format(
                 "Seal requires settled closed Segment: batch={} quiescent={} attempted={} "
-                "active={} "
-                "closed={} writable={} candidates={} records={} descriptors={} native={} "
-                "unresolved={} unknown={} accepted={} written={} failed={}",
+                "active={} closed={} writable={} candidates={} records={} descriptors={} "
+                "native={} unresolved={} unknown={} accepted={} written={} failed={}",
                 batch_.size(), quiescent_, seal_attempted_, active_ == segment, metadata.closed,
                 physical.writable, physical.candidates, metadata.pending_admissions,
                 metadata.pending_descriptors, metadata.native_inflight, metadata.unresolved_owners,
@@ -322,10 +280,8 @@ Result<storage::SegmentSealResult> PipelineWriter::seal(
         fail(sealed.status().code());
         return sealed.status();
     }
-    if (sealed.value().total_physical_bytes > envelope_.max_segment_physical_bytes ||
-        sealed.value().total_physical_bytes >
-            physical.accepted_storage_bound + model_.seal_reserve_bytes) {
-        segment->capacity.invalidate_usage();
+    if (sealed.value().total_physical_bytes > physical.reserved_bytes) {
+        segment->invalidate_usage();
         fail(StatusCode::DataLoss);
         return Status(StatusCode::DataLoss, {});
     }

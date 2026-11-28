@@ -6,9 +6,7 @@
 namespace rodaq::server {
 
 DownloadRegistry::DownloadRegistry(DownloadConfig config)
-: config_(config),
-  max_per_principal_(std::max<std::size_t>(2, config.max_concurrent / 2)),
-  state_(std::make_shared<SharedState>()) {}
+: config_(config), state_(std::make_shared<SharedState>()) {}
 
 DownloadRegistry::~DownloadRegistry() noexcept {
     if (!stopped_) {
@@ -22,6 +20,7 @@ Result<std::unique_ptr<DownloadRegistry>> DownloadRegistry::create(const Downloa
         const std::size_t slot_capacity = std::max<std::size_t>(1, config.max_concurrent);
         reg->state_->cancel_scratch.resize(slot_capacity);
         reg->state_->read_ring.resize(slot_capacity);
+        reg->state_->max_open_queue = std::max<std::size_t>(8, slot_capacity * 2);
         reg->workers_.reserve(config.workers);
         for (std::uint32_t i = 0; i < config.workers; ++i) {
             reg->workers_.emplace_back([state = reg->state_] { worker_loop(state); });
@@ -32,8 +31,20 @@ Result<std::unique_ptr<DownloadRegistry>> DownloadRegistry::create(const Downloa
     }
 }
 
+bool DownloadRegistry::submit_open(std::function<void()> work) {
+    {
+        std::lock_guard<std::mutex> lock(state_->worker_mutex);
+        if (state_->workers_stopping || state_->open_queue.size() >= state_->max_open_queue) {
+            return false;
+        }
+        state_->open_queue.push_back(std::move(work));
+    }
+    state_->worker_cv.notify_one();
+    return true;
+}
+
 DownloadAdmitResult DownloadRegistry::create_session(
-    const std::string& principal, ByteRange range, std::shared_ptr<ArtifactReadHandle> handle,
+    ByteRange range, std::shared_ptr<ArtifactReadHandle> handle,
     std::weak_ptr<trantor::TcpConnection> connection) {
     std::uint64_t sid = 0;
     const trantor::TcpConnection* raw_conn = nullptr;
@@ -49,25 +60,14 @@ DownloadAdmitResult DownloadRegistry::create_session(
             ++state_->metrics.rejected_global;
             return {false, DownloadAdmissionFailure::GlobalSaturation, {}};
         }
-        if (!principal.empty()) {
-            const auto it = state_->principal_sessions.find(principal);
-            if (it != state_->principal_sessions.end() && it->second >= max_per_principal_) {
-                ++state_->metrics.rejected_principal;
-                return {false, DownloadAdmissionFailure::PrincipalQuota, {}};
-            }
-        }
         sid = state_->next_session_id++;
         ++state_->reserved_sessions;
-        if (!principal.empty()) {
-            ++state_->principal_sessions[principal];
-        }
     }
 
     std::shared_ptr<DownloadSession> session;
     try {
         DownloadSession::Options opts;
         opts.session_id = sid;
-        opts.principal = principal;
         opts.chunk_bytes = config_.chunk_bytes;
         opts.max_bytes_in_flight = config_.max_bytes_in_flight;
         opts.range = range;
@@ -85,11 +85,8 @@ DownloadAdmitResult DownloadRegistry::create_session(
     } catch (...) {
         std::lock_guard<std::mutex> lock(state_->registry_mutex);
         --state_->reserved_sessions;
-        if (!principal.empty()) {
-            const auto pit = state_->principal_sessions.find(principal);
-            if (pit != state_->principal_sessions.end() && --pit->second == 0) {
-                state_->principal_sessions.erase(pit);
-            }
+        if (state_->active_sessions.empty() && state_->reserved_sessions == 0) {
+            state_->settled_cv.notify_all();
         }
         throw;
     }
@@ -170,6 +167,10 @@ Result<void> DownloadRegistry::shutdown(std::chrono::steady_clock::time_point de
         return {};
     }
     cancel_all();
+    {
+        std::lock_guard<std::mutex> wlock(state_->worker_mutex);
+        state_->open_queue.clear();
+    }
     bool settled = false;
     {
         std::unique_lock<std::mutex> lock(state_->registry_mutex);
@@ -178,10 +179,14 @@ Result<void> DownloadRegistry::shutdown(std::chrono::steady_clock::time_point de
         });
     }
     {
-        std::lock_guard<std::mutex> wlock(state_->worker_mutex);
+        std::unique_lock<std::mutex> wlock(state_->worker_mutex);
         state_->workers_stopping = true;
+        state_->worker_cv.notify_all();
+        if (settled) {
+            settled = state_->open_settled_cv.wait_until(
+                wlock, deadline, [&] { return state_->active_opens == 0; });
+        }
     }
-    state_->worker_cv.notify_all();
     if (settled) {
         for (auto& w : workers_) {
             if (w.joinable()) {
@@ -231,29 +236,43 @@ bool DownloadRegistry::submit_disk_read(
 
 void DownloadRegistry::worker_loop(const std::shared_ptr<SharedState>& state) {
     for (;;) {
-        ReadJob job;
+        ReadJob read_job;
+        std::function<void()> open_job;
         {
             std::unique_lock<std::mutex> lock(state->worker_mutex);
-            state->worker_cv.wait(
-                lock, [&] { return state->workers_stopping || state->ring_count > 0; });
-            if (state->ring_count == 0) {
-                if (state->workers_stopping) {
-                    break;
-                }
+            state->worker_cv.wait(lock, [&] {
+                return state->workers_stopping || state->ring_count > 0 ||
+                       !state->open_queue.empty();
+            });
+            if (state->ring_count > 0) {
+                read_job = std::move(state->read_ring[state->ring_head]);
+                state->read_ring[state->ring_head] = {};
+                state->ring_head = (state->ring_head + 1) % state->read_ring.size();
+                --state->ring_count;
+            } else if (!state->open_queue.empty()) {
+                open_job = std::move(state->open_queue.front());
+                state->open_queue.pop_front();
+                ++state->active_opens;
+            } else if (state->workers_stopping) {
+                break;
+            } else {
                 continue;
             }
-            job = std::move(state->read_ring[state->ring_head]);
-            state->read_ring[state->ring_head] = {};
-            state->ring_head = (state->ring_head + 1) % state->read_ring.size();
-            --state->ring_count;
         }
-        try {
-            if (job.session) {
-                job.session->execute_disk_read(job.offset, job.to_read);
+        if (read_job.session) {
+            try {
+                read_job.session->execute_disk_read(read_job.offset, read_job.to_read);
+            } catch (...) {
+                read_job.session->request_cancel();
             }
-        } catch (...) {
-            if (job.session) {
-                job.session->request_cancel();
+        } else if (open_job) {
+            try {
+                open_job();
+            } catch (...) {
+            }
+            std::lock_guard<std::mutex> lock(state->worker_mutex);
+            if (--state->active_opens == 0 && state->workers_stopping) {
+                state->open_settled_cv.notify_all();
             }
         }
     }
@@ -268,13 +287,6 @@ void DownloadRegistry::on_session_terminal(
         const auto it = state->active_sessions.find(session_id);
         if (it != state->active_sessions.end()) {
             released = std::move(it->second);
-            const std::string& principal = released->principal();
-            if (!principal.empty()) {
-                const auto pit = state->principal_sessions.find(principal);
-                if (pit != state->principal_sessions.end() && --pit->second == 0) {
-                    state->principal_sessions.erase(pit);
-                }
-            }
             state->active_sessions.erase(it);
         }
         const auto sc_it = state->session_conns.find(session_id);

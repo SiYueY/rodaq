@@ -61,16 +61,6 @@ public:
     rodaq::Result<void> shutdown(rodaq::plugin::Deadline) override { return {}; }
 };
 
-rodaq_status_code_t no_service(
-    rodaq_service_registry_context_t*, const rodaq_interface_query_t*,
-    rodaq_interface_reference_t* reference, rodaq_error_t* error) {
-    if (reference != nullptr) {
-        *reference = {};
-    }
-    rodaq::plugin::abi::write_error(error, {});
-    return RODAQ_STATUS_NOT_FOUND;
-}
-
 class AuthoringTest : public testing::Test {
 protected:
     void SetUp() override {
@@ -89,20 +79,15 @@ protected:
     rodaq_status_code_t configure(std::string_view text) {
         const rodaq_config_t config{
             {sizeof(rodaq_config_t)}, {text.data(), static_cast<std::uint32_t>(text.size())}};
-        return instance_.vtable->configure(instance_.context, &services_, &config, &error_);
+        return instance_.vtable->configure(instance_.context, &app_callbacks_, &config, &error_);
     }
 
     rodaq_plugin_instance_t instance_{};
     std::array<std::uint8_t, 64> error_buffer_{};
     rodaq_error_t error_{
         {error_buffer_.data(), static_cast<std::uint32_t>(error_buffer_.size()), 0}};
-    const rodaq_service_registry_vtable_t registry_{
-        {offsetof(rodaq_service_registry_vtable_t, query) + sizeof(registry_.query)},
-        no_service,
-        nullptr,
-        nullptr};
-    const rodaq_service_registry_reference_t services_{
-        reinterpret_cast<rodaq_service_registry_context_t*>(this), &registry_};
+    const rodaq_application_callbacks_t app_callbacks_{
+        {sizeof(rodaq_application_callbacks_t)}, nullptr, nullptr};
 };
 
 TEST_F(AuthoringTest, ConfigureQueryAndSingleConfigureContract) {

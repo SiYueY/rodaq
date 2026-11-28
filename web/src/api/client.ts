@@ -29,11 +29,11 @@ export interface RequestOptions<TBody = never> {
   idempotencyKey?: string;
   controlGeneration?: DecimalString | null;
   bearerToken?: string;
-  rawConfigResponse?: boolean;
+  suppressAuthHook?: boolean;
 }
 
 export interface ApiClientHooks {
-  getCsrfToken: () => string | null;
+  getBearerToken: () => string | null;
   onUnauthenticated: () => void;
   onApiIncompatible: (reason: string) => void;
 }
@@ -42,6 +42,7 @@ export interface ApiClient {
   request<TResponse, TBody = never>(options: RequestOptions<TBody>): Promise<TResponse>;
   requestRawConfig(path: string, signal?: AbortSignal): Promise<ConfigExportResult>;
   head(path: string, signal?: AbortSignal): Promise<HeadMetadata>;
+  downloadBlob(path: string, signal?: AbortSignal): Promise<{ blob: Blob; contentDisposition: string | null }>;
 }
 
 function buildUrl(path: string, query?: Record<string, string | undefined>): string {
@@ -103,17 +104,9 @@ export function createApiClient(
       'RoDAQ-API-Version': CLIENT_API_VERSION_HEADER,
     };
 
-    if (options.bearerToken) {
-      headers['Authorization'] = `Bearer ${options.bearerToken}`;
-    }
-
-    const isMutation =
-      options.method === 'POST' || options.method === 'PUT' || options.method === 'DELETE';
-    if (isMutation && !options.bearerToken) {
-      const csrf = hooks.getCsrfToken();
-      if (csrf) {
-        headers['RoDAQ-CSRF-Token'] = csrf;
-      }
+    const token = options.bearerToken ?? hooks.getBearerToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     if (options.idempotencyKey) {
@@ -138,7 +131,7 @@ export function createApiClient(
         method: options.method,
         headers,
         body: payload,
-        credentials: 'same-origin',
+        credentials: 'omit',
         signal: merged.signal,
       });
 
@@ -224,9 +217,8 @@ export function createApiClient(
   return {
     async request<TResponse, TBody = never>(options: RequestOptions<TBody>): Promise<TResponse> {
       const resp = await executeRaw(options as RequestOptions<unknown>);
-      const suppressAuthHook = options.path === '/api/session' && options.method === 'POST';
       if (!resp.ok) {
-        await handleErrorResponse(resp, suppressAuthHook);
+        await handleErrorResponse(resp, Boolean(options.suppressAuthHook));
       }
       if (resp.status === 204 || options.method === 'HEAD') {
         return undefined as unknown as TResponse;
@@ -284,6 +276,30 @@ export function createApiClient(
         contentType: resp.headers.get('Content-Type'),
         requestId: resp.headers.get('RoDAQ-Request-ID'),
       };
+    },
+
+    async downloadBlob(
+      path: string,
+      signal?: AbortSignal,
+    ): Promise<{ blob: Blob; contentDisposition: string | null }> {
+      const headers: Record<string, string> = {
+        'RoDAQ-API-Version': CLIENT_API_VERSION_HEADER,
+      };
+      const token = hooks.getBearerToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const resp = await fetchImpl(path, {
+        method: 'GET',
+        headers,
+        credentials: 'omit',
+        signal,
+      });
+      if (!resp.ok) {
+        await handleErrorResponse(resp);
+      }
+      const blob = await resp.blob();
+      return { blob, contentDisposition: resp.headers.get('Content-Disposition') };
     },
   };
 }

@@ -56,7 +56,6 @@ class DownloadSession : public std::enable_shared_from_this<DownloadSession> {
 public:
     struct Options {
         std::uint64_t session_id{0};
-        std::string principal;
         std::uint64_t chunk_bytes{1048576};
         std::uint64_t max_bytes_in_flight{8388608};
         ByteRange range;
@@ -75,8 +74,6 @@ public:
     ~DownloadSession() noexcept;
 
     std::uint64_t id() const noexcept { return session_id_; }
-
-    const std::string& principal() const noexcept { return principal_; }
 
     void attach_and_start(trantor::AsyncStreamPtr stream, std::string initial_header_bytes = {});
 
@@ -105,7 +102,6 @@ private:
     static void invoke_terminal(std::optional<TerminalInvocation> invocation) noexcept;
 
     const std::uint64_t session_id_;
-    const std::string principal_;
     const std::uint64_t chunk_bytes_;
     const std::uint64_t max_bytes_in_flight_;
     const ByteRange range_;

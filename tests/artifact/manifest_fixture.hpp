@@ -14,16 +14,16 @@ inline artifact::ManifestIdentity manifest_identity(std::uint64_t segment_id = 7
     result.pipeline_id = 3;
     result.instance_id = "21234567-89ab-4cde-8fab-0123456789ab";
     result.segment_sequence = 1;
+    result.committed_at = WallTime{std::chrono::nanoseconds{1700000000000000000LL}};
     result.config_version = "sha256:" + std::string(64, 'c');
-    result.effective_config_id = "sha256:" + std::string(64, 'd');
+    result.deployment_generation = "1";
     result.control_generation = 7;
-    result.reset_generation_at_commit = 2;
     result.volume_id = artifact::parse_volume_id("11234567-89ab-4cde-8fab-0123456789ab").value();
-    result.acquisition = {"rodaq.fake.acquisition", "1.0.0", std::string(64, 'e')};
-    result.storage = {"rodaq.fake.storage", "1.0.0", std::string(64, 'f')};
+    result.acquisition = {"rodaq.fake.acquisition", "Fake Acquisition", "1.0.0"};
+    result.storage = {"rodaq.fake.storage", "Fake Storage", "1.0.0"};
     result.qualified_runtime_profile_id = "behavioral-fake.v1";
     result.format = "fake";
-    result.playback_anchor = {42, 10, 1000};
+    result.playback_anchor = {10, 1000};
     return result;
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenAPI 3.1.0 wire conformance & minor compatibility gate (SV-API-008, SV-API-009, SV-CORE-001)."""
+"""OpenAPI 3.1.0 wire conformance & minor compatibility gate."""
 
 import json
 import pathlib
@@ -9,7 +9,6 @@ import yaml
 
 
 REQUIRED_PATHS = {
-    "/api/session": {"post", "get", "delete"},
     "/api/system": {"get"},
     "/api/capabilities": {"get"},
     "/api/tasks": {"get", "post"},
@@ -46,8 +45,7 @@ CLOSED_ENUMS = {
         "pre_admission_only",
         "accepted_known_failed",
         "persistence_unknown",
-        "artifact_quarantined",
-        "historical_artifact_lost_or_corrupt",
+        "artifact_unavailable_or_corrupt",
     ],
     "DesiredState": ["stopped", "running", "paused"],
     "ExecutionCondition": [
@@ -57,7 +55,6 @@ CLOSED_ENUMS = {
         "degraded",
         "draining",
         "protected",
-        "pending_cleanup",
         "failed",
     ],
     "OperationKind": ["configure", "start", "pause", "resume", "stop", "reset", "retire"],
@@ -73,11 +70,9 @@ CLOSED_ENUMS = {
 
 
 def check_minor_compatibility(baseline_schema: dict, candidate_schema: dict) -> list[str]:
-    """SV-API-009: enforce additive-only minor compatibility rules."""
     violations: list[str] = []
     base_req = set(baseline_schema.get("required", []))
     cand_req = set(candidate_schema.get("required", []))
-    # Existing published required response fields must remain required.
     for field in sorted(base_req - cand_req):
         violations.append(f"required field removed or weakened to optional: {field}")
     base_props = baseline_schema.get("properties", {})
@@ -111,18 +106,21 @@ def main() -> int:
     assert isinstance(doc, dict), "openapi.yaml root must be a mapping"
     assert doc.get("openapi") == "3.1.0", f"expected OpenAPI 3.1.0, got {doc.get('openapi')}"
 
-    # 1. Route parity & no /api/v1/ prefix (SV-API-001, SV-API-008).
     paths = doc.get("paths", {})
+    assert "/api/session" not in paths, "/api/session must not exist in V1 simplified contract"
     for p in paths:
         assert not p.startswith("/api/v1/"), f"forbidden /api/v1/ route: {p}"
     assert set(paths.keys()) == set(REQUIRED_PATHS.keys()), (
         f"path set mismatch: {set(paths.keys()) ^ set(REQUIRED_PATHS.keys())}"
     )
     for path, methods in REQUIRED_PATHS.items():
-        present = {k.lower() for k in paths[path].keys() if k.lower() in {"get", "post", "put", "delete", "head", "patch"}}
+        present = {
+            k.lower()
+            for k in paths[path].keys()
+            if k.lower() in {"get", "post", "put", "delete", "head", "patch"}
+        }
         assert present == methods, f"method mismatch on {path}: {present} != {methods}"
 
-    # 2. Closed enums & decimal uint64 & duration wire types.
     schemas = doc["components"]["schemas"]
     for name, expected_values in CLOSED_ENUMS.items():
         assert name in schemas, f"missing closed enum schema {name}"
@@ -130,27 +128,27 @@ def main() -> int:
             f"enum mismatch for {name}: {schemas[name].get('enum')} != {expected_values}"
         )
     assert schemas["DecimalString"]["type"] == "string"
-    assert schemas["DurationValue"]["required"] == ["value", "unit"]
+    assert schemas["FreshnessData"]["required"] == ["state", "age_ms"]
+    assert "recovery" not in schemas["SystemData"]["properties"]
+    assert "idempotency_retention" not in schemas["ApiLimits"]["properties"]
 
-    # 3. PortableTaskConfig mirrors schemas/task_config.schema.json.
     task_schema = json.loads(task_schema_path.read_text(encoding="utf-8"))
     portable = schemas["PortableTaskConfig"]
     assert set(portable["required"]) == set(task_schema["required"]), (
         f"PortableTaskConfig required mismatch: {portable['required']} != {task_schema['required']}"
     )
-    assert portable["properties"]["start_policy"]["type"] == "object"
-    assert portable["properties"]["start_policy"]["required"] == ["mode"]
+    for obsolete in ("recording_mode", "start_policy", "recovery_policy"):
+        assert obsolete not in portable["properties"], f"obsolete field {obsolete} in PortableTaskConfig"
     assert portable["properties"]["segment_policy"]["required"] == [
-        "max_duration",
+        "max_duration_ms",
         "max_physical_bytes",
     ]
     assert portable["properties"]["retention_policy"]["required"] == [
         "mode",
-        "max_duration",
+        "max_duration_ms",
         "max_physical_bytes",
     ]
 
-    # 4. SV-API-009 minor compatibility gate self-test.
     base_resp = {
         "required": ["task_id", "desired_state"],
         "properties": {
@@ -167,24 +165,23 @@ def main() -> int:
         },
     }
     assert check_minor_compatibility(base_resp, additive_minor) == []
-
-    weakened_required = {
-        "required": ["task_id"],
-        "properties": base_resp["properties"],
-    }
-    assert check_minor_compatibility(base_resp, weakened_required), "must reject required->optional"
-
-    expanded_closed_enum = {
-        "required": ["task_id", "desired_state"],
-        "properties": {
-            "task_id": {"type": "string"},
-            "desired_state": {"type": "string", "enum": ["stopped", "running", "paused", "new_val"]},
+    assert check_minor_compatibility(
+        base_resp, {"required": ["task_id"], "properties": base_resp["properties"]}
+    )
+    assert check_minor_compatibility(
+        base_resp,
+        {
+            "required": ["task_id", "desired_state"],
+            "properties": {
+                "task_id": {"type": "string"},
+                "desired_state": {"type": "string", "enum": ["stopped", "running", "paused", "new"]},
+            },
         },
-    }
-    assert check_minor_compatibility(base_resp, expanded_closed_enum), "must reject closed enum expansion"
+    )
 
-    # 5. SV-CORE-001 public-header-only boundary check on server/src.
-    private_include_re = re.compile(r'#\s*include\s*[<"].*(?:^|/)src/(?:daq|task|pipeline|artifact|plugin|storage|system)/')
+    private_include_re = re.compile(
+        r'#\s*include\s*[<"].*(?:^|/)src/(?:daq|task|pipeline|artifact|plugin|storage|system)/'
+    )
     for src_file in list(server_src_dir.rglob("*.hpp")) + list(server_src_dir.rglob("*.cpp")):
         text = src_file.read_text(encoding="utf-8")
         assert not private_include_re.search(text), f"private Core include in {src_file}"
@@ -192,7 +189,7 @@ def main() -> int:
             f"relative private Core include in {src_file}"
         )
 
-    print("OpenAPI 3.1.0 conformance, SV-API-009 compatibility, and SV-CORE-001 boundary checks PASSED.")
+    print("OpenAPI 3.1.0 conformance and public-header boundary checks PASSED.")
     return 0
 
 

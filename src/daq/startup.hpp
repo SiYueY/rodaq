@@ -4,26 +4,19 @@
 #include <filesystem>
 #include <memory>
 
-#include "composition.hpp"
 #include "../persistence/file_descriptor.hpp"
+#include "composition.hpp"
 
 namespace rodaq::daq {
-
-// Exclusive boot work before Catalog/capacity publication. Task/Reset authority
-// is loaded for each actual publication boundary; unresolved deletes run first.
-Result<void> recover_pending_artifacts(const CompositionOptions& options);
 
 enum class DeploymentOpenMode { Initialize, Existing };
 
 struct StartupOptions {
-    // Explicit, existing absolute directories. Initialize requires both roots
-    // empty; Existing requires the durable bootstrap marker and all namespaces.
     std::filesystem::path state_root;
     std::filesystem::path volume_root;
     DeploymentOpenMode mode{DeploymentOpenMode::Existing};
     plugin::PluginManagerOptions plugins;
     artifact::VolumeCapacityOptions capacity;
-    std::uint32_t ledger_records{4096};
     DeploymentSettings settings;
 };
 

@@ -1,29 +1,28 @@
 #include "manifest.hpp"
 
 #include <algorithm>
-#include <array>
+#include <chrono>
 #include <initializer_list>
 #include <limits>
 #include <new>
 #include <utility>
 
+#include <rodaq/acquisition/validation.hpp>
+#include <rodaq/canonical/validation.hpp>
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
 #include <rodaq/storage/validation.hpp>
-#include <rodaq/acquisition/validation.hpp>
 
 #include "../persistence/decimal.hpp"
 #include "../persistence/digest.hpp"
 #include "../persistence/json.hpp"
-#include "../ros2_qos.hpp"
 #include "../uuid.hpp"
-#include "ledger_record.hpp"
 
 namespace rodaq::artifact {
 namespace {
 
 using persistence::Json;
-constexpr auto kDomain = "rodaq.segment-manifest.v1";
+
 constexpr std::string_view kEmptySchema =
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -49,25 +48,7 @@ void valid_limits(const ManifestLimits& limits) {
     require(
         limits.max_bytes > 0 && limits.max_bytes <= 64 * 1024 * 1024 && limits.max_files > 0 &&
         limits.max_files <= 4096 && limits.max_descriptors > 0 && limits.max_descriptors <= 1024 &&
-        limits.max_streams > 0 && limits.max_streams <= 1024 && limits.max_epochs > 0 &&
-        limits.max_epochs <= 1024 && limits.max_qos_profiles <= 256);
-}
-
-persistence::JsonLimits json_limits(const ManifestLimits& limits) {
-    return {
-        limits.max_bytes,
-        36,
-        64 * 1024,
-        256,
-        std::max(
-            {4096u, limits.max_files, limits.max_descriptors, limits.max_streams, limits.max_epochs,
-             limits.max_qos_profiles}),
-        256 + 2 * persistence::JsonLimits{}.max_nodes +
-            static_cast<std::size_t>(limits.max_files) * 4 +
-            static_cast<std::size_t>(limits.max_descriptors) *
-                (48 + static_cast<std::size_t>(limits.max_qos_profiles) * 13) +
-            static_cast<std::size_t>(limits.max_streams) * 9 +
-            static_cast<std::size_t>(limits.max_epochs) * 14};
+        limits.max_streams > 0 && limits.max_streams <= 1024 && limits.max_qos_profiles <= 256);
 }
 
 void fields(
@@ -89,18 +70,43 @@ const std::string& text(const Json& object, const char* field) {
     return value.get_ref<const std::string&>();
 }
 
-std::uint64_t number(const Json& object, const char* field) {
-    return take(persistence::unsigned_decimal(text(object, field)));
+std::uint64_t unsigned_value(const Json& object, const char* field) {
+    const auto& value = object.at(field);
+    if (value.is_string()) {
+        return take(persistence::unsigned_decimal(value.get_ref<const std::string&>()));
+    }
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto signed_val = value.get<std::int64_t>();
+        require(signed_val >= 0);
+        return static_cast<std::uint64_t>(signed_val);
+    }
+    throw InvalidManifest{Status(StatusCode::InvalidArgument, {})};
 }
 
-std::uint32_t narrow(const Json& object, const char* field) {
-    const auto value = number(object, field);
+std::uint32_t narrow_unsigned(const Json& object, const char* field) {
+    const auto value = unsigned_value(object, field);
     require(value <= std::numeric_limits<std::uint32_t>::max());
     return static_cast<std::uint32_t>(value);
 }
 
-std::int64_t signed_number(const Json& object, const char* field) {
-    return take(persistence::signed_decimal(text(object, field)));
+std::int64_t signed_value(const Json& object, const char* field) {
+    const auto& value = object.at(field);
+    if (value.is_string()) {
+        return take(persistence::signed_decimal(value.get_ref<const std::string&>()));
+    }
+    if (value.is_number_integer()) {
+        return value.get<std::int64_t>();
+    }
+    if (value.is_number_unsigned()) {
+        const auto unsigned_val = value.get<std::uint64_t>();
+        require(
+            unsigned_val <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+        return static_cast<std::int64_t>(unsigned_val);
+    }
+    throw InvalidManifest{Status(StatusCode::InvalidArgument, {})};
 }
 
 void add(std::uint64_t& total, std::uint64_t value) {
@@ -114,13 +120,9 @@ bool valid_text(const std::string& value, std::size_t max_bytes, bool allow_empt
            plugin::abi::utf8_prefix(value, value.size()) == value.size();
 }
 
-void validate_plugin(const plugin::PluginBinaryInfo& identity) {
+void validate_plugin(const plugin::PluginInfo& identity) {
     require(
-        plugin::abi::valid_identifier(identity.plugin_id) &&
-        identity.plugin_version.size() <= 128 && identity.sha256.size() == 64 &&
-        std::all_of(identity.sha256.begin(), identity.sha256.end(), [](char byte) {
-            return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
-        }));
+        plugin::abi::valid_identifier(identity.plugin_id) && identity.plugin_version.size() <= 128);
     take(plugin::validate_plugin_version(identity.plugin_version));
 }
 
@@ -139,7 +141,6 @@ void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLim
         persistence::valid_digest(descriptor.schema_digest) &&
         (descriptor.schema_size != 0 || descriptor.schema_digest == kEmptySchema) &&
         descriptor.offered_qos.size() <= limits.max_qos_profiles);
-    // Reuse the common typed text policy without fabricating schema backing.
     const auto token = [](const std::string& value) {
         return std::all_of(value.begin(), value.end(), [](unsigned char byte) {
             return byte >= 0x21 && byte <= 0x7e;
@@ -166,48 +167,17 @@ void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLim
     }
 }
 
-std::string_view origin_text(time::ClockEpochOrigin origin) {
-    switch (origin) {
-        case time::ClockEpochOrigin::Boot:
-            return "boot";
-        case time::ClockEpochOrigin::AuthorityRestart:
-            return "authority_restart";
-        case time::ClockEpochOrigin::RealtimeJump:
-            return "realtime_jump";
-    }
-    throw InvalidManifest{Status(StatusCode::InvalidArgument, {})};
-}
-
-time::ClockEpochOrigin parse_origin(std::string_view value) {
-    for (const auto origin :
-         {time::ClockEpochOrigin::Boot, time::ClockEpochOrigin::AuthorityRestart,
-          time::ClockEpochOrigin::RealtimeJump}) {
-        if (origin_text(origin) == value) {
-            return origin;
-        }
-    }
-    throw InvalidManifest{Status(StatusCode::InvalidArgument, {})};
-}
-
 void validate_identity(const ManifestIdentity& identity) {
     require(
         identity.segment_id != 0 && uuid::nonzero(identity.task_id.value) &&
         identity.pipeline_id != 0 && identity.segment_sequence != 0 &&
         identity.control_generation != 0 && uuid::nonzero(identity.volume_id.value) &&
-        persistence::valid_digest(identity.config_version) &&
-        persistence::valid_digest(identity.effective_config_id) &&
+        valid_text(identity.config_version, 128) &&
+        valid_text(identity.deployment_generation, 128) &&
         valid_text(identity.qualified_runtime_profile_id, 256) && valid_text(identity.format, 128));
     take(uuid::parse(identity.instance_id));
     validate_plugin(identity.acquisition);
     validate_plugin(identity.storage);
-    require(identity.playback_anchor.boot_id != 0);
-    if (identity.effective_configuration) {
-        const auto& effective = *identity.effective_configuration;
-        require(effective.is_object());
-        require(
-            take(persistence::semantic_digest(effective, "rodaq.effective-config.v1")) ==
-            identity.effective_config_id);
-    }
 }
 
 void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
@@ -216,22 +186,20 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
     require(
         !manifest.files.empty() && manifest.files.size() <= limits.max_files &&
         !manifest.descriptors.empty() && manifest.descriptors.size() <= limits.max_descriptors &&
-        !manifest.coverage.empty() && manifest.coverage.size() <= limits.max_streams &&
-        !manifest.epochs.empty() && manifest.epochs.size() <= limits.max_epochs);
+        !manifest.coverage.empty() && manifest.coverage.size() <= limits.max_streams);
     std::uint64_t file_bytes = 0;
     for (std::size_t index = 0; index < manifest.files.size(); ++index) {
         const auto& file = manifest.files[index];
         require(
             file.relative_path.size() <= 4096 &&
             storage::abi::valid_relative_path(file.relative_path) &&
-            file.relative_path != "manifest.json" && persistence::valid_digest(file.digest));
+            file.relative_path != "manifest.json");
         add(file_bytes, file.physical_size);
         for (std::size_t previous = 0; previous < index; ++previous) {
             require(manifest.files[previous].relative_path != file.relative_path);
         }
     }
     require(
-        manifest.identity.playback_anchor.boot_id != 0 &&
         manifest.first_receive_monotonic >= manifest.identity.playback_anchor.monotonic_ns &&
         manifest.first_receive_monotonic <= manifest.last_receive_monotonic &&
         manifest.min_receive_realtime <= manifest.max_receive_realtime &&
@@ -272,34 +240,6 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
                 old.descriptor_id != descriptor.descriptor_id);
         }
     }
-    std::uint64_t epoch_records = 0;
-    std::uint64_t first_receive = std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t last_receive = 0;
-    for (std::size_t index = 0; index < manifest.epochs.size(); ++index) {
-        const auto& epoch = manifest.epochs[index];
-        require(
-            epoch.epoch_id != 0 && epoch.accepted_records != 0 &&
-            epoch.first_receive_monotonic <= epoch.last_receive_monotonic &&
-            epoch.first_receive_monotonic >= manifest.first_receive_monotonic &&
-            epoch.last_receive_monotonic <= manifest.last_receive_monotonic &&
-            epoch.jump.has_value() == (epoch.origin == time::ClockEpochOrigin::RealtimeJump));
-        (void)origin_text(epoch.origin);
-        if (epoch.jump) {
-            require(
-                epoch.jump->previous_epoch_id != 0 &&
-                epoch.jump->previous_epoch_id != epoch.epoch_id && epoch.jump->delta_ns != 0 &&
-                epoch.jump->detected_monotonic_ns <= epoch.first_receive_monotonic);
-        }
-        for (std::size_t previous = 0; previous < index; ++previous) {
-            require(manifest.epochs[previous].epoch_id != epoch.epoch_id);
-        }
-        add(epoch_records, epoch.accepted_records);
-        first_receive = std::min(first_receive, epoch.first_receive_monotonic);
-        last_receive = std::max(last_receive, epoch.last_receive_monotonic);
-    }
-    require(
-        epoch_records == accepted && first_receive == manifest.first_receive_monotonic &&
-        last_receive == manifest.last_receive_monotonic);
 }
 
 rodaq_ros2_qos_profile_t read_qos(const Json& value) {
@@ -308,32 +248,29 @@ rodaq_ros2_qos_profile_t read_qos(const Json& value) {
                 "deadline_nsec", "lifespan_sec", "lifespan_nsec", "lease_sec", "lease_nsec",
                 "avoid_ros_namespace_conventions"});
     rodaq_ros2_qos_profile_t qos{};
-    qos.history = narrow(value, "history");
-    qos.reliability = narrow(value, "reliability");
-    qos.durability = narrow(value, "durability");
-    qos.liveliness = narrow(value, "liveliness");
-    qos.depth = number(value, "depth");
-    qos.deadline = {number(value, "deadline_sec"), number(value, "deadline_nsec")};
-    qos.lifespan = {number(value, "lifespan_sec"), number(value, "lifespan_nsec")};
-    qos.liveliness_lease_duration = {number(value, "lease_sec"), number(value, "lease_nsec")};
-    const auto avoid = number(value, "avoid_ros_namespace_conventions");
+    qos.history = narrow_unsigned(value, "history");
+    qos.reliability = narrow_unsigned(value, "reliability");
+    qos.durability = narrow_unsigned(value, "durability");
+    qos.liveliness = narrow_unsigned(value, "liveliness");
+    qos.depth = unsigned_value(value, "depth");
+    qos.deadline = {unsigned_value(value, "deadline_sec"), unsigned_value(value, "deadline_nsec")};
+    qos.lifespan = {unsigned_value(value, "lifespan_sec"), unsigned_value(value, "lifespan_nsec")};
+    qos.liveliness_lease_duration = {
+        unsigned_value(value, "lease_sec"), unsigned_value(value, "lease_nsec")};
+    const auto avoid = unsigned_value(value, "avoid_ros_namespace_conventions");
     require(avoid <= 1);
     qos.avoid_ros_namespace_conventions = static_cast<std::uint8_t>(avoid);
     require(canonical::valid_qos(qos));
     return qos;
 }
 
-Json plugin_document(const plugin::PluginBinaryInfo& value) {
-    return {
-        {"plugin_id", value.plugin_id},
-        {"plugin_version", value.plugin_version},
-        {"artifact_sha256", value.sha256}};
+Json plugin_document(const plugin::PluginInfo& value) {
+    return {{"plugin_id", value.plugin_id}, {"plugin_version", value.plugin_version}};
 }
 
-plugin::PluginBinaryInfo read_plugin(const Json& value) {
-    fields(value, {"plugin_id", "plugin_version", "artifact_sha256"});
-    return {
-        text(value, "plugin_id"), text(value, "plugin_version"), text(value, "artifact_sha256")};
+plugin::PluginInfo read_plugin(const Json& value) {
+    fields(value, {"plugin_id", "plugin_version"});
+    return {text(value, "plugin_id"), {}, text(value, "plugin_version")};
 }
 
 Json descriptor_document(const ManifestDescriptor& value) {
@@ -345,13 +282,13 @@ Json descriptor_document(const ManifestDescriptor& value) {
         {"stream_id", std::to_string(value.stream_id)},
         {"descriptor_id", std::to_string(value.descriptor_id)},
         {"accepted_records", std::to_string(value.accepted_records)},
-        {"data_profile", std::to_string(value.data_profile)},
+        {"data_profile", value.data_profile},
         {"channel_name", value.channel_name},
         {"message_encoding", value.message_encoding},
         {"schema_name", value.schema_name},
         {"schema_encoding", value.schema_encoding},
         {"schema_digest", value.schema_digest},
-        {"schema_size", std::to_string(value.schema_size)},
+        {"schema_size", value.schema_size},
         {"ros2_type_description_hash", value.ros2_type_description_hash},
         {"offered_qos", std::move(qos)}};
     if (value.ros2_subscription) {
@@ -368,16 +305,16 @@ ManifestDescriptor read_descriptor(const Json& value, const ManifestLimits& limi
          "ros2_type_description_hash", "offered_qos"},
         {"ros2_subscription"});
     ManifestDescriptor result;
-    result.stream_id = number(value, "stream_id");
-    result.descriptor_id = number(value, "descriptor_id");
-    result.accepted_records = number(value, "accepted_records");
-    result.data_profile = narrow(value, "data_profile");
+    result.stream_id = unsigned_value(value, "stream_id");
+    result.descriptor_id = unsigned_value(value, "descriptor_id");
+    result.accepted_records = unsigned_value(value, "accepted_records");
+    result.data_profile = narrow_unsigned(value, "data_profile");
     result.channel_name = text(value, "channel_name");
     result.message_encoding = text(value, "message_encoding");
     result.schema_name = text(value, "schema_name");
     result.schema_encoding = text(value, "schema_encoding");
     result.schema_digest = text(value, "schema_digest");
-    result.schema_size = narrow(value, "schema_size");
+    result.schema_size = narrow_unsigned(value, "schema_size");
     result.ros2_type_description_hash = text(value, "ros2_type_description_hash");
     if (value.contains("ros2_subscription")) {
         const auto& observed = value.at("ros2_subscription");
@@ -388,9 +325,9 @@ ManifestDescriptor read_descriptor(const Json& value, const ManifestLimits& limi
             text(observed, "ros_distribution"),
             text(observed, "rmw_implementation"),
             read_qos(observed.at("installed_requested_qos")),
-            number(observed, "subscription_generation"),
-            narrow(observed, "executor_kind"),
-            narrow(observed, "executor_threads")};
+            unsigned_value(observed, "subscription_generation"),
+            narrow_unsigned(observed, "executor_kind"),
+            narrow_unsigned(observed, "executor_threads")};
     }
     require(
         value.at("offered_qos").is_array() &&
@@ -406,8 +343,7 @@ Json document(const SegmentManifest& manifest) {
     for (const auto& value : manifest.files) {
         files.push_back(
             {{"relative_path", value.relative_path},
-             {"physical_size", std::to_string(value.physical_size)},
-             {"digest", value.digest}});
+             {"physical_size", std::to_string(value.physical_size)}});
     }
     Json descriptors = Json::array();
     for (const auto& value : manifest.descriptors) {
@@ -424,36 +360,18 @@ Json document(const SegmentManifest& manifest) {
              {"first_sequence", std::to_string(value.first_sequence)},
              {"last_sequence", std::to_string(value.last_sequence)}});
     }
-    Json epochs = Json::array();
-    for (const auto& value : manifest.epochs) {
-        Json jump = nullptr;
-        if (value.jump) {
-            jump = {
-                {"previous_epoch_id", std::to_string(value.jump->previous_epoch_id)},
-                {"delta_ns", std::to_string(value.jump->delta_ns)},
-                {"detected_monotonic_ns", std::to_string(value.jump->detected_monotonic_ns)}};
-        }
-        epochs.push_back(
-            {{"epoch_id", std::to_string(value.epoch_id)},
-             {"origin", origin_text(value.origin)},
-             {"jump", std::move(jump)},
-             {"accepted_records", std::to_string(value.accepted_records)},
-             {"first_receive_monotonic", std::to_string(value.first_receive_monotonic)},
-             {"last_receive_monotonic", std::to_string(value.last_receive_monotonic)},
-             {"max_sample_error_bound_ns", std::to_string(value.max_sample_error_bound_ns)}});
-    }
-    Json result{
+    return {
         {"format_version", "1.0"},
         {"segment_id", std::to_string(manifest.identity.segment_id)},
         {"task_id", to_string(manifest.identity.task_id)},
         {"pipeline_id", std::to_string(manifest.identity.pipeline_id)},
         {"instance_id", manifest.identity.instance_id},
         {"segment_sequence", std::to_string(manifest.identity.segment_sequence)},
+        {"committed_at_ns",
+         std::to_string(manifest.identity.committed_at.time_since_epoch().count())},
         {"config_version", manifest.identity.config_version},
-        {"effective_config_id", manifest.identity.effective_config_id},
+        {"deployment_generation", manifest.identity.deployment_generation},
         {"control_generation", std::to_string(manifest.identity.control_generation)},
-        {"reset_generation_at_commit",
-         std::to_string(manifest.identity.reset_generation_at_commit)},
         {"volume_id", to_string(manifest.identity.volume_id)},
         {"acquisition", plugin_document(manifest.identity.acquisition)},
         {"storage", plugin_document(manifest.identity.storage)},
@@ -463,21 +381,15 @@ Json document(const SegmentManifest& manifest) {
         {"files", std::move(files)},
         {"descriptors", std::move(descriptors)},
         {"coverage", std::move(coverage)},
-        {"system_boot_id", std::to_string(manifest.identity.playback_anchor.boot_id)},
         {"playback_anchor_monotonic",
          std::to_string(manifest.identity.playback_anchor.monotonic_ns)},
         {"playback_anchor_realtime", std::to_string(manifest.identity.playback_anchor.realtime_ns)},
-        {"clock_epochs", std::move(epochs)},
         {"first_receive_monotonic", std::to_string(manifest.first_receive_monotonic)},
         {"last_receive_monotonic", std::to_string(manifest.last_receive_monotonic)},
         {"min_receive_realtime", std::to_string(manifest.min_receive_realtime)},
         {"max_receive_realtime", std::to_string(manifest.max_receive_realtime)},
         {"recording_begin_ns", std::to_string(manifest.recording_begin_ns)},
         {"recording_end_ns", std::to_string(manifest.recording_end_ns)}};
-    if (manifest.identity.effective_configuration) {
-        result["effective_configuration"] = *manifest.identity.effective_configuration;
-    }
-    return result;
 }
 
 }  // namespace
@@ -544,57 +456,6 @@ Result<void> validate_manifest_identity(const ManifestIdentity& identity) {
     }
 }
 
-Result<std::size_t> manifest_base_size_bound(
-    const ManifestIdentity& identity, const ManifestLimits& limits) {
-    try {
-        valid_limits(limits);
-        validate_identity(identity);
-        SegmentManifest sizing;
-        sizing.identity = identity;
-        sizing.first_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
-        sizing.last_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
-        sizing.min_receive_realtime = std::numeric_limits<std::int64_t>::min();
-        sizing.max_receive_realtime = std::numeric_limits<std::int64_t>::min();
-        sizing.recording_begin_ns = std::numeric_limits<std::uint64_t>::max();
-        sizing.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
-        sizing.logical_bytes = std::numeric_limits<std::uint64_t>::max();
-        auto shape = document(sizing);
-        shape["content_digest"] = "sha256:" + std::string(64, '0');
-        auto sizing_limits = json_limits(limits);
-        sizing_limits.max_bytes = 64 * 1024 * 1024;
-        auto encoded = persistence::canonical_json(shape, sizing_limits);
-        if (!encoded.ok()) {
-            return encoded.status();
-        }
-        return encoded.value().size();
-    } catch (InvalidManifest& failure) {
-        return std::move(failure.status);
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<std::size_t> manifest_descriptor_size_bound(
-    const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
-    try {
-        valid_limits(limits);
-        validate_descriptor(descriptor, limits);
-        auto sizing = descriptor;
-        sizing.accepted_records = std::numeric_limits<std::uint64_t>::max();
-        auto sizing_limits = json_limits(limits);
-        sizing_limits.max_bytes = 64 * 1024 * 1024;
-        auto encoded = persistence::canonical_json(descriptor_document(sizing), sizing_limits);
-        if (!encoded.ok()) {
-            return encoded.status();
-        }
-        return encoded.value().size();
-    } catch (InvalidManifest& failure) {
-        return std::move(failure.status);
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
 Result<void> validate_manifest_limits(const ManifestLimits& limits) {
     try {
         valid_limits(limits);
@@ -602,23 +463,6 @@ Result<void> validate_manifest_limits(const ManifestLimits& limits) {
     } catch (InvalidManifest& failure) {
         return std::move(failure.status);
     }
-}
-
-Result<void> validate_manifest_ledger_binding(
-    const SegmentManifest& manifest, const LedgerRecord& record, const ManifestLimits& limits) {
-    auto digest = manifest_digest(manifest, limits);
-    if (!digest.ok()) {
-        return digest.status();
-    }
-    const auto& identity = manifest.identity;
-    if (digest.value() != record.manifest_digest || identity.segment_id != record.segment_id ||
-        !(identity.task_id == record.task_id) || identity.pipeline_id != record.pipeline_id ||
-        !(identity.volume_id == record.volume_id) ||
-        identity.control_generation != record.control_generation ||
-        identity.reset_generation_at_commit != record.reset_generation_at_commit) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    return {};
 }
 
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits) {
@@ -635,18 +479,11 @@ Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLi
 Result<std::string> encode_manifest(const SegmentManifest& manifest, const ManifestLimits& limits) {
     try {
         validate(manifest, limits);
-        return persistence::encode_integrity(document(manifest), kDomain, json_limits(limits));
-    } catch (InvalidManifest& failure) {
-        return std::move(failure.status);
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<std::string> manifest_digest(const SegmentManifest& manifest, const ManifestLimits& limits) {
-    try {
-        validate(manifest, limits);
-        return persistence::semantic_digest(document(manifest), kDomain, json_limits(limits));
+        auto encoded = document(manifest).dump();
+        if (encoded.size() > limits.max_bytes) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        return encoded;
     } catch (InvalidManifest& failure) {
         return std::move(failure.status);
     } catch (const std::bad_alloc&) {
@@ -657,75 +494,67 @@ Result<std::string> manifest_digest(const SegmentManifest& manifest, const Manif
 Result<SegmentManifest> decode_manifest(std::string_view encoded, const ManifestLimits& limits) {
     try {
         valid_limits(limits);
-        const auto value = take(persistence::parse_json(encoded, json_limits(limits)));
+        const auto value = take(persistence::parse_json(encoded, {limits.max_bytes, 36}));
         fields(
-            value,
-            {"format_version",
-             "segment_id",
-             "task_id",
-             "pipeline_id",
-             "instance_id",
-             "segment_sequence",
-             "config_version",
-             "effective_config_id",
-             "control_generation",
-             "reset_generation_at_commit",
-             "volume_id",
-             "acquisition",
-             "storage",
-             "qualified_runtime_profile_id",
-             "format",
-             "logical_bytes",
-             "files",
-             "descriptors",
-             "coverage",
-             "system_boot_id",
-             "playback_anchor_monotonic",
-             "playback_anchor_realtime",
-             "clock_epochs",
-             "first_receive_monotonic",
-             "last_receive_monotonic",
-             "min_receive_realtime",
-             "max_receive_realtime",
-             "recording_begin_ns",
-             "recording_end_ns",
-             "content_digest"},
-            {"effective_configuration"});
+            value, {"format_version",
+                    "segment_id",
+                    "task_id",
+                    "pipeline_id",
+                    "instance_id",
+                    "segment_sequence",
+                    "committed_at_ns",
+                    "config_version",
+                    "deployment_generation",
+                    "control_generation",
+                    "volume_id",
+                    "acquisition",
+                    "storage",
+                    "qualified_runtime_profile_id",
+                    "format",
+                    "logical_bytes",
+                    "files",
+                    "descriptors",
+                    "coverage",
+                    "playback_anchor_monotonic",
+                    "playback_anchor_realtime",
+                    "first_receive_monotonic",
+                    "last_receive_monotonic",
+                    "min_receive_realtime",
+                    "max_receive_realtime",
+                    "recording_begin_ns",
+                    "recording_end_ns"});
         if (text(value, "format_version") != "1.0") {
             return Status(StatusCode::Unavailable, {});
         }
         SegmentManifest manifest;
-        manifest.identity.segment_id = number(value, "segment_id");
+        manifest.identity.segment_id = unsigned_value(value, "segment_id");
         manifest.identity.task_id = take(parse_task_id(text(value, "task_id")));
-        manifest.identity.pipeline_id = number(value, "pipeline_id");
+        manifest.identity.pipeline_id = unsigned_value(value, "pipeline_id");
         manifest.identity.instance_id = text(value, "instance_id");
-        manifest.identity.segment_sequence = number(value, "segment_sequence");
+        manifest.identity.segment_sequence = unsigned_value(value, "segment_sequence");
+        manifest.identity.committed_at =
+            WallTime{std::chrono::nanoseconds{signed_value(value, "committed_at_ns")}};
         manifest.identity.config_version = text(value, "config_version");
-        manifest.identity.effective_config_id = text(value, "effective_config_id");
-        if (value.contains("effective_configuration")) {
-            manifest.identity.effective_configuration = value.at("effective_configuration");
-        }
-        manifest.identity.control_generation = number(value, "control_generation");
-        manifest.identity.reset_generation_at_commit = number(value, "reset_generation_at_commit");
+        manifest.identity.deployment_generation = text(value, "deployment_generation");
+        manifest.identity.control_generation = unsigned_value(value, "control_generation");
         manifest.identity.volume_id = take(parse_volume_id(text(value, "volume_id")));
         manifest.identity.acquisition = read_plugin(value.at("acquisition"));
         manifest.identity.storage = read_plugin(value.at("storage"));
         manifest.identity.qualified_runtime_profile_id =
             text(value, "qualified_runtime_profile_id");
         manifest.identity.format = text(value, "format");
-        manifest.logical_bytes = number(value, "logical_bytes");
-        for (const auto* list : {"files", "descriptors", "coverage", "clock_epochs"}) {
+        manifest.logical_bytes = unsigned_value(value, "logical_bytes");
+        for (const auto* list : {"files", "descriptors", "coverage"}) {
             require(value.at(list).is_array());
         }
         require(
             value.at("files").size() <= limits.max_files &&
             value.at("descriptors").size() <= limits.max_descriptors &&
-            value.at("coverage").size() <= limits.max_streams &&
-            value.at("clock_epochs").size() <= limits.max_epochs);
+            value.at("coverage").size() <= limits.max_streams);
         for (const auto& file : value.at("files")) {
-            fields(file, {"relative_path", "physical_size", "digest"});
+            fields(file, {"relative_path", "physical_size"});
             manifest.files.push_back(
-                {text(file, "relative_path"), number(file, "physical_size"), text(file, "digest")});
+                {text(file, "relative_path"), unsigned_value(file, "physical_size")});
         }
         for (const auto& descriptor : value.at("descriptors")) {
             manifest.descriptors.push_back(read_descriptor(descriptor, limits));
@@ -735,42 +564,21 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
                 coverage, {"stream_id", "accepted", "written", "known_failed", "unknown",
                            "first_sequence", "last_sequence"});
             manifest.coverage.push_back(
-                {number(coverage, "stream_id"), number(coverage, "accepted"),
-                 number(coverage, "written"), number(coverage, "known_failed"),
-                 number(coverage, "unknown"), number(coverage, "first_sequence"),
-                 number(coverage, "last_sequence")});
+                {unsigned_value(coverage, "stream_id"), unsigned_value(coverage, "accepted"),
+                 unsigned_value(coverage, "written"), unsigned_value(coverage, "known_failed"),
+                 unsigned_value(coverage, "unknown"), unsigned_value(coverage, "first_sequence"),
+                 unsigned_value(coverage, "last_sequence")});
         }
         manifest.identity.playback_anchor = {
-            number(value, "system_boot_id"), number(value, "playback_anchor_monotonic"),
-            signed_number(value, "playback_anchor_realtime")};
-        for (const auto& epoch : value.at("clock_epochs")) {
-            fields(
-                epoch, {"epoch_id", "origin", "jump", "accepted_records", "first_receive_monotonic",
-                        "last_receive_monotonic", "max_sample_error_bound_ns"});
-            ManifestEpoch summary;
-            summary.epoch_id = number(epoch, "epoch_id");
-            summary.origin = parse_origin(text(epoch, "origin"));
-            summary.accepted_records = number(epoch, "accepted_records");
-            summary.first_receive_monotonic = number(epoch, "first_receive_monotonic");
-            summary.last_receive_monotonic = number(epoch, "last_receive_monotonic");
-            summary.max_sample_error_bound_ns = number(epoch, "max_sample_error_bound_ns");
-            if (!epoch.at("jump").is_null()) {
-                const auto& jump = epoch.at("jump");
-                fields(jump, {"previous_epoch_id", "delta_ns", "detected_monotonic_ns"});
-                summary.jump = time::ClockJump{
-                    number(jump, "previous_epoch_id"), signed_number(jump, "delta_ns"),
-                    number(jump, "detected_monotonic_ns")};
-            }
-            manifest.epochs.push_back(summary);
-        }
-        manifest.first_receive_monotonic = number(value, "first_receive_monotonic");
-        manifest.last_receive_monotonic = number(value, "last_receive_monotonic");
-        manifest.min_receive_realtime = signed_number(value, "min_receive_realtime");
-        manifest.max_receive_realtime = signed_number(value, "max_receive_realtime");
-        manifest.recording_begin_ns = number(value, "recording_begin_ns");
-        manifest.recording_end_ns = number(value, "recording_end_ns");
+            unsigned_value(value, "playback_anchor_monotonic"),
+            signed_value(value, "playback_anchor_realtime")};
+        manifest.first_receive_monotonic = unsigned_value(value, "first_receive_monotonic");
+        manifest.last_receive_monotonic = unsigned_value(value, "last_receive_monotonic");
+        manifest.min_receive_realtime = signed_value(value, "min_receive_realtime");
+        manifest.max_receive_realtime = signed_value(value, "max_receive_realtime");
+        manifest.recording_begin_ns = unsigned_value(value, "recording_begin_ns");
+        manifest.recording_end_ns = unsigned_value(value, "recording_end_ns");
         validate(manifest, limits);
-        take(persistence::verify_integrity(value, kDomain, json_limits(limits)));
         return manifest;
     } catch (InvalidManifest& failure) {
         return failure.status.code() == StatusCode::InvalidArgument

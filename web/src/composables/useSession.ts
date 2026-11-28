@@ -1,15 +1,8 @@
 import { inject, provide, reactive, readonly, type InjectionKey } from 'vue';
 import { CLIENT_TIMEOUTS, createApiClient, type ApiClient } from '../api/client';
-import type {
-  CapabilitiesData,
-  Scope,
-  ServerPhase,
-  SessionData,
-  SystemData,
-} from '../api/generated';
-import type { AppLifecycleState, SessionIdentity } from '../api/types';
+import type { CapabilitiesData, ServerPhase, SystemData } from '../api/generated';
+import type { AppLifecycleState } from '../api/types';
 import { ApiFailure } from '../api/errors';
-import { durationToMsClamped } from '../format/time';
 
 export interface NotificationItem {
   id: number;
@@ -19,7 +12,7 @@ export interface NotificationItem {
 
 export interface SessionStore {
   readonly lifecycle: AppLifecycleState;
-  readonly identity: SessionIdentity | null;
+  readonly authenticated: boolean;
   readonly serverPhase: ServerPhase | null;
   readonly systemSnapshot: SystemData | null;
   readonly capabilities: CapabilitiesData | null;
@@ -29,14 +22,12 @@ export interface SessionStore {
   readonly notifications: readonly NotificationItem[];
   readonly api: ApiClient;
   readonly pollingFloorMs: number;
-  readonly idempotencyRetentionMs: number;
-  hasScope(scope: Scope): boolean;
   setIntendedRoute(path: string | null): void;
   pushNotification(tone: NotificationItem['tone'], message: string): void;
   dismissNotification(id: number): void;
   bootstrap(): Promise<void>;
   login(bearerToken: string): Promise<void>;
-  logout(): Promise<void>;
+  logout(): void;
   refreshCapabilities(): Promise<void>;
   updateServerPhaseFromSystem(sys: SystemData): void;
 }
@@ -46,13 +37,13 @@ export const SESSION_STORE_KEY: InjectionKey<SessionStore> = Symbol('rodaq.sessi
 const MAX_NOTIFICATIONS = 5;
 
 export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
-  // CSRF token lives strictly in memory, never written to localStorage/sessionStorage.
-  let csrfToken: string | null = null;
+  // Single high-entropy Bearer token stored in memory ONLY (never cookie/localStorage/sessionStorage).
+  let bearerToken: string | null = null;
   let nextNotificationId = 1;
 
   const state = reactive<{
     lifecycle: AppLifecycleState;
-    identity: SessionIdentity | null;
+    authenticated: boolean;
     serverPhase: ServerPhase | null;
     systemSnapshot: SystemData | null;
     capabilities: CapabilitiesData | null;
@@ -61,8 +52,8 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
     intendedRoute: string | null;
     notifications: NotificationItem[];
   }>({
-    lifecycle: 'Bootstrapping',
-    identity: null,
+    lifecycle: 'Unauthenticated',
+    authenticated: false,
     serverPhase: null,
     systemSnapshot: null,
     capabilities: null,
@@ -72,13 +63,13 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
     notifications: [],
   });
 
-  function clearMemorySession(): void {
-    csrfToken = null;
-    state.identity = null;
+  function clearMemoryAuth(): void {
+    bearerToken = null;
+    state.authenticated = false;
   }
 
   function handleUnauthenticated(): void {
-    clearMemorySession();
+    clearMemoryAuth();
     if (state.lifecycle !== 'ApiIncompatible') {
       state.lifecycle = 'Unauthenticated';
     }
@@ -91,7 +82,7 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
 
   const api = createApiClient(
     {
-      getCsrfToken: () => csrfToken,
+      getBearerToken: () => bearerToken,
       onUnauthenticated: handleUnauthenticated,
       onApiIncompatible: handleApiIncompatible,
     },
@@ -115,75 +106,50 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
   function applySystemPhase(sys: SystemData): void {
     state.systemSnapshot = sys;
     state.serverPhase = sys.server_phase;
-    if (state.lifecycle === 'ApiIncompatible' || state.identity === null) {
+    if (state.lifecycle === 'ApiIncompatible' || !state.authenticated) {
       return;
     }
-    if (sys.server_phase === 'ready') {
-      const wasRecovering = state.lifecycle !== 'AuthenticatedReady';
-      state.lifecycle = 'AuthenticatedReady';
-      if (wasRecovering && !state.capabilities) {
-        void refreshCapabilities();
-      }
-    } else {
-      state.lifecycle = 'AuthenticatedRecovering';
-    }
+    state.lifecycle = 'AuthenticatedReady';
   }
 
   async function refreshCapabilities(): Promise<void> {
-    if (!state.identity || state.lifecycle === 'ApiIncompatible') {
+    if (!state.authenticated || state.lifecycle === 'ApiIncompatible') {
       return;
     }
     try {
-      const caps = await api.request<CapabilitiesData>({
+      state.capabilities = await api.request<CapabilitiesData>({
         method: 'GET',
         path: '/api/capabilities',
         timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
       });
-      state.capabilities = caps;
     } catch (err) {
-      if (err instanceof ApiFailure && err.httpStatus === 503) {
-        // Recovering/unavailable: leave capabilities null until Ready.
-        return;
-      }
       if (err instanceof ApiFailure) {
         state.lastError = err;
       }
-    }
-  }
-
-  async function loadSystemAfterAuth(): Promise<void> {
-    const sys = await api.request<SystemData>({
-      method: 'GET',
-      path: '/api/system',
-      timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
-    });
-    applySystemPhase(sys);
-    if (sys.server_phase === 'ready') {
-      await refreshCapabilities();
     }
   }
 
   async function bootstrap(): Promise<void> {
-    state.lifecycle = 'Bootstrapping';
     state.lastError = null;
+    if (!bearerToken) {
+      state.lifecycle = 'Unauthenticated';
+      return;
+    }
+    state.lifecycle = 'Bootstrapping';
     try {
-      const session = await api.request<SessionData>({
+      const sys = await api.request<SystemData>({
         method: 'GET',
-        path: '/api/session',
+        path: '/api/system',
         timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
       });
-      csrfToken = session.csrf_token;
-      state.identity = {
-        principal: session.principal,
-        scopes: [...session.scopes],
-        apiVersion: { ...session.api_version },
-      };
-      await loadSystemAfterAuth();
+      state.authenticated = true;
+      applySystemPhase(sys);
+      await refreshCapabilities();
     } catch (err) {
       if (err instanceof ApiFailure) {
         state.lastError = err;
         if (err.kind === 'unauthenticated') {
-          clearMemorySession();
+          clearMemoryAuth();
           state.lifecycle = 'Unauthenticated';
           return;
         }
@@ -196,25 +162,24 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
     }
   }
 
-  async function login(bearerToken: string): Promise<void> {
+  async function login(rawToken: string): Promise<void> {
+    const trimmed = rawToken.trim();
     state.lifecycle = 'Authenticating';
     state.lastError = null;
     try {
-      const session = await api.request<SessionData>({
-        method: 'POST',
-        path: '/api/session',
-        bearerToken: bearerToken.trim(),
+      const sys = await api.request<SystemData>({
+        method: 'GET',
+        path: '/api/system',
+        bearerToken: trimmed,
+        suppressAuthHook: true,
         timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
       });
-      csrfToken = session.csrf_token;
-      state.identity = {
-        principal: session.principal,
-        scopes: [...session.scopes],
-        apiVersion: { ...session.api_version },
-      };
-      await loadSystemAfterAuth();
+      bearerToken = trimmed;
+      state.authenticated = true;
+      applySystemPhase(sys);
+      await refreshCapabilities();
     } catch (err) {
-      clearMemorySession();
+      clearMemoryAuth();
       if (err instanceof ApiFailure) {
         state.lastError = err;
         if (err.kind === 'api_incompatible') {
@@ -229,31 +194,21 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
     }
   }
 
-  async function logout(): Promise<void> {
-    try {
-      await api.request<void>({
-        method: 'DELETE',
-        path: '/api/session',
-        timeoutMs: CLIENT_TIMEOUTS.sessionOrSystem,
-      });
-    } catch {
-      // Idempotent logout: always clear in-memory session even on network failure.
-    } finally {
-      clearMemorySession();
-      state.capabilities = null;
-      state.systemSnapshot = null;
-      state.serverPhase = null;
-      state.intendedRoute = null;
-      state.lifecycle = 'Unauthenticated';
-    }
+  function logout(): void {
+    clearMemoryAuth();
+    state.capabilities = null;
+    state.systemSnapshot = null;
+    state.serverPhase = null;
+    state.intendedRoute = null;
+    state.lifecycle = 'Unauthenticated';
   }
 
   const store: SessionStore = {
     get lifecycle() {
       return state.lifecycle;
     },
-    get identity() {
-      return state.identity;
+    get authenticated() {
+      return state.authenticated;
     },
     get serverPhase() {
       return state.serverPhase;
@@ -278,16 +233,7 @@ export function createSessionStore(fetchImpl?: typeof fetch): SessionStore {
     },
     api,
     get pollingFloorMs() {
-      return durationToMsClamped(state.capabilities?.api_limits.recommended_polling_floor, 500);
-    },
-    get idempotencyRetentionMs() {
-      return durationToMsClamped(
-        state.capabilities?.api_limits.idempotency_retention,
-        24 * 60 * 60 * 1000,
-      );
-    },
-    hasScope(scope: Scope) {
-      return state.identity?.scopes.includes(scope) ?? false;
+      return state.capabilities?.api_limits.recommended_polling_floor_ms ?? 500;
     },
     setIntendedRoute(path: string | null) {
       if (path && (path.startsWith('/login') || path.includes('Bearer'))) {

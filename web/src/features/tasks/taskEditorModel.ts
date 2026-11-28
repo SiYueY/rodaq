@@ -1,16 +1,10 @@
 import type {
   BackendCapabilityData,
   CapabilitiesData,
-  DurationValue,
   PortablePipelineConfig,
   PortableTaskConfig,
 } from '../../api/generated';
-import { isPositiveUint64Decimal } from '../../format/decimal';
 
-/**
- * Compatibility table gating official ROS 2 and MCAP visual editors (Web §2.2, WEB-E2E-017).
- * Unknown plugin IDs or versions always fall back to bounded raw JSON editor.
- */
 export const OFFICIAL_ROS2_PLUGIN_ID = 'com.rodaq.acquisition.ros2';
 export const OFFICIAL_MCAP_PLUGIN_ID = 'com.rodaq.storage.mcap';
 
@@ -74,11 +68,7 @@ export function eligibleBackendsForRole(
     return [];
   }
   return caps.backends.filter(
-    (b) =>
-      b.installed &&
-      b.allowed &&
-      b.role === role &&
-      b.support_status !== 'deferred',
+    (b) => b.installed && b.allowed && b.role === role && b.support_status !== 'deferred',
   );
 }
 
@@ -105,18 +95,14 @@ export function createDefaultTaskDraft(caps: CapabilitiesData | null): PortableT
   return {
     format_version: '1.0',
     name: '',
-    recording_mode: 'continuous',
-    start_policy: { mode: 'all_required' },
-    recovery_policy: { mode: 'manual' },
     segment_policy: {
-      max_duration: { value: '60', unit: 's' },
+      max_duration_ms: 60_000,
       max_physical_bytes: null,
     },
     retention_policy: {
       mode: 'keep_all',
-      max_duration: null,
+      max_duration_ms: null,
       max_physical_bytes: null,
-      include_previous_continuous: false,
     },
     pipelines: [
       {
@@ -145,11 +131,8 @@ export function createDefaultTaskDraft(caps: CapabilitiesData | null): PortableT
   };
 }
 
-function validPositiveDuration(d: DurationValue | null): boolean {
-  if (!d) {
-    return false;
-  }
-  return isPositiveUint64Decimal(d.value);
+function isPositiveInteger(n: number | null | undefined): boolean {
+  return typeof n === 'number' && Number.isInteger(n) && n > 0;
 }
 
 export function validateTaskDraft(
@@ -163,41 +146,23 @@ export function validateTaskDraft(
   if (draft.name && new TextEncoder().encode(draft.name).length > 128) {
     issues.push({ path: '/name', message: 'Task name must be <= 128 UTF-8 bytes' });
   }
-  if (draft.recording_mode !== 'continuous' && draft.recording_mode !== 'rolling') {
-    issues.push({ path: '/recording_mode', message: 'Invalid recording_mode' });
-  }
-  if (
-    !draft.recovery_policy ||
-    (draft.recovery_policy.mode !== 'manual' && draft.recovery_policy.mode !== 'resume')
-  ) {
-    issues.push({ path: '/recovery_policy/mode', message: 'recovery_policy.mode is required' });
-  }
-  const hasSegDur = validPositiveDuration(draft.segment_policy.max_duration);
-  const hasSegBytes =
-    draft.segment_policy.max_physical_bytes !== null &&
-    isPositiveUint64Decimal(draft.segment_policy.max_physical_bytes);
+  const hasSegDur = isPositiveInteger(draft.segment_policy.max_duration_ms);
+  const hasSegBytes = isPositiveInteger(draft.segment_policy.max_physical_bytes);
   if (!hasSegDur && !hasSegBytes) {
     issues.push({
       path: '/segment_policy',
-      message: 'At least one positive segment bound (max_duration or max_physical_bytes) is required',
+      message: 'At least one positive segment bound (max_duration_ms or max_physical_bytes) is required',
     });
   }
-  if (draft.recording_mode === 'continuous') {
-    if (draft.retention_policy.mode !== 'keep_all') {
-      issues.push({
-        path: '/retention_policy/mode',
-        message: 'Continuous recording requires retention_policy.mode = keep_all',
-      });
-    }
-  } else {
-    const hasRetDur = validPositiveDuration(draft.retention_policy.max_duration);
-    const hasRetBytes =
-      draft.retention_policy.max_physical_bytes !== null &&
-      isPositiveUint64Decimal(draft.retention_policy.max_physical_bytes);
-    if (draft.retention_policy.mode !== 'rolling' || (!hasRetDur && !hasRetBytes)) {
+  if (draft.retention_policy.mode !== 'keep_all' && draft.retention_policy.mode !== 'rolling') {
+    issues.push({ path: '/retention_policy/mode', message: 'retention_policy.mode must be keep_all or rolling' });
+  } else if (draft.retention_policy.mode === 'rolling') {
+    const hasRetDur = isPositiveInteger(draft.retention_policy.max_duration_ms);
+    const hasRetBytes = isPositiveInteger(draft.retention_policy.max_physical_bytes);
+    if (!hasRetDur && !hasRetBytes) {
       issues.push({
         path: '/retention_policy',
-        message: 'Rolling recording requires retention mode=rolling and at least one positive bound',
+        message: 'Rolling retention requires at least one positive bound (max_duration_ms or max_physical_bytes)',
       });
     }
   }
@@ -322,26 +287,21 @@ export function computeIdentityDiff(
 export function serializePortableConfig(draft: PortableTaskConfig): string {
   const cleaned: Record<string, unknown> = {
     format_version: '1.0',
-    recording_mode: draft.recording_mode,
-    start_policy: { mode: draft.start_policy.mode },
-    recovery_policy: { mode: draft.recovery_policy.mode },
     segment_policy: {
-      max_duration: draft.segment_policy.max_duration,
+      max_duration_ms: draft.segment_policy.max_duration_ms,
       max_physical_bytes: draft.segment_policy.max_physical_bytes,
     },
     retention_policy:
-      draft.recording_mode === 'continuous'
+      draft.retention_policy.mode === 'keep_all'
         ? {
             mode: 'keep_all',
-            max_duration: null,
+            max_duration_ms: null,
             max_physical_bytes: null,
-            include_previous_continuous: false,
           }
         : {
             mode: 'rolling',
-            max_duration: draft.retention_policy.max_duration,
+            max_duration_ms: draft.retention_policy.max_duration_ms,
             max_physical_bytes: draft.retention_policy.max_physical_bytes,
-            include_previous_continuous: Boolean(draft.retention_policy.include_previous_continuous),
           },
     pipelines: draft.pipelines.map((p) => {
       const pipeObj: Record<string, unknown> = {

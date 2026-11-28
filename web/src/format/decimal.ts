@@ -22,14 +22,23 @@ export function isPositiveUint64Decimal(raw: string): boolean {
   return BigInt(raw) > 0n;
 }
 
-export function parseUint64BigInt(raw: DecimalString | null | undefined): bigint | null {
-  if (raw === null || raw === undefined || !isValidUint64Decimal(raw)) {
+export function parseUint64BigInt(raw: DecimalString | number | null | undefined): bigint | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)) {
+      return null;
+    }
+    return BigInt(raw);
+  }
+  if (!isValidUint64Decimal(raw)) {
     return null;
   }
   return BigInt(raw);
 }
 
-export function formatDecimalCount(raw: DecimalString | null | undefined): string {
+export function formatDecimalCount(raw: DecimalString | number | null | undefined): string {
   const val = parseUint64BigInt(raw);
   if (val === null) {
     return '—';
@@ -37,7 +46,7 @@ export function formatDecimalCount(raw: DecimalString | null | undefined): strin
   return val.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-export function formatIecBytes(raw: DecimalString | null | undefined): string {
+export function formatIecBytes(raw: DecimalString | number | null | undefined): string {
   const bytes = parseUint64BigInt(raw);
   if (bytes === null) {
     return '—';

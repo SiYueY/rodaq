@@ -1,18 +1,18 @@
 #pragma once
 
-#include <rodaq/artifact/artifact_service.hpp>
-
-#include "task_service.hpp"
-#include "task_controller.hpp"
-#include "create_store.hpp"
-#include "retirement_store.hpp"
-#include "../pipeline/stream_identity_store.hpp"
-
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
+#include <string>
+#include <vector>
+
+#include "operation_history.hpp"
+#include "task_service.hpp"
+#include "task_store.hpp"
 
 namespace rodaq::task {
 
@@ -28,8 +28,6 @@ struct Reply {
 
     void complete(Result<T> value) noexcept {
         std::lock_guard<std::mutex> lock(mutex);
-        // Merged callers observe one immutable result. A later terminal-status
-        // failure cannot retract an already durable Accepted response.
         if (result) {
             return;
         }
@@ -49,119 +47,93 @@ struct Reply {
 class RequestSlot {
 public:
     explicit RequestSlot(std::atomic<std::size_t>& requests) noexcept : requests_(&requests) {}
-
-    ~RequestSlot() noexcept { requests_->fetch_sub(1, std::memory_order_release); }
+    RequestSlot(RequestSlot&& other) noexcept
+    : requests_(std::exchange(other.requests_, nullptr)) {}
+    RequestSlot& operator=(RequestSlot&& other) noexcept {
+        if (this != &other) {
+            if (requests_) {
+                requests_->fetch_sub(1, std::memory_order_release);
+            }
+            requests_ = std::exchange(other.requests_, nullptr);
+        }
+        return *this;
+    }
+    ~RequestSlot() noexcept {
+        if (requests_) {
+            requests_->fetch_sub(1, std::memory_order_release);
+        }
+    }
     RequestSlot(const RequestSlot&) = delete;
     RequestSlot& operator=(const RequestSlot&) = delete;
 
 private:
-    std::atomic<std::size_t>* requests_;
+    std::atomic<std::size_t>* requests_{nullptr};
 };
 
 struct PublishedTask {
     TaskSnapshot snapshot;
-    std::shared_ptr<const task::TaskControlRecord> control;
     std::shared_ptr<const TaskConfig> config;
     TaskRuntimeSnapshot runtime;
     std::chrono::steady_clock::time_point observed_at;
 };
 
-struct CleanupWork {
-    std::uint64_t work_id{0};
-    std::shared_ptr<Work> frame;
-};
-
 struct RunExecution {
-    std::mutex registration;
-    std::condition_variable returned;
-    bool fenced{false};
-    bool preparation_returned{false};
-    bool preparing{true};
-    bool draining{false};
-    bool rotating{false};
-    bool rotating_native{false};
-    bool result_ready{false};
-    bool ended_pending{false};
-    bool recovery_exhausted{false};
-    RunPurpose purpose{RunPurpose::Operation};
-    bool result_partial{false};
-    DataImpact result_impact{DataImpact::None};
-    std::shared_ptr<RunAuthorization> authorization;
-    std::vector<RunPipeline> pipelines;
-    time::BootIdentity boot;
-    pipeline::ReceiveClock sample{&time::sample_clocks};
-    std::shared_ptr<const TaskControlRecord> control;
+    std::mutex mutex;
+    std::condition_variable changed;
+    TaskId task_id;
+    std::string config_version;
+    ControlGeneration control_generation{0};
+    OperationId start_operation_id;
+    std::uint64_t recording_base_ns{0};
     std::shared_ptr<const TaskConfig> config;
+    std::vector<RunPipeline> pipelines;
+    bool preparing{true};
+    bool preparation_returned{false};
+    bool opened{false};
+    bool degraded{false};
+    bool fenced{false};
+    bool closing{false};
+    bool rotating{false};
+    bool volume_protected{false};
     StatusCode failure{StatusCode::Ok};
+    DataImpact data_impact{DataImpact::None};
 
     void fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
     bool resources_settled();
     ExecutionCondition condition(DesiredState desired);
 };
 
-struct RetentionWork {
-    ArtifactId artifact;
-    ControlGeneration generation;
-    std::uint64_t committed_recording_end_ns{0};
-};
-
-struct VolumeRecovery {
-    ControlGeneration generation{0};
-    std::uint32_t attempts{0};
-    std::uint64_t not_before{0};
-};
-
-enum class BootAction { None, ContinueRun, BootResume, ResumeReset, ResumeRetire };
-
 struct TaskEntry {
     TaskId id;
     std::mutex control_mutex;
-    std::unique_ptr<task::TaskStore> store;
-    std::unique_ptr<pipeline::StreamIdentityStore> identities;
-    pipeline::StreamIdentityState identity;
-    std::unique_ptr<task::TaskController> controller;
-    std::shared_ptr<TaskRecoveryStore> recovery;
-    // Serializes actual Recovery I/O only, never taken by Task control/Open.
-    std::mutex recovery_execution;
+    TaskMetadata metadata;
+    std::shared_ptr<const TaskConfig> config;
+    DesiredState desired_state{DesiredState::Stopped};
+    ControlGeneration control_generation{1};
+    std::uint64_t snapshot_sequence{1};
+    std::uint64_t recording_base_ns{0};
+    std::optional<OperationSnapshot> current_operation;
+    OperationRegistry operations;
     std::shared_ptr<RunExecution> execution;
-    std::optional<VolumeRecovery> volume_recovery;
     std::shared_ptr<const PublishedTask> published;
-    BootAction boot_action{BootAction::None};
-    bool missing_recovery_proof{false};
-    bool quiescent{false};
-    bool persisting{false};
-    // Retained until actual deletion settles, including uncertain publication.
-    // Configure cannot change policy while this original-generation work exists.
-    std::optional<RetentionWork> retention_work;
-    bool artifact_maintenance_active{false};
+    bool configuring{false};
     bool resetting{false};
     bool retiring{false};
-    // Failed dispatch only; an actual ended result is replayed, never re-issued.
-    bool ready_to_submit{false};
-    std::uint32_t closing{0};
-    // One actual Native cleanup per Task and one deferred superseding flight.
-    // Failed lane admission retains ready ownership for maintenance retry.
-    std::uint64_t cleanup_active_id{0};
-    CleanupWork cleanup_ready;
-    CleanupWork cleanup_pending;
-    std::optional<OperationId> closed_acceptance;
-    std::shared_ptr<const task::ControlWork> control_work;
-    std::shared_ptr<Reply<OperationId>> operation_reply;
-    std::optional<OperationId> stop_id;
-    std::shared_ptr<Reply<OperationId>> stop_reply;
-    std::optional<task::ControlWorkResult> pending_result;
+    bool retired{false};
+    bool protected_state{false};
+    DataImpact last_data_impact{DataImpact::None};
+
+    explicit TaskEntry(HistoryPolicy history) : operations(history) {}
 };
 
 Result<std::shared_ptr<const PublishedTask>> make_task_publication(
     const TaskEntry& entry, std::shared_ptr<const TaskConfig> config, std::uint64_t sequence,
-    std::shared_ptr<const TaskControlRecord> control = {});
+    const PublishedTask* previous = nullptr);
 
 Result<TaskRuntimeSnapshot> capture_task_runtime(
     const TaskEntry& entry, const TaskConfig& config, const TaskSnapshot& snapshot);
 
 void project_runtime_rates(PublishedTask& current, const PublishedTask* previous) noexcept;
-
-std::optional<OperationSnapshot> completed_configuration(const TaskControlRecord& control);
 
 }  // namespace rodaq::task
 
@@ -170,129 +142,35 @@ namespace rodaq {
 struct TaskService::State : std::enable_shared_from_this<TaskService::State> {
     std::shared_ptr<const task::ServiceOptions> options;
     std::vector<plugin::PluginInfo> installed;
-    std::unique_ptr<task::TaskCreateStore> creates;
-    std::unique_ptr<task::TaskRetirementStore> retired;
-    std::mutex retirement_mutex;
-    std::set<TaskId> pending_retirement_cleanups;
-    std::atomic<std::size_t> active_retirement_jobs{0};
+    std::optional<task::TaskConfigStore> store;
+    std::mutex store_mutex;
+    std::mutex create_mutex;
+    task::CreateRegistry create_registry;
     std::mutex catalog_mutex;
     std::vector<std::shared_ptr<task::TaskEntry>> entries;
     std::atomic<std::size_t> requests{0};
+    std::atomic<std::size_t> active_jobs{0};
     std::atomic<bool> accepting{true};
-    bool reconcile_creates{false};
 
-    persistence::FileFaultHook file_hook(task::ServiceFileDomain domain) const;
-    Result<void> step(task::MaterializationStep value) const;
-    Result<void> directory(const std::filesystem::path& path) const;
+    Result<task::RequestSlot> enter_request();
     Result<void> validate_deployment(const TaskConfig& config) const;
     std::shared_ptr<task::TaskEntry> find(TaskId id);
-    Result<void> insert(std::shared_ptr<task::TaskEntry> entry);
-    Result<std::shared_ptr<task::TaskEntry>> materialize(
-        TaskId id, const task::AssignedConfig* initial);
-    Result<TaskId> create(const TaskConfig& config, const RequestIdentity& request);
-    Result<void> enqueue_cleanup(
-        const std::shared_ptr<task::TaskEntry>& entry, std::shared_ptr<Work> body,
-        bool allow_defer = true);
-    Result<void> retry_cleanup(const std::shared_ptr<task::TaskEntry>& entry);
-    void cleanup_failed_pipelines(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
-    void start_execution(
+    void publish_locked(task::TaskEntry& entry) noexcept;
+
+    void start_prepare(
         const std::shared_ptr<task::TaskEntry>& entry,
-        task::RunPurpose purpose = task::RunPurpose::Operation,
-        std::uint64_t now_monotonic = 0) noexcept;
-    bool cleanup_failed_prepare(
+        const std::shared_ptr<task::RunExecution>& execution) noexcept;
+    void start_close(
         const std::shared_ptr<task::TaskEntry>& entry,
-        const std::shared_ptr<task::RunExecution>& execution, StatusCode failure) noexcept;
-    void finish_execution(
-        const std::shared_ptr<task::TaskEntry>& entry, OperationId operation,
-        ControlGeneration generation, StatusCode failure, bool partial = false,
-        DataImpact impact = DataImpact::None) noexcept;
-    void close_execution(
-        const std::shared_ptr<task::TaskEntry>& entry,
-        std::shared_ptr<task::Reply<OperationId>> reply,
-        std::shared_ptr<const task::TaskControlRecord> accepted) noexcept;
-    void start_reset(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
-    void start_retire(const std::shared_ptr<task::TaskEntry>& entry) noexcept;
-    Result<bool> cleanup_retired_namespace(TaskId task_id);
-    Result<bool> active_namespace_absent(TaskId task_id) const;
-    Result<void> sync_active_parents() const;
-    Result<void> remove_retired_receipt(TaskId task_id);
-
-    struct CreateWork final : Work {
-        std::shared_ptr<State> owner;
-        TaskConfig config;
-        RequestIdentity request;
-        std::shared_ptr<task::Reply<TaskId>> reply;
-        void run() noexcept override;
-    };
-
-    struct CleanupFrame final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        std::shared_ptr<Work> body;
-        std::uint64_t work_id{0};
-        void run() noexcept override;
-    };
-
-    struct FailedPipelineCleanup final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::RunExecution> execution;
-        void run() noexcept override;
-    };
-
-    struct ControlJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        std::shared_ptr<task::Reply<OperationId>> reply;
-        std::shared_ptr<const task::ControlWork> frame;
-        bool replay{false};
-        void run() noexcept override;
-    };
-
-    struct PrepareJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        std::shared_ptr<task::RunExecution> execution;
-        void run() noexcept override;
-    };
-
-    struct CloseJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        std::shared_ptr<task::RunExecution> execution;
-        std::shared_ptr<const task::TaskControlRecord> control;
-        std::shared_ptr<task::Reply<OperationId>> reply;
-        bool internal_cleanup{false};
-        bool process_drain{false};
-        StatusCode preparation_failure{StatusCode::Ok};
-        void run() noexcept override;
-    };
-
-    struct RotateJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        std::shared_ptr<task::RunExecution> execution;
-        std::uint64_t now_monotonic{0};
-        void run() noexcept override;
-    };
-
-    struct ResetJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        void run() noexcept override;
-    };
-
-    struct RetireJob final : Work {
-        std::shared_ptr<State> owner;
-        std::shared_ptr<task::TaskEntry> entry;
-        void run() noexcept override;
-    };
-
-    struct RemoveRetiredReceiptWork final : Work {
-        std::shared_ptr<State> owner;
-        TaskId task_id;
-        std::shared_ptr<task::Reply<bool>> reply;
-        void run() noexcept override;
-    };
+        const std::shared_ptr<task::RunExecution>& execution,
+        std::optional<OperationId> operation_id, ControlGeneration generation, bool is_pause,
+        bool process_drain, bool internal_cleanup) noexcept;
+    void start_reset(
+        const std::shared_ptr<task::TaskEntry>& entry, OperationId operation_id,
+        ControlGeneration generation) noexcept;
+    void start_retire(
+        const std::shared_ptr<task::TaskEntry>& entry, OperationId operation_id,
+        ControlGeneration generation) noexcept;
 };
 
 }  // namespace rodaq

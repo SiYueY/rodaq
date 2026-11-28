@@ -1,26 +1,13 @@
 {
   "format_version": "1.0",
-  "recording_mode": "rolling",
-  "start_policy": {
-    "mode": "best_effort"
-  },
-  "recovery_policy": {
-    "mode": "resume"
-  },
   "segment_policy": {
-    "max_duration": {
-      "value": "60",
-      "unit": "s"
-    },
+    "max_duration_ms": 60000,
     "max_physical_bytes": null
   },
   "retention_policy": {
     "mode": "rolling",
-    "max_duration": {
-      "value": "3600",
-      "unit": "s"
-    },
-    "max_physical_bytes": "1073741824"
+    "max_duration_ms": 3600000,
+    "max_physical_bytes": 1073741824
   },
   "pipelines": [
     {

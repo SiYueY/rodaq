@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include <rodaq/task/types.hpp>
 #include <rodaq/task/runtime.hpp>
+#include <rodaq/task/types.hpp>
 
 namespace rodaq {
 namespace daq {
@@ -27,9 +27,8 @@ struct TaskSnapshot {
     std::string active_config_version;
     DesiredState desired_state{DesiredState::Stopped};
     ControlGeneration control_generation{0};
-    std::uint64_t reset_generation{0};
     std::optional<OperationSnapshot> current_operation;
-    ExecutionCondition execution_condition{ExecutionCondition::Protected};
+    ExecutionCondition execution_condition{ExecutionCondition::Idle};
     std::uint64_t snapshot_sequence{0};
     WallTime captured_at;
     DataImpact data_impact{DataImpact::None};
@@ -95,13 +94,7 @@ private:
     Result<void> schedule_rotation(std::uint64_t now_monotonic);
     Result<void> reconcile_volume(
         artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
-    Result<void> reconcile_boot(
-        artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic);
     Result<void> apply_retention(artifact::ArtifactCatalog& catalog);
-    Result<void> collect_artifacts(
-        artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);
-    Result<void> reconcile_destructive(
-        artifact::ArtifactCatalog& catalog, std::chrono::nanoseconds audit_window);
     bool shutdown_settled() const;
     struct State;
     explicit TaskService(std::shared_ptr<State> state) noexcept;

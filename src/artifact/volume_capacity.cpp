@@ -116,31 +116,20 @@ ArtifactCharge::ArtifactCharge(
 : state_(std::move(state)), bytes_(bytes) {}
 
 ArtifactCharge::ArtifactCharge(ArtifactCharge&& other) noexcept
-: state_(std::move(other.state_)),
-  bytes_(std::exchange(other.bytes_, 0)),
-  deleted_(other.deleted_) {}
+: state_(std::move(other.state_)), bytes_(std::exchange(other.bytes_, 0)) {}
 
 Result<void> ArtifactCharge::release_after_delete() {
     if (!state_) {
         return Status(StatusCode::InvalidState, {});
     }
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    assert(state_->counters.actual_bytes >= bytes_);
-    state_->counters.actual_bytes -= bytes_;
-    bytes_ = 0;
-    deleted_ = true;
-    // A subsequent space sample proves when reclaimed blocks are available.
-    return {};
-}
-
-Result<void> ArtifactCharge::release_after_gc() {
-    if (!state_ || !deleted_ || bytes_ != 0) {
-        return Status(StatusCode::InvalidState, {});
-    }
     auto state = std::move(state_);
     std::lock_guard<std::mutex> lock(state->mutex);
+    assert(state->counters.actual_bytes >= bytes_);
     assert(state->counters.artifact_slots != 0);
+    state->counters.actual_bytes -= bytes_;
     --state->counters.artifact_slots;
+    bytes_ = 0;
+    // A subsequent space sample proves when reclaimed blocks are available.
     return {};
 }
 
@@ -329,6 +318,21 @@ Result<ArtifactCharge> VolumeCapacity::claim_recovered_artifact(std::uint64_t ac
     }
     --state_->unclaimed_initial_slots;
     state_->unclaimed_initial_bytes -= actual_bytes;
+    return ArtifactCharge(state_, actual_bytes);
+}
+
+Result<ArtifactCharge> VolumeCapacity::adopt_startup_artifact(std::uint64_t actual_bytes) {
+    if (!state_) {
+        return Status(StatusCode::InvalidState, {});
+    }
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    auto& counters = state_->counters;
+    if (counters.artifact_slots >= state_->options.max_artifact_slots ||
+        actual_bytes > std::numeric_limits<std::uint64_t>::max() - counters.actual_bytes) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    ++counters.artifact_slots;
+    counters.actual_bytes += actual_bytes;
     return ArtifactCharge(state_, actual_bytes);
 }
 

@@ -21,6 +21,7 @@ export interface PollingHandle<T> {
   start(): void;
   refreshNow(): void;
   stop(): void;
+  reset(): void;
 }
 
 const BACKOFF_LADDER_MS = [1_000, 2_000, 5_000, 10_000, 15_000] as const;
@@ -41,7 +42,7 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
   });
 
   let running = false;
-  let inFlight = false;
+  let inFlightGen: number | null = null;
   let failureStreak = 0;
   let retryAfterDeadlineMs = 0;
   let timerId: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -89,10 +90,10 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
       scheduleNext(gen);
       return;
     }
-    if (inFlight) {
+    if (inFlightGen === gen) {
       return;
     }
-    inFlight = true;
+    inFlightGen = gen;
     const controller = new AbortController();
     activeController = controller;
     if (state.data === null) {
@@ -129,26 +130,28 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
       state.phase = state.data !== null ? 'stale' : 'error';
 
       if (failure.kind === 'unauthenticated' || failure.kind === 'api_incompatible') {
-        // Stop immediately; AppShell takes over lifecycle transition.
         running = false;
         clearScheduled();
         return;
       }
 
       failureStreak += 1;
-      if (
-        (failure.httpStatus === 429 || failure.httpStatus === 503) &&
-        failure.retryAfterMs !== null
-      ) {
+      if (failure.httpStatus === 503 && failure.retryAfterMs !== null) {
         retryAfterDeadlineMs = Math.max(retryAfterDeadlineMs, nowFn() + failure.retryAfterMs);
       }
     } finally {
-      if (activeController === controller) {
-        activeController = null;
-      }
-      inFlight = false;
-      if (running && gen === state.generation) {
-        scheduleNext(gen);
+      // Strictly generation-scoped: late completion of an old generation never
+      // clears or disrupts a newer generation's in-flight state or timer (Web §3.4).
+      if (gen === state.generation) {
+        if (activeController === controller) {
+          activeController = null;
+        }
+        if (inFlightGen === gen) {
+          inFlightGen = null;
+        }
+        if (running) {
+          scheduleNext(gen);
+        }
       }
     }
   }
@@ -157,7 +160,7 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
     if (!running) {
       return;
     }
-    if (!isHidden() && !inFlight && nowFn() >= retryAfterDeadlineMs) {
+    if (!isHidden() && inFlightGen !== state.generation && nowFn() >= retryAfterDeadlineMs) {
       clearScheduled();
       void tick(state.generation);
     }
@@ -169,6 +172,7 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
     }
     running = true;
     state.generation += 1;
+    inFlightGen = null;
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', onVisibilityChange);
     }
@@ -180,7 +184,7 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
       start();
       return;
     }
-    if (inFlight) {
+    if (inFlightGen === state.generation) {
       return;
     }
     clearScheduled();
@@ -190,6 +194,7 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
   function stop(): void {
     running = false;
     state.generation += 1;
+    inFlightGen = null;
     clearScheduled();
     if (activeController) {
       activeController.abort();
@@ -200,10 +205,21 @@ export function usePolling<T>(options: PollingOptions<T>): PollingHandle<T> {
     }
   }
 
+  function reset(): void {
+    stop();
+    failureStreak = 0;
+    retryAfterDeadlineMs = 0;
+    state.phase = 'idle';
+    state.data = null;
+    state.error = null;
+    state.receivedAt = null;
+  }
+
   return {
     state: shallowReadonly(state),
     start,
     refreshNow,
     stop,
+    reset,
   };
 }

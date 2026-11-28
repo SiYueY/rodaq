@@ -15,7 +15,7 @@ struct VolumeCapacityOptions {
     std::uint64_t space_sample_max_age_ns{2000000000};
     std::uint32_t max_segments{64};
     std::uint32_t max_commit_slots{16};
-    std::uint32_t max_artifact_slots{4096};
+    std::uint32_t max_artifact_slots{10000};
     std::uint64_t low_free_bytes{128ull * 1024 * 1024};
     std::uint64_t recovery_free_bytes{256ull * 1024 * 1024};
     std::uint64_t recovery_stable_ns{1000000000};
@@ -75,10 +75,9 @@ public:
     ArtifactCharge& operator=(ArtifactCharge&&) = delete;
     ~ArtifactCharge() = default;
 
-    // Caller must already prove filesystem deletion and parent durability.
+    // Caller must already prove filesystem deletion of the artifact directory.
+    // Releases both retained physical bytes and the artifact cardinality slot.
     Result<void> release_after_delete();
-    // Caller must also prove tombstone audit/reference/durability GC conditions.
-    Result<void> release_after_gc();
 
 private:
     friend class VolumeReservation;
@@ -86,7 +85,6 @@ private:
     ArtifactCharge(std::shared_ptr<VolumeCapacityState> state, std::uint64_t bytes) noexcept;
     std::shared_ptr<VolumeCapacityState> state_;
     std::uint64_t bytes_{0};
-    bool deleted_{false};
 };
 
 // One Segment owner serializes this move-only lease. Shared Volume aggregates
@@ -110,7 +108,7 @@ public:
     // complete disk fact. Retain all charges and stop further growth.
     void invalidate_usage();
     // Requires sealed/verified actual bytes, no in-flight native access and no
-    // remaining future exposure. Caller owns commit/quarantine business proof.
+    // remaining future exposure. Caller owns commit/cleanup business proof.
     Result<ArtifactCharge> settle_retained();
     // Requires all files/committing facts durably cleaned; never observer expiry.
     Result<void> settle_aborted_after_cleanup();
@@ -137,10 +135,9 @@ public:
     VolumeCapacity(VolumeCapacity&&) noexcept = default;
     VolumeCapacity& operator=(VolumeCapacity&&) noexcept = default;
 
-    // Claims exactly one entry from the verified startup totals. The recovery
-    // index supplies each Ledger/retained artifact once; this is not adoption
-    // of Ledger-absent files or a second artifact-lifecycle authority.
+    // Claims one verified final artifact discovered during synchronous startup scan.
     Result<ArtifactCharge> claim_recovered_artifact(std::uint64_t actual_bytes);
+    Result<ArtifactCharge> adopt_startup_artifact(std::uint64_t actual_bytes);
     Result<SpaceProbe> begin_space_sample(std::uint64_t started_monotonic_ns);
     Result<void> finish_space_sample(
         const SpaceProbe& probe, std::uint64_t free_bytes, std::uint64_t finished_monotonic_ns);

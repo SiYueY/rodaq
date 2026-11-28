@@ -5,7 +5,7 @@ import type { SystemData } from '../../api/generated';
 import { usePolling } from '../../composables/usePolling';
 import { useSessionStore } from '../../composables/useSession';
 import { formatIecBytes } from '../../format/decimal';
-import { formatDuration, formatTimestampUtc } from '../../format/time';
+import { formatDurationMs, formatTimestampUtc } from '../../format/time';
 import StatusBadge from '../../components/StatusBadge.vue';
 import FreshnessBadge from '../../components/FreshnessBadge.vue';
 import ErrorPanel from '../../components/ErrorPanel.vue';
@@ -17,8 +17,7 @@ let clockTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
 const systemPoll = usePolling<SystemData>({
   resourceKey: 'system.runtime',
-  enabled: () =>
-    session.lifecycle === 'AuthenticatedReady' || session.lifecycle === 'AuthenticatedRecovering',
+  enabled: () => session.lifecycle === 'AuthenticatedReady',
   fetcher: async (signal) => {
     const sys = await session.api.request<SystemData>({
       method: 'GET',
@@ -99,9 +98,9 @@ onBeforeUnmount(() => {
     <ErrorPanel v-if="systemPoll.state.error" :error="systemPoll.state.error" title="System Runtime Error" />
 
     <article class="card">
-      <h2 class="card-title">Runtime Health &amp; Recovery</h2>
+      <h2 class="card-title">Runtime Health</h2>
       <div v-if="!system" class="skeleton" aria-hidden="true" />
-      <div v-else class="grid-3">
+      <div v-else class="grid-2">
         <div>
           <div class="muted">Server / Core</div>
           <div class="row-actions" style="margin-top: 6px">
@@ -115,23 +114,13 @@ onBeforeUnmount(() => {
             />
             <FreshnessBadge
               :freshness="systemPoll.state.phase === 'stale' ? 'stale' : system.freshness.state"
-              :server-age="system.freshness.age"
+              :server-age-ms="system.freshness.age_ms"
               :received-at-ms="systemPoll.state.receivedAt"
               :now-ms="nowMs"
             />
           </div>
           <div class="muted mono" style="margin-top: 6px">
             Captured: {{ formatTimestampUtc(system.captured_at) }}
-          </div>
-        </div>
-        <div>
-          <div class="muted">Recovery Authority</div>
-          <div style="margin-top: 6px">
-            Complete: <strong>{{ system.recovery.complete ? 'Yes' : 'No' }}</strong>
-            <span v-if="system.recovery.reason"> ({{ system.recovery.reason }})</span>
-          </div>
-          <div v-if="system.recovery.progress !== null">
-            Progress: <strong class="mono">{{ (system.recovery.progress * 100).toFixed(0) }}%</strong>
           </div>
         </div>
         <div>
@@ -175,9 +164,7 @@ onBeforeUnmount(() => {
     <article class="card">
       <div class="row-actions" style="justify-content: space-between; margin-bottom: 8px">
         <h2 class="card-title" style="margin: 0">Backend Capabilities</h2>
-        <span v-if="caps" class="mono muted">
-          App {{ caps.application_version }}
-        </span>
+        <span v-if="caps" class="mono muted">App {{ caps.application_version }}</span>
       </div>
       <p class="muted" style="margin: 0 0 10px 0; font-size: 0.85rem">
         Installed, Allowed, Support Status, and Qualification Status are reported independently.
@@ -188,7 +175,7 @@ onBeforeUnmount(() => {
         :columns="backendCols"
         :rows="caps?.backends ?? []"
         :row-key="(b) => `${b.plugin_id}@${b.plugin_version}`"
-        empty-text="Capabilities unavailable until server is Ready"
+        empty-text="Capabilities unavailable"
       >
         <template #row="{ row }">
           <td class="mono">{{ row.plugin_id }}</td>
@@ -232,7 +219,7 @@ onBeforeUnmount(() => {
       <div class="muted mono" style="margin-top: 10px">
         max_request_body_bytes={{ caps.api_limits.max_request_body_bytes }} ·
         max_page_size={{ caps.api_limits.max_page_size }} ·
-        polling_floor={{ formatDuration(caps.api_limits.recommended_polling_floor) }}
+        polling_floor={{ formatDurationMs(caps.api_limits.recommended_polling_floor_ms) }}
       </div>
     </article>
   </section>

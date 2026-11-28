@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -16,11 +17,11 @@ class PluginLibrary;
 
 struct PluginManagerOptions {
     std::vector<std::filesystem::path> search_paths;
-    std::size_t max_loaded_plugins{0};
-    std::size_t max_instances{0};
+    std::size_t max_loaded_plugins{32};
+    std::size_t max_instances{64};
     /** Maximum Plugin JSON bytes; must fit uint32_t. Zero permits only absent config. */
-    std::size_t max_config_size{0};
-    DeadlineDuration shutdown_timeout{};
+    std::size_t max_config_size{64U * 1024U};
+    DeadlineDuration shutdown_timeout{std::chrono::seconds{5}};
 };
 
 class PluginManager {
@@ -35,12 +36,9 @@ public:
 
     Result<std::vector<PluginInfo>> plugins() const;
     Result<PluginLibrary> load(std::string_view plugin_id);
-    Result<PluginLibrary> load(std::string_view plugin_id, std::string_view plugin_version);
+    Result<PluginLibrary> load(std::string_view plugin_id, std::string_view expected_version);
     [[nodiscard]] PluginManagerPhase phase() const noexcept;
     [[nodiscard]] bool restart_required() const noexcept;
-    // Only discharges create failures already returned to the caller. A true
-    // observation is not quiescence proof for ordinary Open instances.
-    [[nodiscard]] bool initialization_cleanup_settled() const noexcept;
     Result<void> shutdown(Deadline deadline);
 
 private:

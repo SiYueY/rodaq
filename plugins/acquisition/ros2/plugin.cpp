@@ -8,11 +8,7 @@ namespace rodaq::ros2_acquisition {
 class Ros2Plugin final : public plugin::PluginBase {
 public:
     Result<void> configure(plugin::PluginSetup& setup) override {
-        auto service = setup.service<acquisition::Service>(1);
-        if (!service.ok()) {
-            return service.status();
-        }
-        auto configured = backend_.configure(setup.config(), std::move(service.value()));
+        auto configured = backend_.configure(setup.config());
         return configured.ok() ? setup.provide<acquisition::Interface>(backend_) : configured;
     }
 

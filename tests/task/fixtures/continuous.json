@@ -1,22 +1,12 @@
 {
   "format_version": "1.0",
-  "recording_mode": "continuous",
-  "start_policy": {
-    "mode": "all_required"
-  },
-  "recovery_policy": {
-    "mode": "manual"
-  },
   "segment_policy": {
-    "max_duration": {
-      "value": "60",
-      "unit": "s"
-    },
+    "max_duration_ms": 60000,
     "max_physical_bytes": null
   },
   "retention_policy": {
     "mode": "keep_all",
-    "max_duration": null,
+    "max_duration_ms": null,
     "max_physical_bytes": null
   },
   "pipelines": [

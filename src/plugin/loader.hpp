@@ -11,9 +11,7 @@ namespace rodaq::plugin {
 
 struct LibraryState {
     PluginInfo info;
-    PluginBinaryInfo binary;
     std::filesystem::path path;
-    FileIdentity identity;
     rodaq_plugin_entry_t entry{};
     void* native_handle{nullptr};
     // Protected by the current Manager's control mutex; never reset after fault.

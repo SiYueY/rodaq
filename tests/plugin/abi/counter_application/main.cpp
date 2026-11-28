@@ -3,7 +3,6 @@
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
-#include <rodaq/plugin/registry.hpp>
 
 #include <chrono>
 #include <iostream>
@@ -41,13 +40,8 @@ rodaq::Result<void> check_counter(plugin::PluginInstance& instance) {
 }
 
 rodaq::Result<void> exercise(plugin::PluginLibrary& library) {
-    plugin::ServiceRegistry services;
-    auto frozen = services.freeze();
-    if (!frozen.ok()) {
-        return frozen;
-    }
     for (const bool asynchronous : {false, true}) {
-        auto initialized = library.create_instance(services, {});
+        auto initialized = library.create_instance({});
         if (!initialized.ok()) {
             return initialized.status();
         }

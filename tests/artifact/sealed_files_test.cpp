@@ -1,7 +1,6 @@
 #include "artifact/sealed_files.hpp"
 #include "persistence/digest.hpp"
 #include "persistence/file_descriptor.hpp"
-#include "persistence/json.hpp"
 
 #include <gtest/gtest.h>
 
@@ -38,9 +37,9 @@ protected:
         auto staging = volume_->create_staging(1);
         ASSERT_TRUE(staging.ok());
         staging_ = staging.value();
-        write("data.bin", "abc");
+        write("data.mcap", "abc");
         write("metadata", "");
-        seal_.files = {{"data.bin", 3}, {"metadata", 0}};
+        seal_.files = {{"data.mcap", 3}, {"metadata", 0}};
         seal_.total_physical_bytes = 3;
         limits_.max_segment_file_count = 4;
         limits_.max_relative_path_bytes = 128;
@@ -66,12 +65,7 @@ protected:
         return artifact::SealedFiles::open(volume_, 1, seal_, limits_, 4096, std::move(faults));
     }
 
-    std::string encoded_manifest() const {
-        // File-owner test input, not evidence of full Manifest schema acceptance.
-        return persistence::encode_integrity(
-                   {{"format_version", "1.0"}, {"segment_id", "1"}}, "rodaq.segment-manifest.v1")
-            .value();
-    }
+    std::string encoded_manifest() const { return R"({"format_version":"1.0","segment_id":"1"})"; }
 
     fs::path root_;
     fs::path staging_;
@@ -80,18 +74,16 @@ protected:
     rodaq::storage::PrepareConfig limits_{};
 };
 
-TEST_F(SealedFilesTest, ComputesActualFileDigestsAndSyncsPinnedFlatTreeWithoutClaimingCommitted) {
+TEST_F(SealedFilesTest, VerifiesExactSizesAndSyncsPinnedFlatTreeWithoutClaimingCommitted) {
     auto opened = open();
     ASSERT_TRUE(opened.ok());
     auto& owner = opened.value();
-    ASSERT_EQ(owner->evidence().size(), 2);
-    EXPECT_EQ(
-        owner->evidence()[0].digest,
-        "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    EXPECT_EQ(
-        owner->evidence()[1].digest,
-        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    EXPECT_EQ(owner->storage_bytes(), 3);
+    ASSERT_EQ(owner->evidence().size(), 2U);
+    EXPECT_EQ(owner->evidence()[0].relative_path, "data.mcap");
+    EXPECT_EQ(owner->evidence()[0].physical_size, 3U);
+    EXPECT_EQ(owner->evidence()[1].relative_path, "metadata");
+    EXPECT_EQ(owner->evidence()[1].physical_size, 0U);
+    EXPECT_EQ(owner->storage_bytes(), 3U);
     EXPECT_FALSE(owner->durable_tree());
     EXPECT_EQ(owner->sync_tree().status().code(), StatusCode::InvalidState);
     const auto manifest = encoded_manifest();
@@ -99,7 +91,6 @@ TEST_F(SealedFilesTest, ComputesActualFileDigestsAndSyncsPinnedFlatTreeWithoutCl
     EXPECT_EQ(owner->manifest_bytes(), manifest.size());
     ASSERT_TRUE(owner->sync_tree().ok());
     EXPECT_TRUE(owner->durable_tree());
-    EXPECT_TRUE(owner->verify().ok());
     EXPECT_TRUE(owner->verify().ok());
     EXPECT_TRUE(fs::exists(staging_));
     EXPECT_FALSE(fs::exists(volume_->artifacts_directory() / "1"));
@@ -111,8 +102,8 @@ TEST_F(SealedFilesTest, StreamingDigestCrossesBufferBoundariesAndDoesNotChangeBo
     for (std::size_t index = 0; index < data.size(); ++index) {
         data[index] = static_cast<char>(index % 251);
     }
-    write("data.bin", data);
-    persistence::FileDescriptor fd(::open((staging_ / "data.bin").c_str(), O_RDONLY | O_CLOEXEC));
+    write("data.mcap", data);
+    persistence::FileDescriptor fd(::open((staging_ / "data.mcap").c_str(), O_RDONLY | O_CLOEXEC));
     ASSERT_GE(fd.get(), 0);
     ASSERT_EQ(lseek(fd.get(), 7, SEEK_SET), 7);
     const auto expected = persistence::byte_digest(data.data(), data.size());
@@ -133,10 +124,10 @@ TEST_F(SealedFilesTest, RejectsUnlistedEntriesDirectoriesLinksAndWrongSizesBefor
     ASSERT_TRUE(fs::create_directory(staging_ / "metadata"));
     EXPECT_EQ(open().status().code(), StatusCode::DataLoss);
     fs::remove(staging_ / "metadata");
-    fs::create_symlink("data.bin", staging_ / "metadata");
+    fs::create_symlink("data.mcap", staging_ / "metadata");
     EXPECT_FALSE(open().ok());
     fs::remove(staging_ / "metadata");
-    fs::create_hard_link(staging_ / "data.bin", staging_ / "metadata");
+    fs::create_hard_link(staging_ / "data.mcap", staging_ / "metadata");
     EXPECT_EQ(open().status().code(), StatusCode::DataLoss);
     fs::remove(staging_ / "metadata");
     write("metadata", "wrong size");
@@ -149,18 +140,18 @@ TEST_F(SealedFilesTest, FifoCannotBlockACommitWorkerOrBecomeRegularFileEvidence)
     EXPECT_EQ(open().status().code(), StatusCode::DataLoss);
 }
 
-TEST_F(SealedFilesTest, RenamedOrModifiedPinnedFileCannotRetainItsOldDigestProof) {
+TEST_F(SealedFilesTest, RenamedOrResizedPinnedFileFailsVerification) {
     auto opened = open();
     ASSERT_TRUE(opened.ok());
-    fs::rename(staging_ / "data.bin", staging_ / "old-data");
-    write("data.bin", "abc");
+    fs::rename(staging_ / "data.mcap", staging_ / "old-data");
+    write("data.mcap", "abc");
     EXPECT_EQ(opened.value()->verify().status().code(), StatusCode::DataLoss);
     EXPECT_FALSE(opened.value()->install_manifest(encoded_manifest()).ok());
-    fs::remove(staging_ / "data.bin");
-    fs::rename(staging_ / "old-data", staging_ / "data.bin");
+    fs::remove(staging_ / "data.mcap");
+    fs::rename(staging_ / "old-data", staging_ / "data.mcap");
     auto fresh = open();
     ASSERT_TRUE(fresh.ok());
-    write("data.bin", "modified");
+    write("data.mcap", "modified");
     EXPECT_EQ(fresh.value()->verify().status().code(), StatusCode::DataLoss);
 }
 

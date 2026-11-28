@@ -6,34 +6,29 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/task/config.hpp>
 
-#include "ledger_store.hpp"
-#include "manifest.hpp"
-#include "recovery_scan.hpp"
-#include "volume_capacity.hpp"
 #include "../pipeline/sealed_segment.hpp"
+#include "manifest.hpp"
+#include "volume_capacity.hpp"
 
 namespace rodaq::artifact {
 
 enum class ReadStep { Opening, Reading };
-enum class DeleteReason { Retention, Reset, ManualRecovery };
-enum class DeleteStep { UnlinkFile, SyncDirectory, UnlinkManifest, RemoveDirectory, SyncParent };
+enum class DeleteStep { RenameToDeleting, RemoveTree, SyncParent };
 
 struct CatalogOptions {
     std::shared_ptr<ManagedVolume> volume;
-    std::shared_ptr<LedgerStore> ledger;
     std::shared_ptr<VolumeCapacity> capacity;
     ManifestLimits manifest;
-    std::uint32_t max_artifacts{4096};
+    std::uint32_t max_artifacts{10000};
     std::uint32_t max_read_leases{64};
     std::size_t max_read_bytes{1024 * 1024};
     std::chrono::nanoseconds read_lease_duration{std::chrono::seconds{30}};
-    // Private deterministic fault seam, executed outside the index lock.
+    // Private deterministic fault seams, executed outside the index lock.
     std::function<int(ReadStep)> read_faults;
     std::function<int(DeleteStep)> delete_faults;
 };
@@ -41,19 +36,15 @@ struct CatalogOptions {
 struct CatalogSnapshot {
     StatusCode protection{StatusCode::Ok};
     std::uint32_t visible{0};
-    std::uint32_t pending{0};
     std::uint32_t commit_inflight{0};
     std::uint32_t delete_inflight{0};
-    std::uint32_t collect_inflight{0};
     std::uint32_t read_leases{0};
     std::uint32_t reads_inflight{0};
-    std::uint32_t quarantined{0};
-    std::uint32_t verification_required{0};
-    std::uint32_t corrupted_committed{0};
-    std::uint64_t quarantined_bytes{0};
+    std::uint32_t corrupt_artifacts{0};
 };
 
 struct CatalogState;
+struct StartupScanReport;
 
 struct RetentionSelection {
     std::optional<ArtifactId> candidate;
@@ -62,54 +53,33 @@ struct RetentionSelection {
     bool byte_target_satisfied{true};
 };
 
-// Rebuildable index and retained actual handoff/read owners, not a second
-// durable authority. Ledger/Committer own publication; Catalog exposes only
-// verified committed evidence and never releases disk charges by eviction.
+// In-memory index rebuilt synchronously from final Artifact directories +
+// manifest.json on startup. No second durable Ledger authority or quarantine.
 class ArtifactCatalog {
 public:
     static Result<std::shared_ptr<ArtifactCatalog>> create(CatalogOptions options);
+    // Synchronous startup scan before Server enters Ready.
+    Result<StartupScanReport> startup_scan();
+    // Publishes a sealed Pipeline segment into a final Artifact and Catalog.
     Result<void> commit(const pipeline::SealedPipelineSegment& sealed);
-    // Startup work only. Capacity starts from independently verified recovery
-    // totals; each committed row claims its retained charge exactly once.
-    Result<void> rebuild();
-    Result<void> rebuild(const VolumeRecoveryReport& report);
     Result<ArtifactPage> query(const ArtifactQuery& query) const;
     Result<ArtifactInfo> get(ArtifactId id) const;
     Result<ArtifactReadHandle> acquire(ArtifactId id, ArtifactFileId file);
     Result<void> block_reads(ArtifactId id);
     void cancel_readers(std::optional<ArtifactId> id = {}) noexcept;
     Result<void> wait_readers(ArtifactId id, std::chrono::steady_clock::time_point deadline);
-    // Maintenance actual execution only. Caller owns policy/generation selection;
-    // the Ledger owns durable intent, and the retained entry owns disk charges.
-    // Deadline bounds lease observation, never an already-entered syscall.
-    Result<void> delete_artifact(
-        ArtifactId id, std::uint64_t generation, DeleteReason reason, WallTime now,
-        std::chrono::steady_clock::time_point deadline);
-    // Authoritative artifact-side predicate for Task retirement (Artifact §8.2).
-    // Read-only: never triggers implicit delete, registration, or recovery.
+    // Rename-then-delete execution: blocks new reads, waits for active leases,
+    // atomically renames <id> -> <id>.deleting, removes from Catalog, and runs
+    // bounded physical tree deletion.
+    Result<void> delete_artifact(ArtifactId id, std::chrono::steady_clock::time_point deadline);
+    // Read-only artifact-side predicate for Task retirement.
     Result<bool> retire_eligible(TaskId task) const;
-    // Returns true if any Ledger row (including Deleted tombstones), active
-    // work, read lease, or quarantined/unknown artifact may reference this Task.
-    Result<bool> has_task_references(TaskId task) const;
-    // Fixed-scope Reset targets belonging to task through max_control_generation.
-    Result<std::vector<ArtifactId>> reset_targets(
-        TaskId task, ControlGeneration max_control_generation) const;
-    // Removes quarantined/staging directories provably belonging to task within
-    // the fixed Reset scope and releases their retained capacity charges.
-    Result<void> purge_quarantined_for_reset(TaskId task, ControlGeneration max_control_generation);
-    // Task resolves historical immutable configuration modes into this bounded
-    // version set. The time floor comes only from verified committed checkpoints,
-    // never from Task Open time. Revalidate current policy before delete intent.
+    // Snapshot of currently visible final Artifact IDs belonging to task.
+    Result<std::vector<ArtifactId>> reset_targets(TaskId task) const;
+    // Selects the oldest eligible artifact violating the Task's current policy.
     Result<RetentionSelection> select_retention(
         TaskId task, const RetentionPolicy& policy,
-        const std::vector<std::string>& eligible_config_versions,
         std::uint64_t committed_recording_floor_ns = 0) const;
-    Result<std::vector<std::string>> retention_versions(TaskId task) const;
-    // One eligible live tombstone per maintenance pass. The Task supplies a
-    // durable committed checkpoint before its source artifact proof is removed.
-    Result<bool> collect_deleted(
-        TaskId task, std::uint64_t committed_recording_floor_ns, WallTime now,
-        std::chrono::nanoseconds audit_window);
     CatalogSnapshot snapshot() const;
 
 private:

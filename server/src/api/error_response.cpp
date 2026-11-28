@@ -52,10 +52,8 @@ std::string_view to_wire_string(DataImpact value) noexcept {
             return "accepted_known_failed";
         case DataImpact::PersistenceUnknown:
             return "persistence_unknown";
-        case DataImpact::ArtifactQuarantined:
-            return "artifact_quarantined";
-        case DataImpact::HistoricalArtifactLostOrCorrupt:
-            return "historical_artifact_lost_or_corrupt";
+        case DataImpact::ArtifactUnavailableOrCorrupt:
+            return "artifact_unavailable_or_corrupt";
     }
     return "none";
 }
@@ -86,8 +84,6 @@ std::string_view to_wire_string(ExecutionCondition value) noexcept {
             return "draining";
         case ExecutionCondition::Protected:
             return "protected";
-        case ExecutionCondition::PendingCleanup:
-            return "pending_cleanup";
         case ExecutionCondition::Failed:
             return "failed";
     }
@@ -241,7 +237,7 @@ ApiError map_core_status(const Status& status, FailureDomain domain, bool is_ope
         case StatusCode::DeadlineExceeded:
             err.http_status = 504;
             err.code = "observer_timeout";
-            err.message = "observer deadline exceeded; retry with same Idempotency-Key";
+            err.message = "observer deadline exceeded; refresh authoritative Task state";
             err.retryability = Retryability::AfterBackoff;
             break;
         case StatusCode::Unavailable:
@@ -255,10 +251,10 @@ ApiError map_core_status(const Status& status, FailureDomain domain, bool is_ope
         case StatusCode::DataLoss:
             err.http_status = 500;
             err.code = "data_loss";
-            err.message = "durable state integrity violation detected";
+            err.message = "artifact or state integrity violation detected";
             err.retryability = Retryability::ManualRecoveryRequired;
             err.failure_domain = FailureDomain::PersistenceState;
-            err.data_impact = DataImpact::HistoricalArtifactLostOrCorrupt;
+            err.data_impact = DataImpact::ArtifactUnavailableOrCorrupt;
             break;
         case StatusCode::Internal:
         case StatusCode::Ok:
@@ -279,11 +275,10 @@ ApiError make_request_error(
     err.code = std::move(code);
     err.message = std::move(message);
     err.failure_domain = FailureDomain::Request;
-    err.retryability = (http_status == 429 || http_status == 503 || http_status == 504)
-                           ? Retryability::AfterBackoff
-                           : Retryability::Never;
+    err.retryability = (http_status == 503 || http_status == 504) ? Retryability::AfterBackoff
+                                                                  : Retryability::Never;
     err.details = std::move(details);
-    if (http_status == 429 || http_status == 503) {
+    if (http_status == 503) {
         err.retry_after_seconds = 1;
     }
     return err;

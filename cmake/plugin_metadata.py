@@ -1,7 +1,6 @@
 """Build-time metadata generation shared by in-tree and installed plugin tooling."""
 
 import argparse
-import hashlib
 import json
 import pathlib
 import re
@@ -84,19 +83,8 @@ const rodaq_plugin_entry_t* rodaq_plugin_get_entry(void) {
 
 def manifest(args):
     data = json.loads(args.metadata.read_text())
-    data["artifact"] = {
-        "path": "lib/" + args.artifact.name,
-        "sha256": file_digest(args.artifact),
-    }
+    data["library"] = "lib/" + args.artifact.name
     args.output.write_text(json.dumps(data, indent=2) + "\n")
-
-
-def file_digest(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 if __name__ == "__main__":

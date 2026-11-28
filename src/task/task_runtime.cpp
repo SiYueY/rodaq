@@ -19,8 +19,8 @@ StreamRuntimeFacts stream_facts(
     StreamRuntimeFacts result;
     result.entry_ready = callbacks.transport_ready && !callbacks.terminal_failure &&
                          source.descriptor_ready && source.stream_ready;
-    result.source_ready = source.active_sources != 0;
-    result.active_sources = source.active_sources;
+    result.source_ready = result.entry_ready;
+    result.active_sources = result.entry_ready ? 1 : 0;
     result.received_records = source.received_records;
     result.received_logical_bytes = source.received_logical_bytes;
     if (source.last_receive_realtime_ns) {
@@ -56,19 +56,22 @@ Result<TaskRuntimeSnapshot> capture_task_runtime(
         result.control_generation = snapshot.control_generation;
         result.snapshot_sequence = snapshot.snapshot_sequence;
         result.captured_at = snapshot.captured_at;
-        if (snapshot.current_operation) {
-            result.data_impact = snapshot.current_operation->data_impact;
-        }
+        result.data_impact = snapshot.data_impact;
+
         std::vector<RunPipeline> observed;
         if (entry.execution) {
-            std::lock_guard<std::mutex> lock(entry.execution->registration);
-            if (entry.execution->control->active_config_version == snapshot.active_config_version) {
+            std::lock_guard<std::mutex> lock(entry.execution->mutex);
+            if (entry.execution->config_version == snapshot.active_config_version) {
                 observed = entry.execution->pipelines;
             }
         }
         std::vector<pipeline::PipelineSnapshot> pipelines;
         pipelines.reserve(observed.size());
         for (const auto& selected : observed) {
+            if (!selected.controller) {
+                pipelines.push_back({});
+                continue;
+            }
             auto actual = selected.controller->snapshot();
             if (!actual.ok()) {
                 return actual.status();
@@ -85,6 +88,9 @@ Result<TaskRuntimeSnapshot> capture_task_runtime(
                 row.streams.push_back({stream.stream_id, stream.stream_key, stream.name, {}});
             }
             for (std::size_t at = 0; at < pipelines.size(); ++at) {
+                if (!observed[at].controller) {
+                    continue;
+                }
                 const auto& source = pipelines[at];
                 if (source.identity.pipeline_id != definition.pipeline_id) {
                     continue;
@@ -97,9 +103,6 @@ Result<TaskRuntimeSnapshot> capture_task_runtime(
                 facts.instance_id = pipeline::to_string(source.identity.instance_id);
                 facts.control_generation = source.identity.control_generation;
                 facts.prepare_status = observed[at].prepare_status;
-                if (facts.prepare_status == StatusCode::Ok) {
-                    facts.effective_config_id = observed[at].effective_config_id;
-                }
                 facts.admission_open = source.gate.open && !source.gate.control_fence;
                 facts.quiescent = source.quiescence.settled;
                 facts.writer_failure = source.failure;
@@ -200,6 +203,52 @@ void project_runtime_rates(PublishedTask& current, const PublishedTask* previous
     }
     if (complete) {
         next.accepted_records_per_second = static_cast<double>(accepted / seconds);
+    }
+}
+
+Result<std::shared_ptr<const PublishedTask>> make_task_publication(
+    const TaskEntry& entry, std::shared_ptr<const TaskConfig> config, std::uint64_t sequence,
+    const PublishedTask* previous) {
+    try {
+        auto pub = std::make_shared<PublishedTask>();
+        pub->config = config;
+        pub->observed_at = std::chrono::steady_clock::now();
+        auto& snap = pub->snapshot;
+        snap.task_id = entry.id;
+        snap.active_config_version = entry.metadata.active_config_version;
+        snap.desired_state = entry.desired_state;
+        snap.control_generation = entry.control_generation;
+        snap.current_operation = entry.current_operation;
+        snap.snapshot_sequence = sequence;
+        snap.captured_at = control_wall_now();
+        snap.name = config ? config->name : std::string{};
+        snap.data_impact = entry.last_data_impact;
+        if (entry.current_operation) {
+            snap.data_impact = combine(snap.data_impact, entry.current_operation->data_impact);
+        }
+        if (entry.protected_state) {
+            snap.execution_condition = ExecutionCondition::Protected;
+        } else if (entry.execution) {
+            snap.execution_condition = entry.execution->condition(entry.desired_state);
+        } else if (
+            entry.current_operation && entry.current_operation->state == OperationState::Failed &&
+            entry.desired_state == DesiredState::Running) {
+            snap.execution_condition = ExecutionCondition::Failed;
+        } else {
+            snap.execution_condition = ExecutionCondition::Idle;
+        }
+        if (config) {
+            auto rt = capture_task_runtime(entry, *config, snap);
+            if (rt.ok()) {
+                pub->runtime = std::move(rt.value());
+                snap.data_impact = combine(snap.data_impact, pub->runtime.data_impact);
+                snap.freshness = pub->runtime.freshness;
+            }
+        }
+        project_runtime_rates(*pub, previous);
+        return std::shared_ptr<const PublishedTask>(std::move(pub));
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
 }
 

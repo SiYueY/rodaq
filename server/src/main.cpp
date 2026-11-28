@@ -5,7 +5,6 @@
 #include <chrono>
 #include <csignal>
 #include <filesystem>
-#include <future>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -15,90 +14,121 @@
 
 namespace {
 
-std::atomic<bool> g_shutdown_requested{false};
+std::atomic<bool> g_stop_requested{false};
 
-void handle_signal(int /*sig*/) noexcept {
-    g_shutdown_requested.store(true, std::memory_order_release);
+void handle_signal(int) noexcept { g_stop_requested.store(true, std::memory_order_release); }
+
+void print_usage() {
+    std::cerr << "Usage: rodaq --config /absolute/path/to/deployment.json [--assets "
+                 "/absolute/path/to/web]\n";
 }
 
 }  // namespace
 
-int main(int argc, char* argv[]) {
-    std::filesystem::path deployment_path = "/etc/rodaq/deployment.json";
+int main(int argc, char** argv) {
+    std::filesystem::path config_path;
+    std::filesystem::path assets_override;
     for (int i = 1; i < argc; ++i) {
-        const std::string arg(argv[i]);
-        if ((arg == "--deployment" || arg == "-c") && i + 1 < argc) {
-            deployment_path = argv[++i];
+        const std::string arg = argv[i];
+        if ((arg == "--config" || arg == "--deployment") && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (arg == "--assets" && i + 1 < argc) {
+            assets_override = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: rodaq [--deployment <path>]\n";
+            print_usage();
             return 0;
         } else {
-            std::cerr << "Unknown argument: " << arg << "\n";
+            std::cerr << "Unknown or incomplete argument: " << arg << "\n";
+            print_usage();
             return 2;
         }
     }
+    if (config_path.empty()) {
+        print_usage();
+        return 2;
+    }
 
-    auto deployment = rodaq::server::load_deployment_config(deployment_path);
-    if (!deployment.ok()) {
-        std::cerr << "Failed to load deployment config: " << deployment.status().message() << "\n";
+    rodaq::logging::Config log_cfg;
+    log_cfg.name = "rodaq";
+    log_cfg.level = rodaq::logging::Level::Info;
+    log_cfg.console = true;
+    log_cfg.console_stderr = true;
+    if (auto res = rodaq::logging::initialize(log_cfg); !res.ok()) {
+        std::cerr << "Failed to initialize logging: " << res.status().message() << "\n";
         return 1;
     }
 
-    std::signal(SIGTERM, handle_signal);
-    std::signal(SIGINT, handle_signal);
-
-    // 1. Start loopback HTTP listener in Recovering limited mode.
-    rodaq::server::ServerApp server;
-    auto started = server.start(
-        deployment.value().server, rodaq::server::ServerServices{},
-        rodaq::server::ServerPhase::Recovering);
-    if (!started.ok()) {
-        std::cerr << "Failed to start HTTP server: " << started.status().message() << "\n";
+    auto dep = rodaq::server::load_deployment_config(config_path);
+    if (!dep.ok()) {
+        RODAQ_LOG_ERROR("deployment config error: {}", dep.status().message());
+        (void)rodaq::logging::shutdown();
         return 1;
     }
-
-    // 2. Initialize Core DaqRuntime and complete Boot Reconciliation.
-    auto runtime = rodaq::DaqRuntime::open(std::move(deployment.value().daq));
-    if (!runtime.ok()) {
-        std::cerr << "Failed to open DAQ runtime (status="
-                  << static_cast<int>(runtime.status().code()) << ")\n";
-        (void)server.shutdown(std::chrono::steady_clock::now() + std::chrono::seconds{5});
-        return 1;
-    }
-
-    // 3. Atomically transition Server to Ready.
-    rodaq::server::ServerServices services{
-        &runtime.value()->tasks(), &runtime.value()->system(), &runtime.value()->artifacts()};
-    auto ready = server.mark_ready(services);
-    if (!ready.ok()) {
-        std::cerr << "Failed to transition server to Ready\n";
-        (void)server.shutdown(std::chrono::steady_clock::now() + std::chrono::seconds{5});
-        (void)runtime.value()->shutdown(
-            std::chrono::steady_clock::now() + std::chrono::seconds{10});
-        return 1;
-    }
-
-    // 4. Periodic bounded maintenance observe() loop until SIGTERM/SIGINT.
-    const auto observe_interval = deployment.value().observe_interval;
-    while (!g_shutdown_requested.load(std::memory_order_acquire)) {
-        (void)runtime.value()->observe();
-        const auto wake_at = std::chrono::steady_clock::now() + observe_interval;
-        while (!g_shutdown_requested.load(std::memory_order_acquire) &&
-               std::chrono::steady_clock::now() < wake_at) {
-            std::this_thread::sleep_for(std::chrono::milliseconds{25});
+    if (!assets_override.empty()) {
+        if (!assets_override.is_absolute()) {
+            RODAQ_LOG_ERROR("--assets must be an absolute path");
+            (void)rodaq::logging::shutdown();
+            return 2;
         }
+        dep.value().server.static_assets_root = assets_override;
     }
 
-    // 5. Parallel ordered shutdown of Server HTTP/downloads and Core Process Drain.
-    const auto deadline =
-        std::chrono::steady_clock::now() + deployment.value().server.timeouts.shutdown;
-    auto core_shutdown =
-        std::async(std::launch::async, [&] { return runtime.value()->shutdown(deadline); });
-    const auto srv_res = server.shutdown(deadline);
-    const auto core_res = core_shutdown.get();
-    if (!srv_res.ok() || !core_res.ok()) {
-        RODAQ_LOG_ERROR("shutdown did not settle cleanly within deadline");
+    std::signal(SIGINT, handle_signal);
+    std::signal(SIGTERM, handle_signal);
+
+    // Synchronous fail-fast startup: open Core + complete Artifact Catalog scan before HTTP Ready.
+    auto runtime_res = rodaq::DaqRuntime::open(std::move(dep.value().daq));
+    if (!runtime_res.ok()) {
+        RODAQ_LOG_ERROR("DaqRuntime::open failed: {}", runtime_res.status().message());
+        (void)rodaq::logging::shutdown();
         return 1;
     }
-    return 0;
+    auto runtime = std::move(runtime_res.value());
+    (void)runtime->observe();
+
+    rodaq::server::ServerApp server;
+    rodaq::server::ServerServices services;
+    services.tasks = &runtime->tasks();
+    services.system = &runtime->system();
+    services.artifacts = &runtime->artifacts();
+
+    const auto shutdown_budget = dep.value().server.timeouts.shutdown;
+    if (auto started = server.start(std::move(dep.value().server), services); !started.ok()) {
+        RODAQ_LOG_ERROR("ServerApp::start failed: {}", started.status().message());
+        (void)runtime->shutdown(std::chrono::steady_clock::now() + shutdown_budget);
+        (void)rodaq::logging::shutdown();
+        return 1;
+    }
+
+    std::atomic<bool> stop_observe{false};
+    std::thread observe_thread([&] {
+        while (!stop_observe.load(std::memory_order_acquire)) {
+            (void)runtime->observe();
+            for (int i = 0; i < 10 && !stop_observe.load(std::memory_order_acquire); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+        }
+    });
+
+    while (!g_stop_requested.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+
+    RODAQ_LOG_INFO("signal received; initiating ordered shutdown");
+    stop_observe.store(true, std::memory_order_release);
+    if (observe_thread.joinable()) {
+        observe_thread.join();
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + shutdown_budget;
+    auto srv_sd = server.shutdown(deadline);
+    auto core_sd = runtime->shutdown(deadline);
+    if (!srv_sd.ok()) {
+        RODAQ_LOG_ERROR("ServerApp::shutdown error: {}", srv_sd.status().message());
+    }
+    if (!core_sd.ok()) {
+        RODAQ_LOG_ERROR("DaqRuntime::shutdown error: {}", core_sd.status().message());
+    }
+    (void)rodaq::logging::shutdown();
+    return (srv_sd.ok() && core_sd.ok()) ? 0 : 1;
 }

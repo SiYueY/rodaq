@@ -38,13 +38,14 @@ struct Instance {
     bool configured{false};
 
     static rodaq_status_code_t configure(
-        rodaq_plugin_context_t* context, const rodaq_service_registry_reference_t* services,
+        rodaq_plugin_context_t* context, const rodaq_application_callbacks_t* application,
         const rodaq_config_t* config, rodaq_error_t* error) noexcept {
         return exception_boundary(error, [&]() -> Result<void> {
-            if (context == nullptr || services == nullptr || config == nullptr ||
+            if (context == nullptr || !valid_application_callbacks(application) ||
+                config == nullptr ||
                 config->header.struct_size <
                     offsetof(rodaq_config_t, json) + sizeof(config->json) ||
-                !abi::valid_string(config->json) || !valid_registry(*services)) {
+                !abi::valid_string(config->json)) {
                 return Status(StatusCode::InvalidArgument, "Invalid configure input");
             }
             auto& state = *reinterpret_cast<Instance*>(context);
@@ -56,7 +57,7 @@ struct Instance {
             const auto json = config->json.size == 0
                                   ? std::string_view{}
                                   : std::string_view(config->json.data, config->json.size);
-            PluginSetup setup(json, *services, state.entries);
+            PluginSetup setup(json, *application, state.entries);
             auto result = state.plugin.configure(setup);
             if (!result.ok()) {
                 state.entries.clear();

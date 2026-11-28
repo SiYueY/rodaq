@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -11,16 +10,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../..');
 const BUILD_DIR = path.join(REPO_ROOT, 'build/s1');
 const WEB_DIST = path.resolve(HERE, '../../dist');
-const ADMIN_TOKEN = 'rodaq-ros2-mcap-e2e-secret-0123456789abcd';
+const BEARER_TOKEN = 'rodaq-ros2-mcap-e2e-bearer-0123456789abcd';
 const ROS_DOMAIN_ID = 47;
-
-function computeBearerVerifierHex(token: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(Buffer.from('rodaq.server-bearer.v1\0', 'utf8'))
-    .update(token, 'utf8')
-    .digest('hex');
-}
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -103,7 +94,6 @@ test.beforeAll(async () => {
   fs.mkdirSync(path.join(tmpRoot, 'state'), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, 'volume'), { recursive: true });
 
-  // Stage REAL installed package (bin/rodaq, lib/librodaq_*, ROS2/MCAP plugins, share/rodaq/web).
   execFileSync('cmake', ['--install', BUILD_DIR, '--prefix', installPrefix], { stdio: 'pipe' });
 
   const pkgRoot = path.join(tmpRoot, 'plugins');
@@ -120,28 +110,9 @@ test.beforeAll(async () => {
   );
   chmodRecursiveReadOnly(pkgRoot);
 
-  const credFile = path.join(tmpRoot, 'credentials.json');
-  fs.writeFileSync(
-    credFile,
-    JSON.stringify(
-      {
-        format_version: '1.0',
-        credentials: [
-          {
-            credential_id: 'ros2-admin',
-            principal: 'ros2-admin',
-            scopes: ['read', 'control', 'admin'],
-            verifier: computeBearerVerifierHex(ADMIN_TOKEN),
-            credential_epoch: '1',
-            enabled: true,
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  fs.chmodSync(credFile, 0o600);
+  const tokenFile = path.join(tmpRoot, 'server.token');
+  fs.writeFileSync(tokenFile, `${BEARER_TOKEN}\n`);
+  fs.chmodSync(tokenFile, 0o600);
 
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
@@ -155,7 +126,7 @@ test.beforeAll(async () => {
         server: {
           format_version: '1.0',
           http: { listen_address: '127.0.0.1', port, worker_threads: 2 },
-          security: { credential_store: credFile },
+          security: { bearer_token_file: tokenFile },
         },
         daq: {
           state_root: path.join(tmpRoot, 'state'),
@@ -165,14 +136,14 @@ test.beforeAll(async () => {
           qualified_runtime_profile_id: 'installed-ros2-mcap-web-e2e',
           max_tasks: 2,
           max_pipelines_per_task: 2,
-          volume_name: 'local',
+          volume: { name: 'local' },
           profiles: [
             {
               name: 'default',
-              payload_pool_bytes: '262144',
-              max_payload_bytes: '16384',
-              max_logical_bytes: '262144',
-              max_segment_physical_bytes: '4194304',
+              payload_pool_bytes: 262144,
+              max_payload_bytes: 16384,
+              max_logical_bytes: 262144,
+              max_segment_physical_bytes: 4194304,
               max_descriptors: 16,
               max_prepared_descriptors: 16,
               max_streams: 8,
@@ -202,12 +173,11 @@ test.beforeAll(async () => {
     ),
   );
 
-  // Launch INSTALLED bin/rodaq with ROS 2 Humble runtime environment & installed libdir.
   daemon = spawn(
     'bash',
     [
       '-lc',
-      `source /opt/ros/humble/setup.bash && export LD_LIBRARY_PATH="${path.join(installPrefix, 'lib')}:$LD_LIBRARY_PATH" && exec "${path.join(installPrefix, 'bin/rodaq')}" --deployment "${depFile}"`,
+      `source /opt/ros/humble/setup.bash && export LD_LIBRARY_PATH="${path.join(installPrefix, 'lib')}:$LD_LIBRARY_PATH" && exec "${path.join(installPrefix, 'bin/rodaq')}" --config "${depFile}"`,
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
@@ -218,7 +188,6 @@ test.beforeAll(async () => {
     daemonLogs += d.toString();
   });
 
-  // Launch live ROS 2 Humble Python publisher on domain 47 publishing std_msgs/msg/String at 20 Hz.
   const pubFile = path.join(tmpRoot, 'pub.py');
   fs.writeFileSync(
     pubFile,
@@ -254,7 +223,7 @@ test.beforeAll(async () => {
     { stdio: 'ignore' },
   );
 
-  await waitForServerReady(baseUrl, ADMIN_TOKEN, () => daemonLogs);
+  await waitForServerReady(baseUrl, BEARER_TOKEN, () => daemonLogs);
 });
 
 test.afterAll(async () => {
@@ -284,50 +253,35 @@ test.afterAll(async () => {
   }
 });
 
-test('Installed rodaq + share/rodaq/web + ROS 2 Humble -> MCAP real E2E & MCAP download verification', async ({
+test('Installed rodaq + share/rodaq/web + ROS 2 Humble -> single-file MCAP real E2E & download verification', async ({
   page,
 }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
   await page.goto(`${baseUrl}/login`);
-  await page.fill('input[type="password"]', ADMIN_TOKEN);
+  await page.fill('input[type="password"]', BEARER_TOKEN);
   await page.click('button[type="submit"]');
   await expect(page).toHaveURL(`${baseUrl}/`);
 
-  // Verify official ROS 2 and MCAP backends appear as Installed + Allowed + required + qualified.
   await page.click('nav a[href="/system"]');
   await expect(page.locator('main')).toContainText('com.rodaq.acquisition.ros2');
   await expect(page.locator('main')).toContainText('com.rodaq.storage.mcap');
 
-  // Create Task using the Official ROS 2 & MCAP visual editors (WEB-E2E-017).
   await page.click('nav a[href="/tasks"]');
   await page.click('a:has-text("Create Task")');
   await expect(page.locator('main')).toContainText('Official ROS 2 Acquisition Editor');
-  await expect(page.locator('main')).toContainText('Qualified MCAP Baseline');
+  await expect(page.locator('main')).toContainText('Qualified Single-File MCAP Baseline');
 
   await page.fill('#task-name', 'ros2-mcap-live-e2e');
-  // Set Domain ID = 47 and Topic = /rodaq_web_e2e_chatter in Official ROS 2 visual editor.
   await page.locator('input[type="number"][min="0"][max="232"]').fill(String(ROS_DOMAIN_ID));
   await page.fill('#ros2-topic-0-0', '/rodaq_web_e2e_chatter');
   await page.click('button:has-text("Create Task")');
   await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]+$/);
 
-  // Start -> wait for live ROS 2 messages to be received (>0 accepted) -> Pause -> Resume -> Stop.
   await page.click('button:has-text("Start")');
   await expect(page.locator('main')).toContainText('running', { timeout: 10_000 });
-  try {
-    await expect(page.locator('main')).toContainText('active', { timeout: 10_000 });
-  } catch (e) {
-    const taskId = page.url().split('/').pop()!;
-    const ops = await fetch(`${baseUrl}/api/tasks/${taskId}/operations`, {
-      headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, 'RoDAQ-API-Version': '1.0' },
-    }).then((r) => r.text());
-    const cfg = await fetch(`${baseUrl}/api/tasks/${taskId}/config`, {
-      headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, 'RoDAQ-API-Version': '1.0' },
-    }).then((r) => r.text());
-    throw new Error(`Task did not become active.\nops=${ops}\ncfg=${cfg}\ndaemonLogs=${daemonLogs}`);
-  }
+  await expect(page.locator('main')).toContainText('active', { timeout: 10_000 });
 
   await page.click('button[role="tab"]:has-text("Streams")');
   await expect(page.locator('main')).toContainText('Source Ready', { timeout: 10_000 });
@@ -347,11 +301,12 @@ test('Installed rodaq + share/rodaq/web + ROS 2 Humble -> MCAP real E2E & MCAP d
   await expect(page.locator('main')).toContainText('stopped', { timeout: 10_000 });
   await expect(page.locator('main')).toContainText('idle', { timeout: 10_000 });
 
-  // Open Artifacts -> inspect committed MCAP artifact -> download .mcap file -> verify MCAP header & payload!
   await page.click('nav a[href="/artifacts"]');
   await expect(page.locator('table tbody tr').first()).toContainText('mcap', { timeout: 10_000 });
   await page.locator('table tbody tr td button').first().click();
-  await expect(page.locator('main')).toContainText('Files');
+  await expect(page.locator('main')).toContainText('Committed Files');
+  // Single-file MCAP artifact: no .rodaqmeta sidecar!
+  await expect(page.locator('main')).not.toContainText('.rodaqmeta');
 
   const downloadPromise = page.waitForEvent('download');
   await page.locator('button:has-text("Download")').first().click();
@@ -361,11 +316,9 @@ test('Installed rodaq + share/rodaq/web + ROS 2 Humble -> MCAP real E2E & MCAP d
 
   const bytes = fs.readFileSync(dlPath!);
   expect(bytes.length).toBeGreaterThan(64);
-  // Standard MCAP v0 magic prefix & footer: \x89MCAP0\r\n
   const mcapMagic = Buffer.from([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a]);
   expect(bytes.subarray(0, 8).equals(mcapMagic)).toBe(true);
   expect(bytes.subarray(bytes.length - 8).equals(mcapMagic)).toBe(true);
-  // Verify real ROS 2 topic & CDR payload marker recorded inside the downloaded MCAP file!
   expect(bytes.includes(Buffer.from('/rodaq_web_e2e_chatter'))).toBe(true);
   expect(bytes.includes(Buffer.from('rodaq-e2e-msg-'))).toBe(true);
 

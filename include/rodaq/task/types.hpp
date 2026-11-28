@@ -20,6 +20,10 @@ struct TaskId {
         return left.value == right.value;
     }
 
+    friend bool operator!=(const TaskId& left, const TaskId& right) noexcept {
+        return left.value != right.value;
+    }
+
     friend bool operator<(const TaskId& left, const TaskId& right) noexcept {
         return left.value < right.value;
     }
@@ -30,6 +34,10 @@ struct OperationId {
 
     friend bool operator==(const OperationId& left, const OperationId& right) noexcept {
         return left.value == right.value;
+    }
+
+    friend bool operator!=(const OperationId& left, const OperationId& right) noexcept {
+        return left.value != right.value;
     }
 
     friend bool operator<(const OperationId& left, const OperationId& right) noexcept {
@@ -43,16 +51,7 @@ std::string to_string(TaskId task_id);
 std::string to_string(OperationId operation_id);
 
 enum class DesiredState { Stopped, Running, Paused };
-enum class ExecutionCondition {
-    Idle,
-    Preparing,
-    Active,
-    Degraded,
-    Draining,
-    Protected,
-    PendingCleanup,
-    Failed
-};
+enum class ExecutionCondition { Idle, Preparing, Active, Degraded, Draining, Protected, Failed };
 enum class OperationKind { Configure, Start, Pause, Resume, Stop, Reset, Retire };
 enum class OperationState {
     Accepted,
@@ -84,8 +83,7 @@ enum class DataImpact {
     PreAdmissionOnly,
     AcceptedKnownFailed,
     PersistenceUnknown,
-    ArtifactQuarantined,
-    HistoricalArtifactLostOrCorrupt
+    ArtifactUnavailableOrCorrupt
 };
 
 using WallTime = std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds>;
@@ -123,8 +121,6 @@ struct OperationPage {
     bool has_more{false};
     std::string next_cursor;
     bool history_truncated{false};
-    std::optional<ControlGeneration> oldest_retained_control_generation;
-    std::optional<WallTime> oldest_retained_at;
 };
 
 }  // namespace rodaq

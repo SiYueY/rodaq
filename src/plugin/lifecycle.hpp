@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "loader.hpp"
-#include "registry_state.hpp"
 
 #include <rodaq/plugin/manager.hpp>
 
@@ -61,34 +60,22 @@ struct LifecycleWork : std::enable_shared_from_this<LifecycleWork> {
     std::shared_ptr<LibraryState> library;
 };
 
-struct ServiceThread {
-    std::thread::id id;
-    std::size_t count{0};
-};
-
 struct DiagnosticEvent {
     std::array<char, 640> message{};
     std::size_t size{0};
 };
 
-struct InstanceServices {
-    InstanceState* instance{nullptr};
-    std::shared_ptr<RegistryState> registry;
-};
-
 struct InstanceState : std::enable_shared_from_this<InstanceState> {
     InstanceState(
         const std::shared_ptr<ManagerState>& manager, std::shared_ptr<LibraryState> library,
-        std::shared_ptr<RegistryState> registry, std::string config, std::size_t slot,
-        PluginInstanceId id);
+        std::string config, std::size_t slot, PluginInstanceId id);
 
     mutable std::mutex mutex;
     std::condition_variable changed;
     std::weak_ptr<ManagerState> manager;
     ManagerState* manager_identity;
     std::shared_ptr<LibraryState> library;
-    InstanceServices services;
-    rodaq_service_registry_reference_t native_services{};
+    rodaq_application_callbacks_t application_callbacks{};
     std::string config;
     const std::size_t slot;
     const PluginInstanceId id;
@@ -97,7 +84,6 @@ struct InstanceState : std::enable_shared_from_this<InstanceState> {
     rodaq_plugin_instance_vtable_t functions{};
     LifecycleWork initialization{WorkKind::Initialize};
     std::size_t active_calls{0};
-    std::array<ServiceThread, 64> service_threads{};
     CloseStage close_stage{CloseStage::None};
     std::chrono::steady_clock::time_point close_stage_started{std::chrono::steady_clock::now()};
     std::int64_t native_shutdown_deadline{0};
@@ -192,7 +178,6 @@ bool enqueue_locked(ManagerState& manager, LifecycleWork& work) noexcept;
 void request_close_locked(InstanceState& instance) noexcept;
 bool current_invocation(const InstanceState& instance) noexcept;
 bool current_manager_invocation(const ManagerState& manager) noexcept;
-bool current_service_locked(const InstanceState& instance) noexcept;
 std::int64_t monotonic_now() noexcept;
 Result<std::uint64_t> reserve_authority();
 void release_authority(std::uint64_t token) noexcept;

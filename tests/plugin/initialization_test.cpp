@@ -21,8 +21,7 @@ protected:
         options.shutdown_timeout = std::chrono::seconds(1);
         manager_ = std::make_shared<plugin::ManagerState>(std::move(options), token.value());
         library_ = std::make_shared<plugin::LibraryState>();
-        instance_ = std::make_shared<plugin::InstanceState>(
-            manager_, library_, std::make_shared<plugin::RegistryState>(), "{}", 0, 1);
+        instance_ = std::make_shared<plugin::InstanceState>(manager_, library_, "{}", 0, 1);
         manager_->instances[0] = instance_;
         manager_->reserved_instances[0] = true;
         manager_->instance_count = 1;
@@ -41,8 +40,8 @@ TEST_F(InitializationOwnership, UnvalidatedOpaqueOutputRemainsInReservedUnresolv
         manager_, instance_, rodaq::Status(rodaq::StatusCode::Internal, {}), true);
     EXPECT_EQ(manager_->instances[0], instance_);
     EXPECT_TRUE(manager_->reserved_instances[0]);
-    EXPECT_EQ(manager_->instance_count, 1);
-    EXPECT_EQ(manager_->active_creates, 0);
+    EXPECT_EQ(manager_->instance_count, 1U);
+    EXPECT_EQ(manager_->active_creates, 0U);
     EXPECT_EQ(instance_->phase, plugin::PluginInstancePhase::Unresolved);
     EXPECT_EQ(instance_->native.context, reinterpret_cast<rodaq_plugin_context_t*>(1));
     EXPECT_EQ(instance_->functions.destroy, nullptr);
@@ -50,7 +49,6 @@ TEST_F(InitializationOwnership, UnvalidatedOpaqueOutputRemainsInReservedUnresolv
     EXPECT_TRUE(instance_->terminal);
     EXPECT_TRUE(manager_->restart_required);
     EXPECT_TRUE(library_->faulted);
-    EXPECT_FALSE(instance_->services.registry);
     EXPECT_TRUE(instance_->config.empty());
 }
 
@@ -59,8 +57,8 @@ TEST_F(InitializationOwnership, OrdinaryDefaultInvalidFailureReleasesCapacityWit
         manager_, instance_, rodaq::Status(rodaq::StatusCode::Unavailable, {}), false);
     EXPECT_FALSE(manager_->instances[0]);
     EXPECT_FALSE(manager_->reserved_instances[0]);
-    EXPECT_EQ(manager_->instance_count, 0);
-    EXPECT_EQ(manager_->active_creates, 0);
+    EXPECT_EQ(manager_->instance_count, 0U);
+    EXPECT_EQ(manager_->active_creates, 0U);
     EXPECT_FALSE(manager_->restart_required);
     EXPECT_FALSE(library_->faulted);
     EXPECT_EQ(instance_->initialization.result.code(), rodaq::StatusCode::Unavailable);

@@ -37,9 +37,9 @@ def main(args):
     packages = prefix / "lib/rodaq/plugins"
     for manifest in packages.rglob("manifest.json"):
         data = json.loads(manifest.read_text())
-        artifact = manifest.parent / data["artifact"]["path"]
-        if hashlib.sha256(artifact.read_bytes()).hexdigest() != data["artifact"]["sha256"]:
-            raise ValueError("Counter package digest mismatch")
+        artifact = manifest.parent / data["library"]
+        if not artifact.is_file():
+            raise ValueError("Counter package library missing")
         run(["python3", args.source / "tools/check_plugin_symbols.py", artifact], log)
     for path in packages.rglob("*"):
         path.chmod(0o555 if path.is_dir() else 0o444)

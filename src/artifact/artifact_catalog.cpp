@@ -1,94 +1,41 @@
 #include "artifact_catalog.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <dirent.h>
 #include <fcntl.h>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <string_view>
-#include <sys/stat.h>
+#include <string>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
-#include "catalog_state.hpp"
 #include "../pipeline/recording_segment.hpp"
+#include "catalog_state.hpp"
+#include "startup_scan.hpp"
 
 namespace rodaq::artifact {
 namespace {
 
 using persistence::FileDescriptor;
 
-constexpr std::uint32_t kMaxPurgeDepth = 4;
-constexpr std::uint32_t kMaxPurgeEntries = 1024;
-
-Result<void> remove_tree_bounded(
-    int parent_fd, const char* name, std::uint32_t depth, std::uint32_t& remaining) {
-    if (remaining == 0) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    --remaining;
-    struct stat info {};
-    if (fstatat(parent_fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
-        return errno == ENOENT ? Result<void>{} : Result<void>(Status(StatusCode::Unavailable, {}));
-    }
-    if (S_ISREG(info.st_mode)) {
-        if (info.st_nlink != 1) {
-            return Status(StatusCode::DataLoss, {});
+void cleanup_staging_best_effort(
+    const std::shared_ptr<ManagedVolume>& volume, std::uint64_t segment_id) noexcept {
+    try {
+        FileDescriptor parent(open(
+            volume->artifacts_directory().c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return;
         }
-        return unlinkat(parent_fd, name, 0) == 0
-                   ? Result<void>{}
-                   : Result<void>(Status(StatusCode::Unavailable, {}));
+        const std::string name = std::to_string(segment_id) + ".tmp";
+        std::uint32_t remaining = 1024;
+        (void)remove_tree_bounded(parent.get(), name.c_str(), 4, remaining);
+    } catch (...) {
     }
-    if (!S_ISDIR(info.st_mode) || depth == 0) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    FileDescriptor opened(openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-    if (opened.get() < 0) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    const auto close_dir = [](DIR* value) noexcept { (void)closedir(value); };
-    std::unique_ptr<DIR, decltype(close_dir)> entries(fdopendir(opened.get()), close_dir);
-    if (!entries) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    (void)opened.release();
-    const int child_fd = dirfd(entries.get());
-    std::vector<std::string> children;
-    errno = 0;
-    while (const auto* item = readdir(entries.get())) {
-        const std::string_view child(item->d_name);
-        if (child == "." || child == "..") {
-            continue;
-        }
-        children.emplace_back(child);
-        if (children.size() > remaining) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-        errno = 0;
-    }
-    if (errno != 0) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    for (const auto& child : children) {
-        auto removed = remove_tree_bounded(child_fd, child.c_str(), depth - 1, remaining);
-        if (!removed.ok()) {
-            return removed.status();
-        }
-    }
-    if (fsync(child_fd) != 0) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    entries.reset();
-    if (unlinkat(parent_fd, name, AT_REMOVEDIR) != 0 && errno != ENOENT) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    return {};
 }
 
 }  // namespace
@@ -100,20 +47,6 @@ std::size_t CatalogState::find(std::uint64_t id) const noexcept {
         }
     }
     return slots.size();
-}
-
-Result<bool> CatalogState::public_entry(const CatalogSlot& slot) const {
-    if (!slot.visible || !slot.entry) {
-        return false;
-    }
-    auto authority = options.ledger->get(slot.segment_id);
-    if (!authority.ok()) {
-        return Status(
-            authority.status().code() == StatusCode::NotFound ? StatusCode::DataLoss
-                                                              : authority.status().code(),
-            {});
-    }
-    return authority.value().state == LedgerState::Committed;
 }
 
 void CatalogState::corrupt(std::uint64_t id) noexcept {
@@ -132,9 +65,8 @@ ArtifactCatalog::ArtifactCatalog(std::shared_ptr<CatalogState> state) noexcept
 : state_(std::move(state)) {}
 
 Result<std::shared_ptr<ArtifactCatalog>> ArtifactCatalog::create(CatalogOptions options) {
-    if (!options.volume || !options.ledger || !options.capacity ||
-        !validate_manifest_limits(options.manifest).ok() ||
-        options.max_artifacts < options.ledger->capacity() || options.max_artifacts > 65536 ||
+    if (!options.volume || !options.capacity || !validate_manifest_limits(options.manifest).ok() ||
+        options.max_artifacts == 0 || options.max_artifacts > 65536 ||
         options.max_read_leases == 0 || options.max_read_leases > 4096 ||
         options.max_read_bytes == 0 || options.max_read_bytes > 16 * 1024 * 1024 ||
         options.read_lease_duration <= std::chrono::nanoseconds::zero() ||
@@ -157,6 +89,67 @@ Result<std::shared_ptr<ArtifactCatalog>> ArtifactCatalog::create(CatalogOptions 
     }
 }
 
+Result<StartupScanReport> ArtifactCatalog::startup_scan() {
+    auto state = state_;
+    {
+        std::lock_guard<std::mutex> lock(state->index);
+        if (state->scanning || std::any_of(
+                                   state->slots.begin(), state->slots.end(),
+                                   [](const auto& slot) { return slot.segment_id != 0; })) {
+            return Status(StatusCode::InvalidState, {});
+        }
+        state->scanning = true;
+    }
+    struct ScanningGuard {
+        std::shared_ptr<CatalogState> state;
+        ~ScanningGuard() {
+            std::lock_guard<std::mutex> lock(state->index);
+            state->scanning = false;
+        }
+    } guard{state};
+
+    auto report = scan_volume(state->options);
+    if (!report.ok()) {
+        std::lock_guard<std::mutex> lock(state->index);
+        state->startup_health = report.status().code();
+        state->options.capacity->protect(report.status().code());
+        return report.status();
+    }
+    if (report.value().entries.size() > state->slots.size()) {
+        std::lock_guard<std::mutex> lock(state->index);
+        state->startup_health = StatusCode::ResourceExhausted;
+        state->options.capacity->protect(StatusCode::ResourceExhausted);
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+    try {
+        std::size_t at = 0;
+        for (const auto& entry : report.value().entries) {
+            auto charge =
+                state->options.capacity->adopt_startup_artifact(entry->info.summary.physical_bytes);
+            if (!charge.ok()) {
+                std::lock_guard<std::mutex> lock(state->index);
+                state->startup_health = charge.status().code();
+                state->options.capacity->protect(charge.status().code());
+                return charge.status();
+            }
+            entry->charge.emplace(std::move(charge.value()));
+            std::lock_guard<std::mutex> lock(state->index);
+            auto& slot = state->slots[at++];
+            slot.segment_id = entry->info.summary.segment_id;
+            slot.entry = entry;
+            slot.visible = true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->index);
+            state->startup_corrupt_count = report.value().corrupt_count;
+            state->startup_health = report.value().health;
+        }
+        return report;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& sealed) {
     auto state = state_;
     if (!sealed.segment || sealed.work_id == 0) {
@@ -166,34 +159,42 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
     std::size_t at = state->slots.size();
     std::shared_ptr<CommitFrame> frame;
     bool claimed = false;
-    const auto finish = [&](StatusCode failure) -> Result<void> {
+
+    const auto fail_before_publish = [&](StatusCode failure) -> Result<void> {
+        cleanup_staging_best_effort(state->options.volume, id);
+        if (frame && frame->committer) {
+            (void)frame->committer->abort_after_cleanup();
+            frame->committer.reset();
+        } else if (frame && frame->reservation) {
+            (void)frame->reservation->volume.settle_aborted_after_cleanup();
+            frame->reservation.reset();
+        }
+        if (frame) {
+            frame->files.reset();
+        }
         std::lock_guard<std::mutex> lock(state->index);
-        state->slots[at].work = CatalogWork::None;
-        state->slots[at].failure = failure;
-        return failure == StatusCode::Ok ? Result<void>{} : Result<void>(Status(failure, {}));
+        auto& slot = state->slots[at];
+        slot = CatalogSlot{};
+        return Status(failure, {});
     };
+
     try {
         frame = std::make_shared<CommitFrame>(sealed);
         {
             std::lock_guard<std::mutex> lock(state->index);
-            if (state->rebuilding) {
+            if (state->scanning) {
                 return Status(StatusCode::Conflict, {});
+            }
+            if (state->options.volume->protection() != StatusCode::Ok) {
+                return Status(state->options.volume->protection(), {});
             }
             at = state->find(id);
             if (at != state->slots.size()) {
                 const auto& existing = state->slots[at];
-                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None ||
-                    existing.collection_pending) {
+                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None) {
                     return Status(StatusCode::Conflict, {});
                 }
-                if (state->options.volume->protection() != StatusCode::Ok) {
-                    return Status(state->options.volume->protection(), {});
-                }
-                auto published = state->public_entry(existing);
-                if (!published.ok()) {
-                    return published.status();
-                }
-                return published.value() ? Result<void>{}
+                return existing.visible ? Result<void>{}
                        : existing.failure != StatusCode::Ok
                            ? Result<void>(Status(existing.failure, {}))
                            : Result<void>(Status(StatusCode::InvalidState, {}));
@@ -216,294 +217,76 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
             state->options.volume, id, input.files, input.envelope,
             input.manifest_limits.max_bytes);
         if (!files.ok()) {
-            return finish(files.status().code());
+            return fail_before_publish(files.status().code());
         }
         frame->files = std::move(files.value());
-        auto manifest = input.segment->metadata.capture_manifest(frame->files->evidence());
+        const auto now = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        auto manifest = input.segment->metadata.capture_manifest(frame->files->evidence(), now);
         if (!manifest.ok()) {
-            return finish(manifest.status().code());
+            return fail_before_publish(manifest.status().code());
         }
-        auto reservation = input.segment->capacity.handoff_sealed(frame->files->storage_bytes());
+        auto reservation = input.segment->handoff_sealed(frame->files->storage_bytes());
         if (!reservation.ok()) {
-            return finish(reservation.status().code());
+            return fail_before_publish(reservation.status().code());
         }
         frame->reservation.emplace(std::move(reservation.value()));
         auto committer = SegmentCommitter::create(
             frame->files, manifest.value(), input.manifest_limits, *frame->reservation);
         if (!committer.ok()) {
-            return finish(committer.status().code());
+            return fail_before_publish(committer.status().code());
         }
         frame->committer = std::move(committer.value());
-        auto committed = frame->committer->commit(*state->options.ledger);
+        auto committed = frame->committer->commit();
         if (!committed.ok()) {
-            return finish(committed.status().code());
+            return fail_before_publish(committed.status().code());
         }
-        auto entry = verify_committed(state->options, frame->committer->ledger_record());
+        // Final directory is now published. Verify and expose in Catalog.
+        auto entry = verify_final_artifact(state->options, id);
         if (!entry.ok()) {
-            return finish(entry.status().code());
-        }
-        {
             std::lock_guard<std::mutex> lock(state->index);
-            state->slots[at].entry = entry.value();
-            state->slots[at].visible = true;
+            state->slots[at].work = CatalogWork::None;
+            state->slots[at].failure = entry.status().code();
+            state->slots[at].frame.reset();
+            return entry.status();
         }
         auto charge = frame->committer->take_committed_charge();
         if (!charge.ok()) {
             state->corrupt(id);
-            return finish(charge.status().code());
+            std::lock_guard<std::mutex> lock(state->index);
+            state->slots[at].work = CatalogWork::None;
+            state->slots[at].failure = charge.status().code();
+            state->slots[at].frame.reset();
+            return charge.status();
         }
+        entry.value()->charge.emplace(std::move(charge.value()));
         {
             std::lock_guard<std::mutex> lock(state->index);
-            entry.value()->charge.emplace(std::move(charge.value()));
+            state->slots[at].entry = std::move(entry.value());
+            state->slots[at].visible = true;
+            state->slots[at].work = CatalogWork::None;
+            state->slots[at].failure = StatusCode::Ok;
             state->slots[at].frame.reset();
         }
-        // Drop pinned Commit file descriptors outside the index lock. Retained
-        // disk/metadata charge now belongs to the Catalog entry, not its cache age.
+        // Release pinned Commit file descriptors outside the index lock.
         frame->committer.reset();
-        return finish(StatusCode::Ok);
-    } catch (const std::bad_alloc&) {
-        return claimed ? finish(StatusCode::ResourceExhausted)
-                       : Result<void>(Status(StatusCode::ResourceExhausted, {}));
-    } catch (...) {
-        return claimed ? finish(StatusCode::Internal)
-                       : Result<void>(Status(StatusCode::Internal, {}));
-    }
-}
-
-Result<void> ArtifactCatalog::rebuild() {
-    auto state = state_;
-    {
-        std::lock_guard<std::mutex> lock(state->index);
-        if (state->rebuilding || std::any_of(
-                                     state->slots.begin(), state->slots.end(),
-                                     [](const auto& slot) { return slot.segment_id != 0; })) {
-            return Status(StatusCode::InvalidState, {});
-        }
-        state->rebuilding = true;
-    }
-    struct Rebuilding {
-        std::shared_ptr<CatalogState> state;
-        ~Rebuilding() {
-            std::lock_guard<std::mutex> lock(state->index);
-            state->rebuilding = false;
-        }
-    } rebuilding{state};
-    try {
-        auto records = state->options.ledger->recovery_snapshot();
-        if (!records.ok()) {
-            return records.status();
-        }
-        StatusCode failure = StatusCode::Ok;
-        std::size_t at = 0;
-        for (const auto& record : records.value()) {
-            if (record.state == LedgerState::Deleted) {
-                if (!(record.volume_id == state->options.volume->identity())) {
-                    return Status(StatusCode::DataLoss, {});
-                }
-                auto absent = prove_artifact_absence(state->options, record.segment_id);
-                if (!absent.ok()) {
-                    return absent.status();
-                }
-                auto entry = std::make_shared<CatalogEntry>();
-                entry->info.summary.artifact_id = {record.segment_id};
-                entry->info.summary.segment_id = record.segment_id;
-                entry->info.summary.task_id = record.task_id;
-                entry->info.summary.pipeline_id = record.pipeline_id;
-                entry->read_blocked = true;
-                auto charge = state->options.capacity->claim_recovered_artifact(0);
-                if (!charge.ok()) {
-                    return charge.status();
-                }
-                auto deleted = charge.value().release_after_delete();
-                if (!deleted.ok()) {
-                    return deleted.status();
-                }
-                entry->charge.emplace(std::move(charge.value()));
-                std::lock_guard<std::mutex> lock(state->index);
-                auto& slot = state->slots[at++];
-                slot.segment_id = record.segment_id;
-                slot.entry = std::move(entry);
-                continue;
-            }
-            if (record.state != LedgerState::Committed) {
-                std::lock_guard<std::mutex> lock(state->index);
-                auto& slot = state->slots[at++];
-                slot.segment_id = record.segment_id;
-                slot.failure = StatusCode::InvalidState;
-                if (failure == StatusCode::Ok) {
-                    failure = StatusCode::InvalidState;
-                }
-                continue;
-            }
-            auto verified = verify_committed(state->options, record);
-            if (!verified.ok()) {
-                failure = verified.status().code();
-                std::lock_guard<std::mutex> lock(state->index);
-                auto& slot = state->slots[at++];
-                slot.segment_id = record.segment_id;
-                slot.failure = failure;
-                continue;
-            }
-            auto charge = state->options.capacity->claim_recovered_artifact(
-                verified.value()->info.summary.physical_bytes);
-            if (!charge.ok()) {
-                return charge.status();
-            }
-            verified.value()->charge.emplace(std::move(charge.value()));
-            std::lock_guard<std::mutex> lock(state->index);
-            auto& slot = state->slots[at++];
-            slot.segment_id = record.segment_id;
-            slot.entry = std::move(verified.value());
-            slot.visible = true;
-        }
-        return failure == StatusCode::Ok ? Result<void>{} : Result<void>(Status(failure, {}));
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<void> ArtifactCatalog::rebuild(const VolumeRecoveryReport& report) {
-    auto state = state_;
-    {
-        std::lock_guard<std::mutex> lock(state->index);
-        if (state->rebuilding || !state->quarantined.empty() ||
-            std::any_of(state->slots.begin(), state->slots.end(), [](const auto& slot) {
-                return slot.segment_id != 0;
-            })) {
-            return Status(StatusCode::InvalidState, {});
-        }
-        state->rebuilding = true;
-    }
-    struct Rebuilding {
-        std::shared_ptr<CatalogState> state;
-        ~Rebuilding() {
-            std::lock_guard<std::mutex> lock(state->index);
-            state->rebuilding = false;
-        }
-    } rebuilding{state};
-    try {
-        auto records = state->options.ledger->recovery_snapshot();
-        if (!records.ok()) {
-            return records.status();
-        }
-        if (records.value().size() > state->slots.size()) {
-            return Status(StatusCode::ResourceExhausted, {});
-        }
-        std::size_t at = 0;
-        for (const auto& record : records.value()) {
-            if (record.state == LedgerState::Deleted) {
-                if (!(record.volume_id == state->options.volume->identity())) {
-                    return Status(StatusCode::DataLoss, {});
-                }
-                auto entry = std::make_shared<CatalogEntry>();
-                entry->info.summary.artifact_id = {record.segment_id};
-                entry->info.summary.segment_id = record.segment_id;
-                entry->info.summary.task_id = record.task_id;
-                entry->info.summary.pipeline_id = record.pipeline_id;
-                entry->read_blocked = true;
-                auto charge = state->options.capacity->claim_recovered_artifact(0);
-                if (!charge.ok()) {
-                    return charge.status();
-                }
-                auto deleted = charge.value().release_after_delete();
-                if (!deleted.ok()) {
-                    return deleted.status();
-                }
-                entry->charge.emplace(std::move(charge.value()));
-                std::lock_guard<std::mutex> lock(state->index);
-                auto& slot = state->slots[at++];
-                slot.segment_id = record.segment_id;
-                slot.entry = std::move(entry);
-                continue;
-            }
-            if (record.state != LedgerState::Committed) {
-                return Status(StatusCode::InvalidState, {});
-            }
-            const bool known_corrupt =
-                std::find(
-                    report.corrupted_committed_segments.begin(),
-                    report.corrupted_committed_segments.end(),
-                    record.segment_id) != report.corrupted_committed_segments.end();
-            if (known_corrupt) {
-                auto entry = std::make_shared<CatalogEntry>();
-                entry->info.summary.artifact_id = {record.segment_id};
-                entry->info.summary.segment_id = record.segment_id;
-                entry->info.summary.task_id = record.task_id;
-                entry->info.summary.pipeline_id = record.pipeline_id;
-                entry->read_blocked = true;
-                auto charge = state->options.capacity->claim_recovered_artifact(0);
-                if (!charge.ok()) {
-                    return charge.status();
-                }
-                entry->charge.emplace(std::move(charge.value()));
-                std::lock_guard<std::mutex> lock(state->index);
-                auto& slot = state->slots[at++];
-                slot.segment_id = record.segment_id;
-                slot.entry = std::move(entry);
-                slot.failure = StatusCode::DataLoss;
-                continue;
-            }
-            auto verified = verify_committed(state->options, record);
-            if (!verified.ok()) {
-                return verified.status();
-            }
-            auto charge = state->options.capacity->claim_recovered_artifact(
-                verified.value()->info.summary.physical_bytes);
-            if (!charge.ok()) {
-                return charge.status();
-            }
-            verified.value()->charge.emplace(std::move(charge.value()));
-            std::lock_guard<std::mutex> lock(state->index);
-            auto& slot = state->slots[at++];
-            slot.segment_id = record.segment_id;
-            slot.entry = std::move(verified.value());
-            slot.visible = true;
-        }
-
-        std::vector<std::shared_ptr<RetainedQuarantine>> retained;
-        retained.reserve(report.quarantined.size());
-        for (const auto& item : report.quarantined) {
-            auto charge = state->options.capacity->claim_recovered_artifact(item.physical_bytes);
-            if (!charge.ok()) {
-                return charge.status();
-            }
-            auto entry = std::make_shared<RetainedQuarantine>();
-            entry->info = item;
-            entry->charge.emplace(std::move(charge.value()));
-            retained.push_back(std::move(entry));
-        }
-        {
-            std::lock_guard<std::mutex> lock(state->index);
-            state->quarantined = std::move(retained);
-            state->recovery_health = report.health;
-        }
-        if (!report.usage_complete || report.health != StatusCode::Ok) {
-            state->options.capacity->protect(
-                report.health != StatusCode::Ok ? report.health : StatusCode::DataLoss);
-        }
         return {};
     } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
+        return claimed ? fail_before_publish(StatusCode::ResourceExhausted)
+                       : Result<void>(Status(StatusCode::ResourceExhausted, {}));
+    } catch (...) {
+        return claimed ? fail_before_publish(StatusCode::Internal)
+                       : Result<void>(Status(StatusCode::Internal, {}));
     }
 }
 
 Result<bool> ArtifactCatalog::retire_eligible(TaskId task) const {
     auto state = state_;
-    if (state->options.volume->protection() != StatusCode::Ok ||
-        state->options.ledger->protection() != StatusCode::Ok) {
+    if (state->options.volume->protection() != StatusCode::Ok) {
         return false;
-    }
-    auto records = state->options.ledger->recovery_snapshot();
-    if (!records.ok()) {
-        return false;
-    }
-    for (const auto& record : records.value()) {
-        if (record.task_id == task && record.state != LedgerState::Deleted) {
-            return false;
-        }
     }
     std::lock_guard<std::mutex> lock(state->index);
-    if (state->rebuilding) {
+    if (state->scanning || state->startup_health != StatusCode::Ok) {
         return false;
     }
     for (const auto& slot : state->slots) {
@@ -519,72 +302,34 @@ Result<bool> ArtifactCatalog::retire_eligible(TaskId task) const {
             }
             continue;
         }
-        if (slot.visible || slot.work != CatalogWork::None || slot.frame ||
+        if (slot.visible || slot.deleting_pending || slot.work != CatalogWork::None || slot.frame ||
             slot.failure != StatusCode::Ok || (slot.entry && slot.entry->readers != 0)) {
-            return false;
-        }
-    }
-    for (const auto& item : state->quarantined) {
-        if (!item || !item->info.task_id || *item->info.task_id == task) {
             return false;
         }
     }
     return true;
 }
 
-Result<bool> ArtifactCatalog::has_task_references(TaskId task) const {
+Result<std::vector<ArtifactId>> ArtifactCatalog::reset_targets(TaskId task) const {
     auto state = state_;
-    if (state->options.volume->protection() != StatusCode::Ok ||
-        state->options.ledger->protection() != StatusCode::Ok) {
-        return true;
-    }
-    auto records = state->options.ledger->recovery_snapshot();
-    if (!records.ok()) {
-        return true;
-    }
-    for (const auto& record : records.value()) {
-        if (record.task_id == task) {
-            return true;
-        }
-    }
-    std::lock_guard<std::mutex> lock(state->index);
-    if (state->rebuilding) {
-        return true;
-    }
-    for (const auto& slot : state->slots) {
-        if (slot.segment_id == 0) {
-            continue;
-        }
-        if (!slot.entry && !slot.frame) {
-            return true;
-        }
-        if ((slot.entry && slot.entry->info.summary.task_id == task) ||
-            (slot.frame && slot.frame->sealed.segment &&
-             slot.frame->sealed.segment->metadata.task_id() == task)) {
-            return true;
-        }
-    }
-    for (const auto& item : state->quarantined) {
-        if (!item || !item->info.task_id || *item->info.task_id == task) {
-            return true;
-        }
-    }
-    return false;
-}
-
-Result<std::vector<ArtifactId>> ArtifactCatalog::reset_targets(
-    TaskId task, ControlGeneration max_control_generation) const {
-    auto state = state_;
-    auto records = state->options.ledger->recovery_snapshot();
-    if (!records.ok()) {
-        return records.status();
+    if (state->options.volume->protection() != StatusCode::Ok) {
+        return Status(state->options.volume->protection(), {});
     }
     try {
         std::vector<ArtifactId> targets;
-        for (const auto& record : records.value()) {
-            if (record.task_id == task && record.control_generation <= max_control_generation &&
-                (record.state == LedgerState::Committed || record.state == LedgerState::Deleting)) {
-                targets.push_back(ArtifactId{record.segment_id});
+        {
+            std::lock_guard<std::mutex> lock(state->index);
+            if (state->scanning) {
+                return Status(StatusCode::Conflict, {});
+            }
+            for (const auto& slot : state->slots) {
+                if (slot.segment_id == 0 || !slot.entry ||
+                    !(slot.entry->info.summary.task_id == task)) {
+                    continue;
+                }
+                if (slot.visible || slot.deleting_pending) {
+                    targets.push_back(ArtifactId{slot.segment_id});
+                }
             }
         }
         std::sort(targets.begin(), targets.end(), [](ArtifactId a, ArtifactId b) {
@@ -596,136 +341,27 @@ Result<std::vector<ArtifactId>> ArtifactCatalog::reset_targets(
     }
 }
 
-Result<void> ArtifactCatalog::purge_quarantined_for_reset(
-    TaskId task, ControlGeneration max_control_generation) {
-    auto state = state_;
-    auto valid = state->options.volume->verify();
-    if (!valid.ok()) {
-        return valid.status();
-    }
-    struct Target {
-        std::string name;
-        bool in_quarantine_dir{true};
-    };
-    std::vector<Target> targets;
-    {
-        std::lock_guard<std::mutex> lock(state->index);
-        if (state->rebuilding) {
-            return Status(StatusCode::Conflict, {});
-        }
-        for (const auto& item : state->quarantined) {
-            if (item && item->info.task_id && *item->info.task_id == task &&
-                item->info.control_generation &&
-                *item->info.control_generation <= max_control_generation &&
-                item->info.reason != QuarantineReason::DeletedArtifactReappeared) {
-                targets.push_back(Target{item->info.name, item->info.in_quarantine_dir});
-            }
-        }
-    }
-    if (targets.empty()) {
-        return {};
-    }
-    FileDescriptor quarantine_dir(open(
-        (state->options.volume->root() / ".rodaq/quarantine").c_str(),
-        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-    FileDescriptor artifacts_dir(open(
-        state->options.volume->artifacts_directory().c_str(),
-        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-    if (quarantine_dir.get() < 0 || artifacts_dir.get() < 0) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    bool touched_quarantine = false;
-    bool touched_artifacts = false;
-    for (const auto& target : targets) {
-        const int parent_fd = target.in_quarantine_dir ? quarantine_dir.get() : artifacts_dir.get();
-        std::uint32_t remaining = kMaxPurgeEntries;
-        auto removed =
-            remove_tree_bounded(parent_fd, target.name.c_str(), kMaxPurgeDepth, remaining);
-        if (!removed.ok()) {
-            return removed.status();
-        }
-        if (target.in_quarantine_dir) {
-            touched_quarantine = true;
-        } else {
-            touched_artifacts = true;
-        }
-    }
-    if ((touched_quarantine && fsync(quarantine_dir.get()) != 0) ||
-        (touched_artifacts && fsync(artifacts_dir.get()) != 0)) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    valid = state->options.volume->verify();
-    if (!valid.ok()) {
-        return valid.status();
-    }
-    std::lock_guard<std::mutex> lock(state->index);
-    for (const auto& target : targets) {
-        auto it = std::find_if(
-            state->quarantined.begin(), state->quarantined.end(), [&](const auto& entry) {
-                return entry && entry->info.name == target.name &&
-                       entry->info.in_quarantine_dir == target.in_quarantine_dir;
-            });
-        if (it != state->quarantined.end()) {
-            if ((*it)->charge) {
-                auto deleted = (*it)->charge->release_after_delete();
-                if (!deleted.ok()) {
-                    return deleted.status();
-                }
-                auto collected = (*it)->charge->release_after_gc();
-                if (!collected.ok()) {
-                    return collected.status();
-                }
-            }
-            state->quarantined.erase(it);
-        }
-    }
-    return {};
-}
-
 CatalogSnapshot ArtifactCatalog::snapshot() const {
     auto state = state_;
     CatalogSnapshot result;
     std::lock_guard<std::mutex> lock(state->index);
-    result.protection = state->options.volume->protection() == StatusCode::Ok
-                            ? state->options.ledger->protection()
-                            : state->options.volume->protection();
-    if (result.protection == StatusCode::Ok && state->recovery_health != StatusCode::Ok) {
-        result.protection = state->recovery_health;
+    result.protection = state->options.volume->protection();
+    if (result.protection == StatusCode::Ok && state->startup_health != StatusCode::Ok) {
+        result.protection = state->startup_health;
     }
+    result.corrupt_artifacts = state->startup_corrupt_count;
     for (const auto& slot : state->slots) {
-        auto public_fact = state->public_entry(slot);
-        const bool normal = public_fact.ok() && public_fact.value();
-        if (!public_fact.ok() && result.protection == StatusCode::Ok) {
-            result.protection = public_fact.status().code();
-        }
-        if (slot.failure != StatusCode::Ok) {
-            if (result.protection == StatusCode::Ok) {
-                result.protection = slot.failure;
-            }
-            if (slot.failure == StatusCode::DataLoss && !normal) {
-                ++result.corrupted_committed;
-            }
-        }
-        result.visible += normal ? 1 : 0;
-        bool deleted = slot.collection_pending;
-        if (slot.segment_id != 0 && !normal) {
-            auto record = state->options.ledger->get(slot.segment_id);
-            deleted = deleted || (record.ok() && record.value().state == LedgerState::Deleted);
-        }
-        result.pending += slot.segment_id != 0 && !normal && !deleted ? 1 : 0;
-        result.commit_inflight += slot.work == CatalogWork::Commit ? 1 : 0;
-        result.delete_inflight += slot.work == CatalogWork::Delete ? 1 : 0;
-        result.collect_inflight += slot.work == CatalogWork::Collect ? 1 : 0;
-    }
-    for (const auto& item : state->quarantined) {
-        if (!item) {
+        if (slot.segment_id == 0) {
             continue;
         }
-        ++result.quarantined;
-        if (!item->info.in_quarantine_dir) {
-            ++result.verification_required;
+        if (slot.visible && slot.entry) {
+            ++result.visible;
         }
-        result.quarantined_bytes += item->info.physical_bytes;
+        if (slot.failure == StatusCode::DataLoss && !slot.visible) {
+            ++result.corrupt_artifacts;
+        }
+        result.commit_inflight += slot.work == CatalogWork::Commit ? 1 : 0;
+        result.delete_inflight += slot.work == CatalogWork::Delete ? 1 : 0;
     }
     result.read_leases = state->read_leases;
     result.reads_inflight = state->active_reads.load();

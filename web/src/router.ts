@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
-import type { Scope } from './api/generated';
 import type { SessionStore } from './composables/useSession';
 import LoginPage from './features/session/LoginPage.vue';
 import OverviewPage from './features/overview/OverviewPage.vue';
@@ -12,8 +11,6 @@ import SystemPage from './features/system/SystemPage.vue';
 declare module 'vue-router' {
   interface RouteMeta {
     requiresAuth?: boolean;
-    requiredScope?: Scope;
-    allowedDuringRecovery?: boolean;
     title?: string;
   }
 }
@@ -29,73 +26,43 @@ export const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'overview',
     component: OverviewPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'read',
-      allowedDuringRecovery: true,
-      title: 'Overview',
-    },
+    meta: { requiresAuth: true, title: 'Overview' },
   },
   {
     path: '/tasks',
     name: 'tasks',
     component: TaskListPage,
-    meta: { requiresAuth: true, requiredScope: 'read', allowedDuringRecovery: false, title: 'Tasks' },
+    meta: { requiresAuth: true, title: 'Tasks' },
   },
   {
     path: '/tasks/new',
     name: 'task-create',
     component: TaskEditorPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'control',
-      allowedDuringRecovery: false,
-      title: 'Create Task',
-    },
+    meta: { requiresAuth: true, title: 'Create Task' },
   },
   {
     path: '/tasks/:taskId',
     name: 'task-detail',
     component: TaskDetailPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'read',
-      allowedDuringRecovery: false,
-      title: 'Task Detail',
-    },
+    meta: { requiresAuth: true, title: 'Task Detail' },
   },
   {
     path: '/tasks/:taskId/config',
     name: 'task-configure',
     component: TaskEditorPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'control',
-      allowedDuringRecovery: false,
-      title: 'Configure Task',
-    },
+    meta: { requiresAuth: true, title: 'Configure Task' },
   },
   {
     path: '/artifacts',
     name: 'artifacts',
     component: ArtifactsPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'read',
-      allowedDuringRecovery: false,
-      title: 'Artifacts',
-    },
+    meta: { requiresAuth: true, title: 'Artifacts' },
   },
   {
     path: '/system',
     name: 'system',
     component: SystemPage,
-    meta: {
-      requiresAuth: true,
-      requiredScope: 'read',
-      allowedDuringRecovery: true,
-      title: 'System',
-    },
+    meta: { requiresAuth: true, title: 'System' },
   },
   {
     path: '/:pathMatch(.*)*',
@@ -104,7 +71,7 @@ export const routes: RouteRecordRaw[] = [
       template:
         '<section class="card"><h1>Page Not Found</h1><p class="muted">The requested console route does not exist.</p></section>',
     },
-    meta: { requiresAuth: true, allowedDuringRecovery: true, title: 'Not Found' },
+    meta: { requiresAuth: true, title: 'Not Found' },
   },
 ];
 
@@ -120,11 +87,7 @@ export function createAppRouter(session: SessionStore) {
     }
     const requiresAuth = to.meta.requiresAuth !== false;
     if (!requiresAuth) {
-      if (
-        (session.lifecycle === 'AuthenticatedReady' ||
-          session.lifecycle === 'AuthenticatedRecovering') &&
-        to.name === 'login'
-      ) {
+      if (session.lifecycle === 'AuthenticatedReady' && to.name === 'login') {
         return { path: session.intendedRoute ?? '/' };
       }
       return true;
@@ -138,7 +101,6 @@ export function createAppRouter(session: SessionStore) {
   });
 
   router.afterEach(() => {
-    // Accessibility: move focus to main landmark/heading after route transition (Web §4.6).
     queueMicrotask(() => {
       const heading = document.querySelector<HTMLElement>('main h1, main[tabindex]');
       if (heading) {

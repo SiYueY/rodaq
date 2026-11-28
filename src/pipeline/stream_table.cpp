@@ -17,18 +17,13 @@ Result<StreamTable> StreamTable::create(
     });
     for (std::size_t i = 0; i < streams.size(); ++i) {
         const auto& stream = streams[i];
-        // Matches the formal Task stream_key grammar, not a backend topic rule.
         if (stream.stream_id == 0 || (i != 0 && streams[i - 1].stream_id == stream.stream_id) ||
             stream.max_record_bytes == 0 ||
             stream.max_record_bytes > std::numeric_limits<std::uint32_t>::max() ||
             stream.stream_key.empty() || stream.stream_key.size() > 128 ||
             !std::all_of(
                 stream.stream_key.begin(), stream.stream_key.end(),
-                [](unsigned char byte) { return byte >= 0x21 && byte <= 0x7e; }) ||
-            stream.sequences.begin == 0 ||
-            stream.sequences.begin >= stream.sequences.end_exclusive ||
-            stream.descriptors.begin == 0 ||
-            stream.descriptors.begin >= stream.descriptors.end_exclusive) {
+                [](unsigned char byte) { return byte >= 0x21 && byte <= 0x7e; })) {
             return Status(StatusCode::InvalidArgument, {});
         }
         for (std::size_t j = 0; j < i; ++j) {
@@ -44,17 +39,6 @@ Result<StreamTable> StreamTable::create(
         for (auto& stream : streams) {
             auto entry = std::make_unique<Entry>(
                 stream.stream_id, std::move(stream.stream_key), stream.max_record_bytes);
-            auto sequence_started = entry->admission.sequences.begin_refill(1);
-            auto descriptor_started = entry->admission.descriptor_ids.begin_refill(1);
-            if (!sequence_started.ok() || !descriptor_started.ok()) {
-                return Status(StatusCode::Internal, {});
-            }
-            auto sequence_ready = entry->admission.sequences.finish_refill(1, stream.sequences);
-            auto descriptor_ready =
-                entry->admission.descriptor_ids.finish_refill(1, stream.descriptors);
-            if (!sequence_ready.ok() || !descriptor_ready.ok()) {
-                return Status(StatusCode::Internal, {});
-            }
             table.bindings_.push_back(
                 {{sizeof(acquisition::StreamBinding)},
                  stream.stream_id,

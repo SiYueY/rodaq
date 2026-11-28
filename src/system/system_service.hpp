@@ -17,7 +17,6 @@ struct SystemServiceOptions {
 
 struct SystemObservation {
     bool core_ready{false};
-    SystemRecoveryStatus recovery;
     std::vector<VolumeStatus> volumes;
     SystemBacklogSnapshot backlog;
 };

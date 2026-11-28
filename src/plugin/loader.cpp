@@ -3,14 +3,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <sys/sysmacros.h>
 #include <utility>
 
 #include <rodaq/plugin/abi.hpp>
@@ -37,8 +34,6 @@ ResidentLibraries& residents() {
     return *libraries;
 }
 
-// Distinguish an exception escaping foreign code from a Framework allocation
-// failure. Even foreign std::bad_alloc is an ABI violation, not a safe retry.
 struct NativeAbiViolation {};
 
 template <typename Function>
@@ -75,7 +70,7 @@ Result<void> validate_descriptor(
     }
     const std::string_view version(
         descriptor->plugin_version.data, descriptor->plugin_version.size);
-    if (!parse_version(version).ok() ||
+    if (!parse_semver(version).ok() ||
         expected.plugin_id !=
             std::string_view(descriptor->plugin_id.data, descriptor->plugin_id.size) ||
         expected.plugin_name !=
@@ -84,40 +79,6 @@ Result<void> validate_descriptor(
         return Status(StatusCode::InvalidArgument, "Plugin descriptor/Manifest mismatch");
     }
     return {};
-}
-
-bool mapping_matches(void* address, const FileIdentity& identity) {
-    // dladdr alone cannot detect a pathname replaced while an older ELF mapping
-    // remains resident. Verify the inode/device of the actual executable VMA.
-    Dl_info information{};
-    if (dladdr(address, &information) == 0 || information.dli_fname == nullptr) {
-        return false;
-    }
-    const auto named = file_identity(information.dli_fname);
-    if (!named.ok() || !same_file(named.value(), identity)) {
-        return false;
-    }
-    std::ifstream maps("/proc/self/maps");
-    std::array<char, 8192> line{};
-    const auto target = reinterpret_cast<std::uintptr_t>(address);
-    std::size_t lines = 0;
-    while (maps.getline(line.data(), line.size()) && ++lines <= 65536) {
-        unsigned long long start = 0;
-        unsigned long long end = 0;
-        unsigned long long offset = 0;
-        unsigned long long inode = 0;
-        unsigned int device_major = 0;
-        unsigned int device_minor = 0;
-        std::array<char, 5> permissions{};
-        const auto fields = std::sscanf(
-            line.data(), "%llx-%llx %4s %llx %x:%x %llu", &start, &end, permissions.data(), &offset,
-            &device_major, &device_minor, &inode);
-        if (fields == 7 && target >= start && target < end) {
-            return permissions[2] == 'x' && inode == identity.inode &&
-                   device_major == major(identity.device) && device_minor == minor(identity.device);
-        }
-    }
-    return false;
 }
 
 }  // namespace
@@ -161,25 +122,17 @@ Result<void> PreparedLibrary::commit() {
 }
 
 Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
-    auto verified = verify_artifact(entry);
-    if (!verified.ok()) {
-        return verified.status();
-    }
     auto& cache = residents();
     std::optional<std::size_t> reservation;
     {
         std::lock_guard<std::mutex> lock(cache.mutex);
         for (std::size_t i = 0; i < cache.slots.size(); ++i) {
             const auto& slot = cache.slots[i];
-            if (slot.library && same_file(slot.library->identity, verified.value()) &&
-                slot.library->binary.sha256 == entry.binary.sha256) {
+            if (slot.library && slot.library->path == entry.library_path) {
                 if (!matches_metadata(slot.library->info, entry.info)) {
-                    return Status(StatusCode::Conflict, "Resident Artifact metadata conflict");
+                    return Status(StatusCode::Conflict, "Resident Plugin metadata conflict");
                 }
                 return PreparedLibrary(slot.library, {});
-            }
-            if (slot.library && slot.library->path == entry.artifact) {
-                return Status(StatusCode::Conflict, "Resident Plugin path was replaced");
             }
             if (!slot.reserved && !slot.library && !reservation) {
                 reservation = i;
@@ -195,11 +148,9 @@ Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
     prepared.library_ = std::make_shared<LibraryState>();
     auto& library = *prepared.library_;
     library.info = entry.info;
-    library.binary = entry.binary;
-    library.path = entry.artifact;
-    library.identity = verified.value();
+    library.path = entry.library_path;
     prepared.handle_ =
-        bootstrap_call([&] { return dlopen(entry.artifact.c_str(), RTLD_NOW | RTLD_LOCAL); });
+        bootstrap_call([&] { return dlopen(entry.library_path.c_str(), RTLD_NOW | RTLD_LOCAL); });
     if (prepared.handle_ == nullptr) {
         const auto* message = dlerror();
         return Status(
@@ -207,8 +158,8 @@ Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
             message == nullptr ? "dlopen failed" : std::string(message, strnlen(message, 256)));
     }
     void* version_address = dlsym(prepared.handle_, "rodaq_plugin_abi_version");
-    if (version_address == nullptr || !mapping_matches(version_address, library.identity)) {
-        return Status(StatusCode::InvalidArgument, "Plugin ABI symbol provenance failed");
+    if (version_address == nullptr) {
+        return Status(StatusCode::InvalidArgument, "Missing rodaq_plugin_abi_version symbol");
     }
     uint32_t (*version)(void) = nullptr;
     static_assert(sizeof(version) == sizeof(version_address), "POSIX function pointer size");
@@ -221,8 +172,8 @@ Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
         return Status(StatusCode::Unavailable, "Plugin ABI version mismatch");
     }
     void* entry_address = dlsym(prepared.handle_, "rodaq_plugin_get_entry");
-    if (entry_address == nullptr || !mapping_matches(entry_address, library.identity)) {
-        return Status(StatusCode::InvalidArgument, "Plugin Entry symbol provenance failed");
+    if (entry_address == nullptr) {
+        return Status(StatusCode::InvalidArgument, "Missing rodaq_plugin_get_entry symbol");
     }
     const rodaq_plugin_entry_t* (*get_entry)(void) = nullptr;
     static_assert(sizeof(get_entry) == sizeof(entry_address), "POSIX function pointer size");
@@ -243,10 +194,6 @@ Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
         validate_descriptor(bootstrap_call(library.entry.descriptor), library.info);
     if (!descriptor.ok()) {
         return descriptor.status();
-    }
-    const auto after = file_identity(entry.artifact);
-    if (!after.ok() || !same_file(library.identity, after.value())) {
-        return Status(StatusCode::DataLoss, "Plugin artifact changed during load");
     }
     return prepared;
 }

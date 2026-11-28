@@ -1,22 +1,23 @@
 #pragma once
 
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 
 #include <rodaq/acquisition/types.hpp>
 
+#include "../time/clock.hpp"
 #include "admission_gate.hpp"
 #include "record_budget.hpp"
 #include "record_queue.hpp"
 #include "recording_segment.hpp"
-#include "sequence_allocator.hpp"
 
 namespace rodaq::pipeline {
 
 // Controller owns this fixed Stream entry through actual callback completion.
-// Descriptor Cut, sequence refill completion, Segment cursor and Admission
-// finalization use this same short mutex. Never hold it across Native or I/O.
+// Bind-once Descriptor is frozen during Prepare; AcceptanceSequence is
+// instance-local starting at 1. Never hold mutex across Native or I/O.
 struct StreamAdmission {
     std::mutex mutex;
     std::condition_variable segment_changed;
@@ -24,11 +25,7 @@ struct StreamAdmission {
     const std::uint64_t max_record_bytes;
     DescriptorRef active_descriptor;
     std::shared_ptr<RecordingSegment> segment;
-    SequenceAllocator sequences;
-    // Separate durable Stream-scoped identity range; a failed Descriptor
-    // prepare may burn an ID but can never reuse an interpretation identity.
-    SequenceAllocator descriptor_ids;
-    bool descriptor_proposal_inflight{false};
+    std::uint64_t next_sequence{1};
     bool segment_transition{false};
 
     StreamAdmission(StreamId identity, std::uint64_t max_bytes) noexcept
@@ -46,16 +43,15 @@ struct AdmissionDomain {
     RecordBudget& records;
     PayloadPool& payloads;
     RecordQueue& queue;
-    // Frozen instance recording timeline: receive monotonic delta from Open
-    // plus the Task's durable accumulated active recording time.
+    const time::PlaybackAnchor playback_anchor;
     const std::uint64_t recording_base_ns{0};
     const std::uint64_t opened_monotonic_ns{0};
 };
 
-// Core captures a fresh receive sample/Epoch before calling this function.
+// Core captures a fresh receive clock sample before calling this function.
 // Borrowed plugin input is retained only through this COPY call, never queued.
-Result<acquisition::SubmitResult> submit_record(
+Result<acquisition::RecordDisposition> submit_record(
     AdmissionDomain& domain, StreamAdmission& stream, const acquisition::RecordAttempt& attempt,
-    const time::ClockSnapshot& received);
+    const time::ClockSample& received);
 
 }  // namespace rodaq::pipeline

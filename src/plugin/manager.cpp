@@ -2,7 +2,6 @@
 
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
-#include <rodaq/plugin/registry.hpp>
 
 #include "lifecycle.hpp"
 
@@ -54,11 +53,9 @@ Result<std::shared_ptr<LibraryState>> load_library(
             return Status(StatusCode::InvalidState, "PluginManager is not Running");
         }
         const auto& selected = manager->catalog[index];
-        // Alias installations of the same validated main Artifact share one load.
         for (std::size_t i = 0; i < index; ++i) {
             const auto& candidate = manager->catalog[i];
-            if (same_file(candidate.identity, selected.identity) &&
-                candidate.binary.sha256 == selected.binary.sha256 &&
+            if (candidate.library_path == selected.library_path &&
                 candidate.info.plugin_id == selected.info.plugin_id &&
                 candidate.info.plugin_name == selected.info.plugin_name &&
                 candidate.info.plugin_version == selected.info.plugin_version) {
@@ -302,41 +299,10 @@ bool PluginManager::restart_required() const noexcept {
     return state_->restart_required;
 }
 
-bool PluginManager::initialization_cleanup_settled() const noexcept {
-    assert(state_);
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->phase == PluginManagerPhase::Stopped) {
-        return true;
-    }
-    if (state_->phase != PluginManagerPhase::Running || state_->restart_required) {
-        return false;
-    }
-    // Failed initialization backing remains indexed until actual destroy and
-    // Registry release precede close's terminal publication. Unreturned creates
-    // cannot be discharged by this fact; successful Open instances are unrelated.
-    return std::none_of(
-        state_->instances.begin(), state_->instances.end(), [](const auto& instance) {
-            return instance && instance->initialization.done &&
-                   !instance->initialization.result.ok();
-        });
-}
-
 Result<void> PluginManager::shutdown(Deadline deadline) {
     assert(state_);
     if (current_manager_invocation(*state_)) {
         return Status(StatusCode::InvalidState, "Shutdown would await current invocation");
-    }
-    {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        for (const auto& instance : state_->instances) {
-            if (instance) {
-                std::lock_guard<std::mutex> state_lock(instance->mutex);
-                if (current_service_locked(*instance)) {
-                    return Status(
-                        StatusCode::InvalidState, "Shutdown would await current Service call");
-                }
-            }
-        }
     }
     request_shutdown(state_);
     std::unique_lock<std::mutex> lock(state_->mutex);
@@ -382,17 +348,8 @@ const PluginInfo& PluginLibrary::info() const noexcept {
     return state_->info;
 }
 
-const PluginBinaryInfo& PluginLibrary::binary() const noexcept {
-    assert(state_);
-    return state_->binary;
-}
-
-Result<PluginInstance> PluginLibrary::create_instance(
-    const ServiceRegistry& services, std::string_view config) const {
+Result<PluginInstance> PluginLibrary::create_instance(std::string_view config) const {
     assert(manager_ && state_);
-    if (!services.frozen()) {
-        return Status(StatusCode::InvalidArgument, "ServiceRegistry must be frozen");
-    }
     if (config.size() > manager_->options.max_config_size) {
         return Status(StatusCode::ResourceExhausted, "Plugin configuration size limit");
     }
@@ -424,8 +381,8 @@ Result<PluginInstance> PluginLibrary::create_instance(
             throw std::bad_alloc();
         }
         instance = std::make_shared<InstanceState>(
-            manager_, state_, services.state_, config.empty() ? std::string{} : std::string(config),
-            slot, identity.value());
+            manager_, state_, config.empty() ? std::string{} : std::string(config), slot,
+            identity.value());
         instance->initialization.instance = instance;
     } catch (...) {
         std::lock_guard<std::mutex> lock(manager_->mutex);

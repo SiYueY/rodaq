@@ -1,12 +1,12 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
+#include <limits>
 #include <string_view>
-#include <utility>
 #include <vector>
 
-#include <rodaq/plugin/service_reference.hpp>
+#include <rodaq/plugin/provider.hpp>
+#include <rodaq/plugin/types.hpp>
 
 namespace rodaq::plugin {
 
@@ -14,6 +14,31 @@ namespace authoring {
 template <typename Plugin>
 struct Instance;
 }
+
+/** Borrowed Application logging callback valid for the enclosing Plugin Instance lifetime. */
+class ApplicationLogger {
+public:
+    ApplicationLogger() = default;
+
+    explicit ApplicationLogger(rodaq_application_callbacks_t callbacks) noexcept
+    : callbacks_(callbacks) {}
+
+    void log(LogLevel level, std::string_view message) const noexcept {
+        if (callbacks_.log == nullptr) {
+            return;
+        }
+        const auto size = message.size() > std::numeric_limits<std::uint32_t>::max()
+                              ? std::numeric_limits<std::uint32_t>::max()
+                              : static_cast<std::uint32_t>(message.size());
+        const rodaq_string_t text{size == 0 ? nullptr : message.data(), size};
+        callbacks_.log(callbacks_.context, static_cast<rodaq_log_level_t>(level), text);
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept { return callbacks_.log != nullptr; }
+
+private:
+    rodaq_application_callbacks_t callbacks_{};
+};
 
 class PluginSetup {
 public:
@@ -24,38 +49,15 @@ public:
 
     [[nodiscard]] std::string_view config() const noexcept { return config_; }
 
+    void log(LogLevel level, std::string_view message) const noexcept {
+        logger_.log(level, message);
+    }
+
+    [[nodiscard]] ApplicationLogger logger() const noexcept { return logger_; }
+
     template <typename Interface, typename Implementation>
     Result<void> provide(Implementation& implementation) {
         return authoring::add_interface<Interface>(entries_, implementation);
-    }
-
-    template <typename Interface>
-    Result<typename Interface::Reference> service(std::uint16_t minimum_minor = 0) {
-        const auto id = Interface::kInterfaceId;
-        if (!abi::valid_identifier(id) || minimum_minor > Interface::kMinor) {
-            return Status(StatusCode::InvalidArgument, "Invalid Service query");
-        }
-        const rodaq_interface_query_t query{
-            {id.data(), static_cast<std::uint32_t>(id.size())},
-            Interface::kMajor,
-            minimum_minor,
-            Interface::kMinor};
-        std::array<std::uint8_t, 512> buffer{};
-        rodaq_error_t error{{buffer.data(), buffer.size(), 0}};
-        rodaq_interface_reference_t reference{};
-        const abi::BufferSnapshot expected{buffer.data(), buffer.size()};
-        const auto code = services_.vtable->query(services_.context, &query, &reference, &error);
-        auto status = abi::status_from_abi(code, error, expected);
-        if (!status.ok()) {
-            return status;
-        }
-        typename Interface::Vtable table{};
-        if (reference.negotiated_version.minor < minimum_minor ||
-            !abi::copy_vtable<Interface>(reference, table)) {
-            return Status(StatusCode::Internal, "Invalid Service vtable");
-        }
-        return
-            typename Interface::Reference(ServiceReference<Interface>(services_, reference, table));
     }
 
 private:
@@ -63,12 +65,12 @@ private:
     friend struct authoring::Instance;
 
     PluginSetup(
-        std::string_view config, rodaq_service_registry_reference_t services,
+        std::string_view config, rodaq_application_callbacks_t callbacks,
         std::vector<authoring::InterfaceEntry>& entries) noexcept
-    : config_(config), services_(services), entries_(entries) {}
+    : config_(config), logger_(callbacks), entries_(entries) {}
 
     std::string_view config_;
-    rodaq_service_registry_reference_t services_;
+    ApplicationLogger logger_;
     std::vector<authoring::InterfaceEntry>& entries_;
 };
 

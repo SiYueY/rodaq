@@ -23,6 +23,17 @@ enum {
     RODAQ_STATUS_INTERNAL = 10u
 };
 
+typedef uint32_t rodaq_log_level_t;
+
+enum {
+    RODAQ_LOG_TRACE = 0u,
+    RODAQ_LOG_DEBUG = 1u,
+    RODAQ_LOG_INFO = 2u,
+    RODAQ_LOG_WARNING = 3u,
+    RODAQ_LOG_ERROR = 4u,
+    RODAQ_LOG_CRITICAL = 5u
+};
+
 /**
  * FROZEN_VALUE. Borrowed UTF-8 bytes, not NUL-terminated. NULL iff empty is allowed; NULL with
  * nonzero size is invalid. Synchronous inputs live until the native call returns.

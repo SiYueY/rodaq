@@ -1,11 +1,9 @@
 #include <rodaq/acquisition/interface.hpp>
-#include <rodaq/acquisition/service.hpp>
 #include <rodaq/plugin/authoring.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <string_view>
 #include <thread>
 
@@ -15,7 +13,8 @@ using rodaq::plugin::Deadline;
 // Bounded callback ABI fixture, not a native protocol implementation.
 class AcquisitionProbe {
 public:
-    rodaq::Result<void> prepare(const acq::PrepareConfig& config, Deadline deadline) {
+    rodaq::Result<void> prepare(
+        const acq::PrepareConfig& config, acq::Callbacks callbacks, Deadline) {
         if (started_ || config.stream_count != 1 ||
             std::string_view(
                 config.streams[0].stream_key.data, config.streams[0].stream_key.size) != "sample" ||
@@ -23,29 +22,33 @@ public:
             return rodaq::Status(
                 rodaq::StatusCode::InvalidArgument, "Expected exactly configured sample binding");
         }
+        callbacks_ = callbacks;
         stream_ = config.streams[0].stream_id;
         concurrency_ = std::min<std::uint32_t>(config.max_callback_concurrency, workers_.size());
-        acq::DescriptorProposal proposal{};
-        proposal.header.struct_size = sizeof(proposal);
-        proposal.stream_id = stream_;
-        proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
-        proposal.channel_name = {"sample", 6};
-        proposal.message_encoding = {"raw", 3};
-        auto proposed = service->propose_descriptor(proposal, deadline);
-        if (!proposed.ok()) {
-            return proposed.status();
+
+        acq::Descriptor descriptor{};
+        descriptor.header.struct_size = sizeof(descriptor);
+        descriptor.stream_id = stream_;
+        descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
+        descriptor.channel_name = {"sample", 6};
+        descriptor.message_encoding = {"raw", 3};
+        auto bound = callbacks_.prepare_descriptor(stream_, descriptor);
+        if (!bound.ok()) {
+            return bound.status();
         }
-        token_ = proposed.value();
+        descriptor_id_ = bound.value();
+
         acq::AcquisitionEvent event{};
         event.header.struct_size = sizeof(event);
         event.kind = RODAQ_ACQUISITION_EVENT_STREAM_READY;
         event.has_stream_id = 1;
         event.stream_id = stream_;
-        return service->report_acquisition_event(event);
+        callbacks_.report_event(event);
+        return {};
     }
 
     rodaq::Result<void> start(Deadline) {
-        if (started_ || token_.value == 0) {
+        if (started_ || descriptor_id_ == 0) {
             return rodaq::Status(
                 rodaq::StatusCode::InvalidState, "Probe not prepared or already started");
         }
@@ -56,10 +59,9 @@ public:
                 acq::RecordAttempt record{};
                 record.header.struct_size = sizeof(record);
                 record.stream_id = stream_;
-                record.descriptor_token = token_;
-                record.payload = {{sizeof(record.payload)}, payload.data(), payload.size()};
-                const auto result = service->submit_record(record);
-                (void)result;
+                record.descriptor_id = descriptor_id_;
+                record.payload = {payload.data(), payload.size()};
+                (void)callbacks_.submit_record(record);
                 payload.fill(0xff);  // Caller copy must already be independent.
             });
         }
@@ -76,12 +78,11 @@ public:
         return {};
     }
 
-    std::optional<acq::ServiceReference> service;
-
 private:
+    acq::Callbacks callbacks_;
     std::array<std::thread, 4> workers_;
     rodaq_stream_id_t stream_{0};
-    acq::DescriptorToken token_{};
+    rodaq_descriptor_id_t descriptor_id_{0};
     std::uint32_t concurrency_{0};
     bool started_{false};
 };
@@ -89,11 +90,6 @@ private:
 class ProbePlugin final : public rodaq::plugin::PluginBase {
 public:
     rodaq::Result<void> configure(rodaq::plugin::PluginSetup& setup) override {
-        auto service = setup.service<acq::Service>();
-        if (!service.ok()) {
-            return service.status();
-        }
-        probe_.service = std::move(service).value();
         return setup.provide<acq::Interface>(probe_);
     }
 

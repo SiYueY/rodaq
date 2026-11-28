@@ -16,17 +16,14 @@ namespace rodaq::artifact {
 struct FileEvidence {
     std::string relative_path;
     std::uint64_t physical_size{0};
-    std::string digest;
 };
 
 class SegmentCommitter;
-struct LedgerRecord;
-struct SegmentManifest;
-struct ManifestLimits;
 
-// Single Commit-lane owner, retained through actual filesystem calls. Opens and
-// pins the exact sealed regular-file set and computes hashes of actual bytes.
-// No method calls Storage or establishes Ledger/Catalog committed authority.
+// Single Commit-lane owner, retained through actual filesystem calls. Validates
+// the flat regular-file set and exact physical sizes without mandatory full-file
+// SHA-256 readback, writes manifest.json, and performs same-parent atomic
+// no-replace publication (<id>.tmp -> <id>).
 class SealedFiles {
 public:
     static Result<std::unique_ptr<SealedFiles>> open(
@@ -41,11 +38,8 @@ public:
     std::uint64_t storage_bytes() const noexcept;
     std::uint64_t manifest_bytes() const noexcept;
     const std::filesystem::path& staging_directory() const noexcept;
-    // Core supplies already validated/domain-encoded Manifest bytes. First
-    // attempt only: failure/uncertainty requires Commit recovery, not overwrite.
     Result<void> install_manifest(std::string_view encoded_manifest);
     Result<void> sync_tree();
-    // Rechecks pinned identities, exact flat entries and Volume identity.
     Result<void> verify() const;
     bool durable_tree() const noexcept;
     std::uint64_t segment_id() const noexcept;
@@ -53,13 +47,6 @@ public:
 
 private:
     friend class SegmentCommitter;
-    static Result<std::unique_ptr<SealedFiles>> recover(
-        std::shared_ptr<ManagedVolume> volume, const LedgerRecord& record,
-        const ManifestLimits& limits, persistence::FileFaultHook faults);
-    const SegmentManifest& recovery_manifest() const noexcept;
-    Result<void> finish_recovery_publication();
-    Result<void> verify_recovery_publication() const;
-    // Only the Commit owner may publish after durable Ledger committing.
     Result<void> publish_directory();
     struct State;
     explicit SealedFiles(std::unique_ptr<State> state) noexcept;

@@ -10,15 +10,15 @@
 #include <string>
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <rmw/validate_full_topic_name.h>
 
-#include "../../support/ros2/schema.hpp"
-#include "../../../src/persistence/json.hpp"
+#include "ros2/schema.hpp"
 
 namespace rodaq::ros2_acquisition {
 namespace {
 
-using persistence::Json;
+using Json = nlohmann::json;
 
 bool fields(const Json& value, std::initializer_list<std::string_view> allowed) {
     if (!value.is_object()) {
@@ -32,7 +32,14 @@ bool fields(const Json& value, std::initializer_list<std::string_view> allowed) 
     return true;
 }
 
-Result<std::uint64_t> decimal(const Json& value, std::uint64_t maximum) {
+Result<std::uint64_t> decimal_or_uint(const Json& value, std::uint64_t maximum) {
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<std::uint64_t>();
+        if (number <= maximum) {
+            return number;
+        }
+        return Status(StatusCode::InvalidArgument, {});
+    }
     if (!value.is_string()) {
         return Status(StatusCode::InvalidArgument, {});
     }
@@ -60,7 +67,7 @@ Result<std::chrono::nanoseconds> duration(const Json& value, bool zero) {
     if (multiplier == 0) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    const auto parsed = decimal(value["value"], 60000000000ULL / multiplier);
+    const auto parsed = decimal_or_uint(value["value"], 60000000000ULL / multiplier);
     if (!parsed.ok() || (!zero && parsed.value() == 0)) {
         return Status(StatusCode::InvalidArgument, {});
     }
@@ -132,7 +139,7 @@ Result<StreamConfig> stream_config(const Json& input) {
         return Status(StatusCode::InvalidArgument, {});
     }
     if (qos.contains("depth")) {
-        auto depth = decimal(qos["depth"], 1000000);
+        auto depth = decimal_or_uint(qos["depth"], 1000000);
         if (!depth.ok() || depth.value() == 0) {
             return Status(StatusCode::InvalidArgument, {});
         }
@@ -144,18 +151,17 @@ Result<StreamConfig> stream_config(const Json& input) {
 }  // namespace
 
 Result<Config> parse_config(std::string_view input) {
-    auto parsed = persistence::parse_json(input, {512 * 1024, 8, 1024, 16, 256, 4096});
-    if (!parsed.ok()) {
-        return parsed.status();
+    if (input.empty() || input.size() > 512 * 1024) {
+        return Status(StatusCode::InvalidArgument, "Invalid ROS 2 config size");
     }
     try {
-        const auto& value = parsed.value();
+        const auto value = Json::parse(input.begin(), input.end());
         if (!fields(
                 value, {"format_version", "domain_id", "executor_threads", "graph_poll_interval",
                         "qos_change_debounce", "streams"}) ||
             !value.contains("format_version") || value["format_version"] != "1.0" ||
             !value.contains("streams") || !value["streams"].is_array() ||
-            value["streams"].empty()) {
+            value["streams"].empty() || value["streams"].size() > 256) {
             return Status(StatusCode::InvalidArgument, {});
         }
         Config config;
@@ -166,7 +172,7 @@ Result<Config> parse_config(std::string_view input) {
             config.domain_id = static_cast<std::uint32_t>(value["domain_id"].get<double>());
         }
         if (value.contains("executor_threads")) {
-            if (!integer(value["executor_threads"], 1, 16)) {
+            if (!integer(value["executor_threads"], 1, 8)) {
                 return Status(StatusCode::InvalidArgument, {});
             }
             config.executor_threads =
@@ -198,6 +204,8 @@ Result<Config> parse_config(std::string_view input) {
             config.streams.push_back(std::move(stream.value()));
         }
         return config;
+    } catch (const Json::exception&) {
+        return Status(StatusCode::InvalidArgument, "Malformed ROS 2 config JSON");
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }

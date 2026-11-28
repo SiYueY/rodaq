@@ -2,7 +2,6 @@
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
-#include <rodaq/plugin/registry.hpp>
 
 #include <gtest/gtest.h>
 
@@ -10,8 +9,8 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
-#include <filesystem>
 #include <fcntl.h>
+#include <filesystem>
 #include <new>
 #include <string>
 #include <sys/stat.h>
@@ -23,8 +22,6 @@ namespace allocation_failure {
 thread_local bool reject = false;
 }
 
-// This executable alone replaces allocation. Only the calling test thread is
-// faulted; native/close workers remain able to make actual lifecycle progress.
 void* operator new(std::size_t size) {
     if (!allocation_failure::reject) {
         if (auto* pointer = std::malloc(size == 0 ? 1 : size)) {
@@ -95,19 +92,10 @@ protected:
         root_ = directory;
         fs::create_directory(root_ / "control");
         fs::copy(RODAQ_LIFECYCLE_PACKAGE, root_ / "package", fs::copy_options::recursive);
-        for (const auto& entry : fs::recursive_directory_iterator(root_ / "package")) {
-            fs::permissions(entry.path(), fs::perms::owner_read | fs::perms::owner_exec);
-        }
-        fs::permissions(root_ / "package", fs::perms::owner_read | fs::perms::owner_exec);
     }
 
     void TearDown() override {
         std::error_code error;
-        fs::permissions(root_ / "package", fs::perms::owner_all, error);
-        for (fs::recursive_directory_iterator iterator(root_, error);
-             iterator != fs::recursive_directory_iterator(); iterator.increment(error)) {
-            fs::permissions(iterator->path(), fs::perms::owner_all, error);
-        }
         fs::remove_all(root_, error);
     }
 
@@ -145,7 +133,8 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
     {
         RejectAllocation fail;
         try {
-            plugin::ServiceRegistry rejected;  // Allocation occurs inside the SDK shared library.
+            auto* probe = new int(1);
+            delete probe;
         } catch (const std::bad_alloc&) {
             injected = true;
         }
@@ -163,8 +152,6 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
     auto loaded = manager.load("com.example.lifecycle");
     ASSERT_TRUE(loaded.ok());
     auto library = std::move(loaded).value();
-    plugin::ServiceRegistry services;
-    ASSERT_TRUE(services.freeze().ok());
     std::vector<plugin::PluginInstance> instances;
     std::vector<plugin::CloseFuture> futures;
     instances.reserve(12);
@@ -177,7 +164,7 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
             ASSERT_EQ(mkfifo(gates[i].c_str(), 0600), 0);
             config = "{\"mode\":\"shutdown_wait\",\"gate\":\"" + gates[i].string() + "\"}";
         }
-        auto initialized = library.create_instance(services, config);
+        auto initialized = library.create_instance(config);
         ASSERT_TRUE(initialized.ok());
         instances.emplace_back(std::move(initialized).value());
     }
@@ -192,8 +179,6 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
     }
     {
         RejectAllocation fail;
-        // All four close workers are busy. Embedded Pending requests, including
-        // repeated destructor takeover, must need neither queue space nor malloc.
         for (std::size_t i = gates.size(); i < instances.size(); ++i) {
             futures.push_back(instances[i].async_close());
         }
@@ -211,7 +196,7 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
         EXPECT_TRUE(future.result().ok());
     }
     EXPECT_FALSE(manager.restart_required());
-    auto replacement = library.create_instance(services, {});
+    auto replacement = library.create_instance({});
     ASSERT_TRUE(replacement.ok());
     EXPECT_TRUE(replacement.value().close(plugin::Deadline::after(2s).value()).ok());
     EXPECT_TRUE(manager.shutdown(plugin::Deadline::after(2s).value()).ok());

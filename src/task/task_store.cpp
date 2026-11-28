@@ -1,558 +1,520 @@
 #include "task_store.hpp"
 
-#include "config.hpp"
-#include "../persistence/json.hpp"
-
 #include <algorithm>
 #include <cerrno>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits>
-#include <mutex>
+#include <memory>
 #include <new>
 #include <set>
 #include <string>
-#include <sys/file.h>
+#include <string_view>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 
+#include <rodaq/logging.hpp>
+
+#include "../persistence/decimal.hpp"
+#include "../persistence/file_descriptor.hpp"
+#include "../persistence/json.hpp"
+#include "../uuid.hpp"
+#include "config.hpp"
+#include "identity.hpp"
+
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1 << 0)
+#endif
+
 namespace rodaq::task {
 namespace {
 
-std::string config_name(std::string_view version) {
-    return std::string(version.substr(7)) + ".json";
+using persistence::FileDescriptor;
+using persistence::Json;
+
+constexpr std::size_t kMaxMetaBytes = 256 * 1024;
+constexpr std::uint32_t kMaxCleanupDepth = 4;
+constexpr std::uint32_t kMaxCleanupEntries = 1024;
+
+int rename_noreplace(int dir_fd, const char* from, const char* to) noexcept {
+    return static_cast<int>(syscall(SYS_renameat2, dir_fd, from, dir_fd, to, RENAME_NOREPLACE));
 }
 
-Result<std::string> control_digest(std::string_view bytes, const HistoryPolicy& policy) {
-    auto parsed = persistence::parse_json(
-        bytes, {control_record_max_bytes(policy), 6, 256, 20, policy.max_entries,
-                32 + policy.max_entries * 20});
-    if (!parsed.ok()) {
-        return std::move(parsed).status();
-    }
-    const auto field = parsed.value().find("content_digest");
-    if (field == parsed.value().end() || !field->is_string()) {
-        return Status(StatusCode::DataLoss, {});
-    }
-    return field->get_ref<const std::string&>();
+bool ends_with(std::string_view text, std::string_view suffix) noexcept {
+    return text.size() >= suffix.size() && text.substr(text.size() - suffix.size()) == suffix;
 }
 
-bool same_request(const StoredOperation& left, const StoredOperation& right) noexcept {
-    const auto& a = left.snapshot;
-    const auto& b = right.snapshot;
-    return left.request.request_key == right.request.request_key &&
-           left.request_digest == right.request_digest && a.operation_id == b.operation_id &&
-           a.kind == b.kind && a.control_generation == b.control_generation &&
-           a.accepted_at == b.accepted_at;
-}
-
-Result<void> successor(const TaskControlRecord& previous, const TaskControlRecord& next) {
-    if (previous.record_revision == std::numeric_limits<std::uint64_t>::max()) {
+Result<void> remove_tree_bounded(
+    int parent_fd, const char* name, std::uint32_t depth, std::uint32_t& remaining) {
+    if (remaining == 0) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    if (next.record_revision != previous.record_revision + 1 ||
-        next.control_generation < previous.control_generation ||
-        next.control_generation - previous.control_generation > 1 ||
-        next.reset_generation < previous.reset_generation ||
-        next.reset_generation - previous.reset_generation > 1) {
-        return Status(StatusCode::Conflict, {});
+    --remaining;
+    struct stat info {};
+    if (fstatat(parent_fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno == ENOENT ? Result<void>{} : Result<void>(Status(StatusCode::Unavailable, {}));
     }
-    const bool new_intent = next.control_generation != previous.control_generation;
-    if (!new_intent && (previous.desired_state != next.desired_state ||
-                        previous.active_config_version != next.active_config_version ||
-                        previous.reset_generation != next.reset_generation ||
-                        (next.current_operation_id &&
-                         (!previous.current_operation_id ||
-                          !(*next.current_operation_id == *previous.current_operation_id))))) {
-        return Status(StatusCode::Conflict, {});
+    if (S_ISREG(info.st_mode) || S_ISLNK(info.st_mode)) {
+        return unlinkat(parent_fd, name, 0) == 0 || errno == ENOENT
+                   ? Result<void>{}
+                   : Result<void>(Status(StatusCode::Unavailable, {}));
     }
-    if (new_intent) {
-        if (!next.current_operation_id || next.operation_history.entries.empty()) {
-            return Status(StatusCode::Conflict, {});
-        }
-        const auto& newest = next.operation_history.entries.back().snapshot;
-        if (previous.active_config_version != next.active_config_version &&
-            newest.kind != OperationKind::Configure) {
-            return Status(StatusCode::Conflict, {});
-        }
-        if (newest.kind == OperationKind::Reset &&
-            (!next.reset_intent ||
-             next.reset_intent->target_control_generation != previous.control_generation)) {
-            return Status(StatusCode::Conflict, {});
-        }
-        if (!(newest.operation_id == *next.current_operation_id) ||
-            newest.control_generation != next.control_generation ||
-            newest.state != OperationState::Accepted ||
-            ((next.reset_generation != previous.reset_generation) !=
-             (newest.kind == OperationKind::Reset))) {
-            return Status(StatusCode::Conflict, {});
-        }
+    if (!S_ISDIR(info.st_mode) || depth == 0) {
+        return Status(StatusCode::DataLoss, {});
     }
-    for (const auto& updated : next.operation_history.entries) {
-        const auto found = std::find_if(
-            previous.operation_history.entries.begin(), previous.operation_history.entries.end(),
-            [&](const auto& old) {
-                return old.snapshot.operation_id == updated.snapshot.operation_id;
-            });
-        if (found == previous.operation_history.entries.end()) {
-            if (!new_intent || updated.snapshot.control_generation != next.control_generation) {
-                return Status(StatusCode::Conflict, {});
-            }
-        } else if (
-            !same_request(*found, updated) ||
-            (terminal(found->snapshot.state) &&
-             (found->snapshot.state != updated.snapshot.state ||
-              found->snapshot.terminal_at != updated.snapshot.terminal_at)) ||
-            (found->snapshot.state == OperationState::InProgress &&
-             updated.snapshot.state == OperationState::Accepted)) {
-            return Status(StatusCode::Conflict, {});
+    FileDescriptor opened(openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (opened.get() < 0) {
+        return errno == ENOENT ? Result<void>{} : Result<void>(Status(StatusCode::Unavailable, {}));
+    }
+    const auto close_dir = [](DIR* d) noexcept { (void)closedir(d); };
+    std::unique_ptr<DIR, decltype(close_dir)> entries(fdopendir(opened.get()), close_dir);
+    if (!entries) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    (void)opened.release();
+    const int child_fd = dirfd(entries.get());
+    std::vector<std::string> children;
+    errno = 0;
+    while (const auto* item = readdir(entries.get())) {
+        const std::string_view child(item->d_name);
+        if (child == "." || child == "..") {
+            continue;
+        }
+        children.emplace_back(child);
+        if (children.size() > remaining) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        errno = 0;
+    }
+    if (errno != 0) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    for (const auto& child : children) {
+        auto removed = remove_tree_bounded(child_fd, child.c_str(), depth - 1, remaining);
+        if (!removed.ok()) {
+            return removed.status();
         }
     }
-    for (const auto& old : previous.operation_history.entries) {
-        const auto retained = std::any_of(
-            next.operation_history.entries.begin(), next.operation_history.entries.end(),
-            [&](const auto& item) {
-                return item.snapshot.operation_id == old.snapshot.operation_id;
-            });
-        if (!retained && (!terminal(old.snapshot.state) ||
-                          (previous.current_operation_id &&
-                           old.snapshot.operation_id == *previous.current_operation_id) ||
-                          !next.operation_history.history_truncated)) {
-            return Status(StatusCode::Conflict, {});
-        }
-    }
-    if (previous.operation_history.history_truncated && !next.operation_history.history_truncated) {
-        return Status(StatusCode::Conflict, {});
+    entries.reset();
+    if (unlinkat(parent_fd, name, AT_REMOVEDIR) != 0 && errno != ENOENT) {
+        return Status(StatusCode::Unavailable, {});
     }
     return {};
 }
 
-}  // namespace
-
-struct TaskStore::State {
-    std::filesystem::path task_directory;
-    std::filesystem::path configs;
-    std::filesystem::path controls;
-    std::string control_name;
-    TaskId task_id;
-    TaskStoreMode mode{TaskStoreMode::Existing};
-    TaskStorePolicy policy;
-    persistence::FileFaultHook faults;
-    std::mutex execution;
-    int lease{-1};
-    int control_lease{-1};
-    bool protected_state{true};
-    std::optional<TaskControlRecord> current;
-    std::string content_digest;
-    std::string retained_control_temporary;
-    std::string pending_control_digest;
-    std::set<std::string, std::less<>> config_versions;
-
-    ~State() noexcept {
-        if (control_lease >= 0) {
-            close(control_lease);
+Result<std::string> encode_metadata(const TaskMetadata& meta) {
+    try {
+        Json known = Json::object();
+        for (const auto& [stream_id, key] : meta.known_streams) {
+            known[std::to_string(stream_id)] = key;
         }
-        if (lease >= 0) {
-            close(lease);
+        Json doc{
+            {"format_version", "1.0"},
+            {"task_id", to_string(meta.task_id)},
+            {"active_config_version", meta.active_config_version},
+            {"next_pipeline_id", std::to_string(meta.next_pipeline_id)},
+            {"next_stream_id", std::to_string(meta.next_stream_id)},
+            {"known_streams", std::move(known)}};
+        auto dumped = doc.dump();
+        if (dumped.size() > kMaxMetaBytes) {
+            return Status(StatusCode::ResourceExhausted, {});
         }
+        return dumped;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
+}
 
-    Result<TaskConfigVersion> read_config(std::string_view version) {
-        if (!persistence::valid_digest(version)) {
-            return Status(StatusCode::InvalidArgument, {});
-        }
-        auto bytes =
-            persistence::read_file(configs, config_name(version), policy.config.max_config_bytes);
-        if (!bytes.ok()) {
-            return std::move(bytes).status();
-        }
-        auto parsed = parse_task_config(bytes.value(), policy.config);
-        if (!parsed.ok()) {
-            return parsed.status().code() == StatusCode::InvalidArgument
-                       ? Status(StatusCode::DataLoss, {})
-                       : std::move(parsed).status();
-        }
-        auto actual_version = config_version(parsed.value(), policy.config);
-        if (!actual_version.ok()) {
-            return actual_version.status().code() == StatusCode::InvalidArgument
-                       ? Status(StatusCode::DataLoss, {})
-                       : std::move(actual_version).status();
-        }
-        if (actual_version.value() != version) {
-            return Status(StatusCode::DataLoss, "Immutable Task Config identity mismatch");
-        }
-        return TaskConfigVersion{std::string(version), std::move(parsed).value()};
+Result<TaskMetadata> decode_metadata(std::string_view encoded, TaskId expected_task_id) {
+    auto parsed = persistence::parse_json(encoded, {kMaxMetaBytes, 8});
+    if (!parsed.ok()) {
+        return Status(StatusCode::DataLoss, {});
     }
+    const auto& doc = parsed.value();
+    if (!doc.is_object() || doc.size() != 6 || !doc.contains("format_version") ||
+        !doc.at("format_version").is_string() || doc.at("format_version") != "1.0" ||
+        !doc.contains("task_id") || !doc.at("task_id").is_string() ||
+        !doc.contains("active_config_version") || !doc.at("active_config_version").is_string() ||
+        !doc.contains("next_pipeline_id") || !doc.at("next_pipeline_id").is_string() ||
+        !doc.contains("next_stream_id") || !doc.at("next_stream_id").is_string() ||
+        !doc.contains("known_streams") || !doc.at("known_streams").is_object()) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto task_id = parse_task_id(doc.at("task_id").get_ref<const std::string&>());
+    if (!task_id.ok() || !(task_id.value() == expected_task_id)) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    const auto& active = doc.at("active_config_version").get_ref<const std::string&>();
+    if (!uuid::parse(active).ok()) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    auto next_pipe =
+        persistence::unsigned_decimal(doc.at("next_pipeline_id").get_ref<const std::string&>());
+    auto next_stream =
+        persistence::unsigned_decimal(doc.at("next_stream_id").get_ref<const std::string&>());
+    if (!next_pipe.ok() || !next_stream.ok() || next_pipe.value() == 0 ||
+        next_stream.value() == 0) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    TaskMetadata meta;
+    meta.task_id = task_id.value();
+    meta.active_config_version = active;
+    meta.next_pipeline_id = next_pipe.value();
+    meta.next_stream_id = next_stream.value();
+    for (const auto& [k, v] : doc.at("known_streams").items()) {
+        auto sid = persistence::unsigned_decimal(k);
+        if (!sid.ok() || sid.value() == 0 || !v.is_string() ||
+            v.get_ref<const std::string&>().empty()) {
+            return Status(StatusCode::DataLoss, {});
+        }
+        meta.known_streams[sid.value()] = v.get<std::string>();
+    }
+    return meta;
+}
 
-    Result<std::optional<TaskControlRecord>> reload() {
-        protected_state = true;
-        std::set<std::string, std::less<>> versions;
-        std::vector<std::filesystem::path> temporaries;
-        std::size_t entries = 0;
-        for (const auto& entry : std::filesystem::directory_iterator(configs)) {
-            if (++entries > policy.max_config_versions + 64) {
+Result<TaskConfig> materialize_ids(
+    const TaskConfig& input, TaskMetadata& meta, const TaskConfigLimits& limits, bool is_create) {
+    auto valid = validate_task_config(input, limits, false);
+    if (!valid.ok()) {
+        return valid.status();
+    }
+    TaskConfig out = input;
+    std::set<PipelineId> used_pipelines;
+    std::set<StreamId> used_streams;
+    for (auto& pipe : out.pipelines) {
+        if (pipe.pipeline_id == 0) {
+            if (meta.next_pipeline_id == std::numeric_limits<std::uint64_t>::max()) {
                 return Status(StatusCode::ResourceExhausted, {});
             }
-            const auto name = entry.path().filename().string();
-            if (persistence::is_temporary_file_name(name)) {
-                if (entry.symlink_status().type() != std::filesystem::file_type::regular) {
-                    return Status(
-                        StatusCode::DataLoss, "Unexpected Task Config temporary file type");
-                }
-                if (temporaries.size() >= 64) {
+            pipe.pipeline_id = meta.next_pipeline_id++;
+        } else {
+            if (is_create) {
+                return Status(StatusCode::InvalidArgument, "Create must not supply pipeline_id");
+            }
+            if (pipe.pipeline_id >= meta.next_pipeline_id) {
+                return Status(StatusCode::InvalidArgument, "Unknown pipeline_id");
+            }
+        }
+        if (!used_pipelines.insert(pipe.pipeline_id).second) {
+            return Status(StatusCode::InvalidArgument, "Duplicate pipeline_id");
+        }
+        for (auto& stream : pipe.streams) {
+            if (stream.stream_id == 0) {
+                if (meta.next_stream_id == std::numeric_limits<std::uint64_t>::max()) {
                     return Status(StatusCode::ResourceExhausted, {});
                 }
-                temporaries.push_back(entry.path());
+                stream.stream_id = meta.next_stream_id++;
+                meta.known_streams[stream.stream_id] = stream.stream_key;
+            } else {
+                if (is_create) {
+                    return Status(StatusCode::InvalidArgument, "Create must not supply stream_id");
+                }
+                const auto it = meta.known_streams.find(stream.stream_id);
+                if (it == meta.known_streams.end()) {
+                    return Status(StatusCode::InvalidArgument, "Unknown stream_id");
+                }
+                if (it->second != stream.stream_key) {
+                    return Status(
+                        StatusCode::InvalidArgument,
+                        "Cannot rebind existing stream_id to a different stream_key");
+                }
+            }
+            if (!used_streams.insert(stream.stream_id).second) {
+                return Status(StatusCode::InvalidArgument, "Duplicate stream_id");
+            }
+        }
+    }
+    auto verified = validate_task_config(out, limits, true);
+    if (!verified.ok()) {
+        return verified.status();
+    }
+    return out;
+}
+
+}  // namespace
+
+TaskConfigStore::TaskConfigStore(
+    std::filesystem::path root, TaskStorePolicy policy, persistence::FileFaultHook faults) noexcept
+: root_(std::move(root)), policy_(policy), faults_(std::move(faults)) {}
+
+Result<TaskConfigStore> TaskConfigStore::open(
+    const std::filesystem::path& tasks_root, TaskStorePolicy policy,
+    persistence::FileFaultHook faults) {
+    if (tasks_root.empty() || policy.max_config_versions == 0 ||
+        policy.max_config_versions > 4096) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(tasks_root, ec);
+    if (ec && status.type() != std::filesystem::file_type::not_found) {
+        return Status(StatusCode::Unavailable, {});
+    }
+    if (status.type() == std::filesystem::file_type::not_found) {
+        std::filesystem::create_directories(tasks_root, ec);
+        if (ec) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto synced = persistence::sync_directory(tasks_root.parent_path(), faults);
+        if (!synced.ok()) {
+            return synced.status();
+        }
+    } else if (status.type() != std::filesystem::file_type::directory) {
+        return Status(StatusCode::DataLoss, {});
+    }
+    return TaskConfigStore(tasks_root, policy, std::move(faults));
+}
+
+Result<std::vector<LoadedTask>> TaskConfigStore::load_all() {
+    try {
+        FileDescriptor parent(
+            ::open(root_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        FileDescriptor dup_fd(openat(parent.get(), ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (dup_fd.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        const auto close_dir = [](DIR* d) noexcept { (void)closedir(d); };
+        std::unique_ptr<DIR, decltype(close_dir)> entries(fdopendir(dup_fd.get()), close_dir);
+        if (!entries) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        (void)dup_fd.release();
+        std::vector<std::string> names;
+        errno = 0;
+        while (const auto* item = readdir(entries.get())) {
+            const std::string_view name(item->d_name);
+            if (name == "." || name == "..") {
                 continue;
             }
-            if (versions.size() >= policy.max_config_versions || name.size() != 69 ||
-                name.substr(64) != ".json") {
-                return Status(StatusCode::DataLoss, "Unreconciled Task Config namespace entry");
-            }
-            const auto version = "sha256:" + name.substr(0, 64);
-            auto config = read_config(version);
-            if (!config.ok()) {
-                return std::move(config).status();
-            }
-            auto synced = persistence::sync_file(configs, name, faults);
-            if (!synced.ok()) {
-                return std::move(synced).status();
-            }
-            versions.insert(version);
+            names.emplace_back(name);
+            errno = 0;
         }
-        for (const auto& temporary : temporaries) {
-            std::error_code error;
-            if (!std::filesystem::remove(temporary, error) || error) {
-                return Status(StatusCode::Unavailable, {});
-            }
+        if (errno != 0) {
+            return Status(StatusCode::Unavailable, {});
         }
-        auto configs_synced = persistence::sync_directory(configs, faults);
-        if (!configs_synced.ok()) {
-            return std::move(configs_synced).status();
-        }
-        auto bytes = persistence::read_file(
-            controls, control_name, control_record_max_bytes(policy.history));
-        std::optional<TaskControlRecord> record;
-        std::string digest;
-        if (bytes.ok()) {
-            auto loaded = decode_control_record(bytes.value(), policy.history);
-            if (!loaded.ok()) {
-                return std::move(loaded).status();
-            }
-            if (!(loaded.value().task_id == task_id) ||
-                versions.count(loaded.value().active_config_version) == 0) {
-                return Status(
-                    StatusCode::DataLoss, "Task Control refers to missing or foreign authority");
-            }
-            auto synced = persistence::sync_file(controls, control_name, faults);
-            if (!synced.ok()) {
-                return std::move(synced).status();
-            }
-            auto actual_digest = control_digest(bytes.value(), policy.history);
-            if (!actual_digest.ok()) {
-                return std::move(actual_digest).status();
-            }
-            digest = std::move(actual_digest).value();
-            if (!current && !pending_control_digest.empty() && digest != pending_control_digest) {
-                return Status(StatusCode::DataLoss, "Unexpected initial Task Control authority");
-            }
-            if (current && digest != content_digest) {
-                if (digest != pending_control_digest) {
-                    return Status(
-                        StatusCode::DataLoss,
-                        "Unexpected Task Control authority during reconciliation");
+        entries.reset();
+        std::sort(names.begin(), names.end());
+
+        std::vector<LoadedTask> loaded;
+        bool modified = false;
+        for (const auto& name : names) {
+            if (ends_with(name, ".tmp")) {
+                std::uint32_t remaining = kMaxCleanupEntries;
+                auto removed =
+                    remove_tree_bounded(parent.get(), name.c_str(), kMaxCleanupDepth, remaining);
+                if (!removed.ok()) {
+                    logging::write(
+                        logging::Level::Warning, {},
+                        "Startup failed to remove stale task tmp directory: " + name);
+                } else {
+                    modified = true;
                 }
-                auto ordered = successor(*current, loaded.value());
-                if (!ordered.ok()) {
-                    return std::move(ordered).status();
-                }
+                continue;
             }
-            record = std::move(loaded).value();
-        } else if (bytes.status().code() != StatusCode::NotFound) {
-            return std::move(bytes).status();
-        } else if (current || mode == TaskStoreMode::Existing) {
-            return Status(StatusCode::DataLoss, "Task Control authority disappeared");
-        }
-        if (!retained_control_temporary.empty()) {
-            std::error_code error;
-            const auto removed =
-                std::filesystem::remove(controls / retained_control_temporary, error);
-            if (error ||
-                (!removed && std::filesystem::exists(controls / retained_control_temporary))) {
-                return Status(StatusCode::Unavailable, {});
+            auto task_id = parse_task_id(name);
+            if (!task_id.ok()) {
+                logging::write(
+                    logging::Level::Warning, {}, "Startup ignored non-task entry: " + name);
+                continue;
             }
+            const auto task_dir = root_ / name;
+            auto meta_bytes = persistence::read_file(task_dir, "meta.json", kMaxMetaBytes);
+            if (!meta_bytes.ok()) {
+                logging::write(
+                    logging::Level::Warning, {}, "Startup skipped unreadable task: " + name);
+                continue;
+            }
+            auto meta = decode_metadata(meta_bytes.value(), task_id.value());
+            if (!meta.ok()) {
+                logging::write(
+                    logging::Level::Warning, {}, "Startup skipped corrupt task meta: " + name);
+                continue;
+            }
+            auto cfg_bytes = persistence::read_file(
+                task_dir / "configs", meta.value().active_config_version + ".json",
+                policy_.config.max_config_bytes);
+            if (!cfg_bytes.ok()) {
+                logging::write(
+                    logging::Level::Warning, {},
+                    "Startup skipped task with missing config: " + name);
+                continue;
+            }
+            auto cfg = parse_task_config(cfg_bytes.value(), policy_.config);
+            if (!cfg.ok() || !validate_task_config(cfg.value(), policy_.config, true).ok()) {
+                logging::write(
+                    logging::Level::Warning, {}, "Startup skipped corrupt task config: " + name);
+                continue;
+            }
+            loaded.push_back(LoadedTask{std::move(meta.value()), std::move(cfg.value())});
         }
-        auto synced = persistence::sync_directory(controls, faults);
-        if (!synced.ok()) {
-            return std::move(synced).status();
+        if (modified && ::fsync(parent.get()) != 0) {
+            return Status(StatusCode::Unavailable, {});
         }
-        // Allocate the result before committing the in-memory authority cache.
-        auto result = record;
-        current = std::move(record);
-        content_digest = std::move(digest);
-        config_versions.swap(versions);
-        retained_control_temporary.clear();
-        pending_control_digest.clear();
-        protected_state = false;
-        return result;
+        return loaded;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
-};
+}
 
-TaskStore::TaskStore(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
-
-TaskStore::~TaskStore() noexcept = default;
-
-Result<std::unique_ptr<TaskStore>> TaskStore::open(
-    const std::filesystem::path& task_directory, const std::filesystem::path& control_directory,
-    TaskId task_id, TaskStoreMode mode, TaskStorePolicy policy, persistence::FileFaultHook faults) {
-    if ((mode != TaskStoreMode::Existing && mode != TaskStoreMode::Materializing) ||
-        std::all_of(
-            task_id.value.begin(), task_id.value.end(),
-            [](std::uint8_t byte) { return byte == 0; }) ||
-        policy.max_config_versions == 0 || policy.max_config_versions > 4096 ||
-        !validate_history({}, policy.history).ok()) {
+Result<LoadedTask> TaskConfigStore::create_task(TaskId task_id, const TaskConfig& input) {
+    if (!uuid::nonzero(task_id.value)) {
         return Status(StatusCode::InvalidArgument, {});
     }
     try {
-        auto state = std::make_unique<State>();
-        state->task_directory = task_directory;
-        state->configs = task_directory / "configs";
-        state->controls = control_directory;
-        state->control_name = to_string(task_id) + ".json";
-        state->task_id = task_id;
-        state->mode = mode;
-        state->policy = policy;
-        state->faults = std::move(faults);
-        state->lease = ::open(
-            (task_directory / ".task.lock").c_str(),
-            O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
-        struct stat attributes {};
-        if (state->lease < 0 || fstat(state->lease, &attributes) != 0 ||
-            !S_ISREG(attributes.st_mode)) {
-            return Status(StatusCode::Unavailable, {});
+        TaskMetadata meta;
+        meta.task_id = task_id;
+        auto materialized = materialize_ids(input, meta, policy_.config, true);
+        if (!materialized.ok()) {
+            return materialized.status();
         }
-        if (flock(state->lease, LOCK_EX | LOCK_NB) != 0) {
-            return Status(
-                errno == EWOULDBLOCK ? StatusCode::Conflict : StatusCode::Unavailable, {});
-        }
-        // The config namespace and the actual (control directory, Task ID)
-        // authority are both exclusive. A different task-directory argument
-        // cannot accidentally create a second publisher of the same record.
-        state->control_lease = ::open(
-            (control_directory / (to_string(task_id) + ".lock")).c_str(),
-            O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
-        if (state->control_lease < 0 || fstat(state->control_lease, &attributes) != 0 ||
-            !S_ISREG(attributes.st_mode)) {
-            return Status(StatusCode::Unavailable, {});
-        }
-        if (flock(state->control_lease, LOCK_EX | LOCK_NB) != 0) {
-            return Status(
-                errno == EWOULDBLOCK ? StatusCode::Conflict : StatusCode::Unavailable, {});
-        }
-        auto loaded = state->reload();
-        if (!loaded.ok()) {
-            return std::move(loaded).status();
-        }
-        return std::unique_ptr<TaskStore>(new TaskStore(std::move(state)));
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    } catch (const std::filesystem::filesystem_error&) {
-        return Status(StatusCode::Unavailable, {});
-    }
-}
-
-Result<TaskConfigVersion> TaskStore::create_config(const TaskConfig& config) {
-    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
-    if (!execution.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    if (state_->protected_state) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    try {
-        auto version = config_version(config, state_->policy.config);
+        auto version = new_config_version();
         if (!version.ok()) {
-            return std::move(version).status();
+            return version.status();
         }
-        if (state_->config_versions.count(version.value()) != 0) {
-            return state_->read_config(version.value());
+        meta.active_config_version = std::move(version.value());
+        auto encoded_cfg = export_task_config(materialized.value(), policy_.config);
+        if (!encoded_cfg.ok()) {
+            return encoded_cfg.status();
         }
-        if (state_->config_versions.size() >= state_->policy.max_config_versions) {
-            return Status(StatusCode::ResourceExhausted, {});
+        auto encoded_meta = encode_metadata(meta);
+        if (!encoded_meta.ok()) {
+            return encoded_meta.status();
         }
-        auto normalized = normalize_config(config, state_->policy.config);
-        if (!normalized.ok()) {
-            return std::move(normalized).status();
-        }
-        auto bytes = export_task_config(normalized.value(), state_->policy.config);
-        if (!bytes.ok()) {
-            return std::move(bytes).status();
-        }
-        TaskConfigVersion response{version.value(), std::move(normalized).value()};
-        std::set<std::string, std::less<>> reserved{version.value()};
-        auto node = reserved.extract(reserved.begin());
-        auto publication = persistence::publish_file(
-            state_->configs, config_name(version.value()), bytes.value(),
-            persistence::FilePublishMode::Create, state_->policy.config.max_config_bytes,
-            state_->faults);
-        if (publication.disposition != persistence::FileDisposition::Durable) {
-            state_->protected_state = true;
-            return std::move(publication.status);
-        }
-        state_->config_versions.insert(std::move(node));
-        return response;
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
 
-Result<TaskConfigVersion> TaskStore::load_config(std::string_view version) {
-    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
-    if (!execution.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    try {
-        return state_->read_config(version);
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
+        const std::string final_name = to_string(task_id);
+        const std::string tmp_name = final_name + ".tmp";
+        const auto tmp_dir = root_ / tmp_name;
+        const auto configs_dir = tmp_dir / "configs";
 
-Result<TaskControlRecord> TaskStore::load_control() {
-    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
-    if (!execution.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    if (state_->protected_state) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    try {
-        auto bytes = persistence::read_file(
-            state_->controls, state_->control_name,
-            control_record_max_bytes(state_->policy.history));
-        if (!bytes.ok()) {
-            if (state_->current) {
-                state_->protected_state = true;
-                return Status(StatusCode::DataLoss, "Task Control authority disappeared");
-            }
-            return std::move(bytes).status();
-        }
-        auto record = decode_control_record(bytes.value(), state_->policy.history);
-        if (!record.ok()) {
-            state_->protected_state = true;
-            return std::move(record).status();
-        }
-        auto digest = control_digest(bytes.value(), state_->policy.history);
-        if (!digest.ok()) {
-            return std::move(digest).status();
-        }
-        if (!(record.value().task_id == state_->task_id) ||
-            digest.value() != state_->content_digest) {
-            state_->protected_state = true;
-            return Status(
-                StatusCode::DataLoss, "Task Control changed outside its publication order");
-        }
-        return record;
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<void> TaskStore::publish_control(
-    const TaskControlRecord& record, std::uint64_t expected_revision) {
-    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
-    if (!execution.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    if (state_->protected_state) {
-        return Status(StatusCode::Unavailable, {});
-    }
-    try {
-        if (!(record.task_id == state_->task_id) ||
-            expected_revision != (state_->current ? state_->current->record_revision : 0)) {
+        std::error_code ec;
+        if (!std::filesystem::create_directory(tmp_dir, ec) || ec) {
             return Status(StatusCode::Conflict, {});
         }
-        auto valid_record = validate_control_record(record, state_->policy.history);
-        if (!valid_record.ok()) {
-            return std::move(valid_record).status();
-        }
-        if (state_->current) {
-            auto ordered = successor(*state_->current, record);
-            if (!ordered.ok()) {
-                return std::move(ordered).status();
+        auto cleanup_tmp = [&]() noexcept {
+            try {
+                FileDescriptor parent(
+                    ::open(root_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+                if (parent.get() >= 0) {
+                    std::uint32_t remaining = kMaxCleanupEntries;
+                    (void)remove_tree_bounded(
+                        parent.get(), tmp_name.c_str(), kMaxCleanupDepth, remaining);
+                }
+            } catch (...) {
             }
-            auto actual = persistence::read_file(
-                state_->controls, state_->control_name,
-                control_record_max_bytes(state_->policy.history));
-            if (!actual.ok()) {
-                state_->protected_state = true;
-                return std::move(actual).status();
+        };
+        if (!std::filesystem::create_directory(configs_dir, ec) || ec) {
+            cleanup_tmp();
+            return Status(StatusCode::Unavailable, {});
+        }
+        auto published_cfg = persistence::publish_file(
+            configs_dir, meta.active_config_version + ".json", encoded_cfg.value(),
+            persistence::FilePublishMode::Create, policy_.config.max_config_bytes, faults_);
+        if (!published_cfg.status.ok()) {
+            cleanup_tmp();
+            return published_cfg.status;
+        }
+        auto published_meta = persistence::publish_file(
+            tmp_dir, "meta.json", encoded_meta.value(), persistence::FilePublishMode::Create,
+            kMaxMetaBytes, faults_);
+        if (!published_meta.status.ok()) {
+            cleanup_tmp();
+            return published_meta.status;
+        }
+
+        FileDescriptor parent(
+            ::open(root_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            cleanup_tmp();
+            return Status(StatusCode::Unavailable, {});
+        }
+        if (rename_noreplace(parent.get(), tmp_name.c_str(), final_name.c_str()) != 0) {
+            const int err = errno;
+            cleanup_tmp();
+            return Status(err == EEXIST ? StatusCode::Conflict : StatusCode::Unavailable, {});
+        }
+        if (::fsync(parent.get()) != 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        return LoadedTask{std::move(meta), std::move(materialized.value())};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<LoadedTask> TaskConfigStore::update_config(
+    const TaskMetadata& current, const TaskConfig& input) {
+    try {
+        TaskMetadata next = current;
+        auto materialized = materialize_ids(input, next, policy_.config, false);
+        if (!materialized.ok()) {
+            return materialized.status();
+        }
+        auto version = new_config_version();
+        if (!version.ok()) {
+            return version.status();
+        }
+        next.active_config_version = std::move(version.value());
+        auto encoded_cfg = export_task_config(materialized.value(), policy_.config);
+        if (!encoded_cfg.ok()) {
+            return encoded_cfg.status();
+        }
+        auto encoded_meta = encode_metadata(next);
+        if (!encoded_meta.ok()) {
+            return encoded_meta.status();
+        }
+
+        const auto task_dir = root_ / to_string(current.task_id);
+        const auto configs_dir = task_dir / "configs";
+        auto published_cfg = persistence::publish_file(
+            configs_dir, next.active_config_version + ".json", encoded_cfg.value(),
+            persistence::FilePublishMode::Create, policy_.config.max_config_bytes, faults_);
+        if (!published_cfg.status.ok()) {
+            return published_cfg.status;
+        }
+        auto published_meta = persistence::publish_file(
+            task_dir, "meta.json", encoded_meta.value(), persistence::FilePublishMode::Replace,
+            kMaxMetaBytes, faults_);
+        if (!published_meta.status.ok()) {
+            return published_meta.status;
+        }
+        return LoadedTask{std::move(next), std::move(materialized.value())};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<void> TaskConfigStore::remove_task(TaskId task_id) {
+    try {
+        FileDescriptor parent(
+            ::open(root_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (parent.get() < 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        const std::string final_name = to_string(task_id);
+        const std::string tmp_name = final_name + ".tmp";
+        if (rename_noreplace(parent.get(), final_name.c_str(), tmp_name.c_str()) != 0) {
+            if (errno == ENOENT) {
+                return {};
             }
-            auto valid = decode_control_record(actual.value(), state_->policy.history);
-            auto digest = control_digest(actual.value(), state_->policy.history);
-            if (!valid.ok() || !digest.ok() || digest.value() != state_->content_digest) {
-                state_->protected_state = true;
-                return Status(
-                    StatusCode::DataLoss, "Task Control changed outside its publication order");
-            }
-        } else if (
-            record.record_revision != 1 || record.control_generation != 1 ||
-            record.reset_generation != 0 || record.desired_state != DesiredState::Stopped ||
-            record.current_operation_id || !record.operation_history.entries.empty() ||
-            record.reset_intent || record.operation_history.history_truncated) {
-            return Status(StatusCode::InvalidArgument, {});
+            return Status(StatusCode::Unavailable, {});
         }
-        if (state_->config_versions.count(record.active_config_version) == 0) {
-            return Status(StatusCode::NotFound, "Active Config has no durable publication proof");
+        std::uint32_t remaining = kMaxCleanupEntries;
+        auto removed =
+            remove_tree_bounded(parent.get(), tmp_name.c_str(), kMaxCleanupDepth, remaining);
+        if (!removed.ok()) {
+            return removed.status();
         }
-        auto config = state_->read_config(record.active_config_version);
-        if (!config.ok()) {
-            return std::move(config).status();
+        if (::fsync(parent.get()) != 0) {
+            return Status(StatusCode::Unavailable, {});
         }
-        auto bytes = encode_control_record(record, state_->policy.history);
-        if (!bytes.ok()) {
-            return std::move(bytes).status();
-        }
-        auto digest = control_digest(bytes.value(), state_->policy.history);
-        if (!digest.ok()) {
-            return std::move(digest).status();
-        }
-        // All owned results are allocated before publication can have effects.
-        std::optional<TaskControlRecord> candidate{record};
-        auto publication = persistence::publish_file(
-            state_->controls, state_->control_name, bytes.value(),
-            state_->current ? persistence::FilePublishMode::Replace
-                            : persistence::FilePublishMode::Create,
-            control_record_max_bytes(state_->policy.history), state_->faults);
-        if (publication.disposition != persistence::FileDisposition::Durable) {
-            state_->protected_state = true;
-            state_->retained_control_temporary = std::move(publication.retained_temporary);
-            state_->pending_control_digest = std::move(digest).value();
-            return std::move(publication.status);
-        }
-        state_->current = std::move(candidate);
-        state_->content_digest = std::move(digest).value();
-        state_->pending_control_digest.clear();
         return {};
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<std::optional<TaskControlRecord>> TaskStore::reconcile() {
-    std::unique_lock<std::mutex> execution(state_->execution, std::try_to_lock);
-    if (!execution.owns_lock()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    try {
-        return state_->reload();
-    } catch (const std::bad_alloc&) {
-        state_->protected_state = true;
-        return Status(StatusCode::ResourceExhausted, {});
-    } catch (const std::filesystem::filesystem_error&) {
-        state_->protected_state = true;
-        return Status(StatusCode::Unavailable, {});
     }
 }
 

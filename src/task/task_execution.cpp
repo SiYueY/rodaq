@@ -1,28 +1,124 @@
 #include "task_service_state.hpp"
 
 #include <algorithm>
-#include <limits>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <new>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
-namespace rodaq::task {
+#include "../artifact/artifact_catalog.hpp"
+#include "../artifact/volume_capacity.hpp"
+
+namespace rodaq {
+namespace {
+
+DataImpact combine_impact(DataImpact left, DataImpact right) noexcept {
+    return static_cast<DataImpact>(
+        std::max(static_cast<unsigned>(left), static_cast<unsigned>(right)));
+}
+
+void commit_sealed_segment(
+    const task::RunExecutionOptions& exec_opts,
+    const std::shared_ptr<pipeline::PipelineController>& controller,
+    const pipeline::SealedPipelineSegment& sealed, StatusCode& failure, DataImpact& impact) {
+    const auto work_id = sealed.work_id;
+    const auto seg_id = sealed.segment->metadata.segment_id();
+    auto ack = [controller, work_id, seg_id]() noexcept {
+        (void)controller->acknowledge_artifact(work_id, seg_id);
+    };
+    auto committed = exec_opts.commit_with_ack(sealed, std::move(ack));
+    if (!committed.ok()) {
+        if (failure == StatusCode::Ok) {
+            failure = committed.status().code();
+        }
+        impact = combine_impact(impact, DataImpact::PersistenceUnknown);
+    }
+}
+
+void settle_pipeline_close(
+    const task::RunExecutionOptions& exec_opts,
+    const std::shared_ptr<pipeline::PipelineController>& controller, ControlGeneration generation,
+    plugin::Deadline deadline, StatusCode& failure, DataImpact& impact,
+    std::uint64_t& max_recording_boundary) noexcept {
+    try {
+        (void)controller->close_admission(generation);
+        auto boundary = controller->recording_time_boundary();
+        if (boundary.ok() && boundary.value().has_value()) {
+            max_recording_boundary = std::max(max_recording_boundary, *boundary.value());
+        }
+        auto drained = controller->drain(deadline);
+        if (!drained.ok()) {
+            if (failure == StatusCode::Ok) {
+                failure = drained.status().code();
+            }
+            if (drained.status().code() == StatusCode::DataLoss) {
+                impact = combine_impact(impact, DataImpact::PersistenceUnknown);
+            }
+        } else if (drained.value().has_value()) {
+            commit_sealed_segment(exec_opts, controller, *drained.value(), failure, impact);
+        }
+        auto cleaned = controller->cleanup(deadline);
+        if (!cleaned.ok()) {
+            if (failure == StatusCode::Ok) {
+                failure = cleaned.status().code();
+            }
+        }
+        auto snap = controller->snapshot();
+        if (snap.ok()) {
+            if (snap.value().records.unknown != 0 || snap.value().records.unresolved_owners != 0) {
+                impact = combine_impact(impact, DataImpact::PersistenceUnknown);
+            } else if (snap.value().records.known_failed != 0) {
+                impact = combine_impact(impact, DataImpact::AcceptedKnownFailed);
+            }
+        }
+    } catch (...) {
+        if (failure == StatusCode::Ok) {
+            failure = StatusCode::Internal;
+        }
+    }
+}
+
+}  // namespace
+
+namespace task {
 
 void RunExecution::fence(std::optional<std::uint64_t> monotonic_ns) noexcept {
-    std::lock_guard<std::mutex> lock(registration);
-    fenced = true;
-    if (authorization) {
-        (void)authorization->fence(monotonic_ns);
+    std::vector<RunPipeline> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        fenced = true;
+        snapshot = pipelines;
+    }
+    for (const auto& pipe : snapshot) {
+        if (pipe.controller) {
+            (void)pipe.controller->establish_control_fence(monotonic_ns);
+        }
     }
 }
 
 bool RunExecution::resources_settled() {
-    std::lock_guard<std::mutex> lock(registration);
-    if (!preparation_returned || preparing || rotating) {
-        return false;
+    std::vector<RunPipeline> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (preparing || closing || rotating) {
+            return false;
+        }
+        snapshot = pipelines;
     }
-    for (const auto& selected : pipelines) {
-        auto facts = selected.controller->snapshot();
-        if (!facts.ok() || !facts.value().quiescence.settled) {
+    for (const auto& pipe : snapshot) {
+        if (!pipe.controller) {
+            continue;
+        }
+        auto snap = pipe.controller->snapshot();
+        if (!snap.ok() || !snap.value().quiescence.settled) {
             return false;
         }
     }
@@ -30,507 +126,991 @@ bool RunExecution::resources_settled() {
 }
 
 ExecutionCondition RunExecution::condition(DesiredState desired) {
-    std::lock_guard<std::mutex> lock(registration);
-    bool all_settled = preparation_returned && !rotating;
-    bool any_open = false;
-    bool all_open = !pipelines.empty();
-    bool required_open = true;
-    bool failed_pipeline_pending = false;
-    bool required_configuration_rejected = false;
-    bool recoverable_pipeline = false;
-    bool snapshot_unavailable = false;
-    for (const auto& selected : pipelines) {
-        auto actual = selected.controller->snapshot();
-        if (!actual.ok()) {
-            snapshot_unavailable = true;
-            all_settled = false;
-            failed_pipeline_pending =
-                failed_pipeline_pending ||
-                (selected.prepare_status && *selected.prepare_status != StatusCode::Ok);
-            continue;
-        }
-        all_settled = all_settled && actual.value().quiescence.settled;
-        failed_pipeline_pending =
-            failed_pipeline_pending ||
-            (selected.prepare_status && *selected.prepare_status != StatusCode::Ok &&
-             !actual.value().quiescence.settled);
-        const bool open = actual.value().gate.open && !actual.value().gate.control_fence &&
-                          actual.value().failure == StatusCode::Ok;
-        any_open = any_open || open;
-        all_open = all_open && open;
-        required_open = required_open && (!selected.required || open);
-        required_configuration_rejected =
-            required_configuration_rejected ||
-            (selected.required && actual.value().configuration_rejected);
-        recoverable_pipeline = recoverable_pipeline || !actual.value().configuration_rejected;
+    std::vector<RunPipeline> snapshot;
+    bool is_preparing = false;
+    bool is_closing = false;
+    bool is_degraded = false;
+    bool is_protected = false;
+    StatusCode fail = StatusCode::Ok;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        snapshot = pipelines;
+        is_preparing = preparing;
+        is_closing = closing;
+        is_degraded = degraded;
+        is_protected = volume_protected;
+        fail = failure;
     }
-    if (ended_pending) {
-        return ExecutionCondition::PendingCleanup;
-    }
-    if (failed_pipeline_pending) {
-        return ExecutionCondition::PendingCleanup;
-    }
-    if (draining) {
-        return ExecutionCondition::Draining;
-    }
-    if (preparing) {
-        return ExecutionCondition::Preparing;
-    }
-    if (snapshot_unavailable) {
+    if (is_protected) {
         return ExecutionCondition::Protected;
     }
-    if (any_open) {
-        if (!required_open && config->start_policy == StartPolicyMode::AllRequired) {
-            return ExecutionCondition::Protected;
+    if (is_closing) {
+        return ExecutionCondition::Draining;
+    }
+    if (is_preparing) {
+        return ExecutionCondition::Preparing;
+    }
+    bool any_open = false;
+    bool any_failed = fail != StatusCode::Ok;
+    bool all_settled = true;
+    for (const auto& pipe : snapshot) {
+        if (!pipe.controller) {
+            continue;
         }
-        return all_open ? ExecutionCondition::Active : ExecutionCondition::Degraded;
+        auto snap = pipe.controller->snapshot();
+        if (!snap.ok()) {
+            any_failed = true;
+            all_settled = false;
+            continue;
+        }
+        if (snap.value().gate.open && !snap.value().gate.control_fence) {
+            any_open = true;
+        }
+        if (snap.value().failure != StatusCode::Ok) {
+            any_failed = true;
+        }
+        if (!snap.value().quiescence.settled) {
+            all_settled = false;
+        }
+    }
+    if (desired == DesiredState::Running) {
+        if (any_open) {
+            return (is_degraded || any_failed) ? ExecutionCondition::Degraded
+                                               : ExecutionCondition::Active;
+        }
+        if (any_failed) {
+            return all_settled ? ExecutionCondition::Failed : ExecutionCondition::Protected;
+        }
+        return all_settled ? ExecutionCondition::Idle : ExecutionCondition::Draining;
     }
     if (!all_settled) {
-        return ExecutionCondition::PendingCleanup;
+        return any_failed ? ExecutionCondition::Protected : ExecutionCondition::Draining;
     }
-    if (desired != DesiredState::Running) {
-        return ExecutionCondition::Idle;
-    }
-    // A restart with unchanged immutable inputs cannot repair rejected Plugin
-    // configuration. Partial BestEffort runs still take the Degraded path above.
-    const bool configuration_blocks_recovery =
-        !pipelines.empty() &&
-        (!recoverable_pipeline ||
-         (config->start_policy == StartPolicyMode::AllRequired && required_configuration_rejected));
-    return (configuration_blocks_recovery || recovery_exhausted) ? ExecutionCondition::Failed
-                                                                 : ExecutionCondition::Protected;
+    return ExecutionCondition::Idle;
 }
 
-}  // namespace rodaq::task
+}  // namespace task
 
-namespace rodaq {
-namespace {
+void TaskService::State::start_prepare(
+    const std::shared_ptr<task::TaskEntry>& entry,
+    const std::shared_ptr<task::RunExecution>& execution) noexcept {
+    struct PrepareJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::RunExecution> execution;
 
-const OperationSnapshot* current_operation(const task::TaskControlRecord& control) noexcept {
-    for (const auto& stored : control.operation_history.entries) {
-        if (control.current_operation_id &&
-            stored.snapshot.operation_id == *control.current_operation_id) {
-            return &stored.snapshot;
-        }
-    }
-    return nullptr;
-}
+        void run() noexcept override {
+            struct ActiveGuard {
+                std::atomic<std::size_t>& counter;
+                ~ActiveGuard() noexcept { counter.fetch_sub(1, std::memory_order_release); }
+            } active{owner->active_jobs};
 
-std::uint64_t recovery_backoff(const task::RuntimeRecoveryPolicy& policy, std::uint32_t attempt) {
-    auto delay = static_cast<std::uint64_t>(policy.initial_backoff.count());
-    const auto maximum = static_cast<std::uint64_t>(policy.max_backoff.count());
-    for (std::uint32_t i = 1; i < attempt && delay < maximum; ++i) {
-        delay = delay > maximum / 2 ? maximum : delay * 2;
-    }
-    return delay;
-}
+            const auto& exec_opts = *owner->options->execution;
+            auto deadline = plugin::Deadline::after(exec_opts.native_timeout);
+            StatusCode fail_code = StatusCode::Ok;
+            std::string fail_msg;
 
-Result<void> compact_ended_authorization(
-    task::TaskEntry& entry, const task::TaskControlRecord& control) {
-    auto loaded = entry.recovery->load();
-    if (!loaded.ok()) {
-        return loaded.status();
-    }
-    auto record = std::move(loaded.value());
-    if (record.observed_control_generation != control.control_generation ||
-        record.active_config_version != control.active_config_version || record.reset_progress ||
-        !record.cleanup_intents.empty()) {
-        return Status(StatusCode::Conflict, {});
-    }
-    if (!record.run_operation) {
-        return {};
-    }
-    if (!control.current_operation_id ||
-        !(record.run_operation->operation_id == *control.current_operation_id) ||
-        record.run_operation->phase != task::RunPhase::Ended) {
-        return Status(StatusCode::Conflict, {});
-    }
-    if (record.record_revision == std::numeric_limits<std::uint64_t>::max()) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-    // Existing Store compaction is legal only after all old instances Ended.
-    // Keep recording/committed floors and the immutable user Operation result.
-    for (const auto& instance : record.run_operation->authorized_pipelines) {
-        const auto recent = std::find_if(
-            record.pipelines.begin(), record.pipelines.end(),
-            [&](const auto& value) { return value.instance.pipeline_id == instance.pipeline_id; });
-        if (recent != record.pipelines.end()) {
-            if (!recent->instance.ended_boundary) {
-                return Status(StatusCode::Conflict, {});
-            }
-            *recent = {record.run_operation->control_generation, instance};
-        } else {
-            record.pipelines.push_back({record.run_operation->control_generation, instance});
-        }
-    }
-    record.run_operation.reset();
-    const auto expected = record.record_revision++;
-    return entry.recovery->publish(record, expected);
-}
-
-}  // namespace
-
-void TaskService::State::start_execution(
-    const std::shared_ptr<task::TaskEntry>& entry, task::RunPurpose purpose,
-    std::uint64_t now_monotonic) noexcept {
-    try {
-        auto job = std::make_shared<PrepareJob>();
-        auto execution = std::make_shared<task::RunExecution>();
-        {
-            std::unique_lock<std::mutex> control(entry->control_mutex);
-            const auto current = entry->controller->durable_record();
-            const auto* operation = current_operation(*current);
-            if (!accepting.load(std::memory_order_acquire) || !operation ||
-                !entry->controller->run_is_current(
-                    operation->operation_id, current->control_generation) ||
-                !options->execution ||
-                (purpose == task::RunPurpose::Operation && task::terminal(operation->state))) {
-                return;
-            }
-            if (std::atomic_load(&entry->published)->snapshot.snapshot_sequence ==
-                std::numeric_limits<std::uint64_t>::max()) {
-                return;
-            }
-            if (purpose == task::RunPurpose::VolumeRecovery) {
-                const auto config = std::atomic_load(&entry->published)->config;
-                const auto& policy = options->execution->runtime_recovery;
-                if (!entry->volume_recovery ||
-                    entry->volume_recovery->generation != current->control_generation ||
-                    entry->volume_recovery->attempts >= policy.max_attempts ||
-                    now_monotonic < entry->volume_recovery->not_before || !entry->quiescent ||
-                    entry->persisting || entry->control_work || entry->closing ||
-                    entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
-                    entry->cleanup_pending.frame || !task::terminal(operation->state) ||
-                    config->recovery_policy != RecoveryPolicyMode::Resume ||
-                    (entry->execution && entry->execution->condition(DesiredState::Running) ==
-                                             ExecutionCondition::Failed)) {
-                    return;
+            // 1. Resolve closed PipelineControllers from Composition.
+            Result<task::RunInputs> resolved(Status(StatusCode::Internal, {}));
+            if (!deadline.ok()) {
+                fail_code = deadline.status().code();
+            } else {
+                try {
+                    resolved = exec_opts.resolve(
+                        execution->task_id, execution->config_version,
+                        execution->control_generation, *execution->config);
+                } catch (...) {
+                    resolved = Status(StatusCode::Internal, "Exception in resolve");
                 }
-                auto& retry = *entry->volume_recovery;
-                const auto delay = recovery_backoff(policy, ++retry.attempts);
-                retry.not_before = delay > std::numeric_limits<std::uint64_t>::max() - now_monotonic
-                                       ? std::numeric_limits<std::uint64_t>::max()
-                                       : now_monotonic + delay;
-            }
-            if (purpose == task::RunPurpose::BootRecovery) {
-                const auto config = std::atomic_load(&entry->published)->config;
-                if (!entry->quiescent || entry->persisting || entry->control_work ||
-                    entry->closing || entry->cleanup_active_id != 0 || entry->cleanup_ready.frame ||
-                    entry->cleanup_pending.frame || !task::terminal(operation->state) ||
-                    config->recovery_policy != RecoveryPolicyMode::Resume) {
-                    return;
+                if (!resolved.ok()) {
+                    fail_code = resolved.status().code();
+                    fail_msg = resolved.status().message();
                 }
             }
-            if (purpose == task::RunPurpose::Operation && entry->execution &&
-                entry->execution->control->current_operation_id == current->current_operation_id) {
-                const auto existing = entry->execution;
-                bool ready = false;
-                bool partial = false;
-                StatusCode failure = StatusCode::Ok;
-                DataImpact impact = DataImpact::None;
+
+            if (fail_code == StatusCode::Ok) {
+                std::lock_guard<std::mutex> elock(execution->mutex);
+                execution->pipelines = std::move(resolved.value().pipelines);
+            }
+
+            // 2. Prepare all Pipelines (Fixed Required/Optional Prepare Barrier).
+            std::vector<std::optional<pipeline::PreparedPipeline>> prepared_results;
+            std::vector<StatusCode> prepare_statuses;
+            bool any_required_failed = false;
+            bool any_optional_failed = false;
+            std::size_t ready_count = 0;
+
+            if (fail_code == StatusCode::Ok) {
+                std::vector<task::RunPipeline> pipes;
                 {
-                    std::lock_guard<std::mutex> registered(existing->registration);
-                    ready = existing->result_ready && !existing->draining;
-                    partial = existing->result_partial;
-                    failure = existing->failure;
-                    impact = existing->result_impact;
+                    std::lock_guard<std::mutex> elock(execution->mutex);
+                    pipes = execution->pipelines;
                 }
-                control.unlock();
-                if (ready) {
-                    finish_execution(
-                        entry, *current->current_operation_id, current->control_generation, failure,
-                        partial, impact);
-                }
-                return;
-            }
-            if (entry->execution && !entry->quiescent) {
-                return;
-            }
-            execution->purpose = purpose;
-            execution->control = current;
-            execution->config = std::atomic_load(&entry->published)->config;
-            job->owner = shared_from_this();
-            job->entry = entry;
-            job->execution = execution;
-            entry->execution = execution;
-            entry->quiescent = false;
-            auto publication = task::make_task_publication(
-                *entry, execution->config,
-                std::atomic_load(&entry->published)->snapshot.snapshot_sequence + 1);
-            if (publication.ok()) {
-                std::atomic_store(&entry->published, std::move(publication.value()));
-            }
-        }
-        auto queued = options->execution->preparation_lane->submit(job);
-        if (!queued.ok()) {
-            {
-                std::lock_guard<std::mutex> lock(execution->registration);
-                execution->preparing = false;
-                execution->preparation_returned = true;
-                execution->failure = queued.status().code();
-                execution->result_ready = true;
-                execution->returned.notify_all();
-            }
-            if (purpose != task::RunPurpose::Operation) {
-                std::lock_guard<std::mutex> control(entry->control_mutex);
-                if (entry->execution == execution) {
-                    entry->quiescent = true;  // No actual work or Native owner was admitted.
-                    if (purpose == task::RunPurpose::VolumeRecovery) {
-                        std::lock_guard<std::mutex> registered(execution->registration);
-                        execution->recovery_exhausted =
-                            entry->volume_recovery &&
-                            entry->volume_recovery->attempts >=
-                                options->execution->runtime_recovery.max_attempts;
+                prepared_results.resize(pipes.size());
+                prepare_statuses.assign(pipes.size(), StatusCode::Ok);
+
+                for (std::size_t i = 0; i < pipes.size(); ++i) {
+                    bool is_fenced = false;
+                    {
+                        std::lock_guard<std::mutex> elock(execution->mutex);
+                        is_fenced = execution->fenced;
+                    }
+                    if (is_fenced) {
+                        prepare_statuses[i] = StatusCode::Conflict;
+                        if (pipes[i].required) {
+                            any_required_failed = true;
+                        }
+                        continue;
+                    }
+                    auto res = pipes[i].controller->prepare(deadline.value());
+                    if (res.ok()) {
+                        prepared_results[i] = res.value();
+                        prepare_statuses[i] = StatusCode::Ok;
+                        ++ready_count;
+                    } else {
+                        prepare_statuses[i] = res.status().code();
+                        if (pipes[i].required) {
+                            any_required_failed = true;
+                            if (fail_code == StatusCode::Ok) {
+                                fail_code = res.status().code();
+                                fail_msg = res.status().message();
+                            }
+                        } else {
+                            any_optional_failed = true;
+                        }
                     }
                 }
-            } else {
-                finish_execution(
-                    entry, *execution->control->current_operation_id,
-                    execution->control->control_generation, queued.status().code());
+                {
+                    std::lock_guard<std::mutex> elock(execution->mutex);
+                    for (std::size_t i = 0; i < execution->pipelines.size(); ++i) {
+                        execution->pipelines[i].prepare_status = prepare_statuses[i];
+                        execution->pipelines[i].active = prepared_results[i].has_value();
+                    }
+                }
+            }
+
+            if (fail_code == StatusCode::Ok && (any_required_failed || ready_count == 0)) {
+                fail_code = StatusCode::Unavailable;
+                fail_msg = "Prepare barrier failed";
+            }
+
+            // 3. Evaluate barrier under Task control lock and Open Admission if current.
+            bool opened_all = false;
+            bool superseded = false;
+            bool need_cleanup = false;
+            std::vector<std::shared_ptr<pipeline::PipelineController>> optional_failed_cleanup;
+
+            {
+                std::lock_guard<std::mutex> lock(entry->control_mutex);
+                bool fenced = false;
+                {
+                    std::lock_guard<std::mutex> elock(execution->mutex);
+                    execution->preparing = false;
+                    execution->preparation_returned = true;
+                    fenced = execution->fenced;
+                }
+                if (entry->control_generation != execution->control_generation || fenced) {
+                    superseded = true;
+                    need_cleanup = true;
+                } else if (fail_code == StatusCode::Ok) {
+                    auto sample = exec_opts.sample();
+                    if (!sample.ok()) {
+                        fail_code = sample.status().code();
+                        need_cleanup = true;
+                    } else {
+                        std::lock_guard<std::mutex> elock(execution->mutex);
+                        for (std::size_t i = 0; i < execution->pipelines.size(); ++i) {
+                            if (!prepared_results[i]) {
+                                optional_failed_cleanup.push_back(
+                                    execution->pipelines[i].controller);
+                                continue;
+                            }
+                            const auto& prep = *prepared_results[i];
+                            const auto open_mono =
+                                std::max(sample.value().monotonic_ns, prep.prepared_monotonic);
+                            pipeline::OpenAuthorization auth{execution->task_id,
+                                                             prep.pipeline_id,
+                                                             prep.instance_id,
+                                                             prep.control_generation,
+                                                             prep.prepared_monotonic,
+                                                             open_mono,
+                                                             execution->recording_base_ns};
+                            const auto open_res =
+                                execution->pipelines[i].controller->open_admission(auth);
+                            if (open_res != pipeline::GateOpenResult::Opened) {
+                                execution->pipelines[i].active = false;
+                                if (execution->pipelines[i].required) {
+                                    fail_code = StatusCode::Conflict;
+                                    need_cleanup = true;
+                                    break;
+                                }
+                                any_optional_failed = true;
+                                optional_failed_cleanup.push_back(
+                                    execution->pipelines[i].controller);
+                            }
+                        }
+                        if (!need_cleanup) {
+                            execution->opened = true;
+                            execution->degraded = any_optional_failed;
+                            opened_all = true;
+                        }
+                    }
+                } else {
+                    need_cleanup = true;
+                }
+
+                if (opened_all) {
+                    if (entry->current_operation &&
+                        entry->current_operation->operation_id == execution->start_operation_id) {
+                        entry->current_operation->state = any_optional_failed
+                                                              ? OperationState::PartiallySucceeded
+                                                              : OperationState::Succeeded;
+                        entry->current_operation->terminal_at = task::control_wall_now();
+                        entry->current_operation->status_code = StatusCode::Ok;
+                        entry->operations.update(*entry->current_operation);
+                    }
+                    owner->publish_locked(*entry);
+                } else if (!superseded) {
+                    {
+                        std::lock_guard<std::mutex> elock(execution->mutex);
+                        execution->failure = fail_code;
+                    }
+                    if (entry->current_operation &&
+                        entry->current_operation->operation_id == execution->start_operation_id) {
+                        entry->current_operation->state = OperationState::Failed;
+                        entry->current_operation->terminal_at = task::control_wall_now();
+                        entry->current_operation->status_code = fail_code;
+                        entry->current_operation->failure_domain = FailureDomain::Pipeline;
+                        entry->current_operation->retryability = Retryability::AfterConditionChange;
+                        entry->current_operation->diagnostic = fail_msg;
+                        entry->operations.update(*entry->current_operation);
+                    }
+                    owner->publish_locked(*entry);
+                }
+            }
+
+            // Clean up any failed optional pipelines in background.
+            for (const auto& opt_ctrl : optional_failed_cleanup) {
+                if (!opt_ctrl) {
+                    continue;
+                }
+                auto clean_dl = plugin::Deadline::after(exec_opts.native_timeout);
+                if (clean_dl.ok()) {
+                    (void)opt_ctrl->establish_control_fence();
+                    (void)opt_ctrl->close_admission(execution->control_generation);
+                    (void)opt_ctrl->cleanup(clean_dl.value());
+                }
+            }
+
+            if (need_cleanup) {
+                execution->fence();
+                if (!superseded) {
+                    owner->start_close(
+                        entry, execution, std::nullopt, execution->control_generation, false, false,
+                        true);
+                } else {
+                    std::lock_guard<std::mutex> elock(execution->mutex);
+                    execution->changed.notify_all();
+                }
             }
         }
-    } catch (...) {
-        // Durable intent remains visible; a later same-key retry may dispatch
-        // work that was never created. Never invent a Native completion here.
-    }
-}
+    };
 
-void TaskService::State::finish_execution(
-    const std::shared_ptr<task::TaskEntry>& entry, OperationId operation,
-    ControlGeneration generation, StatusCode failure, bool partial, DataImpact impact) noexcept {
     try {
-        auto job = std::make_shared<ControlJob>();
+        active_jobs.fetch_add(1, std::memory_order_acq_rel);
+        auto job = std::make_shared<PrepareJob>();
         job->owner = shared_from_this();
         job->entry = entry;
-        job->reply = std::make_shared<task::Reply<OperationId>>();
-        {
-            std::lock_guard<std::mutex> control(entry->control_mutex);
-            const auto* current = current_operation(*entry->controller->durable_record());
-            if (!current || !(current->operation_id == operation) ||
-                current->control_generation != generation || task::terminal(current->state)) {
-                return;
+        job->execution = execution;
+        auto submitted = options->execution->preparation_lane->submit(std::move(job));
+        if (!submitted.ok()) {
+            active_jobs.fetch_sub(1, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            execution->preparing = false;
+            execution->preparation_returned = true;
+            execution->failure = submitted.status().code();
+            if (entry->current_operation &&
+                entry->current_operation->operation_id == execution->start_operation_id) {
+                entry->current_operation->state = OperationState::Failed;
+                entry->current_operation->terminal_at = task::control_wall_now();
+                entry->current_operation->status_code = submitted.status().code();
+                entry->operations.update(*entry->current_operation);
             }
-            auto result = *current;
-            result.state = failure != StatusCode::Ok ? OperationState::Failed
-                           : partial                 ? OperationState::PartiallySucceeded
-                                                     : OperationState::Succeeded;
-            result.status_code = failure;
-            result.data_impact = impact;
-            result.terminal_at = std::max(task::control_wall_now(), result.accepted_at);
-            if (failure != StatusCode::Ok) {
-                result.failure_domain = FailureDomain::Pipeline;
-                result.retryability = Retryability::ManualRecoveryRequired;
-            }
-            auto work = entry->controller->update_operation(result);
-            if (!work.ok()) {
-                return;
-            }
-            job->frame = work.value();
-            entry->control_work = work.value();
-            entry->operation_reply = job->reply;
-            entry->persisting = true;
-        }
-        auto queued = options->control_lane->submit(job);
-        if (!queued.ok()) {
-            std::lock_guard<std::mutex> control(entry->control_mutex);
-            entry->persisting = false;
-            entry->ready_to_submit = true;
+            entry->execution.reset();
+            publish_locked(*entry);
         }
     } catch (...) {
-        // Current durable Accepted is retained, without a false terminal result.
+        active_jobs.fetch_sub(1, std::memory_order_release);
     }
 }
 
-void TaskService::State::PrepareJob::run() noexcept {
-    StatusCode failure = StatusCode::Ok;
-    bool partial = false;
-    std::uint64_t recording_base = 0;
-    try {
-        auto admitted = owner->validate_deployment(*execution->config);
-        if (!admitted.ok()) {
-            failure = admitted.status().code();
-        }
-        auto inputs = failure == StatusCode::Ok
-                          ? owner->options->execution->resolve(
-                                *execution->control, *execution->config, *entry->identities)
-                          : Result<task::RunInputs>(Status(failure, {}));
-        auto identities = failure == StatusCode::Ok
-                              ? entry->identities->load()
-                              : Result<pipeline::StreamIdentityState>(Status(failure, {}));
-        if (failure == StatusCode::Ok && identities.ok()) {
-            std::lock_guard<std::mutex> control(entry->control_mutex);
-            entry->identity = std::move(identities.value());
-        } else if (failure == StatusCode::Ok && inputs.ok()) {
-            inputs = identities.status();
-        }
-        if (failure == StatusCode::Ok && !inputs.ok()) {
-            failure = inputs.status().code();
-        }
-        if (failure == StatusCode::Ok) {
-            auto& selected = inputs.value();
-            auto recovered_time = [&] {
-                std::lock_guard<std::mutex> recovery(entry->recovery_execution);
-                return entry->recovery->load();
-            }();
-            if (recovered_time.ok()) {
-                if (!recovered_time.value().recording_time_ns) {
-                    failure = StatusCode::Unavailable;
-                } else {
-                    recording_base = *recovered_time.value().recording_time_ns;
+void TaskService::State::start_close(
+    const std::shared_ptr<task::TaskEntry>& entry,
+    const std::shared_ptr<task::RunExecution>& execution, std::optional<OperationId> operation_id,
+    ControlGeneration generation, bool is_pause, bool process_drain,
+    bool internal_cleanup) noexcept {
+    struct CloseJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        std::shared_ptr<task::RunExecution> execution;
+        std::optional<OperationId> operation_id;
+        ControlGeneration generation{0};
+        bool is_pause{false};
+        bool process_drain{false};
+        bool internal_cleanup{false};
+
+        void run() noexcept override {
+            struct ActiveGuard {
+                std::atomic<std::size_t>& counter;
+                ~ActiveGuard() noexcept { counter.fetch_sub(1, std::memory_order_release); }
+            } active{owner->active_jobs};
+
+            const auto& exec_opts = *owner->options->execution;
+            execution->fence();
+
+            // Wait for any in-flight PrepareJob to finish before touching controllers.
+            {
+                std::unique_lock<std::mutex> elock(execution->mutex);
+                if (execution->closing) {
+                    return;
                 }
-            } else if (recovered_time.status().code() != StatusCode::NotFound) {
-                failure = recovered_time.status().code();
+                execution->closing = true;
+                execution->changed.wait_for(elock, exec_opts.native_timeout, [&] {
+                    return execution->preparation_returned || !execution->preparing;
+                });
             }
-            if (selected.pipelines.size() != execution->config->pipelines.size()) {
-                failure = StatusCode::InvalidArgument;
+
+            std::vector<task::RunPipeline> pipes;
+            {
+                std::lock_guard<std::mutex> elock(execution->mutex);
+                pipes = execution->pipelines;
             }
-            for (const auto& pipeline : selected.pipelines) {
-                if (!pipeline.controller) {
-                    failure = StatusCode::InvalidArgument;
-                    break;
-                }
-                auto state = pipeline.controller->snapshot();
-                if (!state.ok()) {
-                    failure = state.status().code();
-                    break;
-                }
-                const auto found = std::find_if(
-                    execution->config->pipelines.begin(), execution->config->pipelines.end(),
-                    [&](const auto& definition) {
-                        return definition.pipeline_id == state.value().identity.pipeline_id &&
-                               definition.required == pipeline.required;
-                    });
-                if (found == execution->config->pipelines.end()) {
-                    failure = StatusCode::InvalidArgument;
-                }
-            }
-            if (failure == StatusCode::Ok) {
-                auto pipelines = selected.pipelines;
-                auto boot = selected.boot;
-                auto authorization = task::RunAuthorization::create(
-                    *execution->control, execution->config->start_policy,
-                    std::move(selected.pipelines), entry->recovery, std::move(selected.boot),
-                    owner->options->execution->sample);
-                if (!authorization.ok()) {
-                    failure = authorization.status().code();
-                } else {
-                    std::shared_ptr<task::RunAuthorization> run(std::move(authorization.value()));
-                    {
-                        std::lock_guard<std::mutex> lock(execution->registration);
-                        execution->pipelines = std::move(pipelines);
-                        execution->boot = std::move(boot);
-                        execution->sample = owner->options->execution->sample;
-                        execution->authorization = run;
-                        if (execution->fenced) {
-                            (void)run->fence();
+
+            auto deadline = plugin::Deadline::after(exec_opts.native_timeout);
+            StatusCode aggregate_failure = StatusCode::Ok;
+            DataImpact aggregate_impact = DataImpact::None;
+            std::uint64_t max_boundary = execution->recording_base_ns;
+
+            if (!deadline.ok()) {
+                aggregate_failure = deadline.status().code();
+            } else if (pipes.size() > 1 && exec_opts.pipeline_cleanup_lane) {
+                // Parallel multi-Pipeline drain/seal/commit/cleanup (IC-T04).
+                struct Latch {
+                    std::mutex mutex;
+                    std::condition_variable done;
+                    std::size_t remaining{0};
+                    StatusCode failure{StatusCode::Ok};
+                    DataImpact impact{DataImpact::None};
+                    std::uint64_t max_boundary{0};
+                };
+                auto latch = std::make_shared<Latch>();
+                latch->remaining = pipes.size();
+                latch->max_boundary = max_boundary;
+
+                struct PipeCloseWork final : Work {
+                    const task::RunExecutionOptions* exec_opts{nullptr};
+                    std::shared_ptr<pipeline::PipelineController> controller;
+                    ControlGeneration generation{0};
+                    plugin::Deadline deadline{plugin::Deadline::infinite()};
+                    std::shared_ptr<Latch> latch;
+
+                    void run() noexcept override {
+                        StatusCode local_fail = StatusCode::Ok;
+                        DataImpact local_impact = DataImpact::None;
+                        std::uint64_t local_boundary = 0;
+                        if (controller) {
+                            settle_pipeline_close(
+                                *exec_opts, controller, generation, deadline, local_fail,
+                                local_impact, local_boundary);
+                        }
+                        std::lock_guard<std::mutex> lock(latch->mutex);
+                        if (local_fail != StatusCode::Ok && latch->failure == StatusCode::Ok) {
+                            latch->failure = local_fail;
+                        }
+                        latch->impact = combine_impact(latch->impact, local_impact);
+                        latch->max_boundary = std::max(latch->max_boundary, local_boundary);
+                        if (--latch->remaining == 0) {
+                            latch->done.notify_all();
                         }
                     }
-                    auto deadline =
-                        plugin::Deadline::after(owner->options->execution->native_timeout);
-                    auto prepared = deadline.ok()
-                                        ? run->prepare(deadline.value())
-                                        : Result<task::RunPrepareResult>(deadline.status());
-                    if (prepared.ok()) {
-                        {
-                            std::lock_guard<std::mutex> registered(execution->registration);
-                            for (std::size_t i = 0; i < execution->pipelines.size(); ++i) {
-                                execution->pipelines[i].prepare_status =
-                                    prepared.value().pipelines[i];
-                                if (prepared.value().pipelines[i] == StatusCode::Ok) {
-                                    execution->pipelines[i].effective_config_id =
-                                        prepared.value().effective_config_ids[i];
-                                }
-                            }
+                };
+
+                std::size_t submitted_count = 0;
+                for (const auto& pipe : pipes) {
+                    auto sub = std::make_shared<PipeCloseWork>();
+                    sub->exec_opts = &exec_opts;
+                    sub->controller = pipe.controller;
+                    sub->generation = generation;
+                    sub->deadline = deadline.value();
+                    sub->latch = latch;
+                    auto queued = exec_opts.pipeline_cleanup_lane->submit(std::move(sub));
+                    if (!queued.ok()) {
+                        if (pipe.controller) {
+                            settle_pipeline_close(
+                                exec_opts, pipe.controller, generation, deadline.value(),
+                                aggregate_failure, aggregate_impact, max_boundary);
                         }
-                        std::lock_guard<std::mutex> recovery(entry->recovery_execution);
-                        auto checkpoint =
-                            execution->purpose != task::RunPurpose::Operation
-                                ? compact_ended_authorization(*entry, *execution->control)
-                                : Result<void>{};
-                        if (checkpoint.ok()) {
-                            checkpoint = run->checkpoint_prepared();
+                        std::lock_guard<std::mutex> lock(latch->mutex);
+                        if (--latch->remaining == 0) {
+                            latch->done.notify_all();
                         }
-                        if (!checkpoint.ok()) {
-                            prepared = checkpoint.status();
-                        }
-                    }
-                    if (!prepared.ok()) {
-                        failure = prepared.status().code();
-                    } else if (!prepared.value().barrier_passed) {
-                        failure = StatusCode::Unavailable;
                     } else {
-                        partial = std::any_of(
-                            prepared.value().pipelines.begin(), prepared.value().pipelines.end(),
-                            [](auto status) { return status != StatusCode::Ok; });
-                        Result<void> authorized;
-                        {
-                            std::lock_guard<std::mutex> recovery(entry->recovery_execution);
-                            authorized = run->publish_authorization(recording_base);
+                        ++submitted_count;
+                    }
+                }
+                if (submitted_count > 0) {
+                    std::unique_lock<std::mutex> lock(latch->mutex);
+                    if (!latch->done.wait_for(lock, exec_opts.native_timeout * 2, [&] {
+                            return latch->remaining == 0;
+                        })) {
+                        if (aggregate_failure == StatusCode::Ok) {
+                            aggregate_failure = StatusCode::DeadlineExceeded;
                         }
-                        if (!authorized.ok()) {
-                            failure = authorized.status().code();
+                    }
+                    if (latch->failure != StatusCode::Ok && aggregate_failure == StatusCode::Ok) {
+                        aggregate_failure = latch->failure;
+                    }
+                    aggregate_impact = combine_impact(aggregate_impact, latch->impact);
+                    max_boundary = std::max(max_boundary, latch->max_boundary);
+                }
+            } else {
+                for (const auto& pipe : pipes) {
+                    if (pipe.controller) {
+                        settle_pipeline_close(
+                            exec_opts, pipe.controller, generation, deadline.value(),
+                            aggregate_failure, aggregate_impact, max_boundary);
+                    }
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> elock(execution->mutex);
+                execution->closing = false;
+                if (aggregate_failure != StatusCode::Ok && execution->failure == StatusCode::Ok) {
+                    execution->failure = aggregate_failure;
+                }
+                execution->data_impact = combine_impact(execution->data_impact, aggregate_impact);
+            }
+            const bool settled = execution->resources_settled();
+
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            entry->last_data_impact = combine_impact(entry->last_data_impact, aggregate_impact);
+            if (settled) {
+                if (is_pause) {
+                    entry->recording_base_ns = max_boundary;
+                } else if (!process_drain && !internal_cleanup) {
+                    entry->recording_base_ns = 0;
+                }
+                if (entry->execution == execution) {
+                    entry->execution.reset();
+                }
+            }
+            if (operation_id && entry->current_operation &&
+                entry->current_operation->operation_id == *operation_id &&
+                !task::is_terminal(entry->current_operation->state)) {
+                entry->current_operation->terminal_at = task::control_wall_now();
+                entry->current_operation->data_impact =
+                    combine_impact(entry->current_operation->data_impact, aggregate_impact);
+                if (aggregate_failure == StatusCode::Ok && settled) {
+                    entry->current_operation->state = OperationState::Succeeded;
+                    entry->current_operation->status_code = StatusCode::Ok;
+                } else if (settled && aggregate_impact == DataImpact::AcceptedKnownFailed) {
+                    entry->current_operation->state = OperationState::PartiallySucceeded;
+                    entry->current_operation->status_code = aggregate_failure;
+                } else {
+                    entry->current_operation->state = OperationState::Failed;
+                    entry->current_operation->status_code = aggregate_failure != StatusCode::Ok
+                                                                ? aggregate_failure
+                                                                : StatusCode::Unavailable;
+                    entry->current_operation->failure_domain = FailureDomain::Pipeline;
+                    entry->current_operation->retryability = Retryability::AfterProcessRestart;
+                }
+                entry->operations.update(*entry->current_operation);
+            }
+            owner->publish_locked(*entry);
+        }
+    };
+
+    try {
+        active_jobs.fetch_add(1, std::memory_order_acq_rel);
+        auto job = std::make_shared<CloseJob>();
+        job->owner = shared_from_this();
+        job->entry = entry;
+        job->execution = execution;
+        job->operation_id = operation_id;
+        job->generation = generation;
+        job->is_pause = is_pause;
+        job->process_drain = process_drain;
+        job->internal_cleanup = internal_cleanup;
+        auto submitted = options->execution->cleanup_lane->submit(std::move(job));
+        if (!submitted.ok()) {
+            active_jobs.fetch_sub(1, std::memory_order_release);
+        }
+    } catch (...) {
+        active_jobs.fetch_sub(1, std::memory_order_release);
+    }
+}
+
+void TaskService::State::start_reset(
+    const std::shared_ptr<task::TaskEntry>& entry, OperationId operation_id,
+    ControlGeneration generation) noexcept {
+    struct ResetJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        OperationId operation_id;
+        ControlGeneration generation{0};
+
+        void run() noexcept override {
+            struct ActiveGuard {
+                std::atomic<std::size_t>& counter;
+                ~ActiveGuard() noexcept { counter.fetch_sub(1, std::memory_order_release); }
+            } active{owner->active_jobs};
+
+            const auto& artifacts = owner->options->execution->artifacts;
+            StatusCode fail = StatusCode::Ok;
+            std::size_t deleted_count = 0;
+            std::size_t failed_count = 0;
+
+            if (!artifacts.reset_targets || !artifacts.delete_for_reset) {
+                fail = StatusCode::Unavailable;
+            } else {
+                auto targets = artifacts.reset_targets(entry->id);
+                if (!targets.ok()) {
+                    fail = targets.status().code();
+                } else {
+                    const auto deadline = std::chrono::steady_clock::now() +
+                                          owner->options->execution->native_timeout;
+                    for (const auto id : targets.value()) {
+                        auto res = artifacts.delete_for_reset(id, deadline);
+                        if (res.ok() || res.status().code() == StatusCode::NotFound) {
+                            ++deleted_count;
                         } else {
-                            const auto opening = execution->sample();
-                            std::lock_guard<std::mutex> control(entry->control_mutex);
-                            const auto current = entry->controller->durable_record();
-                            if (!owner->accepting.load(std::memory_order_acquire) ||
-                                entry->execution != execution ||
-                                !entry->controller->run_is_current(
-                                    *execution->control->current_operation_id,
-                                    execution->control->control_generation)) {
-                                (void)run->fence();
-                                failure = StatusCode::Conflict;
-                            } else if (!opening.ok()) {
-                                failure = opening.status().code();
-                            } else {
-                                auto opened = run->open(*current, opening.value().monotonic_ns);
-                                failure = opened.ok() ? StatusCode::Ok : opened.status().code();
-                                if (opened.ok() &&
-                                    execution->purpose == task::RunPurpose::VolumeRecovery) {
-                                    entry->volume_recovery.reset();
-                                }
+                            ++failed_count;
+                            if (fail == StatusCode::Ok) {
+                                fail = res.status().code();
                             }
                         }
                     }
                 }
             }
+
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            entry->resetting = false;
+            entry->recording_base_ns = 0;
+            entry->last_data_impact = DataImpact::None;
+            if (entry->current_operation &&
+                entry->current_operation->operation_id == operation_id &&
+                !task::is_terminal(entry->current_operation->state)) {
+                entry->current_operation->terminal_at = task::control_wall_now();
+                entry->current_operation->data_impact = DataImpact::None;
+                if (fail == StatusCode::Ok && failed_count == 0) {
+                    entry->current_operation->state = OperationState::Succeeded;
+                    entry->current_operation->status_code = StatusCode::Ok;
+                } else if (deleted_count > 0 && failed_count > 0) {
+                    entry->current_operation->state = OperationState::PartiallySucceeded;
+                    entry->current_operation->status_code = fail;
+                    entry->current_operation->failure_domain = FailureDomain::Volume;
+                    entry->current_operation->retryability = Retryability::AfterConditionChange;
+                } else {
+                    entry->current_operation->state = OperationState::Failed;
+                    entry->current_operation->status_code =
+                        fail != StatusCode::Ok ? fail : StatusCode::Unavailable;
+                    entry->current_operation->failure_domain = FailureDomain::Volume;
+                    entry->current_operation->retryability = Retryability::AfterConditionChange;
+                }
+                entry->operations.update(*entry->current_operation);
+            }
+            owner->publish_locked(*entry);
         }
-    } catch (const std::bad_alloc&) {
-        failure = StatusCode::ResourceExhausted;
+    };
+
+    try {
+        active_jobs.fetch_add(1, std::memory_order_acq_rel);
+        auto job = std::make_shared<ResetJob>();
+        job->owner = shared_from_this();
+        job->entry = entry;
+        job->operation_id = operation_id;
+        job->generation = generation;
+        auto submitted = options->execution->cleanup_lane->submit(std::move(job));
+        if (!submitted.ok()) {
+            active_jobs.fetch_sub(1, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            entry->resetting = false;
+        }
     } catch (...) {
-        failure = StatusCode::Internal;
+        active_jobs.fetch_sub(1, std::memory_order_release);
     }
-    bool exhausted = false;
-    if (execution->purpose == task::RunPurpose::VolumeRecovery && failure != StatusCode::Ok) {
-        std::lock_guard<std::mutex> control(entry->control_mutex);
-        exhausted =
-            entry->volume_recovery && entry->volume_recovery->attempts >=
-                                          owner->options->execution->runtime_recovery.max_attempts;
+}
+
+void TaskService::State::start_retire(
+    const std::shared_ptr<task::TaskEntry>& entry, OperationId operation_id,
+    ControlGeneration generation) noexcept {
+    struct RetireJob final : Work {
+        std::shared_ptr<State> owner;
+        std::shared_ptr<task::TaskEntry> entry;
+        OperationId operation_id;
+        ControlGeneration generation{0};
+
+        void run() noexcept override {
+            struct ActiveGuard {
+                std::atomic<std::size_t>& counter;
+                ~ActiveGuard() noexcept { counter.fetch_sub(1, std::memory_order_release); }
+            } active{owner->active_jobs};
+
+            const auto& exec_opts = *owner->options->execution;
+            StatusCode fail = StatusCode::Ok;
+            if (!exec_opts.artifacts.retire_eligible) {
+                fail = StatusCode::Unavailable;
+            } else {
+                auto eligible = exec_opts.artifacts.retire_eligible(entry->id);
+                if (!eligible.ok()) {
+                    fail = eligible.status().code();
+                } else if (!eligible.value()) {
+                    fail = StatusCode::Conflict;
+                }
+            }
+            if (fail == StatusCode::Ok) {
+                std::lock_guard<std::mutex> slock(owner->store_mutex);
+                auto removed = owner->store->remove_task(entry->id);
+                if (!removed.ok()) {
+                    fail = removed.status().code();
+                }
+            }
+
+            if (fail == StatusCode::Ok) {
+                {
+                    std::lock_guard<std::mutex> lock(entry->control_mutex);
+                    entry->retiring = false;
+                    entry->retired = true;
+                    if (entry->current_operation &&
+                        entry->current_operation->operation_id == operation_id) {
+                        entry->current_operation->state = OperationState::Succeeded;
+                        entry->current_operation->terminal_at = task::control_wall_now();
+                        entry->current_operation->status_code = StatusCode::Ok;
+                        entry->operations.update(*entry->current_operation);
+                    }
+                    owner->publish_locked(*entry);
+                }
+                {
+                    std::lock_guard<std::mutex> clock(owner->catalog_mutex);
+                    owner->entries.erase(
+                        std::remove(owner->entries.begin(), owner->entries.end(), entry),
+                        owner->entries.end());
+                }
+                // Release per-Task Writer lane slice (IC-T01).
+                if (exec_opts.release_task_resources) {
+                    exec_opts.release_task_resources(entry->id);
+                }
+            } else {
+                std::lock_guard<std::mutex> lock(entry->control_mutex);
+                entry->retiring = false;
+                if (entry->current_operation &&
+                    entry->current_operation->operation_id == operation_id) {
+                    entry->current_operation->state = OperationState::Failed;
+                    entry->current_operation->terminal_at = task::control_wall_now();
+                    entry->current_operation->status_code = fail;
+                    entry->current_operation->failure_domain = FailureDomain::TaskControl;
+                    entry->current_operation->retryability = Retryability::AfterConditionChange;
+                    entry->operations.update(*entry->current_operation);
+                }
+                owner->publish_locked(*entry);
+            }
+        }
+    };
+
+    try {
+        active_jobs.fetch_add(1, std::memory_order_acq_rel);
+        auto job = std::make_shared<RetireJob>();
+        job->owner = shared_from_this();
+        job->entry = entry;
+        job->operation_id = operation_id;
+        job->generation = generation;
+        auto submitted = options->execution->cleanup_lane->submit(std::move(job));
+        if (!submitted.ok()) {
+            active_jobs.fetch_sub(1, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            entry->retiring = false;
+        }
+    } catch (...) {
+        active_jobs.fetch_sub(1, std::memory_order_release);
     }
+}
+
+Result<void> TaskService::close_admission() {
+    state_->accepting.store(false, std::memory_order_release);
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
     {
-        std::lock_guard<std::mutex> lock(execution->registration);
-        execution->recovery_exhausted = exhausted;
-        execution->failure = failure;
-        execution->result_partial = partial;
-        execution->preparing = false;
-        execution->preparation_returned = true;
-        execution->returned.notify_all();
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
     }
-    if (failure != StatusCode::Ok && owner->cleanup_failed_prepare(entry, execution, failure)) {
-        return;
+    for (const auto& entry : snapshot) {
+        std::shared_ptr<task::RunExecution> exec;
+        {
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            exec = entry->execution;
+        }
+        if (exec) {
+            exec->fence();
+        }
     }
+    return {};
+}
+
+Result<void> TaskService::drain_shutdown(bool pending_only) {
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
     {
-        std::lock_guard<std::mutex> lock(execution->registration);
-        execution->result_ready = true;
-        execution->result_impact =
-            failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly;
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
     }
-    if (execution->purpose == task::RunPurpose::Operation) {
-        owner->finish_execution(
-            entry, *execution->control->current_operation_id,
-            execution->control->control_generation, failure, partial,
-            failure == StatusCode::Ok ? DataImpact::None : DataImpact::PreAdmissionOnly);
+    for (const auto& entry : snapshot) {
+        std::shared_ptr<task::RunExecution> exec;
+        ControlGeneration gen = 0;
+        {
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            if (!entry->execution) {
+                continue;
+            }
+            std::lock_guard<std::mutex> elock(entry->execution->mutex);
+            if (pending_only && !entry->execution->fenced) {
+                continue;
+            }
+            if (entry->execution->closing) {
+                continue;
+            }
+            exec = entry->execution;
+            gen = entry->control_generation;
+        }
+        if (exec) {
+            exec->fence();
+            state_->start_close(entry, exec, std::nullopt, gen, false, !pending_only, pending_only);
+        }
     }
+    return {};
+}
+
+bool TaskService::shutdown_settled() const {
+    if (state_->requests.load(std::memory_order_acquire) != 0 ||
+        state_->active_jobs.load(std::memory_order_acquire) != 0) {
+        return false;
+    }
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
+    }
+    for (const auto& entry : snapshot) {
+        std::lock_guard<std::mutex> lock(entry->control_mutex);
+        if (entry->configuring || entry->resetting || entry->retiring) {
+            return false;
+        }
+        if (entry->execution && !entry->execution->resources_settled()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Result<void> TaskService::refresh_execution_facts(
+    bool protect, std::optional<std::uint64_t> fence_monotonic_ns) {
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
+    }
+    for (const auto& entry : snapshot) {
+        std::shared_ptr<task::RunExecution> exec;
+        {
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            exec = entry->execution;
+            if (protect && exec) {
+                std::lock_guard<std::mutex> elock(exec->mutex);
+                exec->volume_protected = true;
+            }
+        }
+        if (protect && exec) {
+            exec->fence(fence_monotonic_ns);
+        }
+        std::lock_guard<std::mutex> lock(entry->control_mutex);
+        if (entry->execution && entry->execution->resources_settled() &&
+            entry->desired_state != DesiredState::Running) {
+            entry->execution.reset();
+        }
+        state_->publish_locked(*entry);
+    }
+    return {};
+}
+
+Result<void> TaskService::schedule_rotation(std::uint64_t now_monotonic) {
+    if (!state_->options->execution || !state_->options->execution->allocate_segment_id) {
+        return {};
+    }
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
+    }
+    for (const auto& entry : snapshot) {
+        std::shared_ptr<task::RunExecution> exec;
+        std::shared_ptr<const TaskConfig> cfg;
+        {
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            if (entry->desired_state != DesiredState::Running || !entry->execution) {
+                continue;
+            }
+            exec = entry->execution;
+            cfg = entry->config;
+        }
+        bool due = false;
+        {
+            std::lock_guard<std::mutex> elock(exec->mutex);
+            if (!exec->opened || exec->fenced || exec->closing || exec->rotating) {
+                continue;
+            }
+            for (const auto& pipe : exec->pipelines) {
+                if (!pipe.active || !pipe.controller) {
+                    continue;
+                }
+                auto check = pipe.controller->rotation_due(cfg->segment_policy, now_monotonic);
+                if (check.ok() && check.value()) {
+                    due = true;
+                    break;
+                }
+            }
+            if (due) {
+                exec->rotating = true;
+            }
+        }
+        if (!due) {
+            continue;
+        }
+
+        struct RotateJob final : Work {
+            std::shared_ptr<State> owner;
+            std::shared_ptr<task::TaskEntry> entry;
+            std::shared_ptr<task::RunExecution> execution;
+            std::shared_ptr<const TaskConfig> cfg;
+            std::uint64_t now_monotonic{0};
+
+            void run() noexcept override {
+                struct ActiveGuard {
+                    std::atomic<std::size_t>& counter;
+                    std::shared_ptr<task::RunExecution> exec;
+                    ~ActiveGuard() noexcept {
+                        {
+                            std::lock_guard<std::mutex> elock(exec->mutex);
+                            exec->rotating = false;
+                        }
+                        counter.fetch_sub(1, std::memory_order_release);
+                    }
+                } guard{owner->active_jobs, execution};
+
+                const auto& exec_opts = *owner->options->execution;
+                std::vector<task::RunPipeline> pipes;
+                {
+                    std::lock_guard<std::mutex> elock(execution->mutex);
+                    pipes = execution->pipelines;
+                }
+                for (const auto& pipe : pipes) {
+                    if (!pipe.active || !pipe.controller) {
+                        continue;
+                    }
+                    auto check = pipe.controller->rotation_due(cfg->segment_policy, now_monotonic);
+                    if (!check.ok() || !check.value()) {
+                        continue;
+                    }
+                    auto next_id = exec_opts.allocate_segment_id();
+                    if (!next_id.ok()) {
+                        continue;
+                    }
+                    auto dl = plugin::Deadline::after(exec_opts.native_timeout);
+                    if (!dl.ok()) {
+                        continue;
+                    }
+                    auto rotated = pipe.controller->rotate(next_id.value(), dl.value());
+                    if (rotated.ok() && rotated.value().has_value()) {
+                        StatusCode fail = StatusCode::Ok;
+                        DataImpact impact = DataImpact::None;
+                        commit_sealed_segment(
+                            exec_opts, pipe.controller, *rotated.value(), fail, impact);
+                        if (impact != DataImpact::None) {
+                            std::lock_guard<std::mutex> lock(entry->control_mutex);
+                            entry->last_data_impact =
+                                combine_impact(entry->last_data_impact, impact);
+                        }
+                    }
+                }
+                std::lock_guard<std::mutex> lock(entry->control_mutex);
+                owner->publish_locked(*entry);
+            }
+        };
+
+        try {
+            state_->active_jobs.fetch_add(1, std::memory_order_acq_rel);
+            auto job = std::make_shared<RotateJob>();
+            job->owner = state_;
+            job->entry = entry;
+            job->execution = exec;
+            job->cfg = cfg;
+            job->now_monotonic = now_monotonic;
+            auto submitted = state_->options->execution->preparation_lane->submit(std::move(job));
+            if (!submitted.ok()) {
+                std::lock_guard<std::mutex> elock(exec->mutex);
+                exec->rotating = false;
+                state_->active_jobs.fetch_sub(1, std::memory_order_release);
+            }
+        } catch (...) {
+            std::lock_guard<std::mutex> elock(exec->mutex);
+            exec->rotating = false;
+            state_->active_jobs.fetch_sub(1, std::memory_order_release);
+        }
+    }
+    return {};
+}
+
+Result<void> TaskService::reconcile_volume(
+    artifact::VolumeSpaceCondition condition, std::uint64_t now_monotonic) {
+    const bool stopped = condition == artifact::VolumeSpaceCondition::Stopped ||
+                         condition == artifact::VolumeSpaceCondition::Unknown;
+    if (!stopped) {
+        return {};
+    }
+    (void)refresh_execution_facts(true, now_monotonic);
+    return drain_shutdown(true);
+}
+
+Result<void> TaskService::apply_retention(artifact::ArtifactCatalog& catalog) {
+    std::vector<std::shared_ptr<task::TaskEntry>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_->catalog_mutex);
+        snapshot = state_->entries;
+    }
+    for (const auto& entry : snapshot) {
+        RetentionPolicy policy;
+        {
+            std::lock_guard<std::mutex> lock(entry->control_mutex);
+            if (!entry->config || entry->resetting || entry->retiring || entry->retired) {
+                continue;
+            }
+            policy = entry->config->retention_policy;
+        }
+        if (policy.mode != RetentionMode::Rolling) {
+            continue;
+        }
+        // Bounded per-pass deletions so observe() stays responsive.
+        constexpr std::size_t kMaxDeletesPerPass = 16;
+        for (std::size_t step = 0; step < kMaxDeletesPerPass; ++step) {
+            auto selection = catalog.select_retention(entry->id, policy, 0);
+            if (!selection.ok() || !selection.value().candidate) {
+                break;
+            }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            auto deleted = catalog.delete_artifact(*selection.value().candidate, deadline);
+            if (!deleted.ok()) {
+                break;
+            }
+        }
+    }
+    return {};
 }
 
 }  // namespace rodaq

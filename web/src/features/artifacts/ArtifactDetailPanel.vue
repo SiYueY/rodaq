@@ -2,7 +2,7 @@
 import { onBeforeUnmount } from 'vue';
 import type { ArtifactData } from '../../api/generated';
 import { formatIecBytes } from '../../format/decimal';
-import { formatDuration, formatTimestampUtc } from '../../format/time';
+import { formatDurationMs, formatTimestampUtc } from '../../format/time';
 import { useArtifactDownload } from './useArtifactDownload';
 import StatusBadge from '../../components/StatusBadge.vue';
 import ErrorPanel from '../../components/ErrorPanel.vue';
@@ -40,7 +40,7 @@ onBeforeUnmount(() => {
         <div>
           Recording Range (Task-Local):
           <code class="mono">
-            {{ formatDuration(artifact.recording_range.begin) }} → {{ formatDuration(artifact.recording_range.end) }}
+            {{ formatDurationMs(artifact.recording_range.begin_ms) }} → {{ formatDurationMs(artifact.recording_range.end_ms) }}
           </code>
         </div>
       </div>
@@ -58,13 +58,13 @@ onBeforeUnmount(() => {
       <ul style="margin: 4px 0 0 18px; padding: 0; font-size: 0.85rem">
         <li v-for="(g, i) in artifact.coverage.gaps" :key="i">
           <StatusBadge :label="g.kind" tone="warning" />
-          {{ formatDuration(g.recording_begin) }} – {{ formatDuration(g.recording_end) }}
+          {{ formatDurationMs(g.recording_begin_ms) }} – {{ formatDurationMs(g.recording_end_ms) }}
           <span v-if="g.message"> · {{ g.message }}</span>
         </li>
       </ul>
     </div>
 
-    <ErrorPanel v-if="download.error.value" :error="download.error.value" title="Download Preflight Failed" />
+    <ErrorPanel v-if="download.error.value" :error="download.error.value" title="Download Failed" />
     <div v-if="download.notice.value" class="banner banner-info" role="status">
       <span>{{ download.notice.value }}</span>
     </div>
@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
                 :disabled="download.busyFileId.value === f.file_id"
                 @click="download.downloadFile(f)"
               >
-                {{ download.busyFileId.value === f.file_id ? 'Checking…' : 'Download' }}
+                {{ download.busyFileId.value === f.file_id ? 'Downloading…' : 'Download' }}
               </button>
             </td>
           </tr>

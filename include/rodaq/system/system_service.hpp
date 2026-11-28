@@ -26,13 +26,6 @@ enum class BackendRole { Acquisition, Storage };
 enum class SupportStatus { Required, QualifiedCandidate, Deferred };
 enum class QualificationStatus { Qualified, NotQualified };
 
-struct SystemRecoveryStatus {
-    bool complete{false};
-    std::optional<std::string> reason;
-    // Present only when Core has a meaningful 0.0..1.0 ratio; never fabricated.
-    std::optional<double> progress;
-};
-
 struct ProcessResourceSnapshot {
     double cpu_cores{0.0};
     std::uint64_t rss_bytes{0};
@@ -52,11 +45,10 @@ struct SystemBacklogSnapshot {
     std::uint64_t commit_bytes{0};
 };
 
-// Immutable point-in-time projection of Core health, recovery, process
-// resources, volume pressure and commit backlog. Queries never perform I/O.
+// Immutable point-in-time projection of Core health, process resources,
+// volume pressure and commit backlog. Queries never perform I/O.
 struct SystemSnapshot {
     bool core_ready{false};
-    SystemRecoveryStatus recovery;
     ProcessResourceSnapshot resources;
     std::vector<VolumeStatus> volumes;
     SystemBacklogSnapshot backlog;
@@ -85,7 +77,6 @@ struct ResourceProfileCapability {
 
 struct CoreLimitsCapability {
     std::uint32_t max_page_size{256};
-    std::chrono::nanoseconds idempotency_retention{std::chrono::hours{24}};
     std::chrono::nanoseconds recommended_polling_floor{std::chrono::seconds{1}};
 };
 

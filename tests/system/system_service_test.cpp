@@ -17,32 +17,6 @@ namespace {
 using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 
-void set_readonly_tree(const fs::path& root) {
-    std::vector<fs::path> dirs;
-    for (const auto& entry : fs::recursive_directory_iterator(root)) {
-        if (entry.is_directory()) {
-            dirs.push_back(entry.path());
-        } else {
-            fs::permissions(entry.path(), fs::perms::owner_read);
-        }
-    }
-    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
-        fs::permissions(*it, fs::perms::owner_read | fs::perms::owner_exec);
-    }
-    fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
-}
-
-void restore_writable_tree(const fs::path& root) noexcept {
-    std::error_code ignored;
-    if (!fs::exists(root, ignored)) {
-        return;
-    }
-    fs::permissions(root, fs::perms::owner_all, ignored);
-    for (const auto& entry : fs::recursive_directory_iterator(root, ignored)) {
-        fs::permissions(entry.path(), fs::perms::owner_all, ignored);
-    }
-}
-
 struct TestWorkspace {
     fs::path path;
 
@@ -59,11 +33,9 @@ struct TestWorkspace {
         fs::copy(
             fs::path(RODAQ_SYSTEM_ACQUISITION_PACKAGE) / "rodaq.fake.acquisition",
             path / "packages" / "rodaq.fake.acquisition", fs::copy_options::recursive);
-        set_readonly_tree(path / "packages");
     }
 
     ~TestWorkspace() {
-        restore_writable_tree(path / "packages");
         std::error_code ec;
         fs::remove_all(path, ec);
     }
@@ -88,8 +60,7 @@ rodaq::DaqOpenOptions make_options(
     opts.volume.recovery_free_bytes = 4096;
     opts.volume.max_segments = 8;
     opts.volume.max_commit_slots = 4;
-    opts.volume.max_artifact_slots = 64;
-    opts.volume.ledger_records = 64;
+    opts.volume.max_artifacts_per_volume = 64;
 
     rodaq::DaqResourceProfile profile;
     profile.name = "default";
@@ -102,6 +73,7 @@ rodaq::DaqOpenOptions make_options(
     profile.queue_capacity = 32;
     profile.callback_concurrency = 2;
     profile.max_segment_physical_bytes = 1024 * 1024;
+    profile.segment_reservation_bytes = 2 * 1024 * 1024;
     profile.max_segment_records = 1000;
     profile.max_segment_input_bytes = 256 * 1024;
     profile.max_batch_records = 16;
@@ -111,8 +83,6 @@ rodaq::DaqOpenOptions make_options(
     profile.max_sealed_files = 4;
     profile.max_manifest_bytes = 65536;
     profile.max_prepared_descriptors = 16;
-    profile.sequence_reservation = 1000;
-    profile.descriptor_reservation = 256;
     opts.profiles.push_back(std::move(profile));
 
     opts.allowed_backends.push_back(
@@ -121,7 +91,6 @@ rodaq::DaqOpenOptions make_options(
     opts.allowed_backends.push_back(
         {"rodaq.fake.storage", "1.0.0", rodaq::BackendRole::Storage, "fake",
          rodaq::SupportStatus::Required, rodaq::QualificationStatus::Qualified});
-    // Allowed-but-not-installed backend to verify Installed vs Allowed separation.
     opts.allowed_backends.push_back(
         {"rodaq.not.installed", "1.0.0", rodaq::BackendRole::Acquisition, "",
          rodaq::SupportStatus::Deferred, rodaq::QualificationStatus::NotQualified});
@@ -131,9 +100,6 @@ rodaq::DaqOpenOptions make_options(
 rodaq::TaskConfig make_task_config(const std::string& name) {
     rodaq::TaskConfig config;
     config.name = name;
-    config.recording_mode = rodaq::RecordingMode::Continuous;
-    config.start_policy = rodaq::StartPolicyMode::AllRequired;
-    config.recovery_policy = rodaq::RecoveryPolicyMode::Manual;
     config.segment_policy.max_duration = 60s;
     config.retention_policy.mode = rodaq::RetentionMode::KeepAll;
 
@@ -155,7 +121,6 @@ TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
         rodaq::DaqRuntime::open(make_options(dir.path, rodaq::DaqOpenMode::Initialize, 60ms));
     ASSERT_TRUE(runtime.ok()) << static_cast<int>(runtime.status().code());
 
-    // Capabilities cleanly separate installed, allowed, support_status and qualification_status.
     const auto caps = runtime.value()->system().capabilities();
     ASSERT_TRUE(caps.ok());
     EXPECT_FALSE(caps.value().application_version.empty());
@@ -200,12 +165,9 @@ TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
     EXPECT_TRUE(found_storage);
     EXPECT_TRUE(found_uninstalled);
 
-    // Snapshot reflects real Linux process & filesystem observations.
     const auto snap1 = runtime.value()->system().snapshot();
     ASSERT_TRUE(snap1.ok());
     EXPECT_TRUE(snap1.value().core_ready);
-    EXPECT_TRUE(snap1.value().recovery.complete);
-    EXPECT_FALSE(snap1.value().recovery.progress.has_value());
     EXPECT_EQ(snap1.value().freshness, rodaq::SnapshotFreshness::Fresh);
     EXPECT_GT(snap1.value().snapshot_sequence, 0u);
     EXPECT_GT(snap1.value().resources.rss_bytes, 0u);
@@ -217,14 +179,12 @@ TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
     EXPECT_GT(snap1.value().volumes[0].free_bytes, 0u);
     EXPECT_EQ(snap1.value().volumes[0].pressure, rodaq::VolumePressure::Normal);
 
-    // Wait beyond snapshot_max_age -> query reports Stale without performing I/O.
     std::this_thread::sleep_for(80ms);
     const auto stale = runtime.value()->system().snapshot();
     ASSERT_TRUE(stale.ok());
     EXPECT_EQ(stale.value().freshness, rodaq::SnapshotFreshness::Stale);
     EXPECT_EQ(stale.value().snapshot_sequence, snap1.value().snapshot_sequence);
 
-    // observe() refreshes snapshot back to Fresh with advancing sequence.
     ASSERT_TRUE(runtime.value()->observe().ok());
     const auto snap2 = runtime.value()->system().snapshot();
     ASSERT_TRUE(snap2.ok());
@@ -278,7 +238,6 @@ TEST(SystemServiceTest, PublicRuntimeExecutesEndToEndTaskRecordingAndArtifactRea
 
     ASSERT_EQ(wait_terminal(started.value()), rodaq::OperationState::Succeeded);
 
-    // Let acquisition produce records then stop to seal & commit an artifact.
     std::this_thread::sleep_for(120ms);
     (void)runtime.value()->observe();
 
@@ -297,7 +256,6 @@ TEST(SystemServiceTest, PublicRuntimeExecutesEndToEndTaskRecordingAndArtifactRea
     ASSERT_FALSE(artifacts.value().items.empty());
     EXPECT_GT(artifacts.value().items[0].physical_bytes, 0u);
 
-    // Read committed artifact bytes through public ArtifactReadHandle.
     const auto info =
         runtime.value()->artifacts().get_artifact(artifacts.value().items[0].artifact_id);
     ASSERT_TRUE(info.ok());
@@ -317,7 +275,6 @@ TEST(SystemServiceTest, PublicRuntimeExecutesEndToEndTaskRecordingAndArtifactRea
 TEST(SystemServiceTest, InstalledUnallowedPluginNeverGuessesRole) {
     TestWorkspace dir("unallowed");
     auto opts = make_options(dir.path, rodaq::DaqOpenMode::Initialize);
-    // Keep only fake.storage allowed; fake.acquisition is installed on disk but not allowed.
     opts.allowed_backends.erase(opts.allowed_backends.begin());
     auto runtime = rodaq::DaqRuntime::open(std::move(opts));
     ASSERT_TRUE(runtime.ok()) << static_cast<int>(runtime.status().code());

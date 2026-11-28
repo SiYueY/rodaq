@@ -1,28 +1,45 @@
-name: Core baseline
+name: RoDAQ CI
 on:
   push:
   pull_request:
   workflow_dispatch:
+
 jobs:
   core:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        preset: [dev, asan-ubsan]
+        preset: [dev, asan-ubsan, tsan]
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: sudo apt-get update && sudo apt-get install -y gcc-11 g++-11 clang-format-14 clang-tidy-14 libgtest-dev nlohmann-json3-dev libssl-dev python3-venv
-      - run: |
+      - name: Install Core toolchain and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-11 g++-11 clang-14 clang-format-14 clang-tidy-14 \
+            libgtest-dev nlohmann-json3-dev libssl-dev python3-venv
+      - name: Prepare schema conformance venv
+        run: |
           python3 -m venv build/schema-venv
           build/schema-venv/bin/python -m pip install --require-hashes --only-binary=:all: -r tests/schema-requirements.txt
-      - run: python3 tools/check_format.py
-      - run: cmake --preset ${{ matrix.preset }} -DRODAQ_ENABLE_CLANG_TIDY=ON -DRODAQ_SCHEMA_PYTHON_EXECUTABLE="$GITHUB_WORKSPACE/build/schema-venv/bin/python"
-      - run: cmake --build --preset ${{ matrix.preset }} 2>&1 | tee build/${{ matrix.preset }}/build.log
+      - name: Check C/C++ formatting
+        if: matrix.preset == 'dev'
+        run: python3 tools/check_format.py
+      - name: Configure (${{ matrix.preset }})
+        run: |
+          EXTRA_FLAGS="-DRODAQ_BUILD_BEHAVIORAL_FAKES=ON -DRODAQ_SCHEMA_PYTHON_EXECUTABLE=$GITHUB_WORKSPACE/build/schema-venv/bin/python"
+          if [ "${{ matrix.preset }}" = "dev" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS -DRODAQ_ENABLE_CLANG_TIDY=ON"
+          fi
+          cmake --preset ${{ matrix.preset }} $EXTRA_FLAGS
         shell: bash
-      - run: ctest --preset ${{ matrix.preset }} --output-junit "$GITHUB_WORKSPACE/build/${{ matrix.preset }}/ctest.xml"
+      - name: Build (${{ matrix.preset }})
+        run: cmake --build --preset ${{ matrix.preset }} 2>&1 | tee build/${{ matrix.preset }}/build.log
+        shell: bash
+      - name: Test (${{ matrix.preset }})
+        run: ctest --preset ${{ matrix.preset }} --output-junit "$GITHUB_WORKSPACE/build/${{ matrix.preset }}/ctest.xml"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -33,6 +50,7 @@ jobs:
             build/${{ matrix.preset }}/Testing/Temporary/
             build/${{ matrix.preset }}/CMakeCache.txt
           retention-days: 30
+
   web:
     runs-on: ubuntu-22.04
     defaults:
@@ -47,12 +65,98 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run build
       - run: npm run test:unit
+      - run: npm run build
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: web-dist
           path: |
             web/dist/
+          retention-days: 30
+
+  backends-server-e2e:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install ROS 2 Humble, Server deps, and Chromium deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release gcc-11 g++-11 \
+            libgtest-dev nlohmann-json3-dev libssl-dev libjsoncpp-dev uuid-dev \
+            zlib1g-dev libbrotli-dev libc-ares-dev python3-yaml python3-venv
+          sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+            -o /usr/share/keyrings/ros-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+            | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y ros-humble-rclcpp ros-humble-mcap-vendor \
+            ros-humble-sensor-msgs ros-humble-std-msgs \
+            ros-humble-rosidl-default-generators ros-humble-rosidl-default-runtime \
+            ros-humble-rclpy
+      - name: Cache Drogon 1.9.14 prefix
+        id: cache-drogon
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rodaq-deps
+          key: rodaq-drogon-1.9.14-ubuntu22.04-gcc11
+      - name: Build Drogon 1.9.14
+        if: steps.cache-drogon.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v1.9.14 --recurse-submodules https://github.com/drogonframework/drogon.git "${{ runner.temp }}/drogon-src"
+          cmake -S "${{ runner.temp }}/drogon-src" -B "${{ runner.temp }}/drogon-build" \
+            -DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ runner.temp }}/rodaq-deps" \
+            -DBUILD_EXAMPLES=OFF -DBUILD_ORM=OFF -DBUILD_REDIS=OFF -DBUILD_CTL=OFF -DBUILD_TESTING=OFF
+          cmake --build "${{ runner.temp }}/drogon-build" -j$(nproc)
+          cmake --install "${{ runner.temp }}/drogon-build"
+      - name: Build Web dist and install Playwright browser
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          npx playwright install chromium --with-deps
+      - name: Configure and build Core + Backends + Server + OOT plugins
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          cmake -S . -B build/s1 \
+            -DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="${{ runner.temp }}/rodaq-deps" \
+            -DRODAQ_WARNINGS_AS_ERRORS=ON \
+            -DBUILD_TESTING=ON \
+            -DRODAQ_BUILD_BEHAVIORAL_FAKES=ON \
+            -DRODAQ_BUILD_MCAP_STORAGE=ON \
+            -DRODAQ_BUILD_ROS2_ACQUISITION=ON \
+            -DRODAQ_BUILD_SERVER=ON \
+            -DRODAQ_WEB_DIST_DIR="$GITHUB_WORKSPACE/web/dist"
+          cmake --build build/s1 -j$(nproc) 2>&1 | tee build/s1/build.log
+      - name: Run full CTest suite (Core + Backends + Server + OOT official plugins)
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          ctest --test-dir build/s1 --output-on-failure --output-junit "$GITHUB_WORKSPACE/build/s1/ctest.xml" -j4
+      - name: Run Playwright Web E2E (Fake + Perf + Live ROS 2 Humble -> MCAP)
+        shell: bash
+        working-directory: web
+        run: |
+          source /opt/ros/humble/setup.bash
+          npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backends-server-e2e
+          path: |
+            build/s1/build.log
+            build/s1/ctest.xml
+            build/s1/Testing/Temporary/
+            web/test-results/
           retention-days: 30

@@ -15,24 +15,27 @@ int main() {
 
     Config config;
     config.name = "rodaq-async-test";
-    config.sinks = {FileSinkConfig{SinkOptions{}, path.string(), true}};
-    config.async.enabled = true;
-    config.async.queue_size = 128;
-    config.async.overflow_policy = OverflowPolicy::DiscardNew;
+    config.console = false;
+    config.rotating_file_path = path.string();
+    config.rotating_max_bytes = 2U * 1024U * 1024U;
+    config.rotating_max_files = 2;
+    config.async = true;
+    config.async_queue_size = 128;
 
     const auto initialize_result = initialize(config);
     assert(initialize_result.ok());
 
-    const auto initialized_stats = stats();
-    assert(initialized_stats.initialized);
-    assert(initialized_stats.asynchronous);
-    assert(initialized_stats.queue_capacity == 128);
+    for (int index = 0; index < 500; ++index) {
+        RODAQ_LOG_INFO("async-message index={}", index);
+    }
+
+    const auto mid_flush = flush();
+    assert(mid_flush.ok());
 
     RODAQ_LOG_INFO("async-file-marker");
 
-    for (int index = 0; index < 5000; ++index) {
-        RODAQ_LOG_INFO("async-message index={}", index);
-    }
+    const auto flush_result = flush();
+    assert(flush_result.ok());
 
     const auto shutdown_result = shutdown();
     assert(shutdown_result.ok());

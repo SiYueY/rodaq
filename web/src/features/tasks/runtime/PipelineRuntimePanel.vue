@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PipelineRuntimeData } from '../../../api/generated';
 import { formatDecimalCount, formatIecBytes, formatRatePerSec } from '../../../format/decimal';
-import { formatDuration, formatTimestampUtc } from '../../../format/time';
+import { formatDurationMs, formatTimestampUtc } from '../../../format/time';
 import StatusBadge from '../../../components/StatusBadge.vue';
 
 defineProps<{
@@ -59,7 +59,7 @@ defineProps<{
               {{ formatDecimalCount(p.queue.records) }} ·
               {{ formatIecBytes(p.queue.bytes) }} ·
               HWM {{ formatDecimalCount(p.queue.high_watermark_records) }} ·
-              {{ formatDuration(p.queue.oldest_age) }}
+              {{ formatDurationMs(p.queue.oldest_age_ms) }}
             </td>
             <td class="num">
               <div>{{ formatRatePerSec(p.writer.logical_bytes_per_second, 'B/s') }}</div>
@@ -70,10 +70,10 @@ defineProps<{
               <div class="muted">{{ formatTimestampUtc(p.storage.last_progress_at) }}</div>
             </td>
             <td class="num">
-              <div>{{ formatDuration(p.commit.lag) }}</div>
+              <div>{{ formatDurationMs(p.commit.lag_ms) }}</div>
               <div class="muted">
                 {{
-                  p.commit.pending_segments !== '0'
+                  p.commit.pending_segments !== 0
                     ? `Sealed/Pending commit (${p.commit.pending_segments})`
                     : '0 pending'
                 }}

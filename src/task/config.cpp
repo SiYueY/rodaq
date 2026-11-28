@@ -1,14 +1,10 @@
 #include "config.hpp"
 
-#include "../persistence/decimal.hpp"
-
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <new>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,229 +12,464 @@
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
 
-namespace rodaq::task {
+#include "../persistence/decimal.hpp"
 
-persistence::JsonLimits config_json_limits(const TaskConfigLimits& limits) {
-    return {limits.max_config_bytes,        limits.max_json_depth,
-            limits.max_json_string_bytes,   limits.max_json_object_members,
-            limits.max_json_array_elements, limits.max_json_nodes};
-}
-
+namespace rodaq {
 namespace {
 
 using persistence::Json;
 
+constexpr std::uint64_t kMaxJsSafeInteger = 9007199254740991ULL;
+
 struct InvalidConfig {
-    StatusCode code{StatusCode::InvalidArgument};
+    Status status;
 };
 
-void require(bool predicate) {
-    if (!predicate) {
-        throw InvalidConfig{};
+void require(bool condition, const char* message = nullptr) {
+    if (!condition) {
+        throw InvalidConfig{Status(StatusCode::InvalidArgument, message ? message : "")};
     }
 }
 
-bool visible(std::string_view value, std::size_t maximum) {
-    return !value.empty() && value.size() <= maximum &&
-           std::all_of(value.begin(), value.end(), [](unsigned char byte) {
-               return byte >= 0x21 && byte <= 0x7e;
-           });
-}
-
-bool label(std::string_view value) {
-    return value.size() <= 128 && plugin::abi::utf8_prefix(value, value.size()) == value.size();
+template <typename Value>
+Value take(Result<Value> result) {
+    if (!result.ok()) {
+        throw InvalidConfig{std::move(result).status()};
+    }
+    return std::move(result).value();
 }
 
 void fields(
     const Json& object, std::initializer_list<const char*> required,
     std::initializer_list<const char*> optional = {}) {
-    require(
-        object.is_object() && object.size() >= required.size() &&
-        object.size() <= required.size() + optional.size());
-    for (const auto* name : required) {
-        require(object.contains(name));
+    require(object.is_object(), "Expected JSON object");
+    std::size_t present = 0;
+    for (const auto* name : optional) {
+        present += object.contains(name) ? 1 : 0;
     }
-    for (auto field = object.begin(); field != object.end(); ++field) {
-        const auto named = [&](const char* name) { return field.key() == name; };
-        require(
-            std::any_of(required.begin(), required.end(), named) ||
-            std::any_of(optional.begin(), optional.end(), named));
+    require(object.size() == required.size() + present, "Unexpected or missing JSON field");
+    for (const auto* name : required) {
+        require(object.contains(name), "Missing required JSON field");
     }
 }
 
-std::string_view text(const Json& value) {
-    require(value.is_string());
+const std::string& req_string(const Json& object, const char* key) {
+    const auto& value = object.at(key);
+    require(value.is_string(), "Expected string field");
     return value.get_ref<const std::string&>();
 }
 
-std::uint64_t unsigned_text(const Json& value) {
-    require(value.is_string());
-    const auto parsed = persistence::unsigned_decimal(value.get_ref<const std::string&>());
-    require(parsed.ok());
-    return parsed.value();
+bool valid_utf8(std::string_view value, std::size_t min_bytes, std::size_t max_bytes) {
+    return value.size() >= min_bytes && value.size() <= max_bytes &&
+           value.find('\0') == std::string_view::npos &&
+           plugin::abi::utf8_prefix(value, value.size()) == value.size();
 }
 
-std::optional<std::uint64_t> bytes_bound(const Json& value) {
-    if (value.is_null()) {
-        return std::nullopt;
-    }
-    const auto bytes = unsigned_text(value);
-    require(bytes != 0);
-    return bytes;
+bool valid_visible_ascii(std::string_view value, std::size_t max_bytes) {
+    return !value.empty() && value.size() <= max_bytes &&
+           std::all_of(value.begin(), value.end(), [](unsigned char byte) {
+               return byte >= 0x21 && byte <= 0x7e;
+           });
 }
 
-std::optional<std::chrono::nanoseconds> duration_bound(const Json& value) {
-    if (value.is_null()) {
+std::optional<std::uint64_t> nullable_safe_uint(const Json& object, const char* key) {
+    if (!object.contains(key) || object.at(key).is_null()) {
         return std::nullopt;
     }
-    fields(value, {"value", "unit"});
-    const auto count = unsigned_text(value.at("value"));
-    const auto unit = text(value.at("unit"));
-    const std::uint64_t multiplier = unit == "ns"   ? 1
-                                     : unit == "us" ? 1000
-                                     : unit == "ms" ? 1000000
-                                     : unit == "s"  ? 1000000000
-                                                    : 0;
+    const auto& value = object.at(key);
     require(
-        multiplier != 0 && count != 0 &&
-        count <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) / multiplier);
-    return std::chrono::nanoseconds(static_cast<std::int64_t>(count * multiplier));
+        value.is_number_integer() || value.is_number_unsigned(),
+        "Expected positive integer or null");
+    if (value.is_number_integer()) {
+        const auto signed_val = value.get<std::int64_t>();
+        require(
+            signed_val > 0 && static_cast<std::uint64_t>(signed_val) <= kMaxJsSafeInteger,
+            "Integer out of safe positive range");
+        return static_cast<std::uint64_t>(signed_val);
+    }
+    const auto unsigned_val = value.get<std::uint64_t>();
+    require(
+        unsigned_val > 0 && unsigned_val <= kMaxJsSafeInteger,
+        "Integer out of safe positive range");
+    return unsigned_val;
 }
 
-PluginConfig plugin_config(const Json& value, const TaskConfigLimits& limits) {
-    fields(value, {"plugin_id", "plugin_version", "config"});
-    require(value.at("config").is_object());
-    auto canonical = persistence::canonical_json(value.at("config"), config_json_limits(limits));
-    if (!canonical.ok()) {
-        throw InvalidConfig{canonical.status().code()};
+std::uint64_t optional_id_field(const Json& object, const char* key) {
+    if (!object.contains(key) || object.at(key).is_null()) {
+        return 0;
     }
-    require(canonical.value().size() <= limits.max_plugin_config_bytes);
-    const auto id = text(value.at("plugin_id"));
-    const auto version = text(value.at("plugin_version"));
-    require(plugin::abi::valid_identifier(id));
-    auto valid = plugin::validate_plugin_version(version);
-    if (!valid.ok()) {
-        throw InvalidConfig{valid.status().code()};
-    }
-    return {std::string(id), std::string(version), std::move(canonical).value()};
+    const auto& value = object.at(key);
+    require(value.is_string(), "Identity field must be a positive decimal string");
+    const auto parsed = take(persistence::unsigned_decimal(value.get_ref<const std::string&>()));
+    require(parsed != 0, "Identity must be non-zero");
+    return parsed;
 }
 
-TaskConfig from_document(const Json& value, const TaskConfigLimits& limits) {
-    fields(
-        value,
-        {"format_version", "recording_mode", "start_policy", "recovery_policy", "segment_policy",
-         "retention_policy", "pipelines"},
-        {"name"});
-    require(text(value.at("format_version")) == "1.0");
-    TaskConfig config;
-    if (value.contains("name")) {
-        const auto name = text(value.at("name"));
-        require(!name.empty() && label(name));
-        config.name = name;
+void validate_limits(const TaskConfigLimits& limits) {
+    require(
+        limits.max_config_bytes > 0 && limits.max_config_bytes <= 16 * 1024 * 1024 &&
+        limits.max_plugin_config_bytes > 0 && limits.max_plugin_config_bytes <= 4 * 1024 * 1024 &&
+        limits.max_pipelines > 0 && limits.max_pipelines <= 64 &&
+        limits.max_streams_per_pipeline > 0 && limits.max_streams_per_pipeline <= 1024 &&
+        limits.max_json_depth >= 8 && limits.max_json_depth <= 64);
+}
+
+void validate_plugin_config(const PluginConfig& plugin, const TaskConfigLimits& limits) {
+    require(plugin::abi::valid_identifier(plugin.plugin_id), "Invalid plugin_id");
+    require(plugin.plugin_version.size() <= 128, "Invalid plugin_version");
+    take(plugin::validate_plugin_version(plugin.plugin_version));
+    require(
+        !plugin.json.empty() && plugin.json.size() <= limits.max_plugin_config_bytes,
+        "Plugin config size out of bounds");
+    const auto parsed = take(persistence::parse_json(
+        plugin.json, {limits.max_plugin_config_bytes, limits.max_json_depth}));
+    require(parsed.is_object(), "Plugin config must be a JSON object");
+}
+
+void validate_config_impl(
+    const TaskConfig& config, const TaskConfigLimits& limits, bool require_ids) {
+    validate_limits(limits);
+    if (!config.name.empty()) {
+        require(valid_utf8(config.name, 1, 128), "Invalid task name");
     }
-    const auto mode = text(value.at("recording_mode"));
-    require(mode == "continuous" || mode == "rolling");
-    config.recording_mode =
-        mode == "continuous" ? RecordingMode::Continuous : RecordingMode::Rolling;
-    fields(value.at("start_policy"), {"mode"});
-    const auto start = text(value.at("start_policy").at("mode"));
-    require(start == "all_required" || start == "best_effort");
-    config.start_policy =
-        start == "all_required" ? StartPolicyMode::AllRequired : StartPolicyMode::BestEffort;
-    fields(value.at("recovery_policy"), {"mode"});
-    const auto recovery = text(value.at("recovery_policy").at("mode"));
-    require(recovery == "manual" || recovery == "resume");
-    config.recovery_policy =
-        recovery == "manual" ? RecoveryPolicyMode::Manual : RecoveryPolicyMode::Resume;
-    const auto& segment = value.at("segment_policy");
-    fields(segment, {"max_duration", "max_physical_bytes"});
-    config.segment_policy = {
-        duration_bound(segment.at("max_duration")), bytes_bound(segment.at("max_physical_bytes"))};
-    const auto& retention = value.at("retention_policy");
-    fields(
-        retention, {"mode", "max_duration", "max_physical_bytes"}, {"include_previous_continuous"});
-    const auto retain_mode = text(retention.at("mode"));
-    require(retain_mode == "keep_all" || retain_mode == "rolling");
-    config.retention_policy = {
-        retain_mode == "keep_all" ? RetentionMode::KeepAll : RetentionMode::Rolling,
-        duration_bound(retention.at("max_duration")),
-        bytes_bound(retention.at("max_physical_bytes"))};
-    if (retention.contains("include_previous_continuous")) {
-        require(retention.at("include_previous_continuous").is_boolean());
-        config.retention_policy.include_previous_continuous =
-            retention.at("include_previous_continuous").get<bool>();
+    // Segment policy: at least one bound enabled.
+    require(
+        config.segment_policy.max_duration.has_value() ||
+            config.segment_policy.max_physical_bytes.has_value(),
+        "segment_policy requires max_duration_ms or max_physical_bytes");
+    if (config.segment_policy.max_duration) {
+        const auto ms = config.segment_policy.max_duration->count();
+        require(ms > 0 && static_cast<std::uint64_t>(ms) <= kMaxJsSafeInteger);
     }
-    const auto& pipelines = value.at("pipelines");
-    require(pipelines.is_array() && !pipelines.empty() && pipelines.size() <= limits.max_pipelines);
-    config.pipelines.reserve(pipelines.size());
-    for (const auto& item : pipelines) {
+    if (config.segment_policy.max_physical_bytes) {
+        require(
+            *config.segment_policy.max_physical_bytes > 0 &&
+            *config.segment_policy.max_physical_bytes <= kMaxJsSafeInteger);
+    }
+    // Retention policy.
+    if (config.retention_policy.mode == RetentionMode::KeepAll) {
+        require(
+            !config.retention_policy.max_duration.has_value() &&
+                !config.retention_policy.max_physical_bytes.has_value(),
+            "keep_all retention forbids duration/byte bounds");
+    } else {
+        require(config.retention_policy.mode == RetentionMode::Rolling);
+        require(
+            config.retention_policy.max_duration.has_value() ||
+                config.retention_policy.max_physical_bytes.has_value(),
+            "rolling retention requires max_duration_ms or max_physical_bytes");
+        if (config.retention_policy.max_duration) {
+            const auto ms = config.retention_policy.max_duration->count();
+            require(ms > 0 && static_cast<std::uint64_t>(ms) <= kMaxJsSafeInteger);
+        }
+        if (config.retention_policy.max_physical_bytes) {
+            require(
+                *config.retention_policy.max_physical_bytes > 0 &&
+                *config.retention_policy.max_physical_bytes <= kMaxJsSafeInteger);
+        }
+    }
+    // Pipelines.
+    require(
+        !config.pipelines.empty() && config.pipelines.size() <= limits.max_pipelines,
+        "Invalid pipeline count");
+    std::vector<PipelineId> seen_pipelines;
+    std::vector<StreamId> seen_streams;
+    for (const auto& pipeline : config.pipelines) {
+        if (require_ids) {
+            require(pipeline.pipeline_id != 0, "Missing pipeline_id");
+        }
+        if (pipeline.pipeline_id != 0) {
+            require(
+                std::find(seen_pipelines.begin(), seen_pipelines.end(), pipeline.pipeline_id) ==
+                    seen_pipelines.end(),
+                "Duplicate pipeline_id");
+            seen_pipelines.push_back(pipeline.pipeline_id);
+        }
+        require(valid_visible_ascii(pipeline.resource_profile, 128), "Invalid resource_profile");
+        require(valid_visible_ascii(pipeline.output_root, 128), "Invalid output_root");
+        validate_plugin_config(pipeline.acquisition, limits);
+        validate_plugin_config(pipeline.storage, limits);
+        require(
+            !pipeline.streams.empty() && pipeline.streams.size() <= limits.max_streams_per_pipeline,
+            "Invalid stream count");
+        std::vector<std::string_view> pipeline_stream_keys;
+        for (const auto& stream : pipeline.streams) {
+            if (require_ids) {
+                require(stream.stream_id != 0, "Missing stream_id");
+            }
+            if (stream.stream_id != 0) {
+                require(
+                    std::find(seen_streams.begin(), seen_streams.end(), stream.stream_id) ==
+                        seen_streams.end(),
+                    "Duplicate stream_id");
+                seen_streams.push_back(stream.stream_id);
+            }
+            require(valid_visible_ascii(stream.stream_key, 128), "Invalid stream_key");
+            require(
+                std::find(
+                    pipeline_stream_keys.begin(), pipeline_stream_keys.end(), stream.stream_key) ==
+                    pipeline_stream_keys.end(),
+                "Duplicate stream_key in pipeline");
+            pipeline_stream_keys.push_back(stream.stream_key);
+            if (!stream.name.empty()) {
+                require(valid_utf8(stream.name, 1, 128), "Invalid stream name");
+            }
+            require(
+                stream.readiness_policy == ReadinessPolicy::EntryReady ||
+                stream.readiness_policy == ReadinessPolicy::SourceReady);
+        }
+    }
+}
+
+Json to_json(const TaskConfig& config, const TaskConfigLimits& limits) {
+    Json segment_policy{
+        {"max_duration_ms", config.segment_policy.max_duration
+                                ? Json(config.segment_policy.max_duration->count())
+                                : Json(nullptr)},
+        {"max_physical_bytes", config.segment_policy.max_physical_bytes
+                                   ? Json(*config.segment_policy.max_physical_bytes)
+                                   : Json(nullptr)}};
+    Json retention_policy{
+        {"mode", config.retention_policy.mode == RetentionMode::KeepAll ? "keep_all" : "rolling"},
+        {"max_duration_ms", config.retention_policy.max_duration
+                                ? Json(config.retention_policy.max_duration->count())
+                                : Json(nullptr)},
+        {"max_physical_bytes", config.retention_policy.max_physical_bytes
+                                   ? Json(*config.retention_policy.max_physical_bytes)
+                                   : Json(nullptr)}};
+    Json pipelines = Json::array();
+    for (const auto& pipeline : config.pipelines) {
+        Json streams = Json::array();
+        for (const auto& stream : pipeline.streams) {
+            Json row{
+                {"stream_key", stream.stream_key},
+                {"readiness_policy", stream.readiness_policy == ReadinessPolicy::EntryReady
+                                         ? "entry_ready"
+                                         : "source_ready"}};
+            if (stream.stream_id != 0) {
+                row["stream_id"] = std::to_string(stream.stream_id);
+            }
+            if (!stream.name.empty()) {
+                row["name"] = stream.name;
+            }
+            streams.push_back(std::move(row));
+        }
+        auto acq_cfg = take(persistence::parse_json(
+            pipeline.acquisition.json, {limits.max_plugin_config_bytes, limits.max_json_depth}));
+        auto stg_cfg = take(persistence::parse_json(
+            pipeline.storage.json, {limits.max_plugin_config_bytes, limits.max_json_depth}));
+        Json row{
+            {"required", pipeline.required},
+            {"resource_profile", pipeline.resource_profile},
+            {"output_root", pipeline.output_root},
+            {"acquisition",
+             {{"plugin_id", pipeline.acquisition.plugin_id},
+              {"plugin_version", pipeline.acquisition.plugin_version},
+              {"config", std::move(acq_cfg)}}},
+            {"storage",
+             {{"plugin_id", pipeline.storage.plugin_id},
+              {"plugin_version", pipeline.storage.plugin_version},
+              {"config", std::move(stg_cfg)}}},
+            {"streams", std::move(streams)}};
+        if (pipeline.pipeline_id != 0) {
+            row["pipeline_id"] = std::to_string(pipeline.pipeline_id);
+        }
+        pipelines.push_back(std::move(row));
+    }
+    Json root{
+        {"format_version", "1.0"},
+        {"segment_policy", std::move(segment_policy)},
+        {"retention_policy", std::move(retention_policy)},
+        {"pipelines", std::move(pipelines)}};
+    if (!config.name.empty()) {
+        root["name"] = config.name;
+    }
+    return root;
+}
+
+PluginConfig parse_plugin_obj(const Json& obj, const TaskConfigLimits& limits) {
+    fields(obj, {"plugin_id", "plugin_version", "config"});
+    require(obj.at("config").is_object(), "Plugin config must be object");
+    PluginConfig out;
+    out.plugin_id = req_string(obj, "plugin_id");
+    out.plugin_version = req_string(obj, "plugin_version");
+    out.json = obj.at("config").dump();
+    require(out.json.size() <= limits.max_plugin_config_bytes, "Plugin config exceeds limit");
+    return out;
+}
+
+}  // namespace
+
+Result<TaskConfig> parse_task_config(
+    std::string_view portable_json, const TaskConfigLimits& limits) {
+    try {
+        validate_limits(limits);
+        const auto root = take(persistence::parse_json(
+            portable_json, {limits.max_config_bytes, limits.max_json_depth}));
         fields(
-            item,
-            {"required", "resource_profile", "output_root", "acquisition", "storage", "streams"},
-            {"pipeline_id"});
-        PipelineConfig pipeline;
-        if (item.contains("pipeline_id")) {
-            pipeline.pipeline_id = unsigned_text(item.at("pipeline_id"));
-            require(pipeline.pipeline_id != 0);
+            root, {"format_version", "segment_policy", "retention_policy", "pipelines"}, {"name"});
+        if (req_string(root, "format_version") != "1.0") {
+            return Status(StatusCode::InvalidArgument, "Unsupported TaskConfig format_version");
         }
-        require(item.at("required").is_boolean());
-        pipeline.required = item.at("required").get<bool>();
-        require(
-            visible(text(item.at("resource_profile")), 128) &&
-            visible(text(item.at("output_root")), 128));
-        pipeline.resource_profile = text(item.at("resource_profile"));
-        pipeline.output_root = text(item.at("output_root"));
-        pipeline.acquisition = plugin_config(item.at("acquisition"), limits);
-        pipeline.storage = plugin_config(item.at("storage"), limits);
-        const auto& streams = item.at("streams");
-        require(
-            streams.is_array() && !streams.empty() &&
-            streams.size() <= limits.max_streams_per_pipeline);
-        pipeline.streams.reserve(streams.size());
-        for (const auto& entry : streams) {
-            fields(entry, {"stream_key", "readiness_policy"}, {"stream_id", "name"});
-            StreamConfig stream;
-            if (entry.contains("stream_id")) {
-                stream.stream_id = unsigned_text(entry.at("stream_id"));
-                require(stream.stream_id != 0);
-            }
-            require(visible(text(entry.at("stream_key")), 128));
-            stream.stream_key = text(entry.at("stream_key"));
-            if (entry.contains("name")) {
-                const auto name = text(entry.at("name"));
-                require(!name.empty() && label(name));
-                stream.name = name;
-            }
-            const auto readiness = text(entry.at("readiness_policy"));
-            require(readiness == "entry_ready" || readiness == "source_ready");
-            stream.readiness_policy = readiness == "entry_ready" ? ReadinessPolicy::EntryReady
-                                                                 : ReadinessPolicy::SourceReady;
-            pipeline.streams.push_back(std::move(stream));
+        TaskConfig config;
+        if (root.contains("name") && !root.at("name").is_null()) {
+            config.name = req_string(root, "name");
+            require(!config.name.empty(), "Task name must not be empty");
         }
-        config.pipelines.push_back(std::move(pipeline));
+        const auto& seg = root.at("segment_policy");
+        fields(seg, {}, {"max_duration_ms", "max_physical_bytes"});
+        if (const auto ms = nullable_safe_uint(seg, "max_duration_ms")) {
+            config.segment_policy.max_duration =
+                std::chrono::milliseconds{static_cast<std::int64_t>(*ms)};
+        }
+        config.segment_policy.max_physical_bytes = nullable_safe_uint(seg, "max_physical_bytes");
+
+        const auto& ret = root.at("retention_policy");
+        fields(ret, {"mode"}, {"max_duration_ms", "max_physical_bytes"});
+        const auto& mode_str = req_string(ret, "mode");
+        if (mode_str == "keep_all") {
+            config.retention_policy.mode = RetentionMode::KeepAll;
+        } else if (mode_str == "rolling") {
+            config.retention_policy.mode = RetentionMode::Rolling;
+        } else {
+            return Status(StatusCode::InvalidArgument, "Unknown retention_policy.mode");
+        }
+        if (const auto ms = nullable_safe_uint(ret, "max_duration_ms")) {
+            config.retention_policy.max_duration =
+                std::chrono::milliseconds{static_cast<std::int64_t>(*ms)};
+        }
+        config.retention_policy.max_physical_bytes = nullable_safe_uint(ret, "max_physical_bytes");
+
+        const auto& pipes = root.at("pipelines");
+        require(pipes.is_array() && !pipes.empty() && pipes.size() <= limits.max_pipelines);
+        config.pipelines.reserve(pipes.size());
+        for (const auto& p : pipes) {
+            fields(
+                p,
+                {"required", "resource_profile", "output_root", "acquisition", "storage",
+                 "streams"},
+                {"pipeline_id"});
+            require(p.at("required").is_boolean(), "pipeline.required must be boolean");
+            PipelineConfig pipe;
+            pipe.pipeline_id = optional_id_field(p, "pipeline_id");
+            pipe.required = p.at("required").get<bool>();
+            pipe.resource_profile = req_string(p, "resource_profile");
+            pipe.output_root = req_string(p, "output_root");
+            pipe.acquisition = parse_plugin_obj(p.at("acquisition"), limits);
+            pipe.storage = parse_plugin_obj(p.at("storage"), limits);
+
+            const auto& streams = p.at("streams");
+            require(
+                streams.is_array() && !streams.empty() &&
+                streams.size() <= limits.max_streams_per_pipeline);
+            pipe.streams.reserve(streams.size());
+            for (const auto& s : streams) {
+                fields(s, {"stream_key", "readiness_policy"}, {"stream_id", "name"});
+                StreamConfig stream;
+                stream.stream_id = optional_id_field(s, "stream_id");
+                stream.stream_key = req_string(s, "stream_key");
+                if (s.contains("name") && !s.at("name").is_null()) {
+                    stream.name = req_string(s, "name");
+                    require(!stream.name.empty(), "Stream name must not be empty");
+                }
+                const auto& rp = req_string(s, "readiness_policy");
+                if (rp == "entry_ready") {
+                    stream.readiness_policy = ReadinessPolicy::EntryReady;
+                } else if (rp == "source_ready") {
+                    stream.readiness_policy = ReadinessPolicy::SourceReady;
+                } else {
+                    return Status(StatusCode::InvalidArgument, "Unknown readiness_policy");
+                }
+                pipe.streams.push_back(std::move(stream));
+            }
+            config.pipelines.push_back(std::move(pipe));
+        }
+        validate_config_impl(config, limits, false);
+        return config;
+    } catch (InvalidConfig& failure) {
+        return std::move(failure.status);
+    } catch (const Json::exception&) {
+        return Status(StatusCode::InvalidArgument, "Invalid TaskConfig JSON");
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
-    return config;
 }
 
-Json duration(const std::optional<std::chrono::nanoseconds>& value) {
-    if (!value) {
-        return nullptr;
+Result<std::string> export_task_config(const TaskConfig& config, const TaskConfigLimits& limits) {
+    try {
+        validate_config_impl(config, limits, false);
+        auto dumped = to_json(config, limits).dump();
+        if (dumped.size() > limits.max_config_bytes) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        return dumped;
+    } catch (InvalidConfig& failure) {
+        return std::move(failure.status);
+    } catch (const Json::exception&) {
+        return Status(StatusCode::InvalidArgument, {});
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     }
-    return Json{{"value", std::to_string(value->count())}, {"unit", "ns"}};
 }
 
-Json bytes(const std::optional<std::uint64_t>& value) {
-    return value ? Json(std::to_string(*value)) : Json(nullptr);
+namespace task {
+
+Result<void> validate_task_config(
+    const TaskConfig& config, const TaskConfigLimits& limits, bool require_ids) {
+    try {
+        validate_config_impl(config, limits, require_ids);
+        return {};
+    } catch (InvalidConfig& failure) {
+        return std::move(failure.status);
+    } catch (const Json::exception&) {
+        return Status(StatusCode::InvalidArgument, {});
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
 }
 
-bool consume_nodes(const Json& value, std::size_t& remaining) {
-    if (remaining == 0) {
+Result<persistence::Json> config_document(
+    const TaskConfig& config, const TaskConfigLimits& limits) {
+    try {
+        validate_config_impl(config, limits, false);
+        return to_json(config, limits);
+    } catch (InvalidConfig& failure) {
+        return std::move(failure.status);
+    } catch (const Json::exception&) {
+        return Status(StatusCode::InvalidArgument, {});
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+bool equal_task_config(const TaskConfig& left, const TaskConfig& right) noexcept {
+    if (left.name != right.name ||
+        left.segment_policy.max_duration != right.segment_policy.max_duration ||
+        left.segment_policy.max_physical_bytes != right.segment_policy.max_physical_bytes ||
+        left.retention_policy.mode != right.retention_policy.mode ||
+        left.retention_policy.max_duration != right.retention_policy.max_duration ||
+        left.retention_policy.max_physical_bytes != right.retention_policy.max_physical_bytes ||
+        left.pipelines.size() != right.pipelines.size()) {
         return false;
     }
-    --remaining;
-    if (value.is_structured()) {
-        for (const auto& child : value) {
-            if (!consume_nodes(child, remaining)) {
+    for (std::size_t i = 0; i < left.pipelines.size(); ++i) {
+        const auto& a = left.pipelines[i];
+        const auto& b = right.pipelines[i];
+        if (a.pipeline_id != b.pipeline_id || a.required != b.required ||
+            a.resource_profile != b.resource_profile || a.output_root != b.output_root ||
+            a.acquisition.plugin_id != b.acquisition.plugin_id ||
+            a.acquisition.plugin_version != b.acquisition.plugin_version ||
+            a.acquisition.json != b.acquisition.json ||
+            a.storage.plugin_id != b.storage.plugin_id ||
+            a.storage.plugin_version != b.storage.plugin_version ||
+            a.storage.json != b.storage.json || a.streams.size() != b.streams.size()) {
+            return false;
+        }
+        for (std::size_t j = 0; j < a.streams.size(); ++j) {
+            const auto& sa = a.streams[j];
+            const auto& sb = b.streams[j];
+            if (sa.stream_id != sb.stream_id || sa.stream_key != sb.stream_key ||
+                sa.name != sb.name || sa.readiness_policy != sb.readiness_policy) {
                 return false;
             }
         }
@@ -246,259 +477,5 @@ bool consume_nodes(const Json& value, std::size_t& remaining) {
     return true;
 }
 
-}  // namespace
-
-Result<TaskConfig> normalize_config(const TaskConfig& config, const TaskConfigLimits& limits) {
-    if (config.pipelines.empty() || config.pipelines.size() > limits.max_pipelines ||
-        !label(config.name) || limits.max_plugin_config_bytes > limits.max_config_bytes) {
-        return Status(StatusCode::InvalidArgument, {});
-    }
-    try {
-        require(
-            config.recording_mode == RecordingMode::Continuous ||
-            config.recording_mode == RecordingMode::Rolling);
-        require(
-            config.start_policy == StartPolicyMode::AllRequired ||
-            config.start_policy == StartPolicyMode::BestEffort);
-        require(
-            config.recovery_policy == RecoveryPolicyMode::Manual ||
-            config.recovery_policy == RecoveryPolicyMode::Resume);
-
-        const auto valid_duration = [](const auto& value) { return !value || value->count() > 0; };
-        const auto valid_bytes = [](const auto& value) { return !value || *value > 0; };
-        require(
-            valid_duration(config.segment_policy.max_duration) &&
-            valid_bytes(config.segment_policy.max_physical_bytes) &&
-            (config.segment_policy.max_duration || config.segment_policy.max_physical_bytes));
-        require(
-            valid_duration(config.retention_policy.max_duration) &&
-            valid_bytes(config.retention_policy.max_physical_bytes));
-        if (config.recording_mode == RecordingMode::Continuous) {
-            require(
-                config.retention_policy.mode == RetentionMode::KeepAll &&
-                !config.retention_policy.max_duration &&
-                !config.retention_policy.max_physical_bytes &&
-                !config.retention_policy.include_previous_continuous);
-        } else {
-            require(
-                config.retention_policy.mode == RetentionMode::Rolling &&
-                (config.retention_policy.max_duration ||
-                 config.retention_policy.max_physical_bytes));
-        }
-
-        std::size_t input_bytes = 0;
-        std::size_t model_nodes = 1;
-        const auto charge = [&](std::string_view value) {
-            require(value.size() <= limits.max_config_bytes - input_bytes);
-            input_bytes += value.size();
-        };
-        charge(config.name);
-        for (const auto& pipeline : config.pipelines) {
-            require(model_nodes < limits.max_json_nodes);
-            ++model_nodes;
-            require(
-                pipeline.streams.size() <= limits.max_streams_per_pipeline &&
-                pipeline.streams.size() <= limits.max_json_nodes - model_nodes);
-            model_nodes += pipeline.streams.size();
-            charge(pipeline.resource_profile);
-            charge(pipeline.output_root);
-            for (const auto* backend : {&pipeline.acquisition, &pipeline.storage}) {
-                charge(backend->plugin_id);
-                charge(backend->plugin_version);
-                charge(backend->json);
-            }
-            for (const auto& stream : pipeline.streams) {
-                charge(stream.stream_key);
-                charge(stream.name);
-            }
-        }
-
-        std::set<PipelineId> pipelines;
-        std::set<StreamId> streams;
-        for (const auto& pipeline : config.pipelines) {
-            require(pipeline.pipeline_id == 0 || pipelines.insert(pipeline.pipeline_id).second);
-            require(visible(pipeline.resource_profile, 128) && visible(pipeline.output_root, 128));
-            require(
-                !pipeline.streams.empty() &&
-                pipeline.streams.size() <= limits.max_streams_per_pipeline);
-            for (const auto* backend : {&pipeline.acquisition, &pipeline.storage}) {
-                require(
-                    plugin::abi::valid_identifier(backend->plugin_id) &&
-                    backend->json.size() <= limits.max_plugin_config_bytes);
-                auto version = plugin::validate_plugin_version(backend->plugin_version);
-                if (!version.ok()) {
-                    return std::move(version).status();
-                }
-            }
-
-            std::set<std::string_view> keys;
-            for (const auto& stream : pipeline.streams) {
-                require(stream.stream_id == 0 || streams.insert(stream.stream_id).second);
-                require(
-                    visible(stream.stream_key, 128) && label(stream.name) &&
-                    keys.insert(stream.stream_key).second);
-                require(
-                    stream.readiness_policy == ReadinessPolicy::EntryReady ||
-                    stream.readiness_policy == ReadinessPolicy::SourceReady);
-            }
-        }
-
-        TaskConfig normalized = config;
-        for (auto& pipeline : normalized.pipelines) {
-            for (auto* backend : {&pipeline.acquisition, &pipeline.storage}) {
-                auto parsed = persistence::parse_json(backend->json, config_json_limits(limits));
-                if (!parsed.ok()) {
-                    return std::move(parsed).status();
-                }
-                require(parsed.value().is_object());
-                auto canonical =
-                    persistence::canonical_json(parsed.value(), config_json_limits(limits));
-                if (!canonical.ok()) {
-                    return std::move(canonical).status();
-                }
-                require(canonical.value().size() <= limits.max_plugin_config_bytes);
-                backend->json = std::move(canonical).value();
-            }
-        }
-        return normalized;
-    } catch (const InvalidConfig&) {
-        return Status(StatusCode::InvalidArgument, {});
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<Json> config_document(const TaskConfig& config, const TaskConfigLimits& limits) {
-    auto checked = normalize_config(config, limits);
-    if (!checked.ok()) {
-        return std::move(checked).status();
-    }
-    try {
-        const auto& value = checked.value();
-        Json root{
-            {"format_version", "1.0"},
-            {"recording_mode",
-             value.recording_mode == RecordingMode::Continuous ? "continuous" : "rolling"},
-            {"start_policy",
-             {{"mode", value.start_policy == StartPolicyMode::AllRequired ? "all_required"
-                                                                          : "best_effort"}}},
-            {"recovery_policy",
-             {{"mode", value.recovery_policy == RecoveryPolicyMode::Manual ? "manual" : "resume"}}},
-            {"segment_policy",
-             {{"max_duration", duration(value.segment_policy.max_duration)},
-              {"max_physical_bytes", bytes(value.segment_policy.max_physical_bytes)}}},
-            {"retention_policy",
-             {{"mode",
-               value.retention_policy.mode == RetentionMode::KeepAll ? "keep_all" : "rolling"},
-              {"max_duration", duration(value.retention_policy.max_duration)},
-              {"max_physical_bytes", bytes(value.retention_policy.max_physical_bytes)}}},
-            {"pipelines", Json::array()}};
-        if (value.retention_policy.include_previous_continuous) {
-            root["retention_policy"]["include_previous_continuous"] = true;
-        }
-        if (!value.name.empty()) {
-            root["name"] = value.name;
-        }
-        auto remaining_nodes = limits.max_json_nodes;
-        require(consume_nodes(root, remaining_nodes));
-        for (const auto& item : value.pipelines) {
-            Json pipeline{
-                {"required", item.required},
-                {"resource_profile", item.resource_profile},
-                {"output_root", item.output_root},
-                {"streams", Json::array()}};
-            if (item.pipeline_id != 0) {
-                pipeline["pipeline_id"] = std::to_string(item.pipeline_id);
-            }
-            require(consume_nodes(pipeline, remaining_nodes));
-            for (const auto& named :
-                 {std::pair{"acquisition", &item.acquisition},
-                  std::pair{"storage", &item.storage}}) {
-                Json backend{
-                    {"plugin_id", named.second->plugin_id},
-                    {"plugin_version", named.second->plugin_version}};
-                require(consume_nodes(backend, remaining_nodes));
-                auto bounded = config_json_limits(limits);
-                bounded.max_nodes = remaining_nodes;
-                auto parsed = persistence::parse_json(named.second->json, bounded);
-                if (!parsed.ok()) {
-                    return std::move(parsed).status();
-                }
-                require(consume_nodes(parsed.value(), remaining_nodes));
-                backend["config"] = std::move(parsed).value();
-                pipeline[named.first] = std::move(backend);
-            }
-            for (const auto& stream : item.streams) {
-                Json entry{
-                    {"stream_key", stream.stream_key},
-                    {"readiness_policy", stream.readiness_policy == ReadinessPolicy::EntryReady
-                                             ? "entry_ready"
-                                             : "source_ready"}};
-                if (stream.stream_id != 0) {
-                    entry["stream_id"] = std::to_string(stream.stream_id);
-                }
-                if (!stream.name.empty()) {
-                    entry["name"] = stream.name;
-                }
-                require(consume_nodes(entry, remaining_nodes));
-                pipeline["streams"].push_back(std::move(entry));
-            }
-            root["pipelines"].push_back(std::move(pipeline));
-        }
-        return root;
-    } catch (const InvalidConfig& failure) {
-        return Status(failure.code, {});
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<std::string> config_version(const TaskConfig& config, const TaskConfigLimits& limits) {
-    for (const auto& pipeline : config.pipelines) {
-        if (pipeline.pipeline_id == 0) {
-            return Status(StatusCode::InvalidArgument, {});
-        }
-        for (const auto& stream : pipeline.streams) {
-            if (stream.stream_id == 0) {
-                return Status(StatusCode::InvalidArgument, {});
-            }
-        }
-    }
-    auto document = config_document(config, limits);
-    if (!document.ok()) {
-        return std::move(document).status();
-    }
-    return persistence::semantic_digest(
-        document.value(), "rodaq.task-config.v1", config_json_limits(limits));
-}
-
-}  // namespace rodaq::task
-
-namespace rodaq {
-
-Result<TaskConfig> parse_task_config(std::string_view input, const TaskConfigLimits& limits) {
-    auto parsed = persistence::parse_json(input, task::config_json_limits(limits));
-    if (!parsed.ok()) {
-        return std::move(parsed).status();
-    }
-    try {
-        auto config = task::from_document(parsed.value(), limits);
-        return task::normalize_config(config, limits);
-    } catch (const task::InvalidConfig& error) {
-        return Status(error.code, {});
-    } catch (const persistence::Json::exception&) {
-        return Status(StatusCode::InvalidArgument, {});
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    }
-}
-
-Result<std::string> export_task_config(const TaskConfig& config, const TaskConfigLimits& limits) {
-    auto document = task::config_document(config, limits);
-    if (!document.ok()) {
-        return std::move(document).status();
-    }
-    return persistence::canonical_json(document.value(), task::config_json_limits(limits));
-}
-
+}  // namespace task
 }  // namespace rodaq

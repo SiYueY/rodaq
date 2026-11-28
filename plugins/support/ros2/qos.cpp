@@ -4,8 +4,6 @@
 
 #include <rodaq/canonical/validation.hpp>
 
-#include "../../../src/ros2_qos.hpp"
-
 namespace rodaq::ros2 {
 
 Result<std::vector<rodaq_ros2_qos_profile_t>> normalize_qos(

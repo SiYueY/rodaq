@@ -6,8 +6,6 @@ import ConfirmDialog from '../../components/ConfirmDialog.vue';
 
 const props = defineProps<{
   task: TaskData;
-  canControl: boolean;
-  canAdmin: boolean;
   busy: boolean;
 }>();
 
@@ -22,38 +20,28 @@ const isStoppedIdle = computed(
 );
 
 const canStart = computed(
-  () =>
-    props.canControl &&
-    !props.busy &&
-    (isStoppedIdle.value || props.task.execution_condition === 'failed'),
+  () => !props.busy && (isStoppedIdle.value || props.task.execution_condition === 'failed'),
 );
 
 const canPause = computed(
   () =>
-    props.canControl &&
     !props.busy &&
     props.task.desired_state === 'running' &&
     (props.task.execution_condition === 'active' || props.task.execution_condition === 'degraded'),
 );
 
 const canResume = computed(
-  () =>
-    props.canControl &&
-    !props.busy &&
-    props.task.desired_state === 'paused' &&
-    props.task.execution_condition === 'idle',
+  () => !props.busy && props.task.desired_state === 'paused' && props.task.execution_condition === 'idle',
 );
 
-// Stop stays reachable in Running/Paused/Degraded/Protected/Preparing/Draining/PendingCleanup/Failed (WEB-E2E-005).
 const canStop = computed(
   () =>
-    props.canControl &&
     !props.busy &&
     (props.task.desired_state !== 'stopped' || props.task.execution_condition !== 'idle'),
 );
 
-const canConfigure = computed(() => props.canControl && isStoppedIdle.value);
-const canResetOrRetire = computed(() => props.canAdmin && !props.busy && isStoppedIdle.value);
+const canConfigure = computed(() => !props.busy && isStoppedIdle.value);
+const canResetOrRetire = computed(() => !props.busy && isStoppedIdle.value);
 
 function confirmDanger(): void {
   const k = confirmKind.value;
@@ -69,7 +57,6 @@ function confirmDanger(): void {
     <div class="row-actions" style="justify-content: space-between">
       <div class="row-actions">
         <button
-          v-if="canControl"
           type="button"
           class="btn btn-primary"
           :disabled="!canStart"
@@ -78,7 +65,6 @@ function confirmDanger(): void {
           Start
         </button>
         <button
-          v-if="canControl"
           type="button"
           class="btn"
           :disabled="!canPause"
@@ -87,7 +73,6 @@ function confirmDanger(): void {
           Pause
         </button>
         <button
-          v-if="canControl"
           type="button"
           class="btn"
           :disabled="!canResume"
@@ -96,7 +81,6 @@ function confirmDanger(): void {
           Resume
         </button>
         <button
-          v-if="canControl"
           type="button"
           class="btn btn-danger"
           :disabled="!canStop"
@@ -113,7 +97,7 @@ function confirmDanger(): void {
         </RouterLink>
       </div>
 
-      <div v-if="canAdmin" class="row-actions">
+      <div class="row-actions">
         <button
           type="button"
           class="btn btn-danger"
@@ -148,7 +132,7 @@ function confirmDanger(): void {
       </p>
       <p>
         <strong>Consequence:</strong> All committed artifacts belonging to this Task will be
-        permanently deleted and reset generation will advance. Active ReadLeases may block completion.
+        permanently deleted. Active ReadLeases may block completion.
       </p>
     </ConfirmDialog>
 
