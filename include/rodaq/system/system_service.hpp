@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -96,10 +98,10 @@ class SystemService {
 public:
     SystemService(const SystemService&) = delete;
     SystemService& operator=(const SystemService&) = delete;
-    ~SystemService() noexcept;
+    RODAQ_API ~SystemService() noexcept;
 
-    Result<SystemSnapshot> snapshot() const;
-    Result<SystemCapabilities> capabilities() const;
+    RODAQ_API Result<SystemSnapshot> snapshot() const;
+    RODAQ_API Result<SystemCapabilities> capabilities() const;
 
 private:
     friend class daq::Composition;

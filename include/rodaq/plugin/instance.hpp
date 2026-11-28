@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -17,11 +19,11 @@ public:
     PluginInstance() = delete;
     PluginInstance(const PluginInstance&) = delete;
     PluginInstance& operator=(const PluginInstance&) = delete;
-    PluginInstance(PluginInstance&&) noexcept;
+    RODAQ_API PluginInstance(PluginInstance&&) noexcept;
     PluginInstance& operator=(PluginInstance&&) = delete;
-    ~PluginInstance() noexcept;
+    RODAQ_API ~PluginInstance() noexcept;
 
-    explicit operator bool() const noexcept;
+    RODAQ_API explicit operator bool() const noexcept;
 
     template <typename Interface>
     Result<typename Interface::Handle> query() {
@@ -51,10 +53,10 @@ public:
             OperationHandle<Interface>(state_, reference.value().context, table));
     }
 
-    Result<void> close(Deadline deadline);
-    CloseFuture async_close() noexcept;
-    [[nodiscard]] PluginInstancePhase phase() const noexcept;
-    [[nodiscard]] PluginInstanceId id() const noexcept;
+    RODAQ_API Result<void> close(Deadline deadline);
+    RODAQ_API CloseFuture async_close() noexcept;
+    [[nodiscard]] RODAQ_API PluginInstancePhase phase() const noexcept;
+    [[nodiscard]] RODAQ_API PluginInstanceId id() const noexcept;
 
 private:
     friend class PluginLibrary;

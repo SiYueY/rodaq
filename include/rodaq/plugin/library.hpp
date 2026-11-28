@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <memory>
 #include <string_view>
 
@@ -18,13 +20,13 @@ public:
     PluginLibrary() = delete;
     PluginLibrary(const PluginLibrary&) = delete;
     PluginLibrary& operator=(const PluginLibrary&) = delete;
-    PluginLibrary(PluginLibrary&&) noexcept;
-    PluginLibrary& operator=(PluginLibrary&&) noexcept;
-    ~PluginLibrary() noexcept;
+    RODAQ_API PluginLibrary(PluginLibrary&&) noexcept;
+    RODAQ_API PluginLibrary& operator=(PluginLibrary&&) noexcept;
+    RODAQ_API ~PluginLibrary() noexcept;
 
-    explicit operator bool() const noexcept;
-    [[nodiscard]] const PluginInfo& info() const noexcept;
-    Result<PluginInstance> create_instance(std::string_view config) const;
+    RODAQ_API explicit operator bool() const noexcept;
+    [[nodiscard]] RODAQ_API const PluginInfo& info() const noexcept;
+    RODAQ_API Result<PluginInstance> create_instance(std::string_view config) const;
 
 private:
     friend class PluginManager;

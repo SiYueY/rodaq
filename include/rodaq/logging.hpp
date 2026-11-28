@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -61,14 +63,14 @@ struct Config final {
     std::size_t async_queue_size{8192};
 };
 
-[[nodiscard]] Result<void> initialize(const Config& config);
-[[nodiscard]] Result<void> shutdown();
-[[nodiscard]] Result<void> set_level(Level level);
-[[nodiscard]] Level level() noexcept;
-[[nodiscard]] Result<void> flush();
-[[nodiscard]] bool should_log(Level message_level) noexcept;
+[[nodiscard]] RODAQ_API Result<void> initialize(const Config& config);
+[[nodiscard]] RODAQ_API Result<void> shutdown();
+[[nodiscard]] RODAQ_API Result<void> set_level(Level level);
+[[nodiscard]] RODAQ_API Level level() noexcept;
+[[nodiscard]] RODAQ_API Result<void> flush();
+[[nodiscard]] RODAQ_API bool should_log(Level message_level) noexcept;
 
-void write(Level message_level, SourceLocation source, std::string_view message) noexcept;
+RODAQ_API void write(Level message_level, SourceLocation source, std::string_view message) noexcept;
 
 template <typename... Args>
 void log(

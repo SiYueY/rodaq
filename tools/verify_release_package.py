@@ -142,6 +142,7 @@ def stage_release_package() -> tuple[Path, Path, str]:
         "lib/librodaq_ros2_support.a",
         "lib/cmake/RoDAQ/RoDAQConfig.cmake",
         "lib/cmake/RoDAQ/RoDAQTargets.cmake",
+        "lib/cmake/RoDAQ/RoDAQRos2Targets.cmake",
         "lib/cmake/RoDAQ/RoDAQPlugin.cmake",
         "lib/rodaq/plugins/com.rodaq.acquisition.ros2/1.0.0/manifest.json",
         "lib/rodaq/plugins/com.rodaq.storage.mcap/1.0.0/manifest.json",
@@ -163,10 +164,14 @@ def stage_release_package() -> tuple[Path, Path, str]:
     expected_exports = [
         "add_library(rodaq::plugin SHARED IMPORTED)",
         "add_library(rodaq::daq SHARED IMPORTED)",
-        "add_library(rodaq::ros2_support STATIC IMPORTED)",
     ]
     if sorted(exported) != sorted(expected_exports):
         raise RuntimeError(f"Unexpected exported CMake targets: {exported}")
+
+    ros2_targets = (stage_dir / "lib/cmake/RoDAQ/RoDAQRos2Targets.cmake").read_text(encoding="utf-8")
+    ros2_exported = [line.strip() for line in ros2_targets.splitlines() if line.strip().startswith("add_library(rodaq::")]
+    if ros2_exported != ["add_library(rodaq::ros2_support STATIC IMPORTED)"]:
+        raise RuntimeError(f"Unexpected ROS 2 component targets: {ros2_exported}")
 
     # Verify bin/rodaq ELF dynamic tags have zero build-tree RPATH/RUNPATH and zero node dependency.
     readelf_out = run_checked(["readelf", "-d", str(stage_dir / "bin/rodaq")])
@@ -407,7 +412,7 @@ int main(int argc, char** argv) {
         shutil.copytree(REPO_ROOT / "plugins/storage/mcap", iso_mcap_src)
         shutil.copytree(REPO_ROOT / "plugins/acquisition/ros2", iso_ros2_src)
         for isolated_src in (iso_mcap_src, iso_ros2_src):
-            shutil.copy2(REPO_ROOT / "src/internal/strict_json.hpp", isolated_src)
+            shutil.copy2(REPO_ROOT / "internal/strict_json.hpp", isolated_src)
         mcap_include = REPO_ROOT / "third_party/mcap-cpp/cpp/mcap/include"
 
         run_checked(

@@ -266,6 +266,10 @@ Result<void> submit_commit(
     }
 }
 
+Result<std::unique_ptr<TaskService>> Composition::open_task_service(task::ServiceOptions options) {
+    return TaskService::open(std::move(options));
+}
+
 struct Composition::State {
     // Declared first: releases the namespace lease after composed authorities.
     std::shared_ptr<DeploymentLease> deployment_lease;
@@ -475,7 +479,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
             return catalog->retire_eligible(task_id);
         };
         service.execution = std::move(execution);
-        auto tasks = TaskService::open(std::move(service));
+        auto tasks = open_task_service(std::move(service));
         if (!tasks.ok()) {
             return tasks.status();
         }

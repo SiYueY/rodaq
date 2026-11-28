@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <memory>
 
 #include <rodaq/plugin/deadline.hpp>
@@ -17,13 +19,13 @@ public:
     CloseFuture() = delete;
     CloseFuture(const CloseFuture&) noexcept = default;
     CloseFuture& operator=(const CloseFuture&) noexcept = default;
-    CloseFuture(CloseFuture&&) noexcept;
-    CloseFuture& operator=(CloseFuture&&) noexcept;
+    RODAQ_API CloseFuture(CloseFuture&&) noexcept;
+    RODAQ_API CloseFuture& operator=(CloseFuture&&) noexcept;
 
-    explicit operator bool() const noexcept;
-    [[nodiscard]] bool ready() const noexcept;
-    [[nodiscard]] CloseWaitStatus wait(Deadline deadline) const noexcept;
-    Result<void> result() const;
+    RODAQ_API explicit operator bool() const noexcept;
+    [[nodiscard]] RODAQ_API bool ready() const noexcept;
+    [[nodiscard]] RODAQ_API CloseWaitStatus wait(Deadline deadline) const noexcept;
+    RODAQ_API Result<void> result() const;
 
 private:
     friend class PluginInstance;

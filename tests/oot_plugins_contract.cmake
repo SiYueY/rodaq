@@ -40,7 +40,7 @@ if(RODAQ_BUILD_MCAP_STORAGE)
     set(mcap_src "${work_dir}/isolated-mcap-src")
     set(mcap_build "${work_dir}/mcap-build")
     file(COPY "${RODAQ_SOURCE_DIR}/plugins/storage/mcap/" DESTINATION "${mcap_src}")
-    file(COPY "${RODAQ_SOURCE_DIR}/src/internal/strict_json.hpp" DESTINATION "${mcap_src}")
+    file(COPY "${RODAQ_SOURCE_DIR}/internal/strict_json.hpp" DESTINATION "${mcap_src}")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -S "${mcap_src}" -B "${mcap_build}"
             -DCMAKE_PREFIX_PATH=${prefix_path}
@@ -66,7 +66,7 @@ if(RODAQ_BUILD_ROS2_ACQUISITION)
     set(ros2_src "${work_dir}/isolated-ros2-src")
     set(ros2_build "${work_dir}/ros2-build")
     file(COPY "${RODAQ_SOURCE_DIR}/plugins/acquisition/ros2/" DESTINATION "${ros2_src}")
-    file(COPY "${RODAQ_SOURCE_DIR}/src/internal/strict_json.hpp" DESTINATION "${ros2_src}")
+    file(COPY "${RODAQ_SOURCE_DIR}/internal/strict_json.hpp" DESTINATION "${ros2_src}")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -S "${ros2_src}" -B "${ros2_build}"
             -DCMAKE_PREFIX_PATH=${prefix_path}

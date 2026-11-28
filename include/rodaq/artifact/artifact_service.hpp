@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +14,9 @@
 #include <rodaq/task/types.hpp>
 
 namespace rodaq {
+namespace daq {
+class Composition;
+}
 namespace artifact {
 class ArtifactCatalog;
 struct ReadBacking;
@@ -32,10 +37,10 @@ struct ArtifactFileId {
     }
 };
 
-Result<ArtifactId> parse_artifact_id(std::string_view text);
-Result<ArtifactFileId> parse_artifact_file_id(std::string_view text);
-std::string to_string(ArtifactId id);
-std::string to_string(ArtifactFileId id);
+RODAQ_API Result<ArtifactId> parse_artifact_id(std::string_view text);
+RODAQ_API Result<ArtifactFileId> parse_artifact_file_id(std::string_view text);
+RODAQ_API std::string to_string(ArtifactId id);
+RODAQ_API std::string to_string(ArtifactFileId id);
 
 struct RecordingRange {
     std::uint64_t begin_ns{0};
@@ -112,15 +117,15 @@ class ArtifactReadHandle {
 public:
     ArtifactReadHandle(const ArtifactReadHandle&) = delete;
     ArtifactReadHandle& operator=(const ArtifactReadHandle&) = delete;
-    ArtifactReadHandle(ArtifactReadHandle&&) noexcept;
-    ArtifactReadHandle& operator=(ArtifactReadHandle&&) noexcept;
-    ~ArtifactReadHandle() noexcept;
+    RODAQ_API ArtifactReadHandle(ArtifactReadHandle&&) noexcept;
+    RODAQ_API ArtifactReadHandle& operator=(ArtifactReadHandle&&) noexcept;
+    RODAQ_API ~ArtifactReadHandle() noexcept;
 
-    std::uint64_t size() const noexcept;
+    RODAQ_API std::uint64_t size() const noexcept;
     // Blocking read execution only. Caller retains the output backing through
     // actual return. One in-flight call per handle; cancel is not completion.
-    Result<std::size_t> read_at(std::uint64_t offset, MutableBytes output);
-    void request_cancel() noexcept;
+    RODAQ_API Result<std::size_t> read_at(std::uint64_t offset, MutableBytes output);
+    RODAQ_API void request_cancel() noexcept;
 
 private:
     friend class artifact::ArtifactCatalog;
@@ -130,14 +135,19 @@ private:
 
 class ArtifactService {
 public:
-    static Result<std::unique_ptr<ArtifactService>> create(
-        std::shared_ptr<artifact::ArtifactCatalog> catalog);
-    Result<ArtifactPage> query_artifacts(const ArtifactQuery& query) const;
-    Result<ArtifactInfo> get_artifact(ArtifactId artifact_id) const;
+    ArtifactService(const ArtifactService&) = delete;
+    ArtifactService& operator=(const ArtifactService&) = delete;
+
+    RODAQ_API Result<ArtifactPage> query_artifacts(const ArtifactQuery& query) const;
+    RODAQ_API Result<ArtifactInfo> get_artifact(ArtifactId artifact_id) const;
     // Filesystem work: execute on read capacity, never a control/event-loop lane.
-    Result<ArtifactReadHandle> acquire_read(ArtifactId artifact_id, ArtifactFileId file_id);
+    RODAQ_API Result<ArtifactReadHandle> acquire_read(
+        ArtifactId artifact_id, ArtifactFileId file_id);
 
 private:
+    friend class daq::Composition;
+    static Result<std::unique_ptr<ArtifactService>> create(
+        std::shared_ptr<artifact::ArtifactCatalog> catalog);
     explicit ArtifactService(std::shared_ptr<artifact::ArtifactCatalog> catalog) noexcept;
     std::shared_ptr<artifact::ArtifactCatalog> catalog_;
 };

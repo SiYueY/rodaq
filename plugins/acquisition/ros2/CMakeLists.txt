@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(NOT TARGET rodaq::plugin OR NOT TARGET rodaq::ros2_support)
-    find_package(RoDAQ REQUIRED CONFIG)
+    find_package(RoDAQ REQUIRED CONFIG COMPONENTS ros2_support)
 endif()
 if(NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json REQUIRED CONFIG)
@@ -21,8 +21,7 @@ target_link_libraries(rodaq_ros2_config PUBLIC rodaq::ros2_support
     PRIVATE rclcpp::rclcpp nlohmann_json::nlohmann_json)
 target_include_directories(rodaq_ros2_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # Shared private source helper, bundled with isolated official plugin sources.
-set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/internal" CACHE PATH
-    "Directory containing RoDAQ's private strict_json.hpp")
+set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../internal")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/strict_json.hpp")
     set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()

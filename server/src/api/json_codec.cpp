@@ -6,7 +6,7 @@
 #include <limits>
 #include <string>
 
-#include "../../../src/internal/strict_json.hpp"
+#include "strict_json.hpp"
 
 namespace rodaq::server {
 namespace {

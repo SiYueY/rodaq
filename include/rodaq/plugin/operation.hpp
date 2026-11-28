@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <memory>
 #include <string_view>
 #include <type_traits>
@@ -20,23 +22,23 @@ class CallGuard {
 public:
     CallGuard(const CallGuard&) = delete;
     CallGuard& operator=(const CallGuard&) = delete;
-    CallGuard(CallGuard&&) noexcept;
+    RODAQ_API CallGuard(CallGuard&&) noexcept;
     CallGuard& operator=(CallGuard&&) = delete;
-    ~CallGuard() noexcept;
+    RODAQ_API ~CallGuard() noexcept;
 
 private:
-    friend Result<CallGuard> acquire(const std::shared_ptr<InstanceState>& state);
+    friend RODAQ_API Result<CallGuard> acquire(const std::shared_ptr<InstanceState>& state);
 
     explicit CallGuard(std::shared_ptr<InstanceState> state) noexcept;
 
     std::shared_ptr<InstanceState> state_;
 };
 
-Result<CallGuard> acquire(const std::shared_ptr<InstanceState>& state);
-Result<rodaq_interface_reference_t> query_native(
+RODAQ_API Result<CallGuard> acquire(const std::shared_ptr<InstanceState>& state);
+RODAQ_API Result<rodaq_interface_reference_t> query_native(
     const std::shared_ptr<InstanceState>& state, const rodaq_interface_query_t& query);
 
-void report_abi_violation(
+RODAQ_API void report_abi_violation(
     const std::shared_ptr<InstanceState>& state, std::string_view message) noexcept;
 
 }  // namespace invocation

@@ -1,3 +1,5 @@
+#include <type_traits>
+
 #include <rodaq/daq/runtime.hpp>
 #include <rodaq/logging.hpp>
 #include <rodaq/result.hpp>
@@ -5,6 +7,24 @@
 #include <rodaq/task/config.hpp>
 #include <rodaq/task/runtime.hpp>
 #include <rodaq/task/task_service.hpp>
+
+template <typename T, typename = void>
+struct HasPublicOpen : std::false_type {};
+
+template <typename T>
+struct HasPublicOpen<T, std::void_t<decltype(&T::open)>> : std::true_type {};
+
+template <typename T, typename = void>
+struct HasPublicCreate : std::false_type {};
+
+template <typename T>
+struct HasPublicCreate<T, std::void_t<decltype(&T::create)>> : std::true_type {};
+
+static_assert(!HasPublicOpen<rodaq::TaskService>::value);
+static_assert(!HasPublicCreate<rodaq::ArtifactService>::value);
+static_assert(!std::is_copy_constructible_v<rodaq::ArtifactService>);
+static_assert(!HasPublicCreate<rodaq::SystemService>::value);
+static_assert(HasPublicOpen<rodaq::DaqRuntime>::value);
 
 int main() {
     const rodaq::Result<int> value(17);

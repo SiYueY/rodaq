@@ -36,8 +36,7 @@ target_link_libraries(rodaq_mcap_format PUBLIC rodaq::plugin
     PRIVATE nlohmann_json::nlohmann_json)
 target_include_directories(rodaq_mcap_format PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # Shared private source helper, bundled with isolated official plugin sources.
-set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/internal" CACHE PATH
-    "Directory containing RoDAQ's private strict_json.hpp")
+set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../internal")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/strict_json.hpp")
     set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()

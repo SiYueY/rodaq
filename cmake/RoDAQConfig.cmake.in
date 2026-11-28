@@ -2,7 +2,22 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(fmt 11.2.0 EXACT CONFIG)
-@RODAQ_CONFIG_EXTRA_DEPS@
 include("${CMAKE_CURRENT_LIST_DIR}/RoDAQTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/RoDAQPlugin.cmake")
+
+foreach(component IN LISTS RoDAQ_FIND_COMPONENTS)
+    set(RoDAQ_${component}_FOUND FALSE)
+    if(component STREQUAL "ros2_support" AND @RODAQ_BUILD_ROS2_ACQUISITION@)
+        if(TARGET rodaq::ros2_support)
+            set(RoDAQ_ros2_support_FOUND TRUE)
+        elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/RoDAQRos2Targets.cmake")
+            # Optional components must not make the base package unavailable.
+            find_package(ament_index_cpp QUIET CONFIG)
+            if(ament_index_cpp_FOUND)
+                include("${CMAKE_CURRENT_LIST_DIR}/RoDAQRos2Targets.cmake")
+                set(RoDAQ_ros2_support_FOUND TRUE)
+            endif()
+        endif()
+    endif()
+endforeach()
 check_required_components(RoDAQ)

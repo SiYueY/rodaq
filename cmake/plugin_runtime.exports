@@ -1,0 +1,55 @@
+{
+  global:
+    _ZN5rodaq6plugin10invocation12query_nativeERKSt10shared_ptrINS0_13InstanceStateEERK21rodaq_interface_query; # rodaq::plugin::invocation::query_native(std::shared_ptr<rodaq::plugin::InstanceState> const&, rodaq_interface_query const&)
+    _ZN5rodaq6plugin10invocation20report_abi_violationERKSt10shared_ptrINS0_13InstanceStateEESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::plugin::invocation::report_abi_violation(std::shared_ptr<rodaq::plugin::InstanceState> const&, std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq6plugin10invocation7acquireERKSt10shared_ptrINS0_13InstanceStateEE; # rodaq::plugin::invocation::acquire(std::shared_ptr<rodaq::plugin::InstanceState> const&)
+    _ZN5rodaq6plugin10invocation9CallGuardC1EOS2_; # rodaq::plugin::invocation::CallGuard::CallGuard(rodaq::plugin::invocation::CallGuard&&)
+    _ZN5rodaq6plugin10invocation9CallGuardC2EOS2_; # rodaq::plugin::invocation::CallGuard::CallGuard(rodaq::plugin::invocation::CallGuard&&)
+    _ZN5rodaq6plugin10invocation9CallGuardD1Ev; # rodaq::plugin::invocation::CallGuard::~CallGuard()
+    _ZN5rodaq6plugin10invocation9CallGuardD2Ev; # rodaq::plugin::invocation::CallGuard::~CallGuard()
+    _ZN5rodaq6plugin11CloseFutureC1EOS1_; # rodaq::plugin::CloseFuture::CloseFuture(rodaq::plugin::CloseFuture&&)
+    _ZN5rodaq6plugin11CloseFutureC2EOS1_; # rodaq::plugin::CloseFuture::CloseFuture(rodaq::plugin::CloseFuture&&)
+    _ZN5rodaq6plugin11CloseFutureaSEOS1_; # rodaq::plugin::CloseFuture::operator=(rodaq::plugin::CloseFuture&&)
+    _ZN5rodaq6plugin13PluginLibraryC1EOS1_; # rodaq::plugin::PluginLibrary::PluginLibrary(rodaq::plugin::PluginLibrary&&)
+    _ZN5rodaq6plugin13PluginLibraryC2EOS1_; # rodaq::plugin::PluginLibrary::PluginLibrary(rodaq::plugin::PluginLibrary&&)
+    _ZN5rodaq6plugin13PluginLibraryD1Ev; # rodaq::plugin::PluginLibrary::~PluginLibrary()
+    _ZN5rodaq6plugin13PluginLibraryD2Ev; # rodaq::plugin::PluginLibrary::~PluginLibrary()
+    _ZN5rodaq6plugin13PluginLibraryaSEOS1_; # rodaq::plugin::PluginLibrary::operator=(rodaq::plugin::PluginLibrary&&)
+    _ZN5rodaq6plugin13PluginManager4loadESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::plugin::PluginManager::load(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq6plugin13PluginManager4loadESt17basic_string_viewIcSt11char_traitsIcEES5_; # rodaq::plugin::PluginManager::load(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq6plugin13PluginManager6createENS0_20PluginManagerOptionsE; # rodaq::plugin::PluginManager::create(rodaq::plugin::PluginManagerOptions)
+    _ZN5rodaq6plugin13PluginManager8shutdownENS0_8DeadlineE; # rodaq::plugin::PluginManager::shutdown(rodaq::plugin::Deadline)
+    _ZN5rodaq6plugin13PluginManagerC1EOS1_; # rodaq::plugin::PluginManager::PluginManager(rodaq::plugin::PluginManager&&)
+    _ZN5rodaq6plugin13PluginManagerC2EOS1_; # rodaq::plugin::PluginManager::PluginManager(rodaq::plugin::PluginManager&&)
+    _ZN5rodaq6plugin13PluginManagerD1Ev; # rodaq::plugin::PluginManager::~PluginManager()
+    _ZN5rodaq6plugin13PluginManagerD2Ev; # rodaq::plugin::PluginManager::~PluginManager()
+    _ZN5rodaq6plugin13PluginManageraSEOS1_; # rodaq::plugin::PluginManager::operator=(rodaq::plugin::PluginManager&&)
+    _ZN5rodaq6plugin14PluginInstance11async_closeEv; # rodaq::plugin::PluginInstance::async_close()
+    _ZN5rodaq6plugin14PluginInstance5closeENS0_8DeadlineE; # rodaq::plugin::PluginInstance::close(rodaq::plugin::Deadline)
+    _ZN5rodaq6plugin14PluginInstanceC1EOS1_; # rodaq::plugin::PluginInstance::PluginInstance(rodaq::plugin::PluginInstance&&)
+    _ZN5rodaq6plugin14PluginInstanceC2EOS1_; # rodaq::plugin::PluginInstance::PluginInstance(rodaq::plugin::PluginInstance&&)
+    _ZN5rodaq6plugin14PluginInstanceD1Ev; # rodaq::plugin::PluginInstance::~PluginInstance()
+    _ZN5rodaq6plugin14PluginInstanceD2Ev; # rodaq::plugin::PluginInstance::~PluginInstance()
+    _ZN5rodaq6plugin23validate_plugin_versionESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::plugin::validate_plugin_version(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq7logging10initializeERKNS0_6ConfigE; # rodaq::logging::initialize(rodaq::logging::Config const&)
+    _ZN5rodaq7logging10should_logENS0_5LevelE; # rodaq::logging::should_log(rodaq::logging::Level)
+    _ZN5rodaq7logging5flushEv; # rodaq::logging::flush()
+    _ZN5rodaq7logging5levelEv; # rodaq::logging::level()
+    _ZN5rodaq7logging5writeENS0_5LevelENS0_14SourceLocationESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::logging::write(rodaq::logging::Level, rodaq::logging::SourceLocation, std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq7logging8shutdownEv; # rodaq::logging::shutdown()
+    _ZN5rodaq7logging9set_levelENS0_5LevelE; # rodaq::logging::set_level(rodaq::logging::Level)
+    _ZNK5rodaq6plugin11CloseFuture4waitENS0_8DeadlineE; # rodaq::plugin::CloseFuture::wait(rodaq::plugin::Deadline) const
+    _ZNK5rodaq6plugin11CloseFuture5readyEv; # rodaq::plugin::CloseFuture::ready() const
+    _ZNK5rodaq6plugin11CloseFuture6resultEv; # rodaq::plugin::CloseFuture::result() const
+    _ZNK5rodaq6plugin11CloseFuturecvbEv; # rodaq::plugin::CloseFuture::operator bool() const
+    _ZNK5rodaq6plugin13PluginLibrary15create_instanceESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::plugin::PluginLibrary::create_instance(std::basic_string_view<char, std::char_traits<char> >) const
+    _ZNK5rodaq6plugin13PluginLibrary4infoEv; # rodaq::plugin::PluginLibrary::info() const
+    _ZNK5rodaq6plugin13PluginLibrarycvbEv; # rodaq::plugin::PluginLibrary::operator bool() const
+    _ZNK5rodaq6plugin13PluginManager16restart_requiredEv; # rodaq::plugin::PluginManager::restart_required() const
+    _ZNK5rodaq6plugin13PluginManager5phaseEv; # rodaq::plugin::PluginManager::phase() const
+    _ZNK5rodaq6plugin13PluginManager7pluginsEv; # rodaq::plugin::PluginManager::plugins() const
+    _ZNK5rodaq6plugin14PluginInstance2idEv; # rodaq::plugin::PluginInstance::id() const
+    _ZNK5rodaq6plugin14PluginInstance5phaseEv; # rodaq::plugin::PluginInstance::phase() const
+    _ZNK5rodaq6plugin14PluginInstancecvbEv; # rodaq::plugin::PluginInstance::operator bool() const
+  local: *;
+};

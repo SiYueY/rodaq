@@ -1,4 +1,5 @@
 #include "service_config.hpp"
+#include "daq/composition.hpp"
 #include "task/identity.hpp"
 
 #include <gtest/gtest.h>
@@ -74,7 +75,7 @@ protected:
     }
 
     void open_service() {
-        auto service = rodaq::TaskService::open(options_);
+        auto service = rodaq::daq::Composition::open_task_service(options_);
         ASSERT_TRUE(service.ok()) << static_cast<int>(service.status().code());
         service_ = std::move(service.value());
     }

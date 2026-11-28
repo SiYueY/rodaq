@@ -47,7 +47,14 @@ add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
 find_package(nlohmann_json 3.10.5 EXACT REQUIRED CONFIG)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(Threads REQUIRED)
-add_library(rodaq_plugin SHARED
+add_library(rodaq_plugin_headers INTERFACE)
+target_include_directories(rodaq_plugin_headers INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(rodaq_plugin_headers SYSTEM INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include)
+target_link_libraries(rodaq_plugin_headers INTERFACE fmt::fmt)
+
+add_library(rodaq_plugin_obj OBJECT
     src/logging.cpp
     src/plugin/catalog.cpp
     src/plugin/loader.cpp
@@ -56,6 +63,7 @@ add_library(rodaq_plugin SHARED
     src/plugin/initialize.cpp
     src/plugin/close.cpp
     src/plugin/manager.cpp)
+add_library(rodaq_plugin SHARED $<TARGET_OBJECTS:rodaq_plugin_obj>)
 add_library(rodaq::plugin ALIAS rodaq_plugin)
 set_target_properties(rodaq_plugin PROPERTIES EXPORT_NAME plugin)
 target_compile_features(rodaq_plugin PUBLIC cxx_std_17)
@@ -66,14 +74,24 @@ target_include_directories(rodaq_plugin SYSTEM PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/tl_expected/include>)
 target_link_libraries(rodaq_plugin PUBLIC fmt::fmt
     PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
-rodaq_enable_project_warnings(rodaq_plugin)
+target_link_libraries(rodaq_plugin_obj PRIVATE rodaq_plugin_headers spdlog::spdlog
+    nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
+set_target_properties(rodaq_plugin_obj rodaq_plugin PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+target_link_options(rodaq_plugin PRIVATE
+    "LINKER:--exclude-libs,ALL"
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/plugin_runtime.exports")
+set_property(TARGET rodaq_plugin APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/plugin_runtime.exports")
+rodaq_enable_project_warnings(rodaq_plugin_obj)
 
-add_library(rodaq_daq SHARED
+add_library(rodaq_daq_obj OBJECT
     src/execution_lane.cpp
+    src/work_id.cpp
     src/uuid.cpp
     src/persistence/atomic_file.cpp
     src/persistence/digest.cpp)
-target_sources(rodaq_daq PRIVATE
+target_sources(rodaq_daq_obj PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/runtime.cpp src/daq/startup.cpp
     src/system/system_service.cpp
     src/task/config.cpp src/task/identity.cpp src/task/operation_history.cpp
@@ -81,12 +99,12 @@ target_sources(rodaq_daq PRIVATE
     src/task/task_runtime.cpp
     src/time/clock.cpp
     src/time/wall_time.cpp)
-target_sources(rodaq_daq PRIVATE
+target_sources(rodaq_daq_obj PRIVATE
     src/pipeline/instance_id.cpp src/pipeline/admission_gate.cpp src/pipeline/payload_pool.cpp
     src/pipeline/descriptor.cpp
     src/pipeline/record_budget.cpp src/pipeline/record.cpp src/pipeline/record_queue.cpp
     src/pipeline/pipeline_controller.cpp src/pipeline/pipeline_rotation.cpp)
-target_sources(rodaq_daq PRIVATE
+target_sources(rodaq_daq_obj PRIVATE
     src/artifact/volume_capacity.cpp
     src/artifact/managed_volume.cpp
     src/artifact/sealed_files.cpp
@@ -103,20 +121,28 @@ target_sources(rodaq_daq PRIVATE
     src/pipeline/pipeline_writer.cpp
     src/pipeline/stream_table.cpp
     src/pipeline/recording_instance.cpp)
+add_library(rodaq_daq SHARED $<TARGET_OBJECTS:rodaq_daq_obj>)
 add_library(rodaq::daq ALIAS rodaq_daq)
 set_target_properties(rodaq_daq PROPERTIES EXPORT_NAME daq)
-target_compile_definitions(rodaq_daq PRIVATE RODAQ_APPLICATION_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(rodaq_daq_obj PRIVATE RODAQ_APPLICATION_VERSION="${PROJECT_VERSION}")
 target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
     PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
-rodaq_enable_project_warnings(rodaq_daq)
+target_link_libraries(rodaq_daq_obj PRIVATE rodaq::plugin
+    nlohmann_json::nlohmann_json OpenSSL::Crypto)
+set_target_properties(rodaq_daq_obj rodaq_daq PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+target_link_options(rodaq_daq PRIVATE
+    "LINKER:--exclude-libs,ALL"
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/daq.exports")
+set_property(TARGET rodaq_daq APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/daq.exports")
+rodaq_enable_project_warnings(rodaq_daq_obj)
 
 option(RODAQ_BUILD_BEHAVIORAL_FAKES "Build qualification-only fault-injection backends" OFF)
 option(RODAQ_BUILD_MCAP_STORAGE "Build the standalone MCAP storage plugin using pinned upstream mcap-cpp" OFF)
 option(RODAQ_BUILD_ROS2_ACQUISITION "Build ROS 2 acquisition using prepared ROS dependencies" OFF)
 option(RODAQ_BUILD_SERVER "Build the RoDAQ Drogon 1.9.14 HTTP server" OFF)
-set(RODAQ_CONFIG_EXTRA_DEPS "")
 if(RODAQ_BUILD_ROS2_ACQUISITION)
-    set(RODAQ_CONFIG_EXTRA_DEPS "find_dependency(ament_index_cpp)")
     add_subdirectory(plugins/support/ros2)
     add_subdirectory(plugins/acquisition/ros2)
 endif()
@@ -158,5 +184,13 @@ install(FILES cmake/RoDAQPlugin.cmake cmake/plugin_metadata.py cmake/plugin.expo
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)
 
 if(BUILD_TESTING)
+    # White-box DAQ tests use the same DAQ objects and the one shared Plugin runtime.
+    add_library(rodaq_daq_whitebox STATIC $<TARGET_OBJECTS:rodaq_daq_obj>)
+    target_link_libraries(rodaq_daq_whitebox PUBLIC rodaq::plugin
+        PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    # Only pure, non-loading Plugin catalog/initialization tests may use this archive.
+    add_library(rodaq_plugin_whitebox STATIC $<TARGET_OBJECTS:rodaq_plugin_obj>)
+    target_link_libraries(rodaq_plugin_whitebox PUBLIC rodaq_plugin_headers
+        PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json Threads::Threads ${CMAKE_DL_LIBS})
     add_subdirectory(tests)
 endif()

@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <link.h>
 #include <optional>
 #include <string>
 #include <sys/stat.h>
@@ -136,6 +137,18 @@ TEST_F(PluginRuntimeTest, InstalledPluginFullLifecycleAndImmediateCapacityReuse)
     ASSERT_TRUE(loaded.ok()) << loaded.status().message();
     auto library = std::move(loaded).value();
     EXPECT_EQ(library.info().plugin_version, "1.0.0");
+    unsigned runtime_images = 0;
+    dl_iterate_phdr(
+        [](dl_phdr_info* info, std::size_t, void* context) {
+            const std::string_view path(info->dlpi_name);
+            const auto name = path.substr(path.find_last_of('/') + 1);
+            if (name == "librodaq_plugin.so") {
+                ++*static_cast<unsigned*>(context);
+            }
+            return 0;
+        },
+        &runtime_images);
+    EXPECT_EQ(runtime_images, 1U);
     auto initialized = library.create_instance({});
     ASSERT_TRUE(initialized.ok()) << initialized.status().message();
     auto instance = std::move(initialized).value();

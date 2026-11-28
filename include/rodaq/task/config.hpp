@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -70,9 +72,9 @@ struct TaskConfigLimits {
     std::size_t max_json_depth{32};
 };
 
-Result<TaskConfig> parse_task_config(
+RODAQ_API Result<TaskConfig> parse_task_config(
     std::string_view portable_json, const TaskConfigLimits& limits = {});
-Result<std::string> export_task_config(
+RODAQ_API Result<std::string> export_task_config(
     const TaskConfig& config, const TaskConfigLimits& limits = {});
 
 }  // namespace rodaq

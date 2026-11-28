@@ -1,0 +1,53 @@
+{
+  global:
+    _ZN5rodaq10DaqRuntime4openENS_14DaqOpenOptionsE; # rodaq::DaqRuntime::open(rodaq::DaqOpenOptions)
+    _ZN5rodaq10DaqRuntime5tasksEv; # rodaq::DaqRuntime::tasks()
+    _ZN5rodaq10DaqRuntime6systemEv; # rodaq::DaqRuntime::system()
+    _ZN5rodaq10DaqRuntime7observeEv; # rodaq::DaqRuntime::observe()
+    _ZN5rodaq10DaqRuntime8shutdownENSt6chrono10time_pointINS1_3_V212steady_clockENS1_8durationIlSt5ratioILl1ELl1000000000EEEEEE; # rodaq::DaqRuntime::shutdown(std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
+    _ZN5rodaq10DaqRuntime9artifactsEv; # rodaq::DaqRuntime::artifacts()
+    _ZN5rodaq10DaqRuntimeD1Ev; # rodaq::DaqRuntime::~DaqRuntime()
+    _ZN5rodaq10DaqRuntimeD2Ev; # rodaq::DaqRuntime::~DaqRuntime()
+    _ZN5rodaq11TaskService11create_taskERKNS_10TaskConfigERKNS_15RequestIdentityE; # rodaq::TaskService::create_task(rodaq::TaskConfig const&, rodaq::RequestIdentity const&)
+    _ZN5rodaq11TaskService4stopENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::stop(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService5pauseENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::pause(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService5resetENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::reset(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService5startENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::start(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService6resumeENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::resume(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService6retireENS_6TaskIdERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::retire(rodaq::TaskId, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskService9configureENS_6TaskIdERKNS_10TaskConfigERKNS_15RequestIdentityERKNS_19ControlPreconditionE; # rodaq::TaskService::configure(rodaq::TaskId, rodaq::TaskConfig const&, rodaq::RequestIdentity const&, rodaq::ControlPrecondition const&)
+    _ZN5rodaq11TaskServiceD1Ev; # rodaq::TaskService::~TaskService()
+    _ZN5rodaq11TaskServiceD2Ev; # rodaq::TaskService::~TaskService()
+    _ZN5rodaq13SystemServiceD1Ev; # rodaq::SystemService::~SystemService()
+    _ZN5rodaq13SystemServiceD2Ev; # rodaq::SystemService::~SystemService()
+    _ZN5rodaq13parse_task_idESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::parse_task_id(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq15ArtifactService12acquire_readENS_10ArtifactIdENS_14ArtifactFileIdE; # rodaq::ArtifactService::acquire_read(rodaq::ArtifactId, rodaq::ArtifactFileId)
+    _ZN5rodaq17parse_artifact_idESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::parse_artifact_id(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq17parse_task_configESt17basic_string_viewIcSt11char_traitsIcEERKNS_16TaskConfigLimitsE; # rodaq::parse_task_config(std::basic_string_view<char, std::char_traits<char> >, rodaq::TaskConfigLimits const&)
+    _ZN5rodaq18ArtifactReadHandle14request_cancelEv; # rodaq::ArtifactReadHandle::request_cancel()
+    _ZN5rodaq18ArtifactReadHandle7read_atEmNS_12MutableBytesE; # rodaq::ArtifactReadHandle::read_at(unsigned long, rodaq::MutableBytes)
+    _ZN5rodaq18ArtifactReadHandleC1EOS0_; # rodaq::ArtifactReadHandle::ArtifactReadHandle(rodaq::ArtifactReadHandle&&)
+    _ZN5rodaq18ArtifactReadHandleC2EOS0_; # rodaq::ArtifactReadHandle::ArtifactReadHandle(rodaq::ArtifactReadHandle&&)
+    _ZN5rodaq18ArtifactReadHandleD1Ev; # rodaq::ArtifactReadHandle::~ArtifactReadHandle()
+    _ZN5rodaq18ArtifactReadHandleD2Ev; # rodaq::ArtifactReadHandle::~ArtifactReadHandle()
+    _ZN5rodaq18ArtifactReadHandleaSEOS0_; # rodaq::ArtifactReadHandle::operator=(rodaq::ArtifactReadHandle&&)
+    _ZN5rodaq18export_task_configB5cxx11ERKNS_10TaskConfigERKNS_16TaskConfigLimitsE; # rodaq::export_task_config[abi:cxx11](rodaq::TaskConfig const&, rodaq::TaskConfigLimits const&)
+    _ZN5rodaq18parse_operation_idESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::parse_operation_id(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq22parse_artifact_file_idESt17basic_string_viewIcSt11char_traitsIcEE; # rodaq::parse_artifact_file_id(std::basic_string_view<char, std::char_traits<char> >)
+    _ZN5rodaq9to_stringB5cxx11ENS_10ArtifactIdE; # rodaq::to_string[abi:cxx11](rodaq::ArtifactId)
+    _ZN5rodaq9to_stringB5cxx11ENS_11OperationIdE; # rodaq::to_string[abi:cxx11](rodaq::OperationId)
+    _ZN5rodaq9to_stringB5cxx11ENS_14ArtifactFileIdE; # rodaq::to_string[abi:cxx11](rodaq::ArtifactFileId)
+    _ZN5rodaq9to_stringB5cxx11ENS_6TaskIdE; # rodaq::to_string[abi:cxx11](rodaq::TaskId)
+    _ZNK5rodaq11TaskService10list_tasksERKNS_11PageRequestE; # rodaq::TaskService::list_tasks(rodaq::PageRequest const&) const
+    _ZNK5rodaq11TaskService13get_operationENS_6TaskIdENS_11OperationIdE; # rodaq::TaskService::get_operation(rodaq::TaskId, rodaq::OperationId) const
+    _ZNK5rodaq11TaskService15list_operationsENS_6TaskIdERKNS_11PageRequestE; # rodaq::TaskService::list_operations(rodaq::TaskId, rodaq::PageRequest const&) const
+    _ZNK5rodaq11TaskService17get_active_configENS_6TaskIdE; # rodaq::TaskService::get_active_config(rodaq::TaskId) const
+    _ZNK5rodaq11TaskService20get_runtime_snapshotENS_6TaskIdE; # rodaq::TaskService::get_runtime_snapshot(rodaq::TaskId) const
+    _ZNK5rodaq11TaskService8get_taskENS_6TaskIdE; # rodaq::TaskService::get_task(rodaq::TaskId) const
+    _ZNK5rodaq13SystemService12capabilitiesEv; # rodaq::SystemService::capabilities() const
+    _ZNK5rodaq13SystemService8snapshotEv; # rodaq::SystemService::snapshot() const
+    _ZNK5rodaq15ArtifactService12get_artifactENS_10ArtifactIdE; # rodaq::ArtifactService::get_artifact(rodaq::ArtifactId) const
+    _ZNK5rodaq15ArtifactService15query_artifactsERKNS_13ArtifactQueryE; # rodaq::ArtifactService::query_artifacts(rodaq::ArtifactQuery const&) const
+    _ZNK5rodaq18ArtifactReadHandle4sizeEv; # rodaq::ArtifactReadHandle::size() const
+  local: *;
+};

@@ -84,6 +84,7 @@ struct DeploymentLease;
 // create, prepare, cleanup, commit, and per-Pipeline Writer domains.
 class Composition {
 public:
+    static Result<std::unique_ptr<TaskService>> open_task_service(task::ServiceOptions options);
     static Result<std::unique_ptr<Composition>> create(CompositionOptions options);
     static Result<std::unique_ptr<Composition>> open(StartupOptions options);
     Composition(const Composition&) = delete;

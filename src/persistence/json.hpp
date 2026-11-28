@@ -10,7 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <rodaq/result.hpp>
 
-#include "../internal/strict_json.hpp"
+#include "../../internal/strict_json.hpp"
 #include "digest.hpp"
 
 namespace rodaq::persistence {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -45,10 +47,10 @@ struct OperationId {
     }
 };
 
-Result<TaskId> parse_task_id(std::string_view text);
-Result<OperationId> parse_operation_id(std::string_view text);
-std::string to_string(TaskId task_id);
-std::string to_string(OperationId operation_id);
+RODAQ_API Result<TaskId> parse_task_id(std::string_view text);
+RODAQ_API Result<OperationId> parse_operation_id(std::string_view text);
+RODAQ_API std::string to_string(TaskId task_id);
+RODAQ_API std::string to_string(OperationId operation_id);
 
 enum class DesiredState { Stopped, Running, Paused };
 enum class ExecutionCondition { Idle, Preparing, Active, Degraded, Draining, Protected, Failed };

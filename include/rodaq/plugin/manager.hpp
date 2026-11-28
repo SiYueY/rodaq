@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -26,20 +28,21 @@ struct PluginManagerOptions {
 
 class PluginManager {
 public:
-    static Result<PluginManager> create(PluginManagerOptions options);
+    static RODAQ_API Result<PluginManager> create(PluginManagerOptions options);
 
     PluginManager(const PluginManager&) = delete;
     PluginManager& operator=(const PluginManager&) = delete;
-    PluginManager(PluginManager&&) noexcept;
-    PluginManager& operator=(PluginManager&&) noexcept;
-    ~PluginManager() noexcept;
+    RODAQ_API PluginManager(PluginManager&&) noexcept;
+    RODAQ_API PluginManager& operator=(PluginManager&&) noexcept;
+    RODAQ_API ~PluginManager() noexcept;
 
-    Result<std::vector<PluginInfo>> plugins() const;
-    Result<PluginLibrary> load(std::string_view plugin_id);
-    Result<PluginLibrary> load(std::string_view plugin_id, std::string_view expected_version);
-    [[nodiscard]] PluginManagerPhase phase() const noexcept;
-    [[nodiscard]] bool restart_required() const noexcept;
-    Result<void> shutdown(Deadline deadline);
+    RODAQ_API Result<std::vector<PluginInfo>> plugins() const;
+    RODAQ_API Result<PluginLibrary> load(std::string_view plugin_id);
+    RODAQ_API Result<PluginLibrary> load(
+        std::string_view plugin_id, std::string_view expected_version);
+    [[nodiscard]] RODAQ_API PluginManagerPhase phase() const noexcept;
+    [[nodiscard]] RODAQ_API bool restart_required() const noexcept;
+    RODAQ_API Result<void> shutdown(Deadline deadline);
 
 private:
     explicit PluginManager(std::shared_ptr<ManagerState> state) noexcept;

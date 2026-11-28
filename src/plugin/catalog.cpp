@@ -17,7 +17,7 @@
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
 
-#include "../internal/strict_json.hpp"
+#include "../../internal/strict_json.hpp"
 
 namespace rodaq::plugin {
 namespace {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -92,23 +94,23 @@ struct DaqOpenOptions {
 // Caller must invoke shutdown() before destroying a live runtime.
 class DaqRuntime {
 public:
-    static Result<std::unique_ptr<DaqRuntime>> open(DaqOpenOptions options);
+    static RODAQ_API Result<std::unique_ptr<DaqRuntime>> open(DaqOpenOptions options);
 
     DaqRuntime(const DaqRuntime&) = delete;
     DaqRuntime& operator=(const DaqRuntime&) = delete;
-    ~DaqRuntime() noexcept;
+    RODAQ_API ~DaqRuntime() noexcept;
 
-    TaskService& tasks() noexcept;
-    ArtifactService& artifacts() noexcept;
-    SystemService& system() noexcept;
+    RODAQ_API TaskService& tasks() noexcept;
+    RODAQ_API ArtifactService& artifacts() noexcept;
+    RODAQ_API SystemService& system() noexcept;
 
     // Periodic maintenance tick (volume sampling, retention, system projection
     // refresh). Call from a bounded maintenance thread, never from an HTTP loop.
-    Result<void> observe();
+    RODAQ_API Result<void> observe();
 
     // Deadline bounds observer wait; failure retains live owners so the caller
     // can retry on this runtime. Never manufactures a user Stop operation.
-    Result<void> shutdown(std::chrono::steady_clock::time_point deadline);
+    RODAQ_API Result<void> shutdown(std::chrono::steady_clock::time_point deadline);
 
 private:
     struct State;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rodaq/export.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -55,38 +57,40 @@ struct TaskPage {
 
 class TaskService {
 public:
-    // Composition supplies immutable Deployment admissions and execution lanes.
-    static Result<std::unique_ptr<TaskService>> open(task::ServiceOptions options);
     TaskService(const TaskService&) = delete;
     TaskService& operator=(const TaskService&) = delete;
-    ~TaskService() noexcept;
+    RODAQ_API ~TaskService() noexcept;
 
-    Result<TaskId> create_task(const TaskConfig& config, const RequestIdentity& request);
-    Result<OperationId> configure(
+    RODAQ_API Result<TaskId> create_task(const TaskConfig& config, const RequestIdentity& request);
+    RODAQ_API Result<OperationId> configure(
         TaskId task_id, const TaskConfig& config, const RequestIdentity& request,
         const ControlPrecondition& precondition);
-    Result<OperationId> start(
+    RODAQ_API Result<OperationId> start(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
-    Result<OperationId> pause(
+    RODAQ_API Result<OperationId> pause(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
-    Result<OperationId> resume(
+    RODAQ_API Result<OperationId> resume(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
-    Result<OperationId> stop(
+    RODAQ_API Result<OperationId> stop(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
-    Result<OperationId> reset(
+    RODAQ_API Result<OperationId> reset(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
-    Result<OperationId> retire(
+    RODAQ_API Result<OperationId> retire(
         TaskId task_id, const RequestIdentity& request, const ControlPrecondition& precondition);
 
-    Result<TaskSnapshot> get_task(TaskId task_id) const;
-    Result<TaskRuntimeSnapshot> get_runtime_snapshot(TaskId task_id) const;
-    Result<TaskConfig> get_active_config(TaskId task_id) const;
-    Result<TaskPage> list_tasks(const PageRequest& request) const;
-    Result<OperationSnapshot> get_operation(TaskId task_id, OperationId operation_id) const;
-    Result<OperationPage> list_operations(TaskId task_id, const PageRequest& request) const;
+    RODAQ_API Result<TaskSnapshot> get_task(TaskId task_id) const;
+    RODAQ_API Result<TaskRuntimeSnapshot> get_runtime_snapshot(TaskId task_id) const;
+    RODAQ_API Result<TaskConfig> get_active_config(TaskId task_id) const;
+    RODAQ_API Result<TaskPage> list_tasks(const PageRequest& request) const;
+    RODAQ_API Result<OperationSnapshot> get_operation(
+        TaskId task_id, OperationId operation_id) const;
+    RODAQ_API Result<OperationPage> list_operations(
+        TaskId task_id, const PageRequest& request) const;
 
 private:
     friend class daq::Composition;
+    // Composition supplies immutable Deployment admissions and execution lanes.
+    static Result<std::unique_ptr<TaskService>> open(task::ServiceOptions options);
     Result<void> close_admission();
     Result<void> drain_shutdown(bool pending_only = false);
     Result<void> refresh_execution_facts(

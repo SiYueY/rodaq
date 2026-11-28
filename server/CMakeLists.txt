@@ -1,7 +1,7 @@
 find_package(Drogon 1.9.14 REQUIRED CONFIG)
 
 # Private server helper library (not installed, not exported).
-# Links ONLY public rodaq::daq + Drogon + boundary JSON/Crypto; ZERO src/ includes!
+# Links ONLY public rodaq::daq + Drogon + boundary JSON/Crypto; no Core private headers.
 add_library(rodaq_server_lib STATIC
     src/api/json_codec.cpp
     src/api/error_response.cpp
@@ -14,7 +14,8 @@ add_library(rodaq_server_lib STATIC
     src/static_assets.cpp
     src/server_app.cpp
 )
-target_include_directories(rodaq_server_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(rodaq_server_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${PROJECT_SOURCE_DIR}/internal)
 target_link_libraries(rodaq_server_lib PUBLIC
     rodaq::daq
     Drogon::Drogon
