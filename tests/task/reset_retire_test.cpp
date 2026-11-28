@@ -155,7 +155,16 @@ TEST_F(ResetRetireTest, ResetDeletesArtifactsRetireFreesTaskSlotAndRestartRebuil
         task_id, RequestIdentity{"start-1"}, ControlPrecondition{true, gen});
     ASSERT_TRUE(start_op.ok());
     ASSERT_EQ(wait_operation(task_id, start_op.value()), OperationState::Succeeded);
-    std::this_thread::sleep_for(100ms);
+    const auto record_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < record_deadline) {
+        (void)runtime_->observe();
+        const auto rt = runtime_->tasks().get_runtime_snapshot(task_id);
+        if (rt.ok() && !rt.value().pipelines.empty() && rt.value().pipelines[0].facts &&
+            rt.value().pipelines[0].facts->accepted_records > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
     (void)runtime_->observe();
 
     gen = runtime_->tasks().get_task(task_id).value().control_generation;

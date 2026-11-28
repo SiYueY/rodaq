@@ -118,7 +118,7 @@ rodaq::TaskConfig make_task_config(const std::string& name) {
 TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
     TestWorkspace dir("snapshot");
     auto runtime =
-        rodaq::DaqRuntime::open(make_options(dir.path, rodaq::DaqOpenMode::Initialize, 60ms));
+        rodaq::DaqRuntime::open(make_options(dir.path, rodaq::DaqOpenMode::Initialize, 250ms));
     ASSERT_TRUE(runtime.ok()) << static_cast<int>(runtime.status().code());
 
     const auto caps = runtime.value()->system().capabilities();
@@ -165,6 +165,7 @@ TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
     EXPECT_TRUE(found_storage);
     EXPECT_TRUE(found_uninstalled);
 
+    ASSERT_TRUE(runtime.value()->observe().ok());
     const auto snap1 = runtime.value()->system().snapshot();
     ASSERT_TRUE(snap1.ok());
     EXPECT_TRUE(snap1.value().core_ready);
@@ -179,7 +180,7 @@ TEST(SystemServiceTest, PublicDaqRuntimeSnapshotCapabilitiesAndFreshness) {
     EXPECT_GT(snap1.value().volumes[0].free_bytes, 0u);
     EXPECT_EQ(snap1.value().volumes[0].pressure, rodaq::VolumePressure::Normal);
 
-    std::this_thread::sleep_for(80ms);
+    std::this_thread::sleep_for(300ms);
     const auto stale = runtime.value()->system().snapshot();
     ASSERT_TRUE(stale.ok());
     EXPECT_EQ(stale.value().freshness, rodaq::SnapshotFreshness::Stale);
@@ -238,7 +239,16 @@ TEST(SystemServiceTest, PublicRuntimeExecutesEndToEndTaskRecordingAndArtifactRea
 
     ASSERT_EQ(wait_terminal(started.value()), rodaq::OperationState::Succeeded);
 
-    std::this_thread::sleep_for(120ms);
+    const auto record_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < record_deadline) {
+        (void)runtime.value()->observe();
+        const auto rt = runtime.value()->tasks().get_runtime_snapshot(task_id);
+        if (rt.ok() && !rt.value().pipelines.empty() && rt.value().pipelines[0].facts &&
+            rt.value().pipelines[0].facts->accepted_records > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
     (void)runtime.value()->observe();
 
     const auto detail = runtime.value()->tasks().get_task(task_id);
