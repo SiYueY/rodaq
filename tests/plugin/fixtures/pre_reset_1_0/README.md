@@ -10,3 +10,7 @@ Pre-Release 1.0 ABI Reset):
 
 Used as a negative regression fixture to prove the post-reset Loader deterministically rejects
 stale pre-reset 1.0 plugin binaries before `create` / `configure` / `query`.
+
+Tracked fixture SHA-256 (linux-amd64):
+
+`50c681703bb83d613ede63ed6a7889c9806f6d92666d8a065694711f3bc32511`
