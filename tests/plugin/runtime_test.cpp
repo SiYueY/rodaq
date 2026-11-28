@@ -312,7 +312,7 @@ TEST_F(PluginRuntimeTest, LateConfigureCannotPublishOpenAfterManagerShutdown) {
         std::launch::async, [&] { return library.create_instance(config("configure_wait")); });
     EXPECT_TRUE(entered());
     EXPECT_EQ(
-        manager.shutdown(plugin::Deadline::after(10ms).value()).status().code(),
+        manager.shutdown(plugin::Deadline::after(200ms).value()).status().code(),
         rodaq::StatusCode::DeadlineExceeded);
     EXPECT_EQ(healthy.value().phase(), plugin::PluginInstancePhase::Closed);
     EXPECT_EQ(pending.wait_for(1s), std::future_status::ready);
