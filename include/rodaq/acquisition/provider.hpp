@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-#include <rodaq/acquisition/c/interface.h>
+#include <rodaq/c/acquisition.h>
 #include <rodaq/acquisition/validation.hpp>
 #include <rodaq/plugin/deadline.hpp>
 #include <rodaq/plugin/provider.hpp>

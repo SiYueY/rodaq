@@ -205,7 +205,8 @@ target_compile_definitions(rodaq_plugin_runtime_test PRIVATE
     RODAQ_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/acquisition_provider-0-installed/lib/rodaq/plugins/com.example.acquisition.probe/1.0.0"
     RODAQ_STORAGE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/storage_provider-0-installed/lib/rodaq/plugins/com.example.storage.probe/1.0.0"
     RODAQ_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0"
-    RODAQ_COUNTER_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0")
+    RODAQ_COUNTER_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0"
+    RODAQ_PRE_RESET_PLUGIN_FIXTURE="${PROJECT_SOURCE_DIR}/tests/plugin/fixtures/pre_reset_1_0/linux-amd64")
 rodaq_enable_project_warnings(rodaq_plugin_runtime_test)
 gtest_discover_tests(rodaq_plugin_runtime_test PROPERTIES TIMEOUT 40 FIXTURES_REQUIRED counter_sdk)
 
@@ -246,7 +247,7 @@ rodaq_enable_project_warnings(rodaq_storage_sdk_test)
 gtest_discover_tests(rodaq_storage_sdk_test PROPERTIES TIMEOUT 30)
 
 # Compile every C ABI header alone in both supported language modes.
-file(GLOB_RECURSE abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/*/c/*.h)
+file(GLOB abi_headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/rodaq/c/*.h)
 foreach(header IN LISTS abi_headers)
     file(RELATIVE_PATH include_path ${PROJECT_SOURCE_DIR}/include ${header})
     string(MAKE_C_IDENTIFIER "${include_path}" header_id)

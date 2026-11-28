@@ -128,7 +128,6 @@ static rodaq_status_code_t prepare(
     rodaq_acquisition_descriptor_t descriptor = {0};
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 42;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = (rodaq_string_t){"sample", 6};
     descriptor.message_encoding = (rodaq_string_t){"raw", 3};
     rodaq_descriptor_id_t descriptor_id = 0;

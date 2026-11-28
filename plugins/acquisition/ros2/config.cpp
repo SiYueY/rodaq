@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 #include <rmw/validate_full_topic_name.h>
+#include <rodaq/plugin/abi.hpp>
 
 #include "ros2/schema.hpp"
 
@@ -19,6 +20,54 @@ namespace rodaq::ros2_acquisition {
 namespace {
 
 using Json = nlohmann::json;
+
+struct StrictAbort {
+    const char* message;
+};
+
+Json parse_strict_config_json(std::string_view input) {
+    if (input.find('\0') != std::string_view::npos ||
+        plugin::abi::utf8_prefix(input, input.size()) != input.size()) {
+        throw StrictAbort{"ROS 2 config JSON contains invalid UTF-8 or NUL"};
+    }
+    std::vector<std::set<std::string>> key_stack;
+    std::size_t nodes = 0;
+    auto callback = [&](int depth, Json::parse_event_t event, Json& parsed) -> bool {
+        if (depth > 16) {
+            throw StrictAbort{"ROS 2 config JSON nesting depth exceeded"};
+        }
+        switch (event) {
+            case Json::parse_event_t::object_start:
+                if (++nodes > 16384) {
+                    throw StrictAbort{"ROS 2 config JSON node limit exceeded"};
+                }
+                key_stack.emplace_back();
+                break;
+            case Json::parse_event_t::object_end:
+                if (!key_stack.empty()) {
+                    key_stack.pop_back();
+                }
+                break;
+            case Json::parse_event_t::key: {
+                const auto& key = parsed.get_ref<const std::string&>();
+                if (key_stack.empty() || !key_stack.back().insert(key).second) {
+                    throw StrictAbort{"Duplicate JSON object key in ROS 2 config"};
+                }
+                break;
+            }
+            case Json::parse_event_t::array_start:
+            case Json::parse_event_t::value:
+                if (++nodes > 16384) {
+                    throw StrictAbort{"ROS 2 config JSON node limit exceeded"};
+                }
+                break;
+            case Json::parse_event_t::array_end:
+                break;
+        }
+        return true;
+    };
+    return Json::parse(input.begin(), input.end(), callback);
+}
 
 bool fields(const Json& value, std::initializer_list<std::string_view> allowed) {
     if (!value.is_object()) {
@@ -155,7 +204,7 @@ Result<Config> parse_config(std::string_view input) {
         return Status(StatusCode::InvalidArgument, "Invalid ROS 2 config size");
     }
     try {
-        const auto value = Json::parse(input.begin(), input.end());
+        const auto value = parse_strict_config_json(input);
         if (!fields(
                 value, {"format_version", "domain_id", "executor_threads", "graph_poll_interval",
                         "qos_change_debounce", "streams"}) ||
@@ -204,6 +253,8 @@ Result<Config> parse_config(std::string_view input) {
             config.streams.push_back(std::move(stream.value()));
         }
         return config;
+    } catch (const StrictAbort& abort) {
+        return Status(StatusCode::InvalidArgument, abort.message);
     } catch (const Json::exception&) {
         return Status(StatusCode::InvalidArgument, "Malformed ROS 2 config JSON");
     } catch (const std::bad_alloc&) {

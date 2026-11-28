@@ -22,7 +22,8 @@ artifact::ManifestLimits catalog_manifest_limits(const DeploymentSettings& setti
         limits.max_files = std::max(limits.max_files, selected.max_files);
         limits.max_descriptors = std::max(limits.max_descriptors, selected.max_descriptors);
         limits.max_streams = std::max(limits.max_streams, selected.max_streams);
-        limits.max_qos_profiles = std::max(limits.max_qos_profiles, selected.max_qos_profiles);
+        limits.max_descriptor_metadata_bytes =
+            std::max(limits.max_descriptor_metadata_bytes, selected.max_descriptor_metadata_bytes);
     }
     return limits;
 }

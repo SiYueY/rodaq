@@ -38,7 +38,6 @@ artifact::SegmentManifest make_manifest() {
     descriptor.stream_id = 1;
     descriptor.descriptor_id = 1;
     descriptor.accepted_records = 2;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = "/data";
     descriptor.message_encoding = "json";
     descriptor.schema_digest =
@@ -121,12 +120,23 @@ TEST(SegmentManifest, ClosedSchemaRejectsUnknownFieldsAndUnsupportedVersions) {
     auto encoded = artifact::encode_manifest(make_manifest(), {});
     ASSERT_TRUE(encoded.ok());
     auto document = persistence::parse_json(encoded.value()).value();
+    ASSERT_EQ(document["format_version"], "2.0");
     document["extra"] = nullptr;
     EXPECT_EQ(artifact::decode_manifest(document.dump(), {}).status().code(), StatusCode::DataLoss);
     document = persistence::parse_json(encoded.value()).value();
-    document["format_version"] = "2.0";
+    // Legacy pre-reset 1.0 manifest with old descriptor shape must fail closed with Unavailable
+    // (checked BEFORE schema validation), never misclassified as DataLoss / corrupt.
+    document["format_version"] = "1.0";
+    document["descriptors"][0]["data_profile"] = 2;
     EXPECT_EQ(
         artifact::decode_manifest(document.dump(), {}).status().code(), StatusCode::Unavailable);
+    document = persistence::parse_json(encoded.value()).value();
+    document["format_version"] = "3.0";
+    EXPECT_EQ(
+        artifact::decode_manifest(document.dump(), {}).status().code(), StatusCode::Unavailable);
+    // Duplicate JSON object key must be rejected fail-closed.
+    const std::string dup_json = R"({"format_version":"2.0","format_version":"2.0"})";
+    EXPECT_EQ(artifact::decode_manifest(dup_json, {}).status().code(), StatusCode::DataLoss);
 }
 
 TEST(SegmentManifest, CaptureOwnsBorrowedTextAndComputesSchemaDigestBeforeInputBackingChanges) {
@@ -136,7 +146,6 @@ TEST(SegmentManifest, CaptureOwnsBorrowedTextAndComputesSchemaDigestBeforeInputB
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 1;
     descriptor.descriptor_id = 1;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = {channel.data(), channel.size()};
     descriptor.message_encoding = {"json", 4};
     descriptor.schema = {schema.data(), schema.size()};
@@ -155,19 +164,16 @@ TEST(SegmentManifest, CaptureOwnsBorrowedTextAndComputesSchemaDigestBeforeInputB
         StatusCode::InvalidArgument);
 }
 
-TEST(SegmentManifest, Ros2QosUsesNormalizedTypedSetAndPreservesExactDepthAndDurationFields) {
+TEST(SegmentManifest, DescriptorMetadataNormalizesCompactsAndRoundTripsInManifestV2) {
     const std::string schema = "uint32 value\n";
-    std::array<rodaq_ros2_qos_profile_t, 3> qos{};
-    qos[0].reliability = RODAQ_ROS2_QOS_RELIABILITY_BEST_EFFORT;
-    qos[1].reliability = RODAQ_ROS2_QOS_RELIABILITY_RELIABLE;
-    qos[1].depth = std::numeric_limits<std::uint64_t>::max();
-    qos[1].deadline = {9223372036, 854775807};
-    qos[2] = qos[0];
+    const std::string raw_meta = R"( {
+        "subscription": { "ros_distribution": "humble", "executor_threads": 2 },
+        "offered_qos_profiles": [ { "reliability": 1, "depth": 10 } ]
+    } )";
     rodaq::storage::StreamDescriptor descriptor{};
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 1;
     descriptor.descriptor_id = 1;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_ROS2;
     descriptor.channel_name = {"/data", 5};
     descriptor.message_encoding = {"cdr", 3};
     descriptor.schema_name = {"demo/msg/Value", 14};
@@ -175,30 +181,37 @@ TEST(SegmentManifest, Ros2QosUsesNormalizedTypedSetAndPreservesExactDepthAndDura
     descriptor.schema = {
         reinterpret_cast<const std::uint8_t*>(schema.data()),
         static_cast<std::uint32_t>(schema.size())};
-    descriptor.ros2_offered_qos_profiles = qos.data();
-    descriptor.ros2_offered_qos_profile_count = qos.size();
+    descriptor.metadata = {
+        {"ros2/1.0", 8}, {raw_meta.data(), static_cast<std::uint32_t>(raw_meta.size())}};
     auto captured = artifact::capture_manifest_descriptor(descriptor, 2);
-    ASSERT_TRUE(captured.ok());
-    ASSERT_EQ(captured.value().offered_qos.size(), 2U);
+    ASSERT_TRUE(captured.ok()) << captured.status().message();
+    EXPECT_EQ(captured.value().metadata_format, "ros2/1.0");
+    EXPECT_EQ(
+        captured.value().metadata_json,
+        R"({"offered_qos_profiles":[{"depth":10,"reliability":1}],"subscription":{"executor_threads":2,"ros_distribution":"humble"}})");
     auto value = make_manifest();
     value.descriptors[0] = std::move(captured.value());
-    value.descriptors[0].ros2_subscription = rodaq::canonical::Ros2SubscriptionFacts{
-        "humble", "rmw_fastrtps_cpp", qos[1], std::numeric_limits<std::uint64_t>::max(), 1, 2};
     auto encoded = artifact::encode_manifest(value, {});
     ASSERT_TRUE(encoded.ok()) << encoded.status().message();
     auto decoded = artifact::decode_manifest(encoded.value(), {});
     ASSERT_TRUE(decoded.ok()) << decoded.status().message();
+    EXPECT_EQ(decoded.value().descriptors[0].metadata_format, "ros2/1.0");
+    EXPECT_EQ(decoded.value().descriptors[0].metadata_json, value.descriptors[0].metadata_json);
+
+    // Duplicate key in descriptor metadata JSON must be rejected.
+    const std::string dup_meta = R"({"a":1,"a":2})";
+    descriptor.metadata = {
+        {"custom/1.0", 10}, {dup_meta.data(), static_cast<std::uint32_t>(dup_meta.size())}};
     EXPECT_EQ(
-        decoded.value().descriptors[0].offered_qos[0].depth,
-        std::numeric_limits<std::uint64_t>::max());
-    EXPECT_EQ(decoded.value().descriptors[0].offered_qos[0].deadline.nsec, 854775807);
-    ASSERT_TRUE(decoded.value().descriptors[0].ros2_subscription);
+        artifact::capture_manifest_descriptor(descriptor, 2).status().code(),
+        StatusCode::InvalidArgument);
+    // Non-object metadata JSON must be rejected.
+    const std::string array_meta = R"([1,2,3])";
+    descriptor.metadata = {
+        {"custom/1.0", 10}, {array_meta.data(), static_cast<std::uint32_t>(array_meta.size())}};
     EXPECT_EQ(
-        decoded.value().descriptors[0].ros2_subscription->subscription_generation,
-        std::numeric_limits<std::uint64_t>::max());
-    EXPECT_EQ(
-        decoded.value().descriptors[0].ros2_subscription->installed_requested_qos.depth,
-        std::numeric_limits<std::uint64_t>::max());
+        artifact::capture_manifest_descriptor(descriptor, 2).status().code(),
+        StatusCode::InvalidArgument);
 }
 
 TEST(SegmentManifest, ResourceLimitsAndReservedPathsApplyBeforePersistence) {
@@ -209,6 +222,43 @@ TEST(SegmentManifest, ResourceLimitsAndReservedPathsApplyBeforePersistence) {
     artifact::ManifestLimits limits;
     limits.max_bytes = 128;
     EXPECT_FALSE(artifact::encode_manifest(value, limits).ok());
+}
+
+TEST(SegmentManifest, MultiDescriptorManifestExceeding65536NodesRoundTripsCleanly) {
+    // 5 descriptors * 15,000 array elements = >75,000 JSON nodes while total encoded size
+    // stays well below 1 MiB. Both encode_manifest and decode_manifest must agree.
+    std::string array_json = R"({"a":[)";
+    for (int i = 0; i < 15000; ++i) {
+        if (i > 0) {
+            array_json.push_back(',');
+        }
+        array_json.push_back('0');
+    }
+    array_json += "]}";
+
+    auto value = make_manifest();
+    const auto base_desc = value.descriptors.front();
+    value.descriptors.clear();
+    value.coverage.clear();
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        auto desc = base_desc;
+        desc.stream_id = i;
+        desc.descriptor_id = i;
+        desc.accepted_records = 1;
+        desc.metadata_format = "custom/1.0";
+        desc.metadata_json = array_json;
+        value.descriptors.push_back(std::move(desc));
+        value.coverage.push_back({i, 1, 1, 0, 0, 1, 1});
+    }
+
+    artifact::ManifestLimits limits;
+    limits.max_bytes = 1024 * 1024;
+    auto encoded = artifact::encode_manifest(value, limits);
+    ASSERT_TRUE(encoded.ok()) << encoded.status().message();
+    EXPECT_LT(encoded.value().size(), limits.max_bytes);
+    auto decoded = artifact::decode_manifest(encoded.value(), limits);
+    ASSERT_TRUE(decoded.ok()) << decoded.status().message();
+    EXPECT_EQ(decoded.value().descriptors.size(), 5U);
 }
 
 }  // namespace

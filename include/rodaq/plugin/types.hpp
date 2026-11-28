@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include <rodaq/plugin/c/types.h>
+#include <rodaq/c/types.h>
 
 namespace rodaq::plugin {
 

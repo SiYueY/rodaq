@@ -475,8 +475,7 @@ struct AcquisitionHost {
         void* ctx, rodaq_stream_id_t stream_id, const rodaq_acquisition_descriptor_t* descriptor,
         rodaq_descriptor_id_t* descriptor_id, rodaq_error_t*) noexcept {
         auto& self = *reinterpret_cast<AcquisitionHost*>(ctx);
-        if (stream_id != 42 || descriptor->stream_id != 42 ||
-            descriptor->data_profile != RODAQ_DATA_PROFILE_GENERIC) {
+        if (stream_id != 42 || descriptor->stream_id != 42) {
             return RODAQ_STATUS_INVALID_ARGUMENT;
         }
         ++self.descriptors;
@@ -896,5 +895,98 @@ TEST_P(
 }
 
 INSTANTIATE_TEST_SUITE_P(NativeStages, InitializationSupervision, testing::Bool());
+
+TEST_F(PluginRuntimeTest, PreResetAbiPluginRejectionMatrix) {
+    // Cell 1: new manifest (abi.revision == 1) + new SO -> accept.
+    {
+        auto policy = options();
+        policy.search_paths = {root_ / "counter"};
+        auto manager = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(manager.ok());
+        EXPECT_TRUE(manager.value().load("com.example.counter", "1.0.0").ok());
+        EXPECT_TRUE(manager.value().shutdown(soon()).ok());
+    }
+
+    // Cell 4: old manifest (no abi.revision) + new SO -> rejected by Catalog.
+    {
+        const auto pkg = root_ / "old_manifest_new_so";
+        fs::copy(root_ / "counter", pkg, fs::copy_options::recursive);
+        std::ifstream in(pkg / "manifest.json");
+        auto doc = nlohmann::json::parse(in);
+        doc["plugin"]["abi"].erase("revision");
+        std::ofstream(pkg / "manifest.json", std::ios::trunc) << doc.dump();
+
+        auto policy = options();
+        policy.search_paths = {pkg};
+        auto manager = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(manager.ok());
+        EXPECT_EQ(
+            manager.value().load("com.example.counter", "1.0.0").status().code(),
+            rodaq::StatusCode::NotFound);
+        EXPECT_FALSE(manager.value().restart_required());
+        EXPECT_TRUE(manager.value().shutdown(soon()).ok());
+    }
+
+    // Cell 5: wrong abi.revision (2) + new SO -> rejected by Catalog.
+    {
+        const auto pkg = root_ / "wrong_rev_new_so";
+        fs::copy(root_ / "counter", pkg, fs::copy_options::recursive);
+        std::ifstream in(pkg / "manifest.json");
+        auto doc = nlohmann::json::parse(in);
+        doc["plugin"]["abi"]["revision"] = 2;
+        std::ofstream(pkg / "manifest.json", std::ios::trunc) << doc.dump();
+
+        auto policy = options();
+        policy.search_paths = {pkg};
+        auto manager = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(manager.ok());
+        EXPECT_EQ(
+            manager.value().load("com.example.counter", "1.0.0").status().code(),
+            rodaq::StatusCode::NotFound);
+        EXPECT_FALSE(manager.value().restart_required());
+        EXPECT_TRUE(manager.value().shutdown(soon()).ok());
+    }
+
+#if defined(__x86_64__)
+    const fs::path fixture(RODAQ_PRE_RESET_PLUGIN_FIXTURE);
+    ASSERT_TRUE(fs::is_regular_file(fixture / "lib/libpre_reset_plugin.so"));
+
+    // Cell 2: real pre-reset 1.0 manifest (no revision) + real pre-reset 1.0 SO -> rejected.
+    {
+        const auto pkg = root_ / "pre_reset_old_manifest";
+        fs::copy(fixture, pkg, fs::copy_options::recursive);
+        auto policy = options();
+        policy.search_paths = {pkg};
+        auto manager = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(manager.ok());
+        EXPECT_EQ(
+            manager.value().load("com.example.pre_reset", "1.0.0").status().code(),
+            rodaq::StatusCode::NotFound);
+        EXPECT_FALSE(manager.value().restart_required());
+        EXPECT_TRUE(manager.value().shutdown(soon()).ok());
+    }
+
+    // Cell 3: forged new manifest (abi.revision == 1) + real pre-reset 1.0 SO (struct_size 56 < 60)
+    // -> rejected cleanly by Loader required-prefix check before create().
+    {
+        const auto pkg = root_ / "pre_reset_new_manifest";
+        fs::copy(fixture, pkg, fs::copy_options::recursive);
+        std::ifstream in(pkg / "manifest.json");
+        auto doc = nlohmann::json::parse(in);
+        doc["plugin"]["abi"]["revision"] = 1;
+        std::ofstream(pkg / "manifest.json", std::ios::trunc) << doc.dump();
+
+        auto policy = options();
+        policy.search_paths = {pkg};
+        auto manager = plugin::PluginManager::create(policy);
+        ASSERT_TRUE(manager.ok());
+        EXPECT_EQ(
+            manager.value().load("com.example.pre_reset", "1.0.0").status().code(),
+            rodaq::StatusCode::InvalidArgument);
+        EXPECT_FALSE(manager.value().restart_required());
+        EXPECT_TRUE(manager.value().shutdown(soon()).ok());
+    }
+#endif
+}
 
 }  // namespace

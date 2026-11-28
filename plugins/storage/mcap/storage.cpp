@@ -118,11 +118,16 @@ Result<void> StorageBackend::prepare_descriptor(
     if (phase_ != Phase::Prepared && phase_ != Phase::Open && phase_ != Phase::Sealed) {
         return Status(StatusCode::InvalidState, {});
     }
-    if (input.schema.size > kMaxSchemaBytes ||
-        input.ros2_offered_qos_profile_count > kMaxQosProfiles) {
+    if (input.schema.size > kMaxSchemaBytes || input.metadata.json.size > kMaxRos2MetadataBytes) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    if (!storage::abi::valid_descriptor(&input) || input.data_profile != RODAQ_DATA_PROFILE_ROS2) {
+    if (!storage::abi::valid_descriptor(&input) || input.schema.size == 0 ||
+        input.schema_name.size == 0 ||
+        std::string_view(input.message_encoding.data, input.message_encoding.size) != "cdr") {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    const std::string_view schema_enc(input.schema_encoding.data, input.schema_encoding.size);
+    if (schema_enc != "ros2msg" && schema_enc != "ros2idl") {
         return Status(StatusCode::InvalidArgument, {});
     }
     if (auto ok = check_deadline(deadline); !ok.ok()) {
@@ -133,9 +138,9 @@ Result<void> StorageBackend::prepare_descriptor(
     if (existing == descriptors_.end() && descriptors_.size() == kMaxDescriptors) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    auto qos = encode_qos(input.ros2_offered_qos_profiles, input.ros2_offered_qos_profile_count);
-    if (!qos.ok()) {
-        return qos.status();
+    auto ros2_meta = parse_ros2_metadata(input.metadata);
+    if (!ros2_meta.ok()) {
+        return ros2_meta.status();
     }
     Descriptor descriptor;
     auto schema = mcap::Schema(
@@ -146,21 +151,16 @@ Result<void> StorageBackend::prepare_descriptor(
     auto channel = mcap::Channel(text(input.channel_name), text(input.message_encoding), 0);
     channel.id = 0;
     descriptor.channel = std::move(channel);
-    descriptor.channel.metadata.emplace(kOfferedQosKey, std::move(qos.value()));
-    if (input.ros2_type_description_hash.size != 0) {
-        auto hash = text(input.ros2_type_description_hash);
-        if (hash.size() != 71 || hash.substr(0, 7) != "RIHS01_" ||
-            !std::all_of(hash.begin() + 7, hash.end(), [](unsigned char byte) {
-                return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
-            })) {
-            return Status(StatusCode::InvalidArgument, {});
-        }
-        descriptor.channel.metadata.emplace(kTypeHashKey, std::move(hash));
+    descriptor.channel.metadata.emplace(
+        kOfferedQosKey, std::move(ros2_meta.value().offered_qos_yaml));
+    if (!ros2_meta.value().type_description_hash.empty()) {
+        descriptor.channel.metadata.emplace(
+            kTypeHashKey, std::move(ros2_meta.value().type_description_hash));
     }
     descriptor.input_bytes = input.schema.size + input.schema_name.size +
                              input.schema_encoding.size + input.channel_name.size +
-                             input.message_encoding.size + input.ros2_type_description_hash.size +
-                             input.ros2_offered_qos_profile_count * std::uint64_t{80};
+                             input.message_encoding.size + input.metadata.format.size +
+                             input.metadata.json.size;
     if (existing != descriptors_.end()) {
         const auto& old = existing->second;
         return same_schema(old.schema, descriptor.schema) &&

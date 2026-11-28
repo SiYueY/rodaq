@@ -35,7 +35,7 @@ def c_bytes(text):
 def configure(args):
     validate(args.id, args.name, args.version)
     plugin = {"id": args.id, "name": args.name, "version": args.version,
-              "abi": {"major": 1, "minor": 0}}
+              "abi": {"major": 1, "minor": 0, "revision": 1}}
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "metadata.json").write_text(json.dumps({
         "format_version": 1, "plugin": plugin,
@@ -45,7 +45,7 @@ def configure(args):
         f"    {{{c_bytes(plugin[key])}, {len(plugin[key].encode('utf-8'))}u}}"
         for key in ("id", "name", "version")
     )
-    (args.output / "descriptor.c").write_text('''#include <rodaq/plugin/c/plugin.h>
+    (args.output / "descriptor.c").write_text('''#include <rodaq/c/plugin.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,7 +56,8 @@ extern rodaq_status_code_t rodaq_plugin_create_instance(rodaq_plugin_instance_t*
 
 static const rodaq_plugin_descriptor_t descriptor = {
     {sizeof(rodaq_plugin_descriptor_t)},
-''' + fields + '''
+''' + fields + ''',
+    RODAQ_PLUGIN_ABI_REVISION
 };
 
 static const rodaq_plugin_descriptor_t* get_descriptor(void) {

@@ -127,7 +127,6 @@ protected:
         rodaq::acquisition::Descriptor proposal{};
         proposal.header.struct_size = sizeof(proposal);
         proposal.stream_id = stream;
-        proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         proposal.channel_name = {"/fake", 5};
         proposal.message_encoding = {"json", 4};
         auto result = pipeline::Descriptor::create(proposal, id);

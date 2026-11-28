@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,21 +9,31 @@
 #include <rodaq/result.hpp>
 #include <rodaq/storage/types.hpp>
 
-#include "../ros2_subscription.hpp"
-
 namespace rodaq::pipeline {
 
 struct DescriptorFacts {
-    rodaq_data_profile_t data_profile{RODAQ_DATA_PROFILE_INVALID};
     std::string channel_name;
     std::string message_encoding;
     std::string schema_name;
     std::string schema_encoding;
     std::vector<std::uint8_t> schema;
-    std::string ros2_type_description_hash;
-    std::vector<rodaq_ros2_qos_profile_t> offered_qos;
     std::string schema_digest;
-    std::optional<canonical::Ros2SubscriptionFacts> ros2_subscription;
+    std::string metadata_format;
+    std::string metadata_json;
+
+    friend bool operator==(const DescriptorFacts& left, const DescriptorFacts& right) noexcept {
+        return left.channel_name == right.channel_name &&
+               left.message_encoding == right.message_encoding &&
+               left.schema_name == right.schema_name &&
+               left.schema_encoding == right.schema_encoding &&
+               left.schema_digest == right.schema_digest && left.schema == right.schema &&
+               left.metadata_format == right.metadata_format &&
+               left.metadata_json == right.metadata_json;
+    }
+
+    friend bool operator!=(const DescriptorFacts& left, const DescriptorFacts& right) noexcept {
+        return !(left == right);
+    }
 };
 
 // Immutable bind-once Stream Descriptor owned by a Recording Instance and
@@ -33,7 +42,8 @@ class Descriptor {
 public:
     static Result<std::shared_ptr<const Descriptor>> create(
         const acquisition::Descriptor& proposal, rodaq_descriptor_id_t descriptor_id,
-        std::uint32_t max_schema_bytes = 1024 * 1024, std::uint32_t max_qos_profiles = 256);
+        std::uint32_t max_schema_bytes = 1024 * 1024,
+        std::uint32_t max_metadata_bytes = 128 * 1024);
 
     const rodaq_stream_id_t stream_id;
     const rodaq_descriptor_id_t descriptor_id;

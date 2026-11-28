@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <rodaq/result.hpp>
 
+#include "../internal/strict_json.hpp"
 #include "digest.hpp"
 
 namespace rodaq::persistence {
@@ -20,6 +21,7 @@ using Json = nlohmann::json;
 struct JsonLimits {
     std::size_t max_bytes{1024 * 1024};
     std::size_t max_depth{32};
+    std::size_t max_nodes{65536};
 };
 
 inline bool valid_digest(std::string_view value) noexcept {
@@ -32,24 +34,8 @@ inline bool valid_digest(std::string_view value) noexcept {
 }
 
 inline Result<Json> parse_json(std::string_view input, const JsonLimits& limits = {}) {
-    if (input.empty() || input.size() > limits.max_bytes) {
-        return Status(StatusCode::InvalidArgument, "JSON size out of bounds");
-    }
-    try {
-        auto callback = [&](int depth, Json::parse_event_t, Json&) {
-            if (depth > static_cast<int>(limits.max_depth)) {
-                throw std::invalid_argument("JSON nesting depth exceeded");
-            }
-            return true;
-        };
-        return Json::parse(input.begin(), input.end(), callback);
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, {});
-    } catch (const Json::exception&) {
-        return Status(StatusCode::InvalidArgument, "Malformed JSON");
-    } catch (const std::invalid_argument&) {
-        return Status(StatusCode::InvalidArgument, "JSON depth exceeded");
-    }
+    return internal::parse_strict_json(
+        input, {limits.max_bytes, limits.max_depth, limits.max_nodes});
 }
 
 // Deterministic compact sorted-key UTF-8 JSON digest (nlohmann::json::dump()

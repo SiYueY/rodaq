@@ -169,7 +169,6 @@ protected:
         acquisition::Descriptor result{};
         result.header.struct_size = sizeof(result);
         result.stream_id = stream;
-        result.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         result.channel_name = {"/data", 5};
         result.message_encoding = {"raw", 3};
         result.schema_encoding = {"jsonschema", 10};

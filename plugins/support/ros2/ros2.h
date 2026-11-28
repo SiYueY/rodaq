@@ -1,5 +1,5 @@
-#ifndef RODAQ_CANONICAL_C_ROS2_H
-#define RODAQ_CANONICAL_C_ROS2_H
+#ifndef RODAQ_SUPPORT_ROS2_ROS2_H
+#define RODAQ_SUPPORT_ROS2_ROS2_H
 
 #include <stdint.h>
 
@@ -8,8 +8,8 @@ extern "C" {
 #endif
 
 /**
- * FROZEN_VALUE, 16 bytes. sec is seconds; nsec is normalized nanoseconds (< 1000000000). Preserve
- * unspecified {0,0} and infinite {9223372036,854775807}.
+ * ROS 2 duration representation (16 bytes). sec is seconds; nsec is normalized nanoseconds
+ * (< 1000000000). Preserves unspecified {0,0} and infinite {9223372036,854775807}.
  */
 typedef struct rodaq_ros2_duration {
     uint64_t sec;
@@ -50,9 +50,8 @@ enum {
 };
 
 /**
- * FROZEN_VALUE, 80 bytes. Humble/Jazzy common metadata-v8 policy vocabulary; no RMW headers. depth
- * is a record count. avoid_ros_namespace_conventions is 0/1; reserved is zero. No native
- * BEST_AVAILABLE values may cross the ABI.
+ * ROS 2 plugin-side QoS profile (Humble/Jazzy metadata-v8 vocabulary; no RMW headers).
+ * Serialized into Descriptor metadata under format "ros2/1.0", never part of Core C ABI.
  */
 typedef struct rodaq_ros2_qos_profile {
     rodaq_ros2_qos_history_t history;

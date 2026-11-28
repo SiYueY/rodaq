@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include <rodaq/canonical/c/ros2.h>
+#include <rodaq/c/canonical.h>
 #include <rodaq/result.hpp>
 
 namespace rodaq::mcap_storage {
@@ -30,11 +30,20 @@ inline constexpr char kQosFormat[] =
 // normalized sec/nsec pairs and a boolean. Includes exactly one final LF.
 constexpr std::size_t kMaxEncodedQosBytes =
     sizeof(kQosFormat) - 1 - 12 * 2 + 4 + 20 + 3 * (20 + 9) + 5;
-constexpr std::uint32_t kMaxQosProfiles = 1024;
+constexpr std::uint32_t kMaxQosProfiles = 256;
+constexpr std::size_t kMaxRos2MetadataBytes = 128 * 1024;
 inline constexpr std::string_view kOfferedQosKey = "offered_qos_profiles";
 inline constexpr std::string_view kTypeHashKey = "topic_type_hash";
+inline constexpr std::string_view kRos2MetadataFormat = "ros2/1.0";
 
-// Input order is already Core-canonical; preserve it exactly.
-Result<std::string> encode_qos(const rodaq_ros2_qos_profile_t* profiles, std::uint32_t count);
+struct Ros2ChannelMetadata {
+    std::string offered_qos_yaml{"[]\n"};
+    std::string type_description_hash;
+};
+
+// Strictly parses ros2/1.0 Descriptor metadata JSON (or empty metadata) into
+// rosbag2-compatible channel metadata. Ignores optional diagnostic subscription block;
+// fails closed on unknown format, duplicate keys, or invalid QoS/type-hash fields.
+Result<Ros2ChannelMetadata> parse_ros2_metadata(const rodaq_descriptor_metadata_t& metadata);
 
 }  // namespace rodaq::mcap_storage

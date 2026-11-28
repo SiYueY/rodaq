@@ -95,6 +95,11 @@ TEST(BoundedJsonCodecTest, EnforcesSizeDepthUint64AndRfc3339) {
     EXPECT_FALSE(deep.ok);
     EXPECT_EQ(deep.error.code, "too_large");
 
+    const auto dup = parse_bounded_json(R"({"a":1,"a":2})", {1024, 16});
+    EXPECT_FALSE(dup.ok);
+    const auto escaped_dup = parse_bounded_json(R"({"nested":{"a":1,"\u0061":2}})", {1024, 16});
+    EXPECT_FALSE(escaped_dup.ok);
+
     const auto big = parse_u64_decimal("18446744073709551615");
     ASSERT_TRUE(big.has_value());
     EXPECT_EQ(*big, 18446744073709551615ULL);

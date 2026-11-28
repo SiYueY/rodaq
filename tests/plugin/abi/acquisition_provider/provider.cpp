@@ -29,7 +29,6 @@ public:
         acq::Descriptor descriptor{};
         descriptor.header.struct_size = sizeof(descriptor);
         descriptor.stream_id = stream_;
-        descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         descriptor.channel_name = {"sample", 6};
         descriptor.message_encoding = {"raw", 3};
         auto bound = callbacks_.prepare_descriptor(stream_, descriptor);

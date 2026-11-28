@@ -1,12 +1,11 @@
 #include "descriptor.hpp"
 
-#include <algorithm>
 #include <new>
 #include <utility>
 
 #include <rodaq/acquisition/validation.hpp>
-#include <rodaq/canonical/validation.hpp>
 
+#include "../artifact/manifest.hpp"
 #include "../persistence/digest.hpp"
 
 namespace rodaq::pipeline {
@@ -28,15 +27,16 @@ Descriptor::Descriptor(
 
 Result<DescriptorRef> Descriptor::create(
     const acquisition::Descriptor& proposal, rodaq_descriptor_id_t descriptor_id,
-    std::uint32_t max_schema_bytes, std::uint32_t max_qos_profiles) {
-    if (descriptor_id == 0 || proposal.schema.size > max_schema_bytes || max_qos_profiles > 256 ||
-        proposal.ros2_offered_qos_profile_count > max_qos_profiles ||
+    std::uint32_t max_schema_bytes, std::uint32_t max_metadata_bytes) {
+    if (descriptor_id == 0 || max_metadata_bytes == 0 ||
         !acquisition::abi::valid_descriptor(&proposal)) {
         return Status(StatusCode::InvalidArgument, {});
     }
+    if (proposal.schema.size > max_schema_bytes) {
+        return Status(StatusCode::ResourceExhausted, "Descriptor schema exceeds byte limit");
+    }
     try {
         DescriptorFacts owned;
-        owned.data_profile = proposal.data_profile;
         owned.channel_name = copy_text(proposal.channel_name);
         owned.message_encoding = copy_text(proposal.message_encoding);
         owned.schema_name = copy_text(proposal.schema_name);
@@ -49,27 +49,15 @@ Result<DescriptorRef> Descriptor::create(
             return digest.status();
         }
         owned.schema_digest = std::move(digest.value());
-        owned.ros2_type_description_hash = copy_text(proposal.ros2_type_description_hash);
-        if (proposal.ros2_offered_qos_profile_count != 0) {
-            owned.offered_qos.assign(
-                proposal.ros2_offered_qos_profiles,
-                proposal.ros2_offered_qos_profiles + proposal.ros2_offered_qos_profile_count);
-            std::sort(
-                owned.offered_qos.begin(), owned.offered_qos.end(),
-                [](const auto& left, const auto& right) {
-                    return canonical::qos_key(left) < canonical::qos_key(right);
-                });
-            owned.offered_qos.erase(
-                std::unique(
-                    owned.offered_qos.begin(), owned.offered_qos.end(),
-                    [](const auto& left, const auto& right) {
-                        return canonical::qos_key(left) == canonical::qos_key(right);
-                    }),
-                owned.offered_qos.end());
-        }
-        if (proposal.ros2_subscription != nullptr) {
-            owned.ros2_subscription =
-                canonical::copy_subscription_facts(*proposal.ros2_subscription);
+        if (proposal.metadata.format.size != 0) {
+            owned.metadata_format = copy_text(proposal.metadata.format);
+            auto normalized = artifact::normalize_descriptor_metadata(
+                owned.metadata_format, {proposal.metadata.json.data, proposal.metadata.json.size},
+                max_metadata_bytes);
+            if (!normalized.ok()) {
+                return normalized.status();
+            }
+            owned.metadata_json = std::move(normalized.value());
         }
         return std::shared_ptr<const Descriptor>(
             new Descriptor(proposal.stream_id, descriptor_id, std::move(owned)));
@@ -83,7 +71,6 @@ storage::StreamDescriptor Descriptor::view() const noexcept {
     result.header.struct_size = sizeof(result);
     result.descriptor_id = descriptor_id;
     result.stream_id = stream_id;
-    result.data_profile = facts.data_profile;
     result.channel_name = text(facts.channel_name);
     result.message_encoding = text(facts.message_encoding);
     result.schema_name = text(facts.schema_name);
@@ -91,10 +78,7 @@ storage::StreamDescriptor Descriptor::view() const noexcept {
     result.schema = {
         facts.schema.empty() ? nullptr : facts.schema.data(),
         static_cast<std::uint32_t>(facts.schema.size())};
-    result.ros2_type_description_hash = text(facts.ros2_type_description_hash);
-    result.ros2_offered_qos_profiles =
-        facts.offered_qos.empty() ? nullptr : facts.offered_qos.data();
-    result.ros2_offered_qos_profile_count = static_cast<std::uint32_t>(facts.offered_qos.size());
+    result.metadata = {text(facts.metadata_format), text(facts.metadata_json)};
     return result;
 }
 

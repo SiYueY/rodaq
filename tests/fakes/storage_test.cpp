@@ -147,7 +147,6 @@ protected:
         result.header.struct_size = sizeof(result);
         result.stream_id = stream;
         result.descriptor_id = id;
-        result.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         result.channel_name = {"/fake", 5};
         result.message_encoding = {"json", 4};
         result.schema_name = {"schema", 6};
@@ -198,14 +197,13 @@ protected:
             if (kind == 1) {
                 EXPECT_NE(reader.number(8), 0U);
                 EXPECT_NE(reader.number(8), 0U);
-                EXPECT_EQ(reader.number(4), RODAQ_DATA_PROFILE_GENERIC);
                 EXPECT_EQ(reader.blob(), "/fake");
                 EXPECT_EQ(reader.blob(), "json");
                 EXPECT_EQ(reader.blob(), "schema");
                 EXPECT_EQ(reader.blob(), "jsonschema");
-                EXPECT_EQ(reader.blob(), "");
                 EXPECT_EQ(reader.blob(), "{}");
-                EXPECT_EQ(reader.number(4), 0U);
+                EXPECT_EQ(reader.blob(), "");
+                EXPECT_EQ(reader.blob(), "");
             } else if (kind == 2) {
                 EXPECT_NE(reader.number(8), 0U);
                 EXPECT_NE(reader.number(8), 0U);

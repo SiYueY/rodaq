@@ -1,5 +1,5 @@
-#ifndef RODAQ_PLUGIN_C_TYPES_H
-#define RODAQ_PLUGIN_C_TYPES_H
+#ifndef RODAQ_C_TYPES_H
+#define RODAQ_C_TYPES_H
 
 #include <stdint.h>
 

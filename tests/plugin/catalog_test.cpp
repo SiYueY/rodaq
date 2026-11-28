@@ -86,7 +86,7 @@ protected:
              {{"id", std::move(id)},
               {"name", "Counter"},
               {"version", std::move(version)},
-              {"abi", {{"major", 1}, {"minor", 0}}}}},
+              {"abi", {{"major", 1}, {"minor", 0}, {"revision", 1}}}}},
             {"platform", {{"os", "linux"}, {"arch", architecture}}},
             {"library", "lib/counter.so"}};
     }
@@ -150,6 +150,42 @@ TEST_F(PluginCatalogTest, PackageAndGlobalLimitsAreExecutable) {
     }
     EXPECT_EQ(
         plugin::discover_plugins({root_}).status().code(), rodaq::StatusCode::ResourceExhausted);
+}
+
+TEST_F(PluginCatalogTest, RejectsMissingOrWrongAbiRevisionAndDuplicateKeys) {
+    package("valid", manifest("com.example.valid").dump());
+
+    auto missing_rev = manifest("com.example.norev");
+    missing_rev["plugin"]["abi"].erase("revision");
+    package("missing_rev", missing_rev.dump());
+
+    auto wrong_rev = manifest("com.example.wrongrev");
+    wrong_rev["plugin"]["abi"]["revision"] = 2;
+    package("wrong_rev", wrong_rev.dump());
+
+    auto zero_rev = manifest("com.example.zerorev");
+    zero_rev["plugin"]["abi"]["revision"] = 0;
+    package("zero_rev", zero_rev.dump());
+
+    // Duplicate key in plugin.manifest.json must fail closed.
+    const std::string dup = R"({
+        "format_version": 1,
+        "plugin": {
+            "id": "com.example.dup",
+            "id": "com.example.dup",
+            "name": "Dup",
+            "version": "1.0.0",
+            "abi": {"major": 1, "minor": 0, "revision": 1}
+        },
+        "platform": {"os": "linux", "arch": "amd64"},
+        "library": "lib/counter.so"
+    })";
+    package("dup_key", dup);
+
+    const auto catalog = plugin::discover_plugins({root_});
+    ASSERT_TRUE(catalog.ok()) << catalog.status().message();
+    ASSERT_EQ(catalog.value().size(), 1U);
+    EXPECT_EQ(catalog.value().front().info.plugin_id, "com.example.valid");
 }
 
 }  // namespace

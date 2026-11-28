@@ -37,7 +37,6 @@ protected:
         rodaq::acquisition::Descriptor proposal{};
         proposal.header.struct_size = sizeof(proposal);
         proposal.stream_id = 1;
-        proposal.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         proposal.channel_name = {"/data", 5};
         proposal.message_encoding = {"json", 4};
         auto descriptor = pipeline::Descriptor::create(proposal, 100);

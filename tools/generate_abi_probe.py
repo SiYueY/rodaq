@@ -11,28 +11,27 @@ import subprocess
 EXTENSIBLE = {
     "rodaq_config_t": "json",
     "rodaq_application_callbacks_t": "log",
-    "rodaq_plugin_descriptor_t": "plugin_version",
+    "rodaq_plugin_descriptor_t": "abi_revision",
     "rodaq_plugin_instance_vtable_t": "destroy",
     "rodaq_plugin_entry_t": "create",
     "rodaq_acquisition_prepare_config_t": "max_callback_concurrency",
     "rodaq_acquisition_interface_vtable_t": "quiesce",
     "rodaq_acquisition_callbacks_t": "report_event",
     "rodaq_acquisition_event_t": "reserved",
-    "rodaq_acquisition_descriptor_t": "ros2_subscription",
-    "rodaq_ros2_subscription_facts_t": "executor_threads",
+    "rodaq_acquisition_descriptor_t": "metadata",
     "rodaq_acquisition_record_attempt_t": "reserved",
     "rodaq_storage_prepare_config_t": "max_relative_path_bytes",
     "rodaq_storage_interface_vtable_t": "quiesce",
     "rodaq_storage_batch_result_t": "tail_state",
-    "rodaq_storage_descriptor_t": "reserved1",
+    "rodaq_storage_descriptor_t": "metadata",
     "rodaq_segment_spec_t": "staging_directory",
     "rodaq_segment_usage_t": "reserved0",
     "rodaq_segment_seal_result_t": "total_physical_bytes",
 }
 
 FROZEN_STRUCTS = {
-    "rodaq_acquisition_stream_binding_t", "rodaq_ros2_duration_t",
-    "rodaq_ros2_qos_profile_t", "rodaq_source_id_t",
+    "rodaq_acquisition_stream_binding_t", "rodaq_descriptor_metadata_t",
+    "rodaq_source_id_t",
     "rodaq_interface_version_t", "rodaq_interface_query_t",
     "rodaq_interface_reference_t",
     "rodaq_plugin_instance_t", "rodaq_string_t", "rodaq_bytes_t", "rodaq_buffer_t",
@@ -46,7 +45,7 @@ def c_string(value):
 
 
 def generate(root, output, flags):
-    headers = sorted((root / "include/rodaq").glob("*/c/*.h"))
+    headers = sorted((root / "include/rodaq/c").glob("*.h"))
     texts = [re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S) for path in headers]
     source = "\n".join(texts)
     records = list(re.finditer(r"typedef struct \w+\s*\{(.*?)\}\s*(rodaq_\w+_t);", source, re.S))
@@ -72,7 +71,7 @@ def generate(root, output, flags):
     commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     metadata = {
         "format_version": 1,
-        "abi": {"major": 1, "minor": 0},
+        "abi": {"major": 1, "minor": 0, "revision": 1},
         "source_commit": commit,
         "source_dirty": bool(subprocess.check_output(
             ["git", "-C", str(root), "status", "--porcelain"], text=True)),

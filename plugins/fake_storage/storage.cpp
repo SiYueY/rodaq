@@ -114,14 +114,10 @@ public:
             return Status(StatusCode::InvalidState, {});
         }
         std::uint64_t bytes = 0;
-        const std::uint64_t sizes[]{
-            descriptor.channel_name.size,
-            descriptor.message_encoding.size,
-            descriptor.schema_name.size,
-            descriptor.schema_encoding.size,
-            descriptor.ros2_type_description_hash.size,
-            descriptor.schema.size,
-            80ull * descriptor.ros2_offered_qos_profile_count};
+        const std::uint64_t sizes[]{descriptor.channel_name.size, descriptor.message_encoding.size,
+                                    descriptor.schema_name.size,  descriptor.schema_encoding.size,
+                                    descriptor.schema.size,       descriptor.metadata.format.size,
+                                    descriptor.metadata.json.size};
         for (auto size : sizes) {
             if (size > descriptor_bytes_ - 128 - bytes) {
                 return Status(StatusCode::ResourceExhausted, {});
@@ -133,29 +129,13 @@ public:
         append(0, 4);
         append(descriptor.stream_id, 8);
         append(descriptor.descriptor_id, 8);
-        append(descriptor.data_profile, 4);
         text(descriptor.channel_name);
         text(descriptor.message_encoding);
         text(descriptor.schema_name);
         text(descriptor.schema_encoding);
-        text(descriptor.ros2_type_description_hash);
         blob(descriptor.schema.data, static_cast<std::size_t>(descriptor.schema.size));
-        append(descriptor.ros2_offered_qos_profile_count, 4);
-        for (std::uint32_t i = 0; i < descriptor.ros2_offered_qos_profile_count; ++i) {
-            const auto& qos = descriptor.ros2_offered_qos_profiles[i];
-            append(qos.history, 4);
-            append(qos.reliability, 4);
-            append(qos.durability, 4);
-            append(qos.liveliness, 4);
-            append(qos.depth, 8);
-            append(qos.deadline.sec, 8);
-            append(qos.deadline.nsec, 8);
-            append(qos.lifespan.sec, 8);
-            append(qos.lifespan.nsec, 8);
-            append(qos.liveliness_lease_duration.sec, 8);
-            append(qos.liveliness_lease_duration.nsec, 8);
-            append(qos.avoid_ros_namespace_conventions, 1);
-        }
+        text(descriptor.metadata.format);
+        text(descriptor.metadata.json);
         frame_size();
         auto found = std::find_if(catalog_.begin(), catalog_.end(), [&](const auto& entry) {
             return entry.id == descriptor.descriptor_id && entry.stream == descriptor.stream_id;

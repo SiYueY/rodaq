@@ -79,6 +79,7 @@ Result<std::unique_ptr<DaqRuntime>> DaqRuntime::open(DaqOpenOptions options) {
             target.instance.payloads.max_buffers = profile.payload_max_chunks;
             target.instance.queue_capacity = profile.queue_capacity;
             target.instance.callback_concurrency = profile.callback_concurrency;
+            target.instance.max_descriptor_metadata_bytes = profile.max_descriptor_metadata_bytes;
             target.storage = {};
             target.storage.header = {sizeof(storage::PrepareConfig)};
             target.storage.max_record_bytes = profile.max_payload_bytes;
@@ -92,6 +93,7 @@ Result<std::unique_ptr<DaqRuntime>> DaqRuntime::open(DaqOpenOptions options) {
             target.storage.max_relative_path_bytes = 256;
             target.segment_reservation_bytes = profile.segment_reservation_bytes;
             target.manifest.max_bytes = profile.max_manifest_bytes;
+            target.manifest.max_descriptor_metadata_bytes = profile.max_descriptor_metadata_bytes;
             target.max_prepared_descriptors = profile.max_prepared_descriptors;
             settings.profiles.push_back(std::move(target));
         }

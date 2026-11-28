@@ -6,7 +6,7 @@
 #include <string_view>
 #include <utility>
 
-#include <rodaq/acquisition/c/interface.h>
+#include <rodaq/c/acquisition.h>
 #include <rodaq/acquisition/provider.hpp>
 #include <rodaq/plugin/deadline.hpp>
 #include <rodaq/plugin/operation.hpp>

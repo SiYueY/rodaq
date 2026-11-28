@@ -224,7 +224,7 @@ target_link_libraries(oot_consumer PRIVATE rodaq::daq rodaq::plugin)
         )
 
         (src / "c_plugin.c").write_text(
-            """#include <rodaq/plugin/c/plugin.h>
+            """#include <rodaq/c/plugin.h>
 #include <stddef.h>
 
 static rodaq_status_code_t c_configure(

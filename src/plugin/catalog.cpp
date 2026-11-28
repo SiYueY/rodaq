@@ -17,6 +17,8 @@
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
 
+#include "../internal/strict_json.hpp"
+
 namespace rodaq::plugin {
 namespace {
 
@@ -107,11 +109,15 @@ Result<CatalogEntry> read_manifest(const fs::path& path) {
         used += static_cast<std::size_t>(count);
     }
 
-    const auto json = Json::parse(content);
+    auto parsed = internal::parse_strict_json(content, {kMaxManifestSize, 16, 4096});
+    if (!parsed.ok()) {
+        return parsed.status();
+    }
+    const auto& json = parsed.value();
     if (!exact_keys(json, {"format_version", "plugin", "platform", "library"}) ||
         !json["format_version"].is_number_unsigned() || json["format_version"] != 1 ||
         !exact_keys(json["plugin"], {"id", "name", "version", "abi"}) ||
-        !exact_keys(json["plugin"]["abi"], {"major", "minor"}) ||
+        !exact_keys(json["plugin"]["abi"], {"major", "minor", "revision"}) ||
         !exact_keys(json["platform"], {"os", "arch"}) || !json["library"].is_string()) {
         return Status(StatusCode::InvalidArgument, "Invalid Plugin manifest fields");
     }
@@ -139,12 +145,15 @@ Result<CatalogEntry> read_manifest(const fs::path& path) {
     }
     const auto& requirement = plugin["abi"];
     if (!requirement["major"].is_number_unsigned() || !requirement["minor"].is_number_unsigned() ||
+        !requirement["revision"].is_number_unsigned() ||
         requirement["major"].get<std::uint64_t>() > UINT16_MAX ||
-        requirement["minor"].get<std::uint64_t>() > UINT16_MAX) {
+        requirement["minor"].get<std::uint64_t>() > UINT16_MAX ||
+        requirement["revision"].get<std::uint64_t>() > UINT32_MAX) {
         return Status(StatusCode::InvalidArgument, "Invalid Plugin ABI requirement");
     }
     entry.abi_major = requirement["major"].get<std::uint16_t>();
     entry.abi_minor = requirement["minor"].get<std::uint16_t>();
+    entry.abi_revision = requirement["revision"].get<std::uint32_t>();
 #if defined(__x86_64__)
     constexpr std::string_view kArchitecture = "amd64";
 #elif defined(__aarch64__)
@@ -154,7 +163,8 @@ Result<CatalogEntry> read_manifest(const fs::path& path) {
 #endif
     if (json["platform"]["os"] != "linux" || json["platform"]["arch"] != kArchitecture ||
         entry.abi_major != RODAQ_PLUGIN_ABI_MAJOR(RODAQ_PLUGIN_ABI_VERSION) ||
-        entry.abi_minor > RODAQ_PLUGIN_ABI_MINOR(RODAQ_PLUGIN_ABI_VERSION)) {
+        entry.abi_minor > RODAQ_PLUGIN_ABI_MINOR(RODAQ_PLUGIN_ABI_VERSION) ||
+        entry.abi_revision != RODAQ_PLUGIN_ABI_REVISION) {
         return Status(StatusCode::Unavailable, "Incompatible Plugin platform/ABI");
     }
 

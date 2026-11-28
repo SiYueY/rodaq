@@ -8,7 +8,7 @@
 
 #include <rodaq/plugin/deadline.hpp>
 #include <rodaq/plugin/provider.hpp>
-#include <rodaq/storage/c/interface.h>
+#include <rodaq/c/storage.h>
 #include <rodaq/storage/validation.hpp>
 
 namespace rodaq::storage {

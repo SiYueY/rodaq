@@ -52,7 +52,6 @@ storage::StreamDescriptor make_descriptor(std::uint64_t stream = 1, std::uint64_
     result.header.struct_size = sizeof(result);
     result.stream_id = stream;
     result.descriptor_id = id;
-    result.data_profile = RODAQ_DATA_PROFILE_ROS2;
     result.channel_name = {"/same", 5};
     result.message_encoding = {"cdr", 3};
     result.schema_name = {"std_msgs/msg/Int32", 18};
@@ -133,20 +132,31 @@ TEST(McapConfig, StrictFixedProfileAcceptsDefaultsAndRejectsUnknownsAndUnsupport
     }
 }
 
-TEST(McapQos, DeterministicVersion8TextPreservesInputOrder) {
-    EXPECT_EQ(format::encode_qos(nullptr, 0).value(), "[]\n");
-    rodaq_ros2_qos_profile_t qos{};
-    qos.history = 1;
-    qos.depth = 10;
-    qos.reliability = 1;
-    qos.durability = 2;
-    qos.liveliness = 1;
+TEST(McapQos, DeterministicVersion8TextFromRos2MetadataPreservesInputOrderAndRejectsInvalid) {
+    const rodaq_descriptor_metadata_t empty{};
+    EXPECT_EQ(format::parse_ros2_metadata(empty).value().offered_qos_yaml, "[]\n");
+    const std::string json =
+        R"({"offered_qos_profiles":[{"history":1,"depth":10,"reliability":1,"durability":2,)"
+        R"("deadline_sec":0,"deadline_nsec":0,"lifespan_sec":0,"lifespan_nsec":0,)"
+        R"("liveliness":1,"lease_sec":0,"lease_nsec":0,"avoid_ros_namespace_conventions":false}],)"
+        R"("subscription":{"ros_distribution":"humble"}})";
+    const rodaq_descriptor_metadata_t meta{
+        {"ros2/1.0", 8}, {json.data(), static_cast<std::uint32_t>(json.size())}};
     const std::string expected =
         "- history: 1\n  depth: 10\n  reliability: 1\n  durability: 2\n"
         "  deadline:\n    sec: 0\n    nsec: 0\n  lifespan:\n    sec: 0\n    nsec: 0\n"
         "  liveliness: 1\n  liveliness_lease_duration:\n    sec: 0\n    nsec: 0\n"
         "  avoid_ros_namespace_conventions: false\n";
-    EXPECT_EQ(format::encode_qos(&qos, 1).value(), expected);
+    auto parsed = format::parse_ros2_metadata(meta);
+    ASSERT_TRUE(parsed.ok()) << parsed.status().message();
+    EXPECT_EQ(parsed.value().offered_qos_yaml, expected);
+    // Duplicate key in MCAP config and ros2/1.0 metadata must fail closed.
+    EXPECT_FALSE(
+        format::validate_config(R"({"format_version":"1.0","format_version":"1.0"})").ok());
+    const std::string dup = R"({"offered_qos_profiles":[],"offered_qos_profiles":[]})";
+    const rodaq_descriptor_metadata_t dup_meta{
+        {"ros2/1.0", 8}, {dup.data(), static_cast<std::uint32_t>(dup.size())}};
+    EXPECT_FALSE(format::parse_ros2_metadata(dup_meta).ok());
 }
 
 TEST_F(McapStorageTest, WritesSingleFileMcapWithPerChannelSequenceAndIndependentReaderDecode) {

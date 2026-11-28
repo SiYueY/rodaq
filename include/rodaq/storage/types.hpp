@@ -6,7 +6,7 @@
 #include <vector>
 
 #include <rodaq/status.hpp>
-#include <rodaq/storage/c/types.h>
+#include <rodaq/c/storage.h>
 
 namespace rodaq::storage {
 

@@ -5,7 +5,7 @@
 
 #include "catalog.hpp"
 
-#include <rodaq/plugin/c/plugin.h>
+#include <rodaq/c/plugin.h>
 
 namespace rodaq::plugin {
 

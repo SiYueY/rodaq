@@ -44,7 +44,6 @@ int main(int argc, char** argv) {
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 1;
     descriptor.descriptor_id = 1;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = {"/fake", 5};
     descriptor.message_encoding = {"json", 4};
     const std::string_view path(argv[2]);

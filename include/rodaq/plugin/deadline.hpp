@@ -5,7 +5,7 @@
 #include <limits>
 #include <time.h>
 
-#include <rodaq/plugin/c/types.h>
+#include <rodaq/c/types.h>
 #include <rodaq/result.hpp>
 
 namespace rodaq::plugin {

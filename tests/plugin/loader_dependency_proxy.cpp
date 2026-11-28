@@ -1,4 +1,4 @@
-#include <rodaq/plugin/c/plugin.h>
+#include <rodaq/c/plugin.h>
 
 extern "C" int rodaq_loader_dependency_anchor();
 

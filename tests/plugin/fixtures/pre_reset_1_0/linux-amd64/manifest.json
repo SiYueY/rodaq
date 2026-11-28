@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "plugin": {
+    "id": "com.example.pre_reset",
+    "name": "Pre-Reset 1.0 Fixture",
+    "version": "1.0.0",
+    "abi": {
+      "major": 1,
+      "minor": 0
+    }
+  },
+  "platform": {
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "library": "lib/libpre_reset_plugin.so"
+}

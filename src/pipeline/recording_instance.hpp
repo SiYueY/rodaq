@@ -31,7 +31,7 @@ struct InstanceLimits {
     std::size_t queue_capacity{256};
     std::uint32_t callback_concurrency{4};
     std::uint32_t max_schema_bytes{1024 * 1024};
-    std::uint32_t max_offered_qos_profiles{256};
+    std::uint32_t max_descriptor_metadata_bytes{128 * 1024};
 };
 
 struct StreamCallbackFacts {

@@ -1,5 +1,5 @@
-#include <rodaq/acquisition/c/interface.h>
-#include <rodaq/storage/c/interface.h>
+#include <rodaq/c/acquisition.h>
+#include <rodaq/c/storage.h>
 
 #include <stddef.h>
 
@@ -84,5 +84,10 @@ RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->seal_segment, seal
 RODAQ_CHECK_SIGNATURE(((rodaq_storage_interface_vtable_t*)0)->quiesce, control_fn);
 
 RODAQ_STATIC_ASSERT(sizeof(rodaq_source_id_t) == 32, "Source ID layout");
-RODAQ_STATIC_ASSERT(sizeof(rodaq_ros2_duration_t) == 16, "ROS 2 duration layout");
-RODAQ_STATIC_ASSERT(sizeof(rodaq_ros2_qos_profile_t) == 80, "ROS 2 QoS layout");
+RODAQ_STATIC_ASSERT(
+    sizeof(rodaq_descriptor_metadata_t) == 2 * sizeof(rodaq_string_t),
+    "Descriptor metadata layout");
+RODAQ_STATIC_ASSERT(
+    offsetof(rodaq_plugin_descriptor_t, abi_revision) + sizeof(uint32_t) <=
+        sizeof(rodaq_plugin_descriptor_t),
+    "Plugin descriptor abi_revision layout");

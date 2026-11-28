@@ -22,6 +22,7 @@
 #include "../persistence/atomic_file.hpp"
 #include "../persistence/decimal.hpp"
 #include "../persistence/file_descriptor.hpp"
+#include "../persistence/json.hpp"
 
 namespace rodaq::artifact {
 namespace {
@@ -368,6 +369,49 @@ Result<StartupScanReport> scan_volume(const CatalogOptions& options) {
         bool modified_parent = false;
         constexpr std::uint32_t kMaxCleanupDepth = 4;
         constexpr std::uint32_t kMaxCleanupEntries = 1024;
+
+        // Pre-check format_version on existing final artifacts BEFORE performing any
+        // .tmp / .deleting cleanup so an incompatible legacy volume is never mutated on disk.
+        for (const auto& name : names) {
+            std::uint64_t segment_id = 0;
+            if (!parse_segment_name(name, segment_id)) {
+                continue;
+            }
+            const auto artifact_dir =
+                options.volume->artifacts_directory() / std::to_string(segment_id);
+            auto bytes =
+                persistence::read_file(artifact_dir, "manifest.json", options.manifest.max_bytes);
+            if (!bytes.ok()) {
+                continue;
+            }
+            const std::size_t max_nodes =
+                std::max<std::size_t>(65536, options.manifest.max_bytes / 2);
+            auto parsed =
+                persistence::parse_json(bytes.value(), {options.manifest.max_bytes, 48, max_nodes});
+            if (!parsed.ok() || !parsed.value().is_object() ||
+                !parsed.value().contains("format_version") ||
+                !parsed.value().at("format_version").is_string()) {
+                continue;
+            }
+            const auto& version = parsed.value().at("format_version").get_ref<const std::string&>();
+            if (version != "2.0") {
+                std::string safe_version;
+                safe_version.reserve(std::min<std::size_t>(version.size(), 64));
+                for (const unsigned char ch : version) {
+                    if (safe_version.size() == 64) {
+                        break;
+                    }
+                    safe_version.push_back(ch >= 0x20 && ch <= 0x7e ? static_cast<char>(ch) : '?');
+                }
+                const std::string msg =
+                    "Startup scan aborted: incompatible Artifact manifest format_version '" +
+                    safe_version + "' in segment " + name +
+                    " (expected '2.0'); existing volume data left untouched. Select a new volume "
+                    "or back up and re-initialize.";
+                logging::write(logging::Level::Error, {}, msg);
+                return Status(StatusCode::Unavailable, msg);
+            }
+        }
 
         for (const auto& name : names) {
             std::uint64_t segment_id = 0;

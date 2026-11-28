@@ -4,30 +4,16 @@
 #include <cstdio>
 #include <ctime>
 #include <limits>
+#include <set>
+#include <string>
+#include <vector>
+
+#include <rodaq/plugin/abi.hpp>
 
 namespace rodaq::server {
 namespace {
 
-bool check_depth(const nlohmann::json& value, std::size_t depth, std::size_t max_depth) noexcept {
-    if (depth > max_depth) {
-        return false;
-    }
-    if (value.is_object()) {
-        for (const auto& [key, item] : value.items()) {
-            (void)key;
-            if (!check_depth(item, depth + 1, max_depth)) {
-                return false;
-            }
-        }
-    } else if (value.is_array()) {
-        for (const auto& item : value) {
-            if (!check_depth(item, depth + 1, max_depth)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
+constexpr std::size_t kMaxServerJsonNodes = 65536;
 
 bool parse_fixed_digits(std::string_view s, std::size_t pos, std::size_t len, int& out) noexcept {
     if (pos + len > s.size()) {
@@ -62,18 +48,76 @@ JsonParseResult parse_bounded_json(std::string_view input, const JsonParseLimits
         out.error = {"too_large", "", "JSON payload exceeds maximum allowed bytes"};
         return out;
     }
-    nlohmann::json parsed = nlohmann::json::parse(input.begin(), input.end(), nullptr, false);
-    if (parsed.is_discarded()) {
+    if (input.empty() || input.find('\0') != std::string_view::npos ||
+        plugin::abi::utf8_prefix(input, input.size()) != input.size()) {
+        out.error = {"invalid_format", "", "invalid UTF-8 or empty JSON payload"};
+        return out;
+    }
+
+    struct Abort {
+        std::string code;
+        std::string message;
+    };
+
+    std::vector<std::set<std::string>> key_stack;
+    std::size_t nodes = 0;
+
+    try {
+        auto callback = [&](int depth, nlohmann::json::parse_event_t event,
+                            nlohmann::json& parsed) -> bool {
+            // nlohmann::json reports leaf values at container depth + 1.
+            if (depth < 0 || static_cast<std::size_t>(depth) > limits.max_depth + 1) {
+                throw Abort{"too_large", "JSON nesting depth exceeds limit"};
+            }
+            switch (event) {
+                case nlohmann::json::parse_event_t::object_start:
+                    if (static_cast<std::size_t>(depth) > limits.max_depth ||
+                        ++nodes > kMaxServerJsonNodes) {
+                        throw Abort{"too_large", "JSON nesting depth or node limit exceeded"};
+                    }
+                    key_stack.emplace_back();
+                    break;
+                case nlohmann::json::parse_event_t::object_end:
+                    if (!key_stack.empty()) {
+                        key_stack.pop_back();
+                    }
+                    break;
+                case nlohmann::json::parse_event_t::key: {
+                    if (!parsed.is_string()) {
+                        throw Abort{"invalid_format", "invalid JSON object key"};
+                    }
+                    const auto& key = parsed.get_ref<const std::string&>();
+                    if (key_stack.empty() || !key_stack.back().insert(key).second) {
+                        throw Abort{"duplicate", "duplicate JSON object key"};
+                    }
+                    break;
+                }
+                case nlohmann::json::parse_event_t::array_start:
+                    if (static_cast<std::size_t>(depth) > limits.max_depth ||
+                        ++nodes > kMaxServerJsonNodes) {
+                        throw Abort{"too_large", "JSON nesting depth or node limit exceeded"};
+                    }
+                    break;
+                case nlohmann::json::parse_event_t::value:
+                    if (++nodes > kMaxServerJsonNodes) {
+                        throw Abort{"too_large", "JSON node count exceeds limit"};
+                    }
+                    break;
+                case nlohmann::json::parse_event_t::array_end:
+                    break;
+            }
+            return true;
+        };
+        out.value = nlohmann::json::parse(input.begin(), input.end(), callback);
+        out.ok = true;
+        return out;
+    } catch (const Abort& abort) {
+        out.error = {abort.code, "", abort.message};
+        return out;
+    } catch (const nlohmann::json::exception&) {
         out.error = {"invalid_format", "", "invalid JSON syntax"};
         return out;
     }
-    if (!check_depth(parsed, 0, limits.max_depth)) {
-        out.error = {"too_large", "", "JSON nesting depth exceeds limit"};
-        return out;
-    }
-    out.ok = true;
-    out.value = std::move(parsed);
-    return out;
 }
 
 std::optional<std::uint64_t> parse_u64_decimal(std::string_view text) noexcept {

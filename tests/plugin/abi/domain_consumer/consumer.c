@@ -93,7 +93,6 @@ int main(int argc, char** argv) {
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.descriptor_id = 5;
     descriptor.stream_id = 42;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = (rodaq_string_t){"sample", 6};
     descriptor.message_encoding = (rodaq_string_t){"raw", 3};
     assert(

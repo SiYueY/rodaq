@@ -58,6 +58,7 @@ class ManifestTest(unittest.TestCase):
 
     def test_each_forbidden_change_is_rejected(self):
         mutations = [
+            lambda item: item["abi"].update(revision=1),
             lambda item: item["constants"].update(OK=1),
             lambda item: item["types"]["value"].update(sizeof=8),
             lambda item: item["types"]["table"].update(required_prefix_size=24),

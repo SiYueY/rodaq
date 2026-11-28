@@ -9,7 +9,7 @@
 #include <type_traits>
 #include <utility>
 
-#include <rodaq/plugin/c/plugin.h>
+#include <rodaq/c/plugin.h>
 #include <rodaq/status.hpp>
 
 // Small shared boundary primitives used by SDK trampolines and host wrappers.

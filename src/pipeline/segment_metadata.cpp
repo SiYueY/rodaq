@@ -16,6 +16,7 @@ namespace {
 
 struct DescriptorEntry {
     std::optional<artifact::ManifestDescriptor> facts;
+    std::size_t reserved_bytes{0};
     bool ready{false};
 };
 
@@ -197,6 +198,8 @@ DescriptorMetadataReservation::~DescriptorMetadataReservation() noexcept {
     --state_->facts.pending_descriptors;
     if (!transferred_) {
         auto& entry = state_->descriptors[descriptor_];
+        state_->facts.reserved_manifest_bytes -= entry.reserved_bytes;
+        entry.reserved_bytes = 0;
         entry.facts.reset();
         --state_->facts.descriptors;
     }
@@ -244,12 +247,24 @@ Result<SegmentMetadata> SegmentMetadata::create(
             std::adjacent_find(streams.begin(), streams.end()) != streams.end()) {
             return Status(StatusCode::InvalidArgument, {});
         }
+        auto base_bytes = artifact::manifest_base_upper_bound(
+            identity, streams.size(), envelope.max_segment_file_count,
+            envelope.max_relative_path_bytes);
+        if (!base_bytes.ok()) {
+            return base_bytes.status();
+        }
+        if (base_bytes.value() > limits.max_bytes) {
+            return Status(
+                StatusCode::ResourceExhausted,
+                "Manifest base/coverage/file upper bound exceeds max_manifest_bytes");
+        }
         auto state = std::make_shared<SegmentMetadataState>();
         state->identity = std::move(identity);
         state->limits = limits;
         state->max_records = envelope.max_segment_records;
         state->max_files = envelope.max_segment_file_count;
         state->max_path_bytes = envelope.max_relative_path_bytes;
+        state->facts.base_manifest_bytes = base_bytes.value();
         state->streams.reserve(streams.size());
         for (const auto id : streams) {
             artifact::StreamCoverage entry;
@@ -268,6 +283,10 @@ Result<DescriptorMetadataReservation> SegmentMetadata::reserve_descriptor(
     if (facts.accepted_records != 0) {
         return Status(StatusCode::InvalidArgument, {});
     }
+    auto descriptor_bytes = artifact::manifest_descriptor_upper_bound(facts, state_->limits);
+    if (!descriptor_bytes.ok()) {
+        return descriptor_bytes.status();
+    }
     std::lock_guard<std::mutex> lock(state_->mutex);
     if (state_->facts.closed) {
         return Status(StatusCode::InvalidState, {});
@@ -283,11 +302,20 @@ Result<DescriptorMetadataReservation> SegmentMetadata::reserve_descriptor(
             return Status(StatusCode::Conflict, {});
         }
     }
+    const std::size_t used_bytes =
+        state_->facts.base_manifest_bytes + state_->facts.reserved_manifest_bytes;
+    if (descriptor_bytes.value() > state_->limits.max_bytes - used_bytes) {
+        return Status(
+            StatusCode::ResourceExhausted,
+            "Cumulative Manifest descriptor budget exceeds max_manifest_bytes");
+    }
     for (std::size_t index = 0; index < state_->descriptors.size(); ++index) {
         auto& entry = state_->descriptors[index];
         if (!entry.facts) {
             entry.facts.emplace(std::move(facts));
+            entry.reserved_bytes = descriptor_bytes.value();
             entry.ready = false;
+            state_->facts.reserved_manifest_bytes += entry.reserved_bytes;
             ++state_->facts.descriptors;
             ++state_->facts.pending_descriptors;
             return DescriptorMetadataReservation(state_, index);
@@ -394,5 +422,7 @@ Result<artifact::SegmentManifest> SegmentMetadata::capture_manifest(
 std::uint64_t SegmentMetadata::segment_id() const noexcept { return state_->identity.segment_id; }
 
 TaskId SegmentMetadata::task_id() const noexcept { return state_->identity.task_id; }
+
+const artifact::ManifestLimits& SegmentMetadata::limits() const noexcept { return state_->limits; }
 
 }  // namespace rodaq::pipeline

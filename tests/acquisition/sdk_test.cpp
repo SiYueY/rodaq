@@ -93,7 +93,6 @@ TEST(AcquisitionCallbacks, PrepareDescriptorRejectsZeroIdAndReportsHostErrors) {
     acq::Descriptor descriptor{};
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 1;
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     descriptor.channel_name = {"sample", 6};
     descriptor.message_encoding = {"raw", 3};
 
@@ -153,31 +152,45 @@ TEST(AcquisitionValidation, EventScopeAndStatusVocabularyAreExplicit) {
     EXPECT_FALSE(acq::abi::valid_acquisition_event(&event));
 }
 
-TEST(AcquisitionValidation, GenericSchemaSupportStaysWithBackendWhileRos2RequiresSchema) {
+TEST(AcquisitionValidation, GenericDescriptorAndOpaqueSourceIdValidation) {
     acq::Descriptor descriptor{};
     descriptor.header.struct_size = sizeof(descriptor);
     descriptor.stream_id = 1;
     descriptor.channel_name = {"sample", 6};
     descriptor.message_encoding = {"raw", 3};
-    descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
-    descriptor.data_profile = RODAQ_DATA_PROFILE_ROS2;
-    descriptor.message_encoding = {"cdr", 3};
+
+    // Half-present metadata must fail closed.
+    descriptor.metadata.format = {"ros2/1.0", 8};
     EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
+    descriptor.metadata.json = {"{}", 2};
+    EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
+
+    // Format regex ^[a-z0-9][a-z0-9._/-]{0,63}$ rejects uppercase / leading dot / empty.
+    descriptor.metadata.format = {"ROS2/1.0", 8};
+    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
+    descriptor.metadata.format = {".ros2", 5};
+    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
+    descriptor.metadata.format = {"ros2/1.0", 8};
     descriptor.schema_name = {"std_msgs/msg/Int32", 18};
     descriptor.schema_encoding = {"ros2msg", 7};
     const std::uint8_t schema[] = {'i', 'n', 't'};
     descriptor.schema = {schema, sizeof(schema)};
     EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
-    rodaq_ros2_qos_profile_t qos{};
-    descriptor.ros2_offered_qos_profiles = &qos;
-    descriptor.ros2_offered_qos_profile_count = 1;
-    EXPECT_TRUE(acq::abi::valid_descriptor(&descriptor));
-    qos.reliability = 99;
-    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
-    qos.reliability = RODAQ_ROS2_QOS_RELIABILITY_RELIABLE;
-    qos.deadline.nsec = 1000000000;
-    EXPECT_FALSE(acq::abi::valid_descriptor(&descriptor));
+
+    // Opaque 32-byte source_id validation.
+    rodaq_source_id_t source{};
+    EXPECT_TRUE(rodaq::canonical::valid_source_id(source, false));
+    EXPECT_FALSE(rodaq::canonical::valid_source_id(source, true));
+    source.size = 16;
+    source.data[0] = 0xAA;
+    source.data[15] = 0x55;
+    EXPECT_TRUE(rodaq::canonical::valid_source_id(source, true));
+    source.data[16] = 1;  // Non-zero trailing byte rejected.
+    EXPECT_FALSE(rodaq::canonical::valid_source_id(source, true));
+    source.data[16] = 0;
+    source.reserved[0] = 1;  // Non-zero reserved byte rejected.
+    EXPECT_FALSE(rodaq::canonical::valid_source_id(source, true));
 }
 
 struct ControlBackend {

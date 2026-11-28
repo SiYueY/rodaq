@@ -32,7 +32,6 @@ inline artifact::ManifestDescriptor manifest_descriptor(
     artifact::ManifestDescriptor result;
     result.stream_id = stream_id;
     result.descriptor_id = descriptor_id;
-    result.data_profile = RODAQ_DATA_PROFILE_GENERIC;
     result.channel_name = "/data";
     result.message_encoding = "json";
     result.schema_digest =

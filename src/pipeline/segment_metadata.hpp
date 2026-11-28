@@ -93,6 +93,8 @@ struct SegmentMetadataSnapshot {
     std::uint32_t pending_admissions{0};
     std::uint32_t pending_descriptors{0};
     std::uint32_t descriptors{0};
+    std::size_t base_manifest_bytes{0};
+    std::size_t reserved_manifest_bytes{0};
     bool closed{false};
 };
 
@@ -119,6 +121,7 @@ public:
         std::vector<artifact::FileEvidence> files, WallTime committed_at) const;
     std::uint64_t segment_id() const noexcept;
     TaskId task_id() const noexcept;
+    const artifact::ManifestLimits& limits() const noexcept;
 
 private:
     explicit SegmentMetadata(std::shared_ptr<SegmentMetadataState> state) noexcept;

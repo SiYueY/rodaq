@@ -1,7 +1,7 @@
 #ifndef RODAQ_FIXTURE_COUNTER_H
 #define RODAQ_FIXTURE_COUNTER_H
 
-#include <rodaq/plugin/c/plugin.h>
+#include <rodaq/c/plugin.h>
 
 #define RODAQ_COUNTER_INTERFACE_ID "com.example.counter"
 

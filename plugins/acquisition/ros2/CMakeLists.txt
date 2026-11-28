@@ -23,7 +23,8 @@ target_include_directories(rodaq_ros2_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(rodaq_ros2_runtime STATIC runtime.cpp subscription.cpp native_resources.cpp)
 target_compile_options(rodaq_ros2_runtime PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(rodaq_ros2_runtime PUBLIC rodaq_ros2_config rclcpp::rclcpp)
+target_link_libraries(rodaq_ros2_runtime PUBLIC rodaq_ros2_config rclcpp::rclcpp
+    PRIVATE nlohmann_json::nlohmann_json)
 
 add_library(rodaq_ros2_acquisition SHARED plugin.cpp)
 target_compile_options(rodaq_ros2_acquisition PRIVATE -Wall -Wextra -Wpedantic)

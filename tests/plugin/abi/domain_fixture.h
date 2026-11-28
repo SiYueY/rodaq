@@ -1,8 +1,8 @@
 #ifndef RODAQ_TEST_DOMAIN_FIXTURE_H
 #define RODAQ_TEST_DOMAIN_FIXTURE_H
 
-#include <rodaq/acquisition/c/interface.h>
-#include <rodaq/storage/c/interface.h>
+#include <rodaq/c/acquisition.h>
+#include <rodaq/c/storage.h>
 
 #include <stddef.h>
 

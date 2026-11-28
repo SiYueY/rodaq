@@ -279,4 +279,40 @@ TEST_F(SegmentCommitterTest, StartupScanExceedingMaxArtifactsFailsClosed) {
     EXPECT_EQ(catalog.value()->startup_scan().status().code(), StatusCode::ResourceExhausted);
 }
 
+TEST_F(SegmentCommitterTest, StartupScanFailsClosedOnLegacyManifest10BeforeCleaningTmpOrDeleting) {
+    // Seed a legacy Manifest 1.0 artifact directory alongside .tmp and .deleting directories.
+    const auto legacy_dir = volume_->artifacts_directory() / "12";
+    fs::create_directory(legacy_dir);
+    std::ofstream(legacy_dir / "data.mcap", std::ios::binary) << "old";
+    std::ofstream(legacy_dir / "manifest.json", std::ios::binary)
+        << R"({"format_version":"1.0","segment_id":"12","descriptors":[{"data_profile":2}]})";
+
+    const auto tmp_dir = volume_->artifacts_directory() / "13.tmp";
+    fs::create_directory(tmp_dir);
+    std::ofstream(tmp_dir / "partial.mcap", std::ios::binary) << "tmp";
+
+    const auto deleting_dir = volume_->artifacts_directory() / "14.deleting";
+    fs::create_directory(deleting_dir);
+    std::ofstream(deleting_dir / "old.mcap", std::ios::binary) << "del";
+
+    auto fresh_cap = std::make_shared<artifact::VolumeCapacity>(
+        artifact::VolumeCapacity::create({1000000, 1000000, 0, 100, 16, 16, 32}).value());
+    artifact::CatalogOptions opts;
+    opts.volume = volume_;
+    opts.capacity = fresh_cap;
+    opts.max_artifacts = 32;
+    auto catalog = artifact::ArtifactCatalog::create(opts);
+    ASSERT_TRUE(catalog.ok());
+
+    const auto scanned = catalog.value()->startup_scan();
+    ASSERT_FALSE(scanned.ok());
+    EXPECT_EQ(scanned.status().code(), StatusCode::Unavailable);
+
+    // Zero disk mutation: legacy 1.0 artifact, .tmp, and .deleting must remain untouched.
+    EXPECT_TRUE(fs::is_regular_file(legacy_dir / "manifest.json"));
+    EXPECT_TRUE(fs::is_regular_file(legacy_dir / "data.mcap"));
+    EXPECT_TRUE(fs::is_regular_file(tmp_dir / "partial.mcap"));
+    EXPECT_TRUE(fs::is_regular_file(deleting_dir / "old.mcap"));
+}
+
 }  // namespace

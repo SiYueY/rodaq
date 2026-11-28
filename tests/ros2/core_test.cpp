@@ -153,11 +153,14 @@ TEST_F(Ros2Runtime, FormalTaskRecordsRos2ThroughSingleFileMcapCommitAndArtifactR
     ASSERT_TRUE(manifest.ok());
     ASSERT_FALSE(manifest.value().descriptors.empty());
     for (const auto& descriptor : manifest.value().descriptors) {
-        ASSERT_TRUE(descriptor.ros2_subscription);
+        ASSERT_EQ(descriptor.metadata_format, "ros2/1.0");
+        const auto meta = nlohmann::json::parse(descriptor.metadata_json);
+        ASSERT_TRUE(meta.contains("subscription"));
         EXPECT_EQ(
-            descriptor.ros2_subscription->rmw_implementation, rmw_get_implementation_identifier());
+            meta["subscription"]["rmw_implementation"].get<std::string>(),
+            rmw_get_implementation_identifier());
         EXPECT_EQ(
-            descriptor.ros2_subscription->installed_requested_qos.reliability,
+            meta["subscription"]["installed_requested_qos"]["reliability"].get<std::uint32_t>(),
             initial_request.reliability);
     }
 

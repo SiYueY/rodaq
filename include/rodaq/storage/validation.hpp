@@ -63,8 +63,7 @@ inline bool valid_outcome(
 
 inline bool valid_descriptor(const StreamDescriptor* descriptor) noexcept {
     return plugin::abi::readable(descriptor) && descriptor->descriptor_id != 0 &&
-           descriptor->stream_id != 0 && descriptor->reserved0 == 0 && descriptor->reserved1 == 0 &&
-           canonical::valid_descriptor_fields(*descriptor);
+           descriptor->stream_id != 0 && canonical::valid_descriptor_fields(*descriptor);
 }
 
 inline bool valid_segment(const SegmentSpec* segment) noexcept {

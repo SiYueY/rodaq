@@ -1,12 +1,16 @@
-#ifndef RODAQ_ACQUISITION_C_TYPES_H
-#define RODAQ_ACQUISITION_C_TYPES_H
+#ifndef RODAQ_C_ACQUISITION_H
+#define RODAQ_C_ACQUISITION_H
 
-#include <rodaq/canonical/c/ros2.h>
-#include <rodaq/canonical/c/types.h>
+#include <rodaq/c/canonical.h>
+#include <rodaq/c/plugin.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define RODAQ_ACQUISITION_INTERFACE_ID "com.rodaq.acquisition"
+#define RODAQ_ACQUISITION_INTERFACE_MAJOR 1u
+#define RODAQ_ACQUISITION_INTERFACE_MINOR 0u
 
 /**
  * FROZEN_VALUE array element; header is sanity only, not tail extension. Nonzero stable stream_id,
@@ -80,42 +84,20 @@ typedef struct rodaq_acquisition_event {
 } rodaq_acquisition_event_t;
 
 /**
- * EXTENSIBLE_STRUCT, pointer-only subscription observation. Strings are borrowed for the actual
- * prepare_descriptor call, nonempty UTF-8 without NUL (distribution <=64, RMW <=128 bytes). The
- * requested QoS is from an actually installed subscription, never an adapt candidate. Nonzero
- * generation does not wrap. executor_kind=1 is rclcpp MultiThreadedExecutor; actual thread count is
- * 1..8.
- */
-typedef struct rodaq_ros2_subscription_facts {
-    rodaq_struct_header_t header;
-    rodaq_string_t ros_distribution;
-    rodaq_string_t rmw_implementation;
-    rodaq_ros2_qos_profile_t installed_requested_qos;
-    uint64_t subscription_generation;
-    uint32_t executor_kind;
-    uint32_t executor_threads;
-} rodaq_ros2_subscription_facts_t;
-
-/**
- * EXTENSIBLE_STRUCT. Borrowed immutable bind-once descriptor during prepare_descriptor; strings,
- * schema and QoS arrays must be copied for retention. Generic profile has no ROS2 hash/QoS. ROS2
- * requires cdr plus supported ros2msg/ros2idl schema. Provider never supplies a schema digest.
+ * EXTENSIBLE_STRUCT; required prefix ends at metadata. Borrowed immutable bind-once descriptor
+ * during prepare_descriptor; strings, schema and metadata views must be copied for retention.
+ * Provider never supplies a schema digest; Core validates structure and normalizes metadata JSON
+ * without interpreting backend-specific semantics.
  */
 typedef struct rodaq_acquisition_descriptor {
     rodaq_struct_header_t header;
     rodaq_stream_id_t stream_id;
-    rodaq_data_profile_t data_profile;
-    uint32_t reserved0;
     rodaq_string_t channel_name;
     rodaq_string_t message_encoding;
     rodaq_string_t schema_name;
     rodaq_string_t schema_encoding;
     rodaq_bytes_t schema;
-    rodaq_string_t ros2_type_description_hash;
-    const rodaq_ros2_qos_profile_t* ros2_offered_qos_profiles;
-    uint32_t ros2_offered_qos_profile_count;
-    uint32_t reserved1;
-    const rodaq_ros2_subscription_facts_t* ros2_subscription;
+    rodaq_descriptor_metadata_t metadata;
 } rodaq_acquisition_descriptor_t;
 
 /**
@@ -153,6 +135,29 @@ typedef struct rodaq_acquisition_callbacks {
 
     void (*report_event)(void* context, const rodaq_acquisition_event_t* event);
 } rodaq_acquisition_callbacks_t;
+
+/**
+ * EXTENSIBLE_STRUCT; all three slots required in major 1. Non-NULL context/config/callbacks,
+ * optional error. prepare borrows bindings, binds immutable stream descriptors via callbacks and
+ * establishes sources; start enables bounded callbacks, not Core Admission. quiesce is idempotent
+ * and OK proves callbacks settled and callbacks table will no longer be accessed. Mutating
+ * lifecycle calls are serialized; no callback may synchronously reenter them. Operation deadlines
+ * do not cancel native work.
+ */
+typedef struct rodaq_acquisition_interface_vtable {
+    rodaq_struct_header_t header;
+
+    rodaq_status_code_t (*prepare)(
+        rodaq_interface_context_t* context, const rodaq_acquisition_prepare_config_t* config,
+        const rodaq_acquisition_callbacks_t* callbacks, rodaq_deadline_t deadline,
+        rodaq_error_t* error);
+
+    rodaq_status_code_t (*start)(
+        rodaq_interface_context_t* context, rodaq_deadline_t deadline, rodaq_error_t* error);
+
+    rodaq_status_code_t (*quiesce)(
+        rodaq_interface_context_t* context, rodaq_deadline_t deadline, rodaq_error_t* error);
+} rodaq_acquisition_interface_vtable_t;
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,8 @@ def compare(old, new):
             errors.append(f"{key} changed")
     if old["abi"]["major"] != new["abi"]["major"]:
         errors.append("ABI major differs; no same-major compatibility claim")
+    if old["abi"].get("revision", 0) != new["abi"].get("revision", 0):
+        errors.append("ABI revision differs; incompatible pre/post-reset ABI")
     if new["abi"]["minor"] < old["abi"]["minor"]:
         errors.append("ABI minor regressed")
     for name, value in old["constants"].items():

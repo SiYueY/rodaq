@@ -56,11 +56,12 @@ bool valid_name(rodaq_string_t name) noexcept {
 }
 
 Result<void> validate_descriptor(
-    const rodaq_plugin_descriptor_t* descriptor, const PluginInfo& expected) {
+    const rodaq_plugin_descriptor_t* descriptor, const CatalogEntry& expected) {
+    constexpr auto kRequiredDescriptorPrefix = offsetof(rodaq_plugin_descriptor_t, abi_revision) +
+                                               sizeof(rodaq_plugin_descriptor_t::abi_revision);
     if (descriptor == nullptr ||
         reinterpret_cast<std::uintptr_t>(descriptor) % alignof(rodaq_plugin_descriptor_t) != 0 ||
-        descriptor->header.struct_size < offsetof(rodaq_plugin_descriptor_t, plugin_version) +
-                                             sizeof(descriptor->plugin_version) ||
+        descriptor->header.struct_size < kRequiredDescriptorPrefix ||
         !valid_name(descriptor->plugin_name) || descriptor->plugin_id.data == nullptr ||
         descriptor->plugin_id.size > 255 ||
         !abi::valid_identifier({descriptor->plugin_id.data, descriptor->plugin_id.size}) ||
@@ -68,14 +69,18 @@ Result<void> validate_descriptor(
         descriptor->plugin_version.size > 128) {
         return Status(StatusCode::InvalidArgument, "Invalid Plugin descriptor");
     }
+    if (descriptor->abi_revision != RODAQ_PLUGIN_ABI_REVISION ||
+        descriptor->abi_revision != expected.abi_revision) {
+        return Status(StatusCode::Unavailable, "Incompatible Plugin ABI revision");
+    }
     const std::string_view version(
         descriptor->plugin_version.data, descriptor->plugin_version.size);
     if (!parse_semver(version).ok() ||
-        expected.plugin_id !=
+        expected.info.plugin_id !=
             std::string_view(descriptor->plugin_id.data, descriptor->plugin_id.size) ||
-        expected.plugin_name !=
+        expected.info.plugin_name !=
             std::string_view(descriptor->plugin_name.data, descriptor->plugin_name.size) ||
-        expected.plugin_version != version) {
+        expected.info.plugin_version != version) {
         return Status(StatusCode::InvalidArgument, "Plugin descriptor/Manifest mismatch");
     }
     return {};
@@ -190,8 +195,7 @@ Result<PreparedLibrary> prepare_library(const CatalogEntry& entry) {
     if (library.entry.descriptor == nullptr || library.entry.create == nullptr) {
         return Status(StatusCode::InvalidArgument, "Missing Plugin Entry slot");
     }
-    const auto descriptor =
-        validate_descriptor(bootstrap_call(library.entry.descriptor), library.info);
+    const auto descriptor = validate_descriptor(bootstrap_call(library.entry.descriptor), entry);
     if (!descriptor.ok()) {
         return descriptor.status();
     }

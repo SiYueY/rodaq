@@ -178,4 +178,25 @@ TEST(TaskConfig, ConcurrentCallersExportAndParseIndependently) {
     }
 }
 
+TEST(TaskConfig, RejectsDuplicateKeysAtTopLevelAndInsidePluginConfig) {
+    const std::string raw = portable().dump();
+    const auto top_dup = R"({"format_version":"1.0",)" + raw.substr(1);
+    EXPECT_FALSE(rodaq::parse_task_config(top_dup).ok());
+
+    const auto nested_pos = raw.find(R"("config":{})");
+    if (nested_pos != std::string::npos) {
+        std::string nested_dup = raw;
+        nested_dup.replace(nested_pos, 11, R"("config":{"k":1,"k":2})");
+        EXPECT_FALSE(rodaq::parse_task_config(nested_dup).ok());
+    } else {
+        auto value = portable();
+        value["pipelines"][0]["acquisition"]["config"] = Json::object();
+        std::string s = value.dump();
+        const auto pos = s.find(R"("config":{})");
+        ASSERT_NE(pos, std::string::npos);
+        s.replace(pos, 11, R"("config":{"k":1,"k":2})");
+        EXPECT_FALSE(rodaq::parse_task_config(s).ok());
+    }
+}
+
 }  // namespace

@@ -99,25 +99,32 @@ Result<void> PipelineWriter::prepare_descriptor(
             return Status(StatusCode::InvalidState, {});
         }
     }
-    auto captured = artifact::capture_manifest_descriptor(descriptor->view(), 0);
+    auto captured = artifact::capture_manifest_descriptor(
+        descriptor->view(), 0, 1024 * 1024,
+        segment->metadata.limits().max_descriptor_metadata_bytes);
     if (!captured.ok()) {
         return captured.status();
     }
-    captured.value().ros2_subscription = descriptor->facts.ros2_subscription;
     auto metadata = segment->metadata.reserve_descriptor(std::move(captured.value()));
     if (!metadata.ok()) {
         return metadata.status();
     }
-    metadata.value().transfer();
     if (cached != catalog_.end()) {
         // Backend catalog is reusable across rotated Segments.
+        metadata.value().transfer();
         return metadata.value().mark_prepared();
     }
     auto prepared = storage_.prepare_descriptor(descriptor->view(), deadline);
     if (!prepared.ok()) {
+        if (prepared.status().code() == StatusCode::DeadlineExceeded) {
+            // Observer timeout: native Storage call may still complete late, so keep
+            // the reservation pinned rather than freeing it prematurely.
+            metadata.value().transfer();
+        }
         fail(prepared.status().code());
         return prepared.status();
     }
+    metadata.value().transfer();
     catalog_.push_back(std::move(descriptor));
     return metadata.value().mark_prepared();
 }

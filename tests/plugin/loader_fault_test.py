@@ -20,7 +20,7 @@ def main(args):
         manifest.pop("artifact", None)
         manifest["library"] = "fault.so"
         (package / "manifest.json").write_text(json.dumps(manifest))
-        for mode, status in (("major", 7), ("minor", 7), ("short_entry", 1),
+        for mode, status in (("major", 7), ("minor", 7), ("bad_revision", 7), ("short_entry", 1),
                              ("null_entry", 1), ("misaligned_entry", 1), ("missing_slot", 1),
                              ("short_descriptor", 1), ("descriptor_mismatch", 1),
                              ("throw_version", 10), ("throw_entry", 10)):
@@ -30,7 +30,7 @@ def main(args):
             print(mode + ":\n" + result.stdout, flush=True)
             if result.returncode:
                 raise RuntimeError(f"Bootstrap rejection failed: {mode} ({result.returncode})")
-    print("10/10 Loader version/prefix/alignment/descriptor/exception rejections passed")
+    print("11/11 Loader version/revision/prefix/alignment/descriptor/exception rejections passed")
 
 
 if __name__ == "__main__":

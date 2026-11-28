@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 
+#include <nlohmann/json.hpp>
 #include <rclcpp/version.h>
 #include <rmw/rmw.h>
 
@@ -13,7 +14,23 @@ namespace rodaq::ros2_acquisition {
 namespace {
 
 rodaq_string_t view(const std::string& text) {
-    return {text.data(), static_cast<std::uint32_t>(text.size())};
+    return {text.empty() ? nullptr : text.data(), static_cast<std::uint32_t>(text.size())};
+}
+
+nlohmann::json qos_json(const rodaq_ros2_qos_profile_t& qos) {
+    return {
+        {"history", qos.history},
+        {"reliability", qos.reliability},
+        {"durability", qos.durability},
+        {"liveliness", qos.liveliness},
+        {"depth", qos.depth},
+        {"deadline_sec", qos.deadline.sec},
+        {"deadline_nsec", qos.deadline.nsec},
+        {"lifespan_sec", qos.lifespan.sec},
+        {"lifespan_nsec", qos.lifespan.nsec},
+        {"lease_sec", qos.liveliness_lease_duration.sec},
+        {"lease_nsec", qos.liveliness_lease_duration.nsec},
+        {"avoid_ros_namespace_conventions", qos.avoid_ros_namespace_conventions != 0}};
 }
 
 rodaq_ros2_qos_profile_t project(const rmw_qos_profile_t& native) {
@@ -97,12 +114,6 @@ Result<void> Backend::State::bind_stream(Stream& stream, Facts facts, plugin::De
         }
         snapshot->schema = std::move(schema.value());
 
-        // Create subscription before proposing Descriptor so actual installed
-        // requested QoS is observed and recorded in the bind-once Descriptor.
-        stream.subscription = subscribe(stream, *snapshot);
-        snapshot->actual_request =
-            project(stream.subscription->get_actual_qos().get_rmw_qos_profile());
-
         const auto* rmw = rmw_get_implementation_identifier();
         if (rmw == nullptr) {
             return Status(StatusCode::Unavailable, "ROS 2 runtime identity unavailable");
@@ -111,26 +122,36 @@ Result<void> Backend::State::bind_stream(Stream& stream, Facts facts, plugin::De
         if (actual_threads == 0 || actual_threads > 8) {
             return Status(StatusCode::InvalidState, "ROS 2 executor outside qualified bounds");
         }
+
+        // Hold the newly created subscription in a local RAII owner until published
+        // under mutex, ensuring any error or exception cleans it up automatically.
+        auto sub = subscribe(stream, *snapshot);
+        snapshot->actual_request = project(sub->get_actual_qos().get_rmw_qos_profile());
 #if RCLCPP_VERSION_MAJOR == 16
-        constexpr rodaq_string_t distribution{"humble", 6};
+        constexpr const char* distribution = "humble";
 #elif RCLCPP_VERSION_MAJOR == 28
-        constexpr rodaq_string_t distribution{"jazzy", 5};
+        constexpr const char* distribution = "jazzy";
 #else
 #error Unsupported ROS 2 distribution for the qualified backend
 #endif
-        const rodaq_ros2_subscription_facts_t subscription_facts{
-            {sizeof(rodaq_ros2_subscription_facts_t)},
-            distribution,
-            {rmw, static_cast<std::uint32_t>(std::strlen(rmw))},
-            snapshot->actual_request,
-            1,
-            1,
-            static_cast<std::uint32_t>(actual_threads)};
+        nlohmann::json offered = nlohmann::json::array();
+        for (const auto& offer : snapshot->facts.offers) {
+            offered.push_back(qos_json(offer));
+        }
+        const nlohmann::json metadata_doc{
+            {"offered_qos_profiles", std::move(offered)},
+            {"subscription",
+             {{"ros_distribution", distribution},
+              {"rmw_implementation", std::string(rmw)},
+              {"installed_requested_qos", qos_json(snapshot->actual_request)},
+              {"subscription_generation", std::uint64_t{1}},
+              {"executor_kind", std::uint32_t{1}},
+              {"executor_threads", static_cast<std::uint32_t>(actual_threads)}}}};
+        const std::string metadata_json = metadata_doc.dump();
 
         acquisition::Descriptor descriptor{};
         descriptor.header.struct_size = sizeof(descriptor);
         descriptor.stream_id = stream.id;
-        descriptor.data_profile = RODAQ_DATA_PROFILE_ROS2;
         descriptor.channel_name = view(stream.config.topic);
         descriptor.message_encoding = {"cdr", 3};
         descriptor.schema_name = view(snapshot->schema.name);
@@ -138,24 +159,19 @@ Result<void> Backend::State::bind_stream(Stream& stream, Facts facts, plugin::De
         descriptor.schema = {
             reinterpret_cast<const std::uint8_t*>(snapshot->schema.text.data()),
             static_cast<std::uint32_t>(snapshot->schema.text.size())};
-        descriptor.ros2_offered_qos_profiles =
-            snapshot->facts.offers.empty() ? nullptr : snapshot->facts.offers.data();
-        descriptor.ros2_offered_qos_profile_count =
-            static_cast<std::uint32_t>(snapshot->facts.offers.size());
-        descriptor.ros2_subscription = &subscription_facts;
+        descriptor.metadata = {{"ros2/1.0", 8}, view(metadata_json)};
 
         auto descriptor_id = callbacks.prepare_descriptor(stream.id, descriptor);
         if (!descriptor_id.ok()) {
-            stream.subscription.reset();
             return descriptor_id.status();
         }
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (stopping) {
-                stream.subscription.reset();
                 return Status(StatusCode::Conflict, "ROS 2 stopped during bind_stream");
             }
             snapshot->descriptor_id = descriptor_id.value();
+            stream.subscription = std::move(sub);
             stream.snapshot = std::move(snapshot);
             stream.ready_reported = true;
         }

@@ -1,5 +1,5 @@
 // Intentionally invalid bootstrap outputs; never installed as a supported Plugin.
-#include <rodaq/plugin/c/plugin.h>
+#include <rodaq/c/plugin.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -77,12 +77,23 @@ const rodaq_plugin_descriptor_t* descriptor() {
         {sizeof(rodaq_plugin_descriptor_t)},
         {"com.example.counter", 19},
         {"C++ Counter", 11},
-        {"1.0.0", 5}};
+        {"1.0.0", 5},
+        RODAQ_PLUGIN_ABI_REVISION};
     static const rodaq_plugin_descriptor_t mismatch{
         {sizeof(rodaq_plugin_descriptor_t)},
         {"com.example.different", 21},
         {"C++ Counter", 11},
-        {"1.0.0", 5}};
+        {"1.0.0", 5},
+        RODAQ_PLUGIN_ABI_REVISION};
+    static const rodaq_plugin_descriptor_t bad_revision{
+        {sizeof(rodaq_plugin_descriptor_t)},
+        {"com.example.counter", 19},
+        {"C++ Counter", 11},
+        {"1.0.0", 5},
+        RODAQ_PLUGIN_ABI_REVISION + 1u};
+    if (mode("bad_revision")) {
+        return &bad_revision;
+    }
     return mode("descriptor_mismatch") ? &mismatch : &valid;
 }
 

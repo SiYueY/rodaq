@@ -16,5 +16,5 @@ target_include_directories(rodaq_ros2_support PUBLIC
 
 install(TARGETS rodaq_ros2_support EXPORT RoDAQTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(FILES schema.hpp qos.hpp
+install(FILES ros2.h schema.hpp qos.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rodaq/support/ros2)

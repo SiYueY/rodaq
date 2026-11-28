@@ -1,6 +1,6 @@
 #pragma once
 
-#include <rodaq/acquisition/c/types.h>
+#include <rodaq/c/acquisition.h>
 
 namespace rodaq::acquisition {
 

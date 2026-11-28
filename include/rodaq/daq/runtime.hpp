@@ -48,6 +48,7 @@ struct DaqResourceProfile {
     std::uint32_t max_descriptors{1024};
     std::uint32_t max_sealed_files{8};
     std::uint64_t max_manifest_bytes{1024 * 1024};
+    std::uint32_t max_descriptor_metadata_bytes{128 * 1024};
     std::uint32_t max_prepared_descriptors{1024};
 };
 

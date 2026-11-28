@@ -1,7 +1,7 @@
-#ifndef RODAQ_PLUGIN_C_PLUGIN_H
-#define RODAQ_PLUGIN_C_PLUGIN_H
+#ifndef RODAQ_C_PLUGIN_H
+#define RODAQ_C_PLUGIN_H
 
-#include <rodaq/plugin/c/types.h>
+#include <rodaq/c/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,9 +67,10 @@ typedef struct rodaq_application_callbacks {
 } rodaq_application_callbacks_t;
 
 /**
- * EXTENSIBLE_STRUCT; required prefix ends at plugin_version. Immutable process-resident strings:
+ * EXTENSIBLE_STRUCT; required prefix ends at abi_revision. Immutable process-resident strings:
  * ID 1..255 canonical ASCII, name 1..255 UTF-8, version 1..128 strict SemVer 2.0.0 ASCII, no
- * embedded NUL. Manifest fields must match byte-for-byte before publish.
+ * embedded NUL. abi_revision is SDK-generated and must match RODAQ_PLUGIN_ABI_REVISION and
+ * manifest plugin.abi.revision before publish.
  */
 typedef struct rodaq_plugin_descriptor {
     rodaq_struct_header_t header;
@@ -77,6 +78,7 @@ typedef struct rodaq_plugin_descriptor {
     rodaq_string_t plugin_id;
     rodaq_string_t plugin_name;
     rodaq_string_t plugin_version;
+    uint32_t abi_revision;
 } rodaq_plugin_descriptor_t;
 
 /**
@@ -136,10 +138,11 @@ typedef struct rodaq_plugin_entry {
 #endif
 #endif
 
-#define RODAQ_PLUGIN_ABI_VERSION RODAQ_PLUGIN_ABI_ENCODE(1, 0)
-
 #define RODAQ_PLUGIN_ABI_ENCODE(major, minor) \
     ((((uint32_t)(major)) << 16u) | ((uint32_t)(minor)&0xffffu))
+
+#define RODAQ_PLUGIN_ABI_VERSION RODAQ_PLUGIN_ABI_ENCODE(1, 0)
+#define RODAQ_PLUGIN_ABI_REVISION 1u
 
 #define RODAQ_PLUGIN_ABI_MAJOR(value) ((uint16_t)(((uint32_t)(value)) >> 16u))
 

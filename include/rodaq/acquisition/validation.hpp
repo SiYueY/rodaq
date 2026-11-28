@@ -46,22 +46,8 @@ inline bool valid_record(const RecordAttempt* record) noexcept {
            });
 }
 
-inline bool valid_subscription_facts(const rodaq_ros2_subscription_facts_t* facts) noexcept {
-    return plugin::abi::readable(facts) && canonical::valid_text(facts->ros_distribution, 64) &&
-           canonical::valid_text(facts->rmw_implementation, 128) &&
-           canonical::valid_qos(facts->installed_requested_qos) &&
-           facts->subscription_generation != 0 && facts->executor_kind == 1 &&
-           facts->executor_threads >= 1 && facts->executor_threads <= 8;
-}
-
 inline bool valid_descriptor(const Descriptor* descriptor) noexcept {
-    if (!plugin::abi::readable(descriptor)) {
-        return false;
-    }
-    const auto* subscription = descriptor->ros2_subscription;
-    return (subscription == nullptr || (descriptor->data_profile == RODAQ_DATA_PROFILE_ROS2 &&
-                                        valid_subscription_facts(subscription))) &&
-           descriptor->stream_id != 0 && descriptor->reserved0 == 0 && descriptor->reserved1 == 0 &&
+    return plugin::abi::readable(descriptor) && descriptor->stream_id != 0 &&
            canonical::valid_descriptor_fields(*descriptor);
 }
 

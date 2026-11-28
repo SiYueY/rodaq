@@ -207,7 +207,6 @@ private:
         acquisition::Descriptor descriptor{};
         descriptor.header.struct_size = sizeof(descriptor);
         descriptor.stream_id = stream.id;
-        descriptor.data_profile = RODAQ_DATA_PROFILE_GENERIC;
         descriptor.channel_name = {
             stream.key.data(), static_cast<std::uint32_t>(stream.key.size())};
         descriptor.message_encoding = {"raw", 3};

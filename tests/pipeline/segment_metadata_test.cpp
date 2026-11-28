@@ -1,4 +1,5 @@
 #include "pipeline/segment_metadata.hpp"
+#include "pipeline/descriptor.hpp"
 #include "../artifact/manifest_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -296,6 +297,73 @@ TEST(SegmentMetadata, ClosingAndObserverExpirationCannotFinishTheActualInflightC
     EXPECT_EQ(metadata.snapshot().native_inflight, 0ULL);
     EXPECT_EQ(metadata.snapshot().written, 1ULL);
     EXPECT_TRUE(metadata.capture_manifest(files(), committed_at()).ok());
+}
+
+TEST(SegmentMetadata, CumulativeManifestBudgetRejectsOverflowAndRollsBackOnAbandon) {
+    auto bound_limits = limits();
+    const auto base = artifact::manifest_base_upper_bound(
+        rodaq::test::manifest_identity(), 2, envelope().max_segment_file_count,
+        envelope().max_relative_path_bytes);
+    ASSERT_TRUE(base.ok()) << base.status().message();
+    auto d1 = rodaq::test::manifest_descriptor(1, 1);
+    d1.metadata_format = "ros2/1.0";
+    d1.metadata_json = R"({"payload":")" + std::string(1200, 'x') + R"("})";
+    auto d2 = rodaq::test::manifest_descriptor(2, 2);
+    d2.metadata_format = "ros2/1.0";
+    d2.metadata_json = R"({"payload":")" + std::string(1200, 'y') + R"("})";
+    const auto d1_bound = artifact::manifest_descriptor_upper_bound(d1, bound_limits);
+    const auto d2_bound = artifact::manifest_descriptor_upper_bound(d2, bound_limits);
+    ASSERT_TRUE(d1_bound.ok()) << d1_bound.status().message();
+    ASSERT_TRUE(d2_bound.ok()) << d2_bound.status().message();
+
+    // Budget fits base + d1, but NOT base + d1 + d2.
+    bound_limits.max_bytes =
+        static_cast<std::uint32_t>(base.value() + d1_bound.value() + d2_bound.value() - 1);
+    auto created = pipeline::SegmentMetadata::create(
+        rodaq::test::manifest_identity(), {1, 2}, envelope(), bound_limits);
+    ASSERT_TRUE(created.ok()) << created.status().message();
+    auto& metadata = created.value();
+
+    // Reserve d1 and abandon (simulating synchronous Storage prepare_descriptor failure) ->
+    // rollback!
+    {
+        auto r1 = metadata.reserve_descriptor(d1);
+        ASSERT_TRUE(r1.ok()) << r1.status().message();
+        // While r1 is reserved, d2 must fail with ResourceExhausted.
+        EXPECT_EQ(metadata.reserve_descriptor(d2).status().code(), StatusCode::ResourceExhausted);
+    }
+    // After r1 rolls back without transfer(), d2 now fits cleanly!
+    {
+        auto r2 = metadata.reserve_descriptor(d2);
+        ASSERT_TRUE(r2.ok()) << r2.status().message();
+        r2.value().transfer();
+        ASSERT_TRUE(r2.value().mark_prepared().ok());
+    }
+    // Once transferred, d1 no longer fits.
+    EXPECT_EQ(metadata.reserve_descriptor(d1).status().code(), StatusCode::ResourceExhausted);
+}
+
+TEST(SegmentMetadata, DescriptorMetadataEqualityUsesNormalizedCompactJson) {
+    const std::string json_a = R"({ "b": 2, "a": [1, 2] })";
+    const std::string json_b = R"({"a":[1,2],"b":2})";
+    rodaq::acquisition::Descriptor prop_a{};
+    prop_a.header.struct_size = sizeof(prop_a);
+    prop_a.stream_id = 1;
+    prop_a.channel_name = {"/data", 5};
+    prop_a.message_encoding = {"cdr", 3};
+    prop_a.metadata.format = {"ros2/1.0", 8};
+    prop_a.metadata.json = {json_a.data(), static_cast<std::uint32_t>(json_a.size())};
+
+    rodaq::acquisition::Descriptor prop_b = prop_a;
+    prop_b.metadata.json = {json_b.data(), static_cast<std::uint32_t>(json_b.size())};
+
+    auto a = pipeline::Descriptor::create(prop_a, 1);
+    auto b = pipeline::Descriptor::create(prop_b, 2);
+    ASSERT_TRUE(a.ok()) << a.status().message();
+    ASSERT_TRUE(b.ok()) << b.status().message();
+
+    EXPECT_EQ(a.value()->facts.metadata_json, R"({"a":[1,2],"b":2})");
+    EXPECT_EQ(a.value()->facts, b.value()->facts);
 }
 
 }  // namespace

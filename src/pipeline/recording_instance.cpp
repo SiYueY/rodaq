@@ -52,7 +52,7 @@ Result<std::shared_ptr<RecordingInstance>> RecordingInstance::create(
         !valid_instance_id(identity.instance_id) || identity.control_generation == 0 || !prepare ||
         sample == nullptr || limits.callback_concurrency == 0 ||
         limits.callback_concurrency > 1024 || limits.max_schema_bytes == 0 ||
-        limits.max_offered_qos_profiles > 256) {
+        limits.max_descriptor_metadata_bytes == 0) {
         return Status(StatusCode::InvalidArgument, {});
     }
     auto anchor_sample = sample();
@@ -246,7 +246,7 @@ Result<rodaq_descriptor_id_t> RecordingInstance::prepare_descriptor(
     }
     const rodaq_descriptor_id_t descriptor_id = 1;
     auto created = Descriptor::create(
-        proposal, descriptor_id, limits_.max_schema_bytes, limits_.max_offered_qos_profiles);
+        proposal, descriptor_id, limits_.max_schema_bytes, limits_.max_descriptor_metadata_bytes);
     if (!created.ok()) {
         return created.status();
     }

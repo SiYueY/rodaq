@@ -72,8 +72,7 @@ add_library(rodaq_daq SHARED
     src/execution_lane.cpp
     src/uuid.cpp
     src/persistence/atomic_file.cpp
-    src/persistence/digest.cpp
-    src/ros2_subscription.cpp)
+    src/persistence/digest.cpp)
 target_sources(rodaq_daq PRIVATE
     src/daq/composition.cpp src/daq/run_configuration.cpp src/daq/runtime.cpp src/daq/startup.cpp
     src/system/system_service.cpp

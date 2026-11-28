@@ -7,7 +7,6 @@
 #include <new>
 #include <utility>
 
-#include <rodaq/acquisition/validation.hpp>
 #include <rodaq/canonical/validation.hpp>
 #include <rodaq/plugin/abi.hpp>
 #include <rodaq/plugin/version.hpp>
@@ -23,6 +22,7 @@ namespace {
 
 using persistence::Json;
 
+constexpr std::string_view kManifestFormatVersion = "2.0";
 constexpr std::string_view kEmptySchema =
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -48,7 +48,9 @@ void valid_limits(const ManifestLimits& limits) {
     require(
         limits.max_bytes > 0 && limits.max_bytes <= 64 * 1024 * 1024 && limits.max_files > 0 &&
         limits.max_files <= 4096 && limits.max_descriptors > 0 && limits.max_descriptors <= 1024 &&
-        limits.max_streams > 0 && limits.max_streams <= 1024 && limits.max_qos_profiles <= 256);
+        limits.max_streams > 0 && limits.max_streams <= 1024 &&
+        limits.max_descriptor_metadata_bytes > 0 &&
+        limits.max_descriptor_metadata_bytes <= 64 * 1024 * 1024);
 }
 
 void fields(
@@ -126,44 +128,54 @@ void validate_plugin(const plugin::PluginInfo& identity) {
     take(plugin::validate_plugin_version(identity.plugin_version));
 }
 
-void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
-    if (descriptor.ros2_subscription) {
-        const auto view = descriptor.ros2_subscription->view();
-        require(
-            descriptor.data_profile == RODAQ_DATA_PROFILE_ROS2 &&
-            acquisition::abi::valid_subscription_facts(&view));
+Json parse_metadata_object(
+    std::string_view format, std::string_view json, std::uint32_t max_bytes) {
+    if (format.empty() && json.empty()) {
+        return Json{};
     }
+    if (format.empty() || json.empty() || !canonical::valid_metadata_format(format)) {
+        throw InvalidManifest{Status(StatusCode::InvalidArgument, "Invalid descriptor metadata")};
+    }
+    if (json.size() > max_bytes) {
+        throw InvalidManifest{
+            Status(StatusCode::ResourceExhausted, "Descriptor metadata exceeds byte limit")};
+    }
+    auto parsed = persistence::parse_json(
+        json, {max_bytes, kMaxDescriptorMetadataDepth, kMaxDescriptorMetadataNodes});
+    if (!parsed.ok()) {
+        throw InvalidManifest{std::move(parsed).status()};
+    }
+    if (!parsed.value().is_object()) {
+        throw InvalidManifest{
+            Status(StatusCode::InvalidArgument, "Descriptor metadata JSON must be an object")};
+    }
+    const auto normalized = parsed.value().dump();
+    if (normalized.size() > max_bytes) {
+        throw InvalidManifest{Status(
+            StatusCode::ResourceExhausted, "Normalized descriptor metadata exceeds byte limit")};
+    }
+    return std::move(parsed).value();
+}
+
+void validate_descriptor(const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
     require(
         descriptor.stream_id != 0 && descriptor.descriptor_id != 0 &&
         valid_text(descriptor.channel_name, 1024) && valid_text(descriptor.message_encoding, 64) &&
         valid_text(descriptor.schema_name, 1024, true) &&
         valid_text(descriptor.schema_encoding, 64, true) &&
         persistence::valid_digest(descriptor.schema_digest) &&
-        (descriptor.schema_size != 0 || descriptor.schema_digest == kEmptySchema) &&
-        descriptor.offered_qos.size() <= limits.max_qos_profiles);
+        (descriptor.schema_size != 0 || descriptor.schema_digest == kEmptySchema));
     const auto token = [](const std::string& value) {
         return std::all_of(value.begin(), value.end(), [](unsigned char byte) {
             return byte >= 0x21 && byte <= 0x7e;
         });
     };
     require(token(descriptor.message_encoding) && token(descriptor.schema_encoding));
-    if (descriptor.data_profile == RODAQ_DATA_PROFILE_GENERIC) {
-        require(descriptor.ros2_type_description_hash.empty() && descriptor.offered_qos.empty());
-    } else {
-        require(
-            descriptor.data_profile == RODAQ_DATA_PROFILE_ROS2 && descriptor.schema_size != 0 &&
-            !descriptor.schema_name.empty() && descriptor.message_encoding == "cdr" &&
-            (descriptor.schema_encoding == "ros2msg" || descriptor.schema_encoding == "ros2idl") &&
-            valid_text(descriptor.ros2_type_description_hash, 128, true) &&
-            token(descriptor.ros2_type_description_hash));
-    }
-    for (std::size_t index = 0; index < descriptor.offered_qos.size(); ++index) {
-        require(canonical::valid_qos(descriptor.offered_qos[index]));
-        if (index != 0) {
-            require(
-                canonical::qos_key(descriptor.offered_qos[index - 1]) <
-                canonical::qos_key(descriptor.offered_qos[index]));
-        }
+    if (!descriptor.metadata_format.empty() || !descriptor.metadata_json.empty()) {
+        const auto obj = parse_metadata_object(
+            descriptor.metadata_format, descriptor.metadata_json,
+            limits.max_descriptor_metadata_bytes);
+        require(obj.dump() == descriptor.metadata_json);
     }
 }
 
@@ -242,28 +254,6 @@ void validate(const SegmentManifest& manifest, const ManifestLimits& limits) {
     }
 }
 
-rodaq_ros2_qos_profile_t read_qos(const Json& value) {
-    fields(
-        value, {"history", "reliability", "durability", "liveliness", "depth", "deadline_sec",
-                "deadline_nsec", "lifespan_sec", "lifespan_nsec", "lease_sec", "lease_nsec",
-                "avoid_ros_namespace_conventions"});
-    rodaq_ros2_qos_profile_t qos{};
-    qos.history = narrow_unsigned(value, "history");
-    qos.reliability = narrow_unsigned(value, "reliability");
-    qos.durability = narrow_unsigned(value, "durability");
-    qos.liveliness = narrow_unsigned(value, "liveliness");
-    qos.depth = unsigned_value(value, "depth");
-    qos.deadline = {unsigned_value(value, "deadline_sec"), unsigned_value(value, "deadline_nsec")};
-    qos.lifespan = {unsigned_value(value, "lifespan_sec"), unsigned_value(value, "lifespan_nsec")};
-    qos.liveliness_lease_duration = {
-        unsigned_value(value, "lease_sec"), unsigned_value(value, "lease_nsec")};
-    const auto avoid = unsigned_value(value, "avoid_ros_namespace_conventions");
-    require(avoid <= 1);
-    qos.avoid_ros_namespace_conventions = static_cast<std::uint8_t>(avoid);
-    require(canonical::valid_qos(qos));
-    return qos;
-}
-
 Json plugin_document(const plugin::PluginInfo& value) {
     return {{"plugin_id", value.plugin_id}, {"plugin_version", value.plugin_version}};
 }
@@ -273,26 +263,22 @@ plugin::PluginInfo read_plugin(const Json& value) {
     return {text(value, "plugin_id"), {}, text(value, "plugin_version")};
 }
 
-Json descriptor_document(const ManifestDescriptor& value) {
-    Json qos = Json::array();
-    for (const auto& profile : value.offered_qos) {
-        qos.push_back(canonical::qos_document(profile));
-    }
+Json descriptor_document(const ManifestDescriptor& value, std::uint32_t max_metadata_bytes) {
     Json result{
         {"stream_id", std::to_string(value.stream_id)},
         {"descriptor_id", std::to_string(value.descriptor_id)},
         {"accepted_records", std::to_string(value.accepted_records)},
-        {"data_profile", value.data_profile},
         {"channel_name", value.channel_name},
         {"message_encoding", value.message_encoding},
         {"schema_name", value.schema_name},
         {"schema_encoding", value.schema_encoding},
         {"schema_digest", value.schema_digest},
-        {"schema_size", value.schema_size},
-        {"ros2_type_description_hash", value.ros2_type_description_hash},
-        {"offered_qos", std::move(qos)}};
-    if (value.ros2_subscription) {
-        result["ros2_subscription"] = canonical::subscription_document(*value.ros2_subscription);
+        {"schema_size", value.schema_size}};
+    if (!value.metadata_format.empty()) {
+        result["metadata"] = {
+            {"format", value.metadata_format},
+            {"json", parse_metadata_object(
+                         value.metadata_format, value.metadata_json, max_metadata_bytes)}};
     }
     return result;
 }
@@ -300,45 +286,35 @@ Json descriptor_document(const ManifestDescriptor& value) {
 ManifestDescriptor read_descriptor(const Json& value, const ManifestLimits& limits) {
     fields(
         value,
-        {"stream_id", "descriptor_id", "accepted_records", "data_profile", "channel_name",
-         "message_encoding", "schema_name", "schema_encoding", "schema_digest", "schema_size",
-         "ros2_type_description_hash", "offered_qos"},
-        {"ros2_subscription"});
+        {"stream_id", "descriptor_id", "accepted_records", "channel_name", "message_encoding",
+         "schema_name", "schema_encoding", "schema_digest", "schema_size"},
+        {"metadata"});
     ManifestDescriptor result;
     result.stream_id = unsigned_value(value, "stream_id");
     result.descriptor_id = unsigned_value(value, "descriptor_id");
     result.accepted_records = unsigned_value(value, "accepted_records");
-    result.data_profile = narrow_unsigned(value, "data_profile");
     result.channel_name = text(value, "channel_name");
     result.message_encoding = text(value, "message_encoding");
     result.schema_name = text(value, "schema_name");
     result.schema_encoding = text(value, "schema_encoding");
     result.schema_digest = text(value, "schema_digest");
     result.schema_size = narrow_unsigned(value, "schema_size");
-    result.ros2_type_description_hash = text(value, "ros2_type_description_hash");
-    if (value.contains("ros2_subscription")) {
-        const auto& observed = value.at("ros2_subscription");
-        fields(
-            observed, {"ros_distribution", "rmw_implementation", "installed_requested_qos",
-                       "subscription_generation", "executor_kind", "executor_threads"});
-        result.ros2_subscription = canonical::Ros2SubscriptionFacts{
-            text(observed, "ros_distribution"),
-            text(observed, "rmw_implementation"),
-            read_qos(observed.at("installed_requested_qos")),
-            unsigned_value(observed, "subscription_generation"),
-            narrow_unsigned(observed, "executor_kind"),
-            narrow_unsigned(observed, "executor_threads")};
-    }
-    require(
-        value.at("offered_qos").is_array() &&
-        value.at("offered_qos").size() <= limits.max_qos_profiles);
-    for (const auto& profile : value.at("offered_qos")) {
-        result.offered_qos.push_back(read_qos(profile));
+    if (value.contains("metadata")) {
+        const auto& meta = value.at("metadata");
+        fields(meta, {"format", "json"});
+        result.metadata_format = text(meta, "format");
+        require(canonical::valid_metadata_format(result.metadata_format));
+        require(meta.at("json").is_object());
+        result.metadata_json = meta.at("json").dump();
+        if (result.metadata_json.size() > limits.max_descriptor_metadata_bytes) {
+            throw InvalidManifest{Status(
+                StatusCode::ResourceExhausted, "Manifest descriptor metadata exceeds byte limit")};
+        }
     }
     return result;
 }
 
-Json document(const SegmentManifest& manifest) {
+Json document(const SegmentManifest& manifest, const ManifestLimits& limits) {
     Json files = Json::array();
     for (const auto& value : manifest.files) {
         files.push_back(
@@ -347,7 +323,7 @@ Json document(const SegmentManifest& manifest) {
     }
     Json descriptors = Json::array();
     for (const auto& value : manifest.descriptors) {
-        descriptors.push_back(descriptor_document(value));
+        descriptors.push_back(descriptor_document(value, limits.max_descriptor_metadata_bytes));
     }
     Json coverage = Json::array();
     for (const auto& value : manifest.coverage) {
@@ -361,7 +337,7 @@ Json document(const SegmentManifest& manifest) {
              {"last_sequence", std::to_string(value.last_sequence)}});
     }
     return {
-        {"format_version", "1.0"},
+        {"format_version", std::string(kManifestFormatVersion)},
         {"segment_id", std::to_string(manifest.identity.segment_id)},
         {"task_id", to_string(manifest.identity.task_id)},
         {"pipeline_id", std::to_string(manifest.identity.pipeline_id)},
@@ -394,12 +370,25 @@ Json document(const SegmentManifest& manifest) {
 
 }  // namespace
 
+Result<std::string> normalize_descriptor_metadata(
+    std::string_view format, std::string_view json, std::uint32_t max_bytes) {
+    if (format.empty() && json.empty()) {
+        return std::string{};
+    }
+    try {
+        const auto obj = parse_metadata_object(format, json, max_bytes);
+        return obj.dump();
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
 Result<ManifestDescriptor> capture_manifest_descriptor(
     const storage::StreamDescriptor& descriptor, std::uint64_t accepted_records,
-    std::uint32_t max_schema_bytes, std::uint32_t max_qos_profiles) {
-    if (descriptor.schema.size > max_schema_bytes || max_qos_profiles > 256 ||
-        descriptor.ros2_offered_qos_profile_count > max_qos_profiles ||
-        !storage::abi::valid_descriptor(&descriptor)) {
+    std::uint32_t max_schema_bytes, std::uint32_t max_metadata_bytes) {
+    if (descriptor.schema.size > max_schema_bytes || !storage::abi::valid_descriptor(&descriptor)) {
         return Status(StatusCode::InvalidArgument, {});
     }
     try {
@@ -410,7 +399,6 @@ Result<ManifestDescriptor> capture_manifest_descriptor(
         result.stream_id = descriptor.stream_id;
         result.descriptor_id = descriptor.descriptor_id;
         result.accepted_records = accepted_records;
-        result.data_profile = descriptor.data_profile;
         result.channel_name = copy(descriptor.channel_name);
         result.message_encoding = copy(descriptor.message_encoding);
         result.schema_name = copy(descriptor.schema_name);
@@ -421,25 +409,79 @@ Result<ManifestDescriptor> capture_manifest_descriptor(
             return digest.status();
         }
         result.schema_digest = std::move(digest.value());
-        result.ros2_type_description_hash = copy(descriptor.ros2_type_description_hash);
-        if (descriptor.ros2_offered_qos_profile_count != 0) {
-            result.offered_qos.assign(
-                descriptor.ros2_offered_qos_profiles,
-                descriptor.ros2_offered_qos_profiles + descriptor.ros2_offered_qos_profile_count);
-            std::sort(
-                result.offered_qos.begin(), result.offered_qos.end(),
-                [](const auto& left, const auto& right) {
-                    return canonical::qos_key(left) < canonical::qos_key(right);
-                });
-            result.offered_qos.erase(
-                std::unique(
-                    result.offered_qos.begin(), result.offered_qos.end(),
-                    [](const auto& left, const auto& right) {
-                        return canonical::qos_key(left) == canonical::qos_key(right);
-                    }),
-                result.offered_qos.end());
+        if (descriptor.metadata.format.size != 0) {
+            result.metadata_format = copy(descriptor.metadata.format);
+            auto normalized = normalize_descriptor_metadata(
+                result.metadata_format,
+                {descriptor.metadata.json.data, descriptor.metadata.json.size}, max_metadata_bytes);
+            if (!normalized.ok()) {
+                return normalized.status();
+            }
+            result.metadata_json = std::move(normalized.value());
         }
         return result;
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::size_t> manifest_base_upper_bound(
+    const ManifestIdentity& identity, std::size_t stream_count, std::uint32_t max_files,
+    std::uint32_t max_path_bytes) {
+    try {
+        validate_identity(identity);
+        SegmentManifest skeleton;
+        skeleton.identity = identity;
+        skeleton.identity.committed_at =
+            WallTime{std::chrono::nanoseconds{std::numeric_limits<std::int64_t>::min()}};
+        skeleton.logical_bytes = std::numeric_limits<std::uint64_t>::max();
+        skeleton.first_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
+        skeleton.last_receive_monotonic = std::numeric_limits<std::uint64_t>::max();
+        skeleton.min_receive_realtime = std::numeric_limits<std::int64_t>::min();
+        skeleton.max_receive_realtime = std::numeric_limits<std::int64_t>::min();
+        skeleton.recording_begin_ns = std::numeric_limits<std::uint64_t>::max();
+        skeleton.recording_end_ns = std::numeric_limits<std::uint64_t>::max();
+        skeleton.coverage.reserve(stream_count);
+        for (std::size_t i = 0; i < stream_count; ++i) {
+            skeleton.coverage.push_back(StreamCoverage{
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max(),
+                std::numeric_limits<std::uint64_t>::max()});
+        }
+        ManifestLimits dummy;
+        std::size_t total = document(skeleton, dummy).dump().size();
+        // Worst-case FileEvidence entry:
+        // {"physical_size":"18446744073709551615","relative_path":"..."} Account for up to 6x JSON
+        // escaping for any control byte in max_path_bytes.
+        const std::size_t per_file = 64U + static_cast<std::size_t>(max_path_bytes) * 6U;
+        if (max_files > 0 && per_file > (std::numeric_limits<std::size_t>::max() - total) /
+                                            static_cast<std::size_t>(max_files)) {
+            return Status(StatusCode::ResourceExhausted, {});
+        }
+        total += static_cast<std::size_t>(max_files) * per_file;
+        return total;
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::size_t> manifest_descriptor_upper_bound(
+    const ManifestDescriptor& descriptor, const ManifestLimits& limits) {
+    try {
+        valid_limits(limits);
+        validate_descriptor(descriptor, limits);
+        ManifestDescriptor worst = descriptor;
+        worst.accepted_records = std::numeric_limits<std::uint64_t>::max();
+        // +1 covers the JSON array comma separator between descriptor entries.
+        return descriptor_document(worst, limits.max_descriptor_metadata_bytes).dump().size() + 1U;
+    } catch (InvalidManifest& failure) {
+        return std::move(failure.status);
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -479,7 +521,7 @@ Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLi
 Result<std::string> encode_manifest(const SegmentManifest& manifest, const ManifestLimits& limits) {
     try {
         validate(manifest, limits);
-        auto encoded = document(manifest).dump();
+        auto encoded = document(manifest, limits).dump();
         if (encoded.size() > limits.max_bytes) {
             return Status(StatusCode::ResourceExhausted, {});
         }
@@ -494,7 +536,31 @@ Result<std::string> encode_manifest(const SegmentManifest& manifest, const Manif
 Result<SegmentManifest> decode_manifest(std::string_view encoded, const ManifestLimits& limits) {
     try {
         valid_limits(limits);
-        const auto value = take(persistence::parse_json(encoded, {limits.max_bytes, 36}));
+        const std::size_t max_nodes = std::max<std::size_t>(65536, limits.max_bytes / 2);
+        const auto value =
+            take(persistence::parse_json(encoded, {limits.max_bytes, 48, max_nodes}));
+        // Check format_version FIRST before validating version-specific fields so
+        // pre-reset 1.0 manifests fail closed with Unavailable rather than DataLoss.
+        if (!value.is_object() || !value.contains("format_version") ||
+            !value.at("format_version").is_string()) {
+            return Status(StatusCode::DataLoss, "Manifest missing string format_version");
+        }
+        const auto& version = value.at("format_version").get_ref<const std::string&>();
+        if (version != kManifestFormatVersion) {
+            std::string safe_version;
+            safe_version.reserve(std::min<std::size_t>(version.size(), 64));
+            for (const unsigned char ch : version) {
+                if (safe_version.size() == 64) {
+                    break;
+                }
+                safe_version.push_back(ch >= 0x20 && ch <= 0x7e ? static_cast<char>(ch) : '?');
+            }
+            return Status(
+                StatusCode::Unavailable,
+                "Incompatible Artifact manifest format_version '" + safe_version +
+                    "' (expected '2.0'); retain existing volume data and select a new volume or "
+                    "re-initialize after backup");
+        }
         fields(
             value, {"format_version",
                     "segment_id",
@@ -523,9 +589,6 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
                     "max_receive_realtime",
                     "recording_begin_ns",
                     "recording_end_ns"});
-        if (text(value, "format_version") != "1.0") {
-            return Status(StatusCode::Unavailable, {});
-        }
         SegmentManifest manifest;
         manifest.identity.segment_id = unsigned_value(value, "segment_id");
         manifest.identity.task_id = take(parse_task_id(text(value, "task_id")));
@@ -581,10 +644,10 @@ Result<SegmentManifest> decode_manifest(std::string_view encoded, const Manifest
         validate(manifest, limits);
         return manifest;
     } catch (InvalidManifest& failure) {
-        return failure.status.code() == StatusCode::InvalidArgument
-                   ? Status(StatusCode::DataLoss, {})
-                   : std::move(failure.status);
-    } catch (const Json::exception&) {
+        if (failure.status.code() == StatusCode::ResourceExhausted ||
+            failure.status.code() == StatusCode::Unavailable) {
+            return std::move(failure.status);
+        }
         return Status(StatusCode::DataLoss, {});
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});

@@ -5,6 +5,8 @@
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
 
+#include "ros2/ros2.h"
+
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -102,17 +104,41 @@ public:
         if (reject_descriptor) {
             return RODAQ_STATUS_RESOURCE_EXHAUSTED;
         }
-        EXPECT_EQ(descriptor.data_profile, RODAQ_DATA_PROFILE_ROS2);
-        if (descriptor.ros2_subscription == nullptr) {
+        if (descriptor.metadata.format.size != 8 ||
+            std::string_view(descriptor.metadata.format.data, descriptor.metadata.format.size) !=
+                "ros2/1.0" ||
+            descriptor.metadata.json.size == 0) {
             return RODAQ_STATUS_INVALID_ARGUMENT;
         }
-        const auto* subscription = descriptor.ros2_subscription;
+        const auto meta = nlohmann::json::parse(
+            descriptor.metadata.json.data,
+            descriptor.metadata.json.data + descriptor.metadata.json.size);
+        if (!meta.is_object() || !meta.contains("subscription")) {
+            return RODAQ_STATUS_INVALID_ARGUMENT;
+        }
+        const auto& sub = meta.at("subscription");
+        const auto& req = sub.at("installed_requested_qos");
+        rodaq_ros2_qos_profile_t requested{};
+        requested.history = req.at("history").get<std::uint32_t>();
+        requested.reliability = req.at("reliability").get<std::uint32_t>();
+        requested.durability = req.at("durability").get<std::uint32_t>();
+        requested.liveliness = req.at("liveliness").get<std::uint32_t>();
+        requested.depth = req.at("depth").get<std::uint64_t>();
+        requested.deadline = {
+            req.at("deadline_sec").get<std::uint64_t>(),
+            req.at("deadline_nsec").get<std::uint64_t>()};
+        requested.lifespan = {
+            req.at("lifespan_sec").get<std::uint64_t>(),
+            req.at("lifespan_nsec").get<std::uint64_t>()};
+        requested.liveliness_lease_duration = {
+            req.at("lease_sec").get<std::uint64_t>(), req.at("lease_nsec").get<std::uint64_t>()};
+        requested.avoid_ros_namespace_conventions =
+            req.at("avoid_ros_namespace_conventions").get<bool>() ? 1 : 0;
         subscriptions.push_back(
-            {{subscription->ros_distribution.data, subscription->ros_distribution.size},
-             {subscription->rmw_implementation.data, subscription->rmw_implementation.size},
-             subscription->installed_requested_qos,
-             subscription->subscription_generation,
-             subscription->executor_threads});
+            {sub.at("ros_distribution").get<std::string>(),
+             sub.at("rmw_implementation").get<std::string>(), requested,
+             sub.at("subscription_generation").get<std::uint64_t>(),
+             sub.at("executor_threads").get<std::uint32_t>()});
         EXPECT_EQ(
             std::string_view(descriptor.message_encoding.data, descriptor.message_encoding.size),
             "cdr");

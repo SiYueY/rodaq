@@ -28,6 +28,7 @@ struct CatalogEntry {
     std::filesystem::path library_path;
     std::uint16_t abi_major{0};
     std::uint16_t abi_minor{0};
+    std::uint32_t abi_revision{0};
 };
 
 Result<void> parse_semver(std::string_view value);

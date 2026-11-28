@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,29 +10,31 @@
 #include <rodaq/storage/types.hpp>
 #include <rodaq/task/types.hpp>
 
-#include "../ros2_subscription.hpp"
 #include "../time/clock.hpp"
 #include "managed_volume.hpp"
 #include "sealed_files.hpp"
 
 namespace rodaq::artifact {
 
+inline constexpr std::uint32_t kDefaultMaxDescriptorMetadataBytes = 128 * 1024;
+inline constexpr std::size_t kMaxDescriptorMetadataDepth = 16;
+inline constexpr std::size_t kMaxDescriptorMetadataNodes = 16384;
+
 // Schema bytes remain in the self-decoding Storage file set; Core records its
-// own byte digest and all typed bind-once Descriptor facts.
+// own byte digest and generic bind-once Descriptor facts plus optional
+// format-tagged compact-normalized JSON metadata.
 struct ManifestDescriptor {
     StreamId stream_id{0};
     rodaq_descriptor_id_t descriptor_id{0};
     std::uint64_t accepted_records{0};
-    rodaq_data_profile_t data_profile{RODAQ_DATA_PROFILE_INVALID};
     std::string channel_name;
     std::string message_encoding;
     std::string schema_name;
     std::string schema_encoding;
     std::string schema_digest;
     std::uint32_t schema_size{0};
-    std::string ros2_type_description_hash;
-    std::vector<rodaq_ros2_qos_profile_t> offered_qos;
-    std::optional<canonical::Ros2SubscriptionFacts> ros2_subscription;
+    std::string metadata_format;
+    std::string metadata_json;
 };
 
 struct StreamCoverage {
@@ -83,12 +84,25 @@ struct ManifestLimits {
     std::uint32_t max_files{64};
     std::uint32_t max_descriptors{1024};
     std::uint32_t max_streams{1024};
-    std::uint32_t max_qos_profiles{256};
+    std::uint32_t max_descriptor_metadata_bytes{kDefaultMaxDescriptorMetadataBytes};
 };
+
+Result<std::string> normalize_descriptor_metadata(
+    std::string_view format, std::string_view json,
+    std::uint32_t max_bytes = kDefaultMaxDescriptorMetadataBytes);
 
 Result<ManifestDescriptor> capture_manifest_descriptor(
     const storage::StreamDescriptor& descriptor, std::uint64_t accepted_records,
-    std::uint32_t max_schema_bytes = 1024 * 1024, std::uint32_t max_qos_profiles = 256);
+    std::uint32_t max_schema_bytes = 1024 * 1024,
+    std::uint32_t max_metadata_bytes = kDefaultMaxDescriptorMetadataBytes);
+
+Result<std::size_t> manifest_base_upper_bound(
+    const ManifestIdentity& identity, std::size_t stream_count, std::uint32_t max_files,
+    std::uint32_t max_path_bytes);
+
+Result<std::size_t> manifest_descriptor_upper_bound(
+    const ManifestDescriptor& descriptor, const ManifestLimits& limits);
+
 Result<void> validate_manifest_identity(const ManifestIdentity& identity);
 Result<void> validate_manifest_limits(const ManifestLimits& limits);
 Result<void> validate_manifest(const SegmentManifest& manifest, const ManifestLimits& limits);
