@@ -19,7 +19,8 @@ protected:
         options.max_instances = 1;
         options.max_config_size = 64;
         options.shutdown_timeout = std::chrono::seconds(1);
-        manager_ = std::make_shared<plugin::ManagerState>(std::move(options), token.value());
+        manager_ = std::make_shared<plugin::ManagerState>(
+            std::move(options), std::vector<plugin::CatalogEntry>{}, token.value());
         library_ = std::make_shared<plugin::LibraryState>();
         instance_ = std::make_shared<plugin::InstanceState>(manager_, library_, "{}", 0, 1);
         manager_->instances[0] = instance_;

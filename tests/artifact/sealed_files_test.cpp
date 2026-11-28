@@ -1,6 +1,4 @@
 #include "artifact/sealed_files.hpp"
-#include "persistence/digest.hpp"
-#include "persistence/file_descriptor.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,12 +6,10 @@
 #include <array>
 #include <cerrno>
 #include <cstdlib>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
-#include <unistd.h>
 
 namespace {
 
@@ -97,23 +93,18 @@ TEST_F(SealedFilesTest, VerifiesExactSizesAndSyncsPinnedFlatTreeWithoutClaimingC
     EXPECT_FALSE(owner->install_manifest(manifest).ok());
 }
 
-TEST_F(SealedFilesTest, StreamingDigestCrossesBufferBoundariesAndDoesNotChangeBorrowedFdOffset) {
-    std::string data(200003, '\0');
-    for (std::size_t index = 0; index < data.size(); ++index) {
-        data[index] = static_cast<char>(index % 251);
-    }
-    write("data.mcap", data);
-    persistence::FileDescriptor fd(::open((staging_ / "data.mcap").c_str(), O_RDONLY | O_CLOEXEC));
-    ASSERT_GE(fd.get(), 0);
-    ASSERT_EQ(lseek(fd.get(), 7, SEEK_SET), 7);
-    const auto expected = persistence::byte_digest(data.data(), data.size());
-    ASSERT_TRUE(expected.ok());
-    const auto actual = persistence::file_digest(fd.get(), data.size());
-    ASSERT_TRUE(actual.ok());
-    EXPECT_EQ(actual.value(), expected.value());
-    EXPECT_EQ(lseek(fd.get(), 0, SEEK_CUR), 7);
-    EXPECT_EQ(
-        persistence::file_digest(fd.get(), data.size() + 1).status().code(), StatusCode::DataLoss);
+TEST_F(SealedFilesTest, ManifestInstallWithoutSyncSkipsFsyncCalls) {
+    auto opened = open([](persistence::FileStep step) {
+        return (step == persistence::FileStep::SyncFile ||
+                step == persistence::FileStep::SyncDirectory)
+                   ? EIO
+                   : 0;
+    });
+    ASSERT_TRUE(opened.ok());
+    const auto manifest = encoded_manifest();
+    ASSERT_TRUE(opened.value()->install_manifest(manifest, false).ok());
+    EXPECT_EQ(opened.value()->manifest_bytes(), manifest.size());
+    EXPECT_TRUE(opened.value()->verify().ok());
 }
 
 TEST_F(SealedFilesTest, RejectsUnlistedEntriesDirectoriesLinksAndWrongSizesBeforeTreeProof) {

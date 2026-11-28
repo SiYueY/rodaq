@@ -63,6 +63,7 @@ struct DaqVolumePolicy {
     std::uint32_t max_segments{64};
     std::uint32_t max_commit_slots{16};
     std::uint32_t max_artifacts_per_volume{10000};
+    DurabilityProfile durability{DurabilityProfile::Normal};
 };
 
 struct DaqOpenOptions {

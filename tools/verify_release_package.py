@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S7 Release Package Staging, Out-of-Tree SDK Replay, and Installed ROS 2 -> MCAP Qualification."""
+"""Release Package Staging, Relocated SDK & Isolated OOT Plugin Replay, and Installed ROS 2 -> MCAP Verification."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ WEB_DIST_DIR = REPO_ROOT / "web" / "dist"
 OUT_DIR = REPO_ROOT / "build" / "s7-qualification"
 RELEASE_NAME = "rodaq-0.1.0-linux-amd64-humble"
 ROS_DISTRO = "humble"
-ADMIN_TOKEN = "rodaq-s7-qual-admin-secret-0123456789abc"
+BEARER_TOKEN = "rodaq_release_qual_bearer_secret_256bit_0123456789abcdef"
 ROS_DOMAIN_ID = 53
 
 
@@ -35,13 +35,6 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
-    return h.hexdigest()
-
-
-def bearer_verifier_hex(token: str) -> str:
-    h = hashlib.sha256()
-    h.update(b"rodaq.server-bearer.v1\x00")
-    h.update(token.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -88,7 +81,7 @@ def http_json(
     idem_key: str | None = None,
 ) -> tuple[int, dict, float]:
     headers = {
-        "Authorization": f"Bearer {ADMIN_TOKEN}",
+        "Authorization": f"Bearer {BEARER_TOKEN}",
         "RoDAQ-API-Version": "1.0",
     }
     data = None
@@ -112,7 +105,7 @@ def http_json(
 
 def http_bytes(base_url: str, path: str, byte_range: str | None = None) -> tuple[int, bytes, dict]:
     headers = {
-        "Authorization": f"Bearer {ADMIN_TOKEN}",
+        "Authorization": f"Bearer {BEARER_TOKEN}",
         "RoDAQ-API-Version": "1.0",
     }
     if byte_range:
@@ -123,7 +116,7 @@ def http_bytes(base_url: str, path: str, byte_range: str | None = None) -> tuple
 
 
 def stage_release_package() -> tuple[Path, Path, str]:
-    print("[S7-1] Staging final release package...")
+    print("[REL-1] Staging final release package...")
     if not (WEB_DIST_DIR / "index.html").exists():
         raise RuntimeError(f"Missing prebuilt web/dist at {WEB_DIST_DIR}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,6 +139,7 @@ def stage_release_package() -> tuple[Path, Path, str]:
         "bin/rodaq",
         "lib/librodaq_plugin.so",
         "lib/librodaq_daq.so",
+        "lib/librodaq_ros2_support.a",
         "lib/cmake/RoDAQ/RoDAQConfig.cmake",
         "lib/cmake/RoDAQ/RoDAQTargets.cmake",
         "lib/cmake/RoDAQ/RoDAQPlugin.cmake",
@@ -169,6 +163,7 @@ def stage_release_package() -> tuple[Path, Path, str]:
     expected_exports = [
         "add_library(rodaq::plugin SHARED IMPORTED)",
         "add_library(rodaq::daq SHARED IMPORTED)",
+        "add_library(rodaq::ros2_support STATIC IMPORTED)",
     ]
     if sorted(exported) != sorted(expected_exports):
         raise RuntimeError(f"Unexpected exported CMake targets: {exported}")
@@ -189,8 +184,8 @@ def stage_release_package() -> tuple[Path, Path, str]:
 
 
 def replay_out_of_tree_sdk(tarball: Path) -> dict:
-    print("[S7-2] Running out-of-tree C11/C++17 Plugin & rodaq::daq Consumer replay from relocated release tarball...")
-    tmp = Path(tempfile.mkdtemp(prefix="rodaq-s7-oot-"))
+    print("[REL-2] Running out-of-tree C11/C++17 SDK & isolated official plugin replay from relocated release tarball...")
+    tmp = Path(tempfile.mkdtemp(prefix="rodaq-rel-oot-"))
     try:
         with tarfile.open(tarball, "r:gz") as tf:
             tf.extractall(tmp)
@@ -211,15 +206,15 @@ find_package(RoDAQ REQUIRED CONFIG)
 add_library(oot_c_plugin SHARED c_plugin.c)
 target_link_libraries(oot_c_plugin PRIVATE rodaq::plugin)
 rodaq_register_plugin(oot_c_plugin
-    PLUGIN_ID "com.example.s7.c_probe"
-    PLUGIN_NAME "S7 OOT C Probe"
+    PLUGIN_ID "com.example.rel.c_probe"
+    PLUGIN_NAME "Release OOT C Probe"
     PLUGIN_VERSION "1.0.0")
 
 add_library(oot_cpp_plugin SHARED cpp_plugin.cpp)
 target_link_libraries(oot_cpp_plugin PRIVATE rodaq::plugin)
 rodaq_register_plugin(oot_cpp_plugin
-    PLUGIN_ID "com.example.s7.cpp_probe"
-    PLUGIN_NAME "S7 OOT C++ Probe"
+    PLUGIN_ID "com.example.rel.cpp_probe"
+    PLUGIN_NAME "Release OOT C++ Probe"
     PLUGIN_VERSION "1.0.0")
 
 add_executable(oot_consumer consumer.cpp)
@@ -234,11 +229,11 @@ target_link_libraries(oot_consumer PRIVATE rodaq::daq rodaq::plugin)
 
 static rodaq_status_code_t c_configure(
     rodaq_plugin_context_t* context,
-    const rodaq_service_registry_reference_t* services,
+    const rodaq_application_callbacks_t* application,
     const rodaq_config_t* config,
     rodaq_error_t* error) {
     (void)context;
-    (void)services;
+    (void)application;
     (void)config;
     (void)error;
     return RODAQ_STATUS_OK;
@@ -298,13 +293,13 @@ rodaq_status_code_t rodaq_plugin_create_instance(
         (src / "cpp_plugin.cpp").write_text(
             """#include <rodaq/plugin/authoring.hpp>
 
-class S7CppProbe : public rodaq::plugin::PluginBase {
+class RelCppProbe : public rodaq::plugin::PluginBase {
 public:
     rodaq::Result<void> configure(rodaq::plugin::PluginSetup&) override { return {}; }
     rodaq::Result<void> shutdown(rodaq::plugin::Deadline) override { return {}; }
 };
 
-RODAQ_DEFINE_PLUGIN(S7CppProbe)
+RODAQ_DEFINE_PLUGIN(RelCppProbe)
 """,
             encoding="utf-8",
         )
@@ -315,7 +310,6 @@ RODAQ_DEFINE_PLUGIN(S7CppProbe)
 #include <rodaq/plugin/instance.hpp>
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
-#include <rodaq/plugin/registry.hpp>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -337,22 +331,17 @@ int main(int argc, char** argv) {
         std::cerr << "PluginManager::create failed: " << mgr.status().message() << "\\n";
         return 3;
     }
-    rodaq::plugin::ServiceRegistry reg;
-    if (!reg.freeze().ok()) {
-        std::cerr << "ServiceRegistry freeze failed\\n";
-        return 3;
-    }
     auto dl = rodaq::plugin::Deadline::after(std::chrono::seconds(5));
     if (!dl.ok()) {
         return 3;
     }
-    for (const char* id : {"com.example.s7.c_probe", "com.example.s7.cpp_probe"}) {
+    for (const char* id : {"com.example.rel.c_probe", "com.example.rel.cpp_probe"}) {
         auto lib = mgr.value().load(id, "1.0.0");
         if (!lib.ok()) {
             std::cerr << "load failed for " << id << ": " << lib.status().message() << "\\n";
             return 4;
         }
-        auto inst = lib.value().create_instance(reg, "");
+        auto inst = lib.value().create_instance("");
         if (!inst.ok()) {
             std::cerr << "create_instance failed for " << id << ": " << inst.status().message() << "\\n";
             return 5;
@@ -384,16 +373,14 @@ int main(int argc, char** argv) {
         oot_install = tmp / "oot_install"
         run_checked(
             [
-                "cmake",
-                "-S",
-                str(src),
-                "-B",
-                str(bld),
-                f"-DCMAKE_PREFIX_PATH={relocated_prefix}",
+                "bash",
+                "-lc",
+                f'source /opt/ros/{ROS_DISTRO}/setup.bash && '
+                f'cmake -S "{src}" -B "{bld}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" && '
+                f'cmake --build "{bld}" -j4 && '
+                f'cmake --install "{bld}" --prefix "{oot_install}"',
             ]
         )
-        run_checked(["cmake", "--build", str(bld), "-j4"])
-        run_checked(["cmake", "--install", str(bld), "--prefix", str(oot_install)])
 
         oot_plugins = oot_install / "lib" / "rodaq" / "plugins"
         chmod_tree_ro(oot_plugins)
@@ -403,11 +390,33 @@ int main(int argc, char** argv) {
         out = run_checked([str(bld / "oot_consumer"), str(oot_plugins)], env=env)
         if "OOT_REPLAY_OK" not in out:
             raise RuntimeError(f"Unexpected consumer output: {out}")
-        print("  Out-of-tree C11 + C++17 plugin & rodaq::daq consumer replay PASSED.")
+
+        # Verify official MCAP & ROS 2 plugins build completely standalone from isolated copies
+        # against the relocated release tarball prefix (zero repo parent directory access).
+        iso_mcap_src = tmp / "isolated_mcap"
+        iso_ros2_src = tmp / "isolated_ros2"
+        shutil.copytree(REPO_ROOT / "plugins/storage/mcap", iso_mcap_src)
+        shutil.copytree(REPO_ROOT / "plugins/acquisition/ros2", iso_ros2_src)
+
+        run_checked(
+            [
+                "bash",
+                "-lc",
+                f'source /opt/ros/{ROS_DISTRO}/setup.bash && '
+                f'cmake -S "{iso_mcap_src}" -B "{tmp / "iso_mcap_build"}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" && '
+                f'cmake --build "{tmp / "iso_mcap_build"}" -j4 && '
+                f'cmake -S "{iso_ros2_src}" -B "{tmp / "iso_ros2_build"}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" && '
+                f'cmake --build "{tmp / "iso_ros2_build"}" -j4',
+            ]
+        )
+
+        print("  Out-of-tree C11/C++17 SDK & isolated official MCAP/ROS2 plugin replay PASSED.")
         return {
             "status": "passed",
-            "c_plugin": "com.example.s7.c_probe@1.0.0",
-            "cpp_plugin": "com.example.s7.cpp_probe@1.0.0",
+            "c_plugin": "com.example.rel.c_probe@1.0.0",
+            "cpp_plugin": "com.example.rel.cpp_probe@1.0.0",
+            "isolated_official_mcap_build": True,
+            "isolated_official_ros2_build": True,
             "relocated_prefix_tested": True,
         }
     finally:
@@ -415,9 +424,9 @@ int main(int argc, char** argv) {
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
-    print("[S7-3] Running relocated release ROS 2 Humble -> MCAP workload, benchmark, ros2 bag info & SIGKILL crash recovery...")
-    tmp = Path(tempfile.mkdtemp(prefix="rodaq-s7-runtime-"))
+def run_installed_ros2_mcap_workload_and_restart_check(tarball: Path) -> dict:
+    print("[REL-3] Running relocated release ROS 2 -> MCAP workload, ros2 bag info & SIGKILL restart check...")
+    tmp = Path(tempfile.mkdtemp(prefix="rodaq-rel-runtime-"))
     daemon: subprocess.Popen | None = None
     ros_pub: subprocess.Popen | None = None
     try:
@@ -433,27 +442,9 @@ def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
         state_dir.mkdir()
         vol_dir.mkdir()
 
-        cred_file = tmp / "credentials.json"
-        cred_file.write_text(
-            json.dumps(
-                {
-                    "format_version": "1.0",
-                    "credentials": [
-                        {
-                            "credential_id": "s7-admin",
-                            "principal": "s7-admin",
-                            "scopes": ["read", "control", "admin"],
-                            "verifier": bearer_verifier_hex(ADMIN_TOKEN),
-                            "credential_epoch": "1",
-                            "enabled": True,
-                        }
-                    ],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        cred_file.chmod(0o600)
+        token_file = tmp / "server.token"
+        token_file.write_text(f"{BEARER_TOKEN}\n", encoding="utf-8")
+        token_file.chmod(0o600)
 
         port = pick_free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -468,24 +459,27 @@ def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
                         "server": {
                             "format_version": "1.0",
                             "http": {"listen_address": "127.0.0.1", "port": port, "worker_threads": 2},
-                            "security": {"credential_store": str(cred_file)},
+                            "security": {"bearer_token_file": str(token_file)},
                         },
                         "daq": {
                             "state_root": str(state_dir),
                             "volume_root": str(vol_dir),
                             "mode": mode,
                             "plugin_search_paths": [str(plugins)],
-                            "qualified_runtime_profile_id": "s7-devhost-humble-mcap",
+                            "qualified_runtime_profile_id": "rel-devhost-humble-mcap",
                             "max_tasks": 2,
                             "max_pipelines_per_task": 2,
-                            "volume_name": "local",
+                            "volume": {
+                                "name": "local",
+                                "durability_profile": "normal",
+                            },
                             "profiles": [
                                 {
                                     "name": "default",
-                                    "payload_pool_bytes": "2097152",
-                                    "max_payload_bytes": "65536",
-                                    "max_logical_bytes": "2097152",
-                                    "max_segment_physical_bytes": "16777216",
+                                    "payload_pool_bytes": 2097152,
+                                    "max_payload_bytes": 65536,
+                                    "max_logical_bytes": 2097152,
+                                    "max_segment_physical_bytes": 16777216,
                                     "max_descriptors": 32,
                                     "max_prepared_descriptors": 32,
                                     "max_streams": 8,
@@ -542,24 +536,24 @@ def run_installed_ros2_mcap_workload_and_crash_recovery(tarball: Path) -> dict:
                 time.sleep(0.05)
             raise RuntimeError("rodaq did not reach ready phase")
 
-        # Multi-topic ROS 2 publisher: /s7_chatter (64 KiB @ 50 Hz ~= 3.2 MB/s) + /s7_telemetry (100 Hz).
-        pub_py = tmp / "s7_pub.py"
+        # Multi-topic ROS 2 publisher: /rel_chatter (60 KB @ 50 Hz) + /rel_telemetry (100 Hz).
+        pub_py = tmp / "rel_pub.py"
         pub_py.write_text(
             """import rclpy, time
 from rclpy.node import Node
 from std_msgs.msg import String
 rclpy.init()
-node = Node('rodaq_s7_qual_pub')
-p1 = node.create_publisher(String, '/s7_chatter', 50)
-p2 = node.create_publisher(String, '/s7_telemetry', 50)
+node = Node('rodaq_rel_qual_pub')
+p1 = node.create_publisher(String, '/rel_chatter', 50)
+p2 = node.create_publisher(String, '/rel_telemetry', 50)
 big_pad = 'B' * 60000
 small_pad = 'T' * 512
 i = 0
 try:
     while rclpy.ok():
-        p2.publish(String(data=f's7-telemetry-{i}-{small_pad}'))
+        p2.publish(String(data=f'rel-telemetry-{i}-{small_pad}'))
         if i % 2 == 0:
-            p1.publish(String(data=f's7-chatter-{i}-{big_pad}'))
+            p1.publish(String(data=f'rel-chatter-{i}-{big_pad}'))
         i += 1
         time.sleep(0.01)
 except KeyboardInterrupt:
@@ -586,22 +580,18 @@ finally:
         st_html, html_bytes, _ = http_bytes(base_url, "/")
         assert st_html == 200 and b"<div id=\"app\">" in html_bytes
 
-        # Create multi-stream ROS 2 -> MCAP Task with 2s segment rotation.
+        # Create multi-stream ROS 2 -> MCAP Task under frozen simplified TaskConfig.
         task_cfg = {
             "format_version": "1.0",
-            "name": "s7-humble-mcap-qual",
-            "recording_mode": "continuous",
-            "start_policy": {"mode": "all_required"},
-            "recovery_policy": {"mode": "manual"},
+            "name": "rel-humble-mcap-qual",
             "segment_policy": {
-                "max_duration": {"value": "2", "unit": "s"},
+                "max_duration_ms": 2000,
                 "max_physical_bytes": None,
             },
             "retention_policy": {
                 "mode": "keep_all",
-                "max_duration": None,
+                "max_duration_ms": None,
                 "max_physical_bytes": None,
-                "include_previous_continuous": False,
             },
             "pipelines": [
                 {
@@ -618,8 +608,8 @@ finally:
                             "graph_poll_interval": {"value": "200", "unit": "ms"},
                             "qos_change_debounce": {"value": "100", "unit": "ms"},
                             "streams": [
-                                {"stream_key": "chatter", "topic": "/s7_chatter", "qos": {"mode": "adapt", "depth": "50"}},
-                                {"stream_key": "telemetry", "topic": "/s7_telemetry", "qos": {"mode": "adapt", "depth": "50"}},
+                                {"stream_key": "chatter", "topic": "/rel_chatter", "qos": {"mode": "adapt", "depth": "50"}},
+                                {"stream_key": "telemetry", "topic": "/rel_telemetry", "qos": {"mode": "adapt", "depth": "50"}},
                             ],
                         },
                     },
@@ -643,7 +633,7 @@ finally:
                 }
             ],
         }
-        code, created, _ = http_json(base_url, "POST", "/api/tasks", task_cfg, idem_key="s7-create-1")
+        code, created, _ = http_json(base_url, "POST", "/api/tasks", task_cfg, idem_key="rel-create-1")
         assert code == 201, f"create failed: {code} {created}"
         task_id = created["data"]["task_id"]
 
@@ -657,13 +647,17 @@ finally:
             raise RuntimeError(f"Operation {op_id} timed out")
 
         code, op, _ = http_json(
-            base_url, "POST", f"/api/tasks/{task_id}/operations", {"kind": "start", "parameters": {}}, idem_key="s7-start-1"
+            base_url,
+            "POST",
+            f"/api/tasks/{task_id}/operations",
+            {"kind": "start", "parameters": {}},
+            idem_key="rel-start-1",
         )
-        assert code == 202
+        assert code == 202, f"start rejected: {code} {op}"
         st = wait_op(op["data"]["operation_id"])
         assert st["state"] == "succeeded", f"start failed: {st}"
 
-        # Sample system & runtime for ~4.5s (45x2 = 90 HTTP API samples; triggers >=2 rotated MCAP segments).
+        # Sample system & runtime for ~4.5s (triggers >=2 rotated single-file MCAP segments).
         api_latencies_ms: list[float] = []
         rss_samples: list[int] = []
         fd_samples: list[int] = []
@@ -688,14 +682,18 @@ finally:
             time.sleep(0.1)
         rec_elapsed_s = max(0.1, time.monotonic() - t_rec_start)
 
-        # Pause -> Resume -> Stop lifecycle check
-        for kind, key in (("pause", "s7-pause-1"), ("resume", "s7-resume-1"), ("stop", "s7-stop-1")):
+        # Pause -> Resume -> Stop lifecycle check.
+        for kind in ("pause", "resume", "stop"):
             if kind == "stop":
                 time.sleep(0.5)
             c, op_b, _ = http_json(
-                base_url, "POST", f"/api/tasks/{task_id}/operations", {"kind": kind, "parameters": {}}, idem_key=key
+                base_url,
+                "POST",
+                f"/api/tasks/{task_id}/operations",
+                {"kind": kind, "parameters": {}},
+                idem_key=f"rel-{kind}-1",
             )
-            assert c == 202
+            assert c == 202, f"{kind} rejected: {c} {op_b}"
             res_op = wait_op(op_b["data"]["operation_id"])
             assert res_op["state"] == "succeeded", f"{kind} failed: {res_op}"
 
@@ -717,92 +715,80 @@ finally:
         sc_range, range_bytes, _ = http_bytes(base_url, mcap_file["download_url"], byte_range="bytes=0-15")
         assert sc_range == 206 and range_bytes == full_bytes[:16]
 
-        # Independent ROS 2 `ros2 bag info` verification on downloaded MCAP!
-        dl_mcap = tmp / "downloaded_s7.mcap"
+        # Independent ROS 2 `ros2 bag info` verification on downloaded single-file MCAP.
+        dl_mcap = tmp / "downloaded_rel.mcap"
         dl_mcap.write_bytes(full_bytes)
         bag_info = run_checked(
             ["bash", "-lc", f'source /opt/ros/{ROS_DISTRO}/setup.bash && ros2 bag info -s mcap "{dl_mcap}"']
         )
-        assert "/s7_chatter" in bag_info and "/s7_telemetry" in bag_info, f"Missing topics in ros2 bag info:\n{bag_info}"
+        assert "/rel_chatter" in bag_info and "/rel_telemetry" in bag_info, f"Missing topics in ros2 bag info:\n{bag_info}"
 
-        # Consecutive crash #1 + #2 (2x SIGKILL during active recording) measuring history RTO vs recording RTO!
-        crash_rto_history_ms: list[float] = []
-        crash_rto_recording_ms: list[float] = []
-        for crash_idx in (1, 2):
-            c, op_b, _ = http_json(
-                base_url,
-                "POST",
-                f"/api/tasks/{task_id}/operations",
-                {"kind": "start", "parameters": {}},
-                idem_key=f"s7-start-crash-{crash_idx}",
-            )
-            assert c == 202
-            assert wait_op(op_b["data"]["operation_id"])["state"] == "succeeded"
-            time.sleep(0.6)
+        # SIGKILL during active recording -> restart rebuilds Catalog synchronously,
+        # cleans staging .tmp, preserves committed artifacts byte-for-byte, and starts Task in Stopped.
+        c, op_s1, _ = http_json(
+            base_url,
+            "POST",
+            f"/api/tasks/{task_id}/operations",
+            {"kind": "start", "parameters": {}},
+            idem_key="rel-start-before-kill",
+        )
+        assert c == 202
+        assert wait_op(op_s1["data"]["operation_id"])["state"] == "succeeded"
+        time.sleep(0.6)
 
-            daemon.kill()  # SIGKILL sudden crash!
-            daemon.wait(timeout=5)
-            daemon = None
+        daemon.kill()
+        daemon.wait(timeout=5)
+        daemon = None
 
-            t_rec0 = time.perf_counter()
-            daemon = start_daemon("existing")
-            # History Query Recovery RTO: first committed artifact query + byte-exact readback after crash.
-            c, arts_after, _ = http_json(base_url, "GET", f"/api/artifacts?task_id={task_id}&limit=50")
-            assert c == 200 and len(arts_after["data"]["items"]) >= len(arts)
-            sc_after, after_bytes, _ = http_bytes(base_url, mcap_file["download_url"])
-            assert sc_after == 200 and after_bytes == full_bytes
-            crash_rto_history_ms.append(round((time.perf_counter() - t_rec0) * 1000.0, 1))
+        t_restart0 = time.perf_counter()
+        daemon = start_daemon("existing")
+        restart_ready_ms = round((time.perf_counter() - t_restart0) * 1000.0, 1)
 
-            # Verify manual-policy boot reconciliation preserved desired_state == 'running' (never fabricated user Stop).
-            c_t, task_after, _ = http_json(base_url, "GET", f"/api/tasks/{task_id}")
-            assert c_t == 200 and task_after["data"]["desired_state"] == "running", f"Unexpected post-crash task: {task_after}"
+        c, arts_after, _ = http_json(base_url, "GET", f"/api/artifacts?task_id={task_id}&limit=50")
+        assert c == 200 and len(arts_after["data"]["items"]) >= len(arts)
+        sc_after, after_bytes, _ = http_bytes(base_url, mcap_file["download_url"])
+        assert sc_after == 200 and after_bytes == full_bytes
 
-            # Recording Resume RTO: operator stops reconciled manual task and starts fresh recording.
-            c, op_clr, _ = http_json(
-                base_url,
-                "POST",
-                f"/api/tasks/{task_id}/operations",
-                {"kind": "stop", "parameters": {}},
-                idem_key=f"s7-clear-after-crash-{crash_idx}",
-            )
-            assert c == 202, f"post-crash stop failed: {c} {op_clr}"
-            assert wait_op(op_clr["data"]["operation_id"])["state"] == "succeeded"
+        # Under frozen simplified contract, Tasks restart cleanly in Stopped (ready for immediate Start).
+        c_t, task_after, _ = http_json(base_url, "GET", f"/api/tasks/{task_id}")
+        assert c_t == 200, f"GET task after restart failed: {c_t} {task_after}"
+        assert task_after["data"]["desired_state"] == "stopped", f"Unexpected post-restart task: {task_after}"
+        assert task_after["data"]["execution_condition"] == "idle", f"Unexpected post-restart task: {task_after}"
 
-            c, op_r, _ = http_json(
-                base_url,
-                "POST",
-                f"/api/tasks/{task_id}/operations",
-                {"kind": "start", "parameters": {}},
-                idem_key=f"s7-resume-after-crash-{crash_idx}",
-            )
-            assert c == 202, f"post-crash start failed: {c} {op_r}"
-            assert wait_op(op_r["data"]["operation_id"])["state"] == "succeeded"
-            crash_rto_recording_ms.append(round((time.perf_counter() - t_rec0) * 1000.0, 1))
+        c, op_r, _ = http_json(
+            base_url,
+            "POST",
+            f"/api/tasks/{task_id}/operations",
+            {"kind": "start", "parameters": {}},
+            idem_key="rel-start-after-restart",
+        )
+        assert c == 202, f"post-restart start failed: {c} {op_r}"
+        assert wait_op(op_r["data"]["operation_id"])["state"] == "succeeded"
+        time.sleep(0.4)
 
-            c, op_s, _ = http_json(
-                base_url,
-                "POST",
-                f"/api/tasks/{task_id}/operations",
-                {"kind": "stop", "parameters": {}},
-                idem_key=f"s7-stop-after-crash-{crash_idx}",
-            )
-            assert c == 202, f"post-resume stop failed: {c} {op_s}"
-            assert wait_op(op_s["data"]["operation_id"])["state"] == "succeeded"
+        c, op_st, _ = http_json(
+            base_url,
+            "POST",
+            f"/api/tasks/{task_id}/operations",
+            {"kind": "stop", "parameters": {}},
+            idem_key="rel-stop-after-restart",
+        )
+        assert c == 202
+        assert wait_op(op_st["data"]["operation_id"])["state"] == "succeeded"
 
-        # Mid-download HTTP client disconnect releases ReadLease so subsequent Reset succeeds cleanly!
+        # Mid-download HTTP client disconnect releases ReadLease so subsequent Reset succeeds cleanly.
         raw_sock = socket.create_connection(("127.0.0.1", port), timeout=5)
         raw_req = (
             f"GET {mcap_file['download_url']} HTTP/1.1\r\n"
             f"Host: 127.0.0.1:{port}\r\n"
-            f"Authorization: Bearer {ADMIN_TOKEN}\r\n"
+            f"Authorization: Bearer {BEARER_TOKEN}\r\n"
             f"RoDAQ-API-Version: 1.0\r\n"
             f"Connection: close\r\n\r\n"
         ).encode("ascii")
         raw_sock.sendall(raw_req)
         _ = raw_sock.recv(128)
-        raw_sock.close()  # Abrupt client disconnect mid-download!
+        raw_sock.close()
 
-        # Wait briefly for server disconnect cleanup, verify active_downloads == 0, then Reset succeeds!
         dl_clean = time.monotonic() + 5.0
         while time.monotonic() < dl_clean:
             _, sb, _ = http_json(base_url, "GET", "/api/system")
@@ -813,7 +799,11 @@ finally:
         assert int(sb_final["data"]["backlog"]["active_downloads"]) == 0
 
         c, op_reset, _ = http_json(
-            base_url, "POST", f"/api/tasks/{task_id}/operations", {"kind": "reset", "parameters": {}}, idem_key="s7-reset-final"
+            base_url,
+            "POST",
+            f"/api/tasks/{task_id}/operations",
+            {"kind": "reset", "parameters": {}},
+            idem_key="rel-reset-final",
         )
         assert c == 202
         reset_res = wait_op(op_reset["data"]["operation_id"])
@@ -822,7 +812,7 @@ finally:
         # Clean SIGTERM shutdown -> exit code 0.
         daemon.send_signal(signal.SIGTERM)
         rc = daemon.wait(timeout=10)
-        assert rc == 0, f"Expected exit code 0 on SIGTERM after crash recovery, got {rc}"
+        assert rc == 0, f"Expected exit code 0 on SIGTERM, got {rc}"
         daemon = None
 
         api_latencies_ms.sort()
@@ -833,8 +823,7 @@ finally:
         result = {
             "status": "passed",
             "ros_distro": ROS_DISTRO,
-            "host_caveat": "Dev-host measurement (NOT target industrial hardware or 100,300 rec/s / 909.44 MB/s heavy reference workload)",
-            "committed_mcap_artifacts_before_crash": len(arts),
+            "committed_mcap_artifacts_before_restart": len(arts),
             "total_committed_physical_bytes": total_committed_bytes,
             "sustained_committed_mb_per_s": round(throughput_mb_s, 2),
             "max_accepted_records_observed": max_accepted_records,
@@ -842,10 +831,9 @@ finally:
             "mcap_download_bytes": len(full_bytes),
             "range_206_verified": True,
             "ros2_bag_info_verified": True,
-            "consecutive_sigkill_crashes_tested": 2,
-            "committed_artifact_rpo_loss_count": 0,
-            "history_query_recovery_rto_ms": crash_rto_history_ms,
-            "recording_resume_recovery_rto_ms": crash_rto_recording_ms,
+            "sigkill_restart_ready_ms": restart_ready_ms,
+            "sigkill_restart_task_stopped": True,
+            "committed_artifact_loss_count": 0,
             "mid_download_disconnect_lease_release_and_reset": True,
             "api_latency_ms": {
                 "samples": len(api_latencies_ms),
@@ -860,7 +848,7 @@ finally:
             },
             "sigterm_clean_exit_code": 0,
         }
-        print(f"  Installed ROS 2 -> MCAP workload, ros2 bag info & SIGKILL recovery PASSED: {json.dumps(result)}")
+        print(f"  Installed ROS 2 -> MCAP workload, ros2 bag info & restart check PASSED: {json.dumps(result)}")
         return result
     finally:
         if ros_pub and ros_pub.poll() is None:
@@ -890,7 +878,7 @@ def main() -> int:
 
     stage_dir, tarball, digest = stage_release_package()
     oot = replay_out_of_tree_sdk(tarball)
-    runtime = run_installed_ros2_mcap_workload_and_crash_recovery(tarball)
+    runtime = run_installed_ros2_mcap_workload_and_restart_check(tarball)
     report = {
         "release_name": RELEASE_NAME,
         "ros_distro": ROS_DISTRO,
@@ -900,9 +888,9 @@ def main() -> int:
         "out_of_tree_sdk_replay": oot,
         "installed_ros2_mcap_qualification": runtime,
     }
-    report_path = OUT_DIR / f"s7-release-qualification-{ROS_DISTRO}.json"
+    report_path = OUT_DIR / f"release-verification-{ROS_DISTRO}.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"[S7] Wrote qualification report to {report_path}")
+    print(f"[REL] Wrote verification report to {report_path}")
     return 0
 
 

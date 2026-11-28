@@ -127,7 +127,7 @@ bool same_snapshot(const struct stat& left, const struct stat& right) noexcept {
 
 FilePublication publish_file(
     const std::filesystem::path& directory, std::string_view name, std::string_view contents,
-    FilePublishMode mode, std::size_t max_bytes, const FileFaultHook& faults) {
+    FilePublishMode mode, std::size_t max_bytes, const FileFaultHook& faults, bool sync) {
     FilePublication outcome;
     if (!valid_name(name) || contents.size() > max_bytes ||
         (mode != FilePublishMode::Create && mode != FilePublishMode::Replace)) {
@@ -207,14 +207,16 @@ FilePublication publish_file(
             return outcome;
         }
 
-        outcome.step = FileStep::SyncFile;
-        error = injected(faults, outcome.step);
-        if (error == 0) {
-            error = synchronize(file.get());
-        }
-        if (error != 0) {
-            fail(error);
-            return outcome;
+        if (sync) {
+            outcome.step = FileStep::SyncFile;
+            error = injected(faults, outcome.step);
+            if (error == 0) {
+                error = synchronize(file.get());
+            }
+            if (error != 0) {
+                fail(error);
+                return outcome;
+            }
         }
 
         outcome.step = FileStep::Publish;
@@ -240,16 +242,18 @@ FilePublication publish_file(
             return outcome;
         }
 
-        outcome.disposition = FileDisposition::Uncertain;
         outcome.retained_temporary.clear();
-        outcome.step = FileStep::SyncDirectory;
-        error = injected(faults, outcome.step);
-        if (error == 0) {
-            error = synchronize(parent.get());
-        }
-        if (error != 0) {
-            fail(error);
-            return outcome;
+        if (sync) {
+            outcome.disposition = FileDisposition::Uncertain;
+            outcome.step = FileStep::SyncDirectory;
+            error = injected(faults, outcome.step);
+            if (error == 0) {
+                error = synchronize(parent.get());
+            }
+            if (error != 0) {
+                fail(error);
+                return outcome;
+            }
         }
 
         outcome.disposition = FileDisposition::Durable;

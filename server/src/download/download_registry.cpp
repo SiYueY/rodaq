@@ -1,6 +1,7 @@
 #include "download_registry.hpp"
 
 #include <algorithm>
+#include <system_error>
 #include <utility>
 
 namespace rodaq::server {
@@ -28,19 +29,25 @@ Result<std::unique_ptr<DownloadRegistry>> DownloadRegistry::create(const Downloa
         return reg;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, "failed to allocate DownloadRegistry");
+    } catch (const std::system_error&) {
+        return Status(StatusCode::ResourceExhausted, "failed to start DownloadRegistry threads");
     }
 }
 
 bool DownloadRegistry::submit_open(std::function<void()> work) {
-    {
-        std::lock_guard<std::mutex> lock(state_->worker_mutex);
-        if (state_->workers_stopping || state_->open_queue.size() >= state_->max_open_queue) {
-            return false;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(state_->worker_mutex);
+            if (state_->workers_stopping || state_->open_queue.size() >= state_->max_open_queue) {
+                return false;
+            }
+            state_->open_queue.push_back(std::move(work));
         }
-        state_->open_queue.push_back(std::move(work));
+        state_->worker_cv.notify_one();
+        return true;
+    } catch (const std::bad_alloc&) {
+        return false;
     }
-    state_->worker_cv.notify_one();
-    return true;
 }
 
 DownloadAdmitResult DownloadRegistry::create_session(

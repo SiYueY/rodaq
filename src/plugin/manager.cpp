@@ -5,8 +5,8 @@
 
 #include "lifecycle.hpp"
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -19,8 +19,6 @@
 
 namespace rodaq::plugin {
 namespace {
-
-constexpr std::size_t kMaxWaitingLoads = 1024;
 
 Result<PluginInstanceId> reserve_instance_id() {
     static std::atomic<PluginInstanceId> next{1};
@@ -35,23 +33,14 @@ Result<PluginInstanceId> reserve_instance_id() {
     }
 }
 
-struct LoadObserver {
-    std::shared_ptr<ManagerState> manager;
-
-    ~LoadObserver() {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        --manager->waiting_loads;
-    }
-};
-
+// Direct single-flight loader: bounded catalog -> dlopen -> dlsym -> ABI &
+// descriptor check -> resident publish. No 30s watchdog on trusted local
+// deployment bootstrap.
 Result<std::shared_ptr<LibraryState>> load_library(
     const std::shared_ptr<ManagerState>& manager, std::size_t index) {
-    std::shared_ptr<LifecycleWork> work;
+    bool is_leader = false;
     {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        if (manager->phase != PluginManagerPhase::Running) {
-            return Status(StatusCode::InvalidState, "PluginManager is not Running");
-        }
+        std::unique_lock<std::mutex> lock(manager->mutex);
         const auto& selected = manager->catalog[index];
         for (std::size_t i = 0; i < index; ++i) {
             const auto& candidate = manager->catalog[i];
@@ -63,66 +52,100 @@ Result<std::shared_ptr<LibraryState>> load_library(
                 break;
             }
         }
-        work = manager->loads[index];
-        if (work && work->done && work->result.ok()) {
-            return work->library;
-        }
-        if (manager->waiting_loads == kMaxWaitingLoads) {
-            return Status(StatusCode::ResourceExhausted, "Plugin load observer capacity");
-        }
-        if (!work || work->done) {
-            if (manager->loaded_count == manager->options.max_loaded_plugins) {
-                return Status(StatusCode::ResourceExhausted, "Loaded Plugin capacity");
+        auto& slot = manager->load_slots[index];
+        for (;;) {
+            if (manager->phase != PluginManagerPhase::Running) {
+                return Status(StatusCode::InvalidState, "PluginManager is not Running");
             }
-            work.reset();
-            for (const auto& available : manager->load_pool) {
-                if (available.use_count() == 1) {
-                    work = available;
-                    break;
+            if (slot.loaded && slot.library) {
+                return slot.library;
+            }
+            if (!slot.in_flight) {
+                if (manager->loaded_count == manager->options.max_loaded_plugins) {
+                    return Status(StatusCode::ResourceExhausted, "Loaded Plugin capacity");
+                }
+                slot.in_flight = true;
+                slot.last_result = Status{};
+                ++manager->loaded_count;
+                ++manager->active_loads;
+                is_leader = true;
+                break;
+            }
+            manager->changed.wait(lock, [&] {
+                return !slot.in_flight || manager->phase != PluginManagerPhase::Running;
+            });
+            if (slot.loaded && slot.library) {
+                return slot.library;
+            }
+            if (!slot.in_flight && !slot.last_result.ok()) {
+                return slot.last_result;
+            }
+        }
+    }
+
+    assert(is_leader);
+    (void)is_leader;
+
+    Status failure;
+    std::shared_ptr<LibraryState> committed_lib;
+    bool abi_exception = false;
+    try {
+        auto prepared = prepare_library(manager->catalog[index]);
+        if (prepared.ok()) {
+            {
+                std::lock_guard<std::mutex> lock(manager->mutex);
+                if (manager->phase == PluginManagerPhase::Running) {
+                    auto committed = prepared.value().commit();
+                    if (committed.ok()) {
+                        committed_lib = prepared.value().library();
+                    } else {
+                        failure = std::move(committed).status();
+                    }
+                } else {
+                    failure =
+                        Status(StatusCode::InvalidState, "Manager stopped before Library publish");
                 }
             }
-            if (!work) {
-                return Status(StatusCode::ResourceExhausted, "Plugin load record capacity");
+            if (!committed_lib) {
+                auto rollback = std::move(prepared).value();
             }
-            work->catalog_index = index;
-            work->done = false;
-            work->submitted = false;
-            work->reported = false;
-            work->result = Status{};
-            work->library.reset();
-            if (!enqueue_locked(*manager, *work)) {
-                return Status(StatusCode::ResourceExhausted, "Plugin lifecycle queue capacity");
-            }
-            manager->loads[index] = work;
-            ++manager->loaded_count;
-            ++manager->active_loads;
+        } else {
+            failure = std::move(prepared).status();
         }
-        ++manager->waiting_loads;
+    } catch (const std::bad_alloc&) {
+        failure = Status(StatusCode::ResourceExhausted, "Out of memory loading Plugin");
+    } catch (...) {
+        abi_exception = true;
+        failure = Status(StatusCode::Internal, "Exception crossed load ABI; restart required");
     }
-    LoadObserver observer{manager};
-    manager->changed.notify_all();
-    std::unique_lock<std::mutex> lock(manager->mutex);
-    manager->changed.wait(
-        lock, [&] { return work->done || manager->phase != PluginManagerPhase::Running; });
-    if (work->done) {
-        if (!work->result.ok()) {
-            return work->result;
-        }
-        return work->library;
-    }
-    return manager->restart_required
-               ? manager->failure
-               : Status(StatusCode::InvalidState, "Manager stopped during load");
-}
 
-void abandon_creation(const std::shared_ptr<ManagerState>& state) noexcept {
     {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (!state->discovery.submitted) {
-            state->discovery.done = true;
+        std::lock_guard<std::mutex> lock(manager->mutex);
+        auto& slot = manager->load_slots[index];
+        slot.in_flight = false;
+        --manager->active_loads;
+        if (committed_lib) {
+            slot.loaded = true;
+            slot.library = committed_lib;
+            slot.last_result = Status{};
+        } else {
+            --manager->loaded_count;
+            slot.last_result = failure;
+            if (abi_exception) {
+                degrade_locked(*manager, failure);
+            }
         }
     }
-    request_shutdown(state);
+    manager->changed.notify_all();
+    if (abi_exception) {
+        enqueue_diagnostic(
+            manager, "Exception crossed load ABI; restart required", &manager->catalog[index].info,
+            0, "native-load");
+    }
+    if (committed_lib) {
+        return committed_lib;
+    }
+    return failure;
 }
 
 }  // namespace
@@ -179,54 +202,34 @@ Result<PluginManager> PluginManager::create(PluginManagerOptions options) {
     if (!token.ok()) {
         return token.status();
     }
+
+    // Synchronous bounded catalog scan (trusted local deployment bootstrap).
+    auto catalog = discover_plugins(options.search_paths);
+    if (!catalog.ok()) {
+        release_authority(token.value());
+        return catalog.status();
+    }
+
     std::shared_ptr<ManagerState> state;
     try {
-        state = std::make_shared<ManagerState>(std::move(options), token.value());
+        state = std::make_shared<ManagerState>(
+            std::move(options), std::move(catalog).value(), token.value());
         state->self_retention = state;
         auto started = start_workers(state);
         if (!started.ok()) {
             return std::move(started).status();
         }
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            if (!enqueue_locked(*state, state->discovery)) {
-                state->discovery.done = true;
-                state->discovery.result = Status(StatusCode::ResourceExhausted, {});
-            }
-        }
-        state->changed.notify_all();
-        Status failure;
-        {
-            std::unique_lock<std::mutex> lock(state->mutex);
-            state->changed.wait(
-                lock, [&] { return state->discovery.done || state->restart_required; });
-            if (state->discovery.done && state->discovery.result.ok() &&
-                state->phase == PluginManagerPhase::Running) {
-                return PluginManager(std::move(state));
-            }
-            failure = state->discovery.done && !state->discovery.result.ok()
-                          ? state->discovery.result
-                          : state->failure;
-        }
-        request_shutdown(state);
-        {
-            std::unique_lock<std::mutex> lock(state->mutex);
-            if (!state->restart_required) {
-                state->changed.wait(
-                    lock, [&] { return state->phase == PluginManagerPhase::Stopped; });
-            }
-        }
-        return failure;
+        return PluginManager(std::move(state));
     } catch (const std::bad_alloc&) {
         if (state) {
-            abandon_creation(state);
+            request_shutdown(state);
         } else {
             release_authority(token.value());
         }
         return Status(StatusCode::ResourceExhausted, {});
     } catch (...) {
         if (state) {
-            abandon_creation(state);
+            request_shutdown(state);
         } else {
             release_authority(token.value());
         }
@@ -323,7 +326,6 @@ Result<void> PluginManager::shutdown(Deadline deadline) {
         return state_->failure;
     }
     lock.unlock();
-    // Native worker/TLS cleanup was joined by the independently supervised reaper.
     std::lock_guard<std::mutex> completion(state_->completion_mutex);
     if (state_->monitor.joinable()) {
         state_->monitor.join();

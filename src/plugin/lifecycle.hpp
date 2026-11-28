@@ -22,11 +22,8 @@ namespace rodaq::plugin {
 struct InstanceState;
 struct ManagerState;
 
-enum class WorkKind { Catalog, Load, Initialize };
 enum class WorkStage {
     Pending,
-    CatalogScan,
-    NativeLoad,
     NativeCreate,
     FoundationValidation,
     NativeConfigure,
@@ -35,6 +32,7 @@ enum class WorkStage {
     InitializationCleanup,
     Complete
 };
+
 enum class CloseStage {
     None,
     Pending,
@@ -45,18 +43,20 @@ enum class CloseStage {
     TerminalPublication
 };
 
-struct LifecycleWork : std::enable_shared_from_this<LifecycleWork> {
-    explicit LifecycleWork(WorkKind value) : kind(value) {}
-
-    WorkKind kind;
+struct LifecycleWork {
     WorkStage stage{WorkStage::Pending};
     std::chrono::steady_clock::time_point stage_started{std::chrono::steady_clock::now()};
     std::weak_ptr<InstanceState> instance;
-    std::size_t catalog_index{0};
     bool done{false};
     bool submitted{false};
     bool reported{false};
     Status result;
+};
+
+struct LoadSlot {
+    bool in_flight{false};
+    bool loaded{false};
+    Status last_result;
     std::shared_ptr<LibraryState> library;
 };
 
@@ -82,7 +82,7 @@ struct InstanceState : std::enable_shared_from_this<InstanceState> {
     PluginInstancePhase phase{PluginInstancePhase::Initializing};
     rodaq_plugin_instance_t native{};
     rodaq_plugin_instance_vtable_t functions{};
-    LifecycleWork initialization{WorkKind::Initialize};
+    LifecycleWork initialization{};
     std::size_t active_calls{0};
     CloseStage close_stage{CloseStage::None};
     std::chrono::steady_clock::time_point close_stage_started{std::chrono::steady_clock::now()};
@@ -105,14 +105,16 @@ private:
     std::uint64_t token_;
 };
 
-/** Bounded control domains: two lifecycle workers share the reserved ring;
- * four close workers consume embedded Instance requests. The monitor never calls
- * native code or Logging; one bounded diagnostic worker performs Logging calls.
- * The reaper owns actual worker/TLS joins. State retains every domain until real
- * completion; Degraded retention intentionally survives until process exit.
+/** Bounded runtime control domains for third-party Plugin Instances:
+ * - Two lifecycle workers run Instance create/configure supervision.
+ * - Four close workers run Instance shutdown/drain/destroy supervision.
+ * - Monitor supervises Instance Initialize/Close runtime timeouts only (not
+ *   startup Catalog scan or dlopen, which are trusted deployment bootstrap).
  */
 struct ManagerState {
-    ManagerState(PluginManagerOptions value, std::uint64_t authority_token);
+    ManagerState(
+        PluginManagerOptions value, std::vector<CatalogEntry> discovered,
+        std::uint64_t authority_token);
     ~ManagerState() noexcept;
 
     // Declared first, destroyed last: authority is released after all backing.
@@ -139,9 +141,7 @@ struct ManagerState {
     Status failure;
     std::atomic<bool> call_violation{false};
     std::vector<CatalogEntry> catalog;
-    LifecycleWork discovery{WorkKind::Catalog};
-    std::vector<std::shared_ptr<LifecycleWork>> loads;
-    std::vector<std::shared_ptr<LifecycleWork>> load_pool;
+    std::vector<LoadSlot> load_slots;
     std::vector<std::shared_ptr<InstanceState>> instances;
     std::vector<bool> reserved_instances;
     std::vector<std::chrono::steady_clock::time_point> instance_reserved_at;
@@ -155,7 +155,6 @@ struct ManagerState {
     std::size_t close_cursor{0};
     std::size_t close_busy{0};
     std::size_t pending_closes{0};
-    std::size_t waiting_loads{0};
     std::array<DiagnosticEvent, 64> diagnostics{};
     std::size_t diagnostic_head{0};
     std::size_t diagnostic_count{0};
@@ -185,8 +184,6 @@ void enqueue_diagnostic(
     const std::shared_ptr<ManagerState>& manager, std::string_view message,
     const PluginInfo* info = nullptr, PluginInstanceId instance = 0,
     std::string_view stage = {}) noexcept;
-void run_discovery(const std::shared_ptr<ManagerState>& manager);
-void run_load(const std::shared_ptr<ManagerState>& manager, LifecycleWork& work);
 void run_initialization(
     const std::shared_ptr<ManagerState>& manager, const std::shared_ptr<InstanceState>& instance);
 void fail_initialization(

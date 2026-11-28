@@ -17,6 +17,8 @@ class ArtifactCatalog;
 struct ReadBacking;
 }  // namespace artifact
 
+enum class DurabilityProfile { Normal, PowerLossHardened };
+
 struct ArtifactId {
     std::uint64_t value{0};
     friend bool operator==(ArtifactId a, ArtifactId b) noexcept { return a.value == b.value; }

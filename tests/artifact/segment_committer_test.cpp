@@ -75,7 +75,8 @@ protected:
     }
 
     rodaq::Result<std::unique_ptr<artifact::SegmentCommitter>> prepare(
-        persistence::FileFaultHook faults = {}) {
+        persistence::FileFaultHook faults = {},
+        rodaq::DurabilityProfile durability = rodaq::DurabilityProfile::Normal) {
         auto files =
             artifact::SealedFiles::open(volume_, 7, seal_, envelope_, 8192, std::move(faults));
         if (!files.ok()) {
@@ -92,7 +93,8 @@ protected:
             return usage.status();
         }
         artifact::CommitReservation reservation{std::move(capacity.value()), 3};
-        return artifact::SegmentCommitter::create(files.value(), manifest_, {}, reservation);
+        return artifact::SegmentCommitter::create(
+            files.value(), manifest_, {}, reservation, durability);
     }
 
     fs::path final_dir() const { return volume_->artifacts_directory() / "7"; }
@@ -141,9 +143,25 @@ TEST_F(SegmentCommitterTest, AtomicNoReplacePublicationSyncsTreeAndTransfersReta
     EXPECT_EQ(volume_capacity_->snapshot().actual_bytes, 0U);
 }
 
-TEST_F(SegmentCommitterTest, TreeSyncFailureNeverPublishesFinalDirectory) {
-    auto prepared =
-        prepare([](auto step) { return step == persistence::FileStep::SyncFile ? EIO : 0; });
+TEST_F(SegmentCommitterTest, NormalProfileCommitsAtomicallyWithoutMandatoryFsync) {
+    auto prepared = prepare([](auto step) {
+        return (step == persistence::FileStep::SyncFile ||
+                step == persistence::FileStep::SyncDirectory)
+                   ? EIO
+                   : 0;
+    });
+    ASSERT_TRUE(prepared.ok());
+    ASSERT_TRUE(prepared.value()->commit().ok());
+    EXPECT_TRUE(prepared.value()->committed());
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_TRUE(fs::is_directory(final_dir()));
+    EXPECT_TRUE(fs::is_regular_file(final_dir() / "manifest.json"));
+}
+
+TEST_F(SegmentCommitterTest, PowerLossHardenedTreeSyncFailureNeverPublishesFinalDirectory) {
+    auto prepared = prepare(
+        [](auto step) { return step == persistence::FileStep::SyncFile ? EIO : 0; },
+        rodaq::DurabilityProfile::PowerLossHardened);
     ASSERT_TRUE(prepared.ok());
     EXPECT_FALSE(prepared.value()->commit().ok());
     EXPECT_FALSE(prepared.value()->committed());

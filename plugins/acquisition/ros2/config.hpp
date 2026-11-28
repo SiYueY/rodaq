@@ -9,7 +9,7 @@
 
 #include <rodaq/result.hpp>
 
-#include "../../support/ros2/qos.hpp"
+#include "ros2/qos.hpp"
 
 namespace rodaq::ros2_acquisition {
 

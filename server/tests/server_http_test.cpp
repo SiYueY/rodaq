@@ -316,11 +316,11 @@ TEST(ServerHttpIntegrationTest, FullLifecycleSecurityDownloadRangeAndStaticSpa) 
     ASSERT_TRUE(validate_server_config(srv_cfg).ok());
 
     ServerApp server;
-    ASSERT_TRUE(server
-                    .start(
-                        srv_cfg, {&runtime.value()->tasks(), &runtime.value()->system(),
-                                  &runtime.value()->artifacts()})
-                    .ok());
+    ServerServices services;
+    services.tasks = &runtime.value()->tasks();
+    services.system = &runtime.value()->system();
+    services.artifacts = &runtime.value()->artifacts();
+    ASSERT_TRUE(server.start(srv_cfg, std::move(services)).ok());
 
     struct RuntimeServerShutdownGuard {
         ServerApp* srv;

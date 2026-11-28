@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(NOT TARGET rodaq::plugin)
+if(NOT TARGET rodaq::plugin OR NOT TARGET rodaq::ros2_support)
     find_package(RoDAQ REQUIRED CONFIG)
 endif()
 if(NOT TARGET nlohmann_json::nlohmann_json)
@@ -15,19 +15,9 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
 endif()
 find_package(rclcpp REQUIRED)
 
-if(NOT TARGET rodaq_ros2_support)
-    find_package(ament_index_cpp REQUIRED)
-    add_library(rodaq_ros2_support STATIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../support/ros2/schema.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../support/ros2/qos.cpp)
-    target_compile_options(rodaq_ros2_support PRIVATE -Wall -Wextra -Wpedantic)
-    target_link_libraries(rodaq_ros2_support PUBLIC rodaq::plugin ament_index_cpp::ament_index_cpp)
-    target_include_directories(rodaq_ros2_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../support)
-endif()
-
 add_library(rodaq_ros2_config STATIC config.cpp)
 target_compile_options(rodaq_ros2_config PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(rodaq_ros2_config PUBLIC rodaq_ros2_support
+target_link_libraries(rodaq_ros2_config PUBLIC rodaq::ros2_support
     PRIVATE rclcpp::rclcpp nlohmann_json::nlohmann_json)
 target_include_directories(rodaq_ros2_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

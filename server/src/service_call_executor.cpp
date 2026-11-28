@@ -1,6 +1,7 @@
 #include "service_call_executor.hpp"
 
 #include <algorithm>
+#include <system_error>
 #include <utility>
 
 namespace rodaq::server {
@@ -52,6 +53,8 @@ Result<std::unique_ptr<ControlExecutor>> ControlExecutor::create(const Execution
         return exec;
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, "failed to allocate ControlExecutor");
+    } catch (const std::system_error&) {
+        return Status(StatusCode::ResourceExhausted, "failed to start ControlExecutor threads");
     }
 }
 
@@ -63,33 +66,38 @@ ExecutorSubmitResult ControlExecutor::submit(
         return {false, CallAdmissionFailure::ShuttingDown};
     }
 
-    auto item = std::make_shared<TaskItem>();
-    item->deadline = std::chrono::steady_clock::now() + observer_timeout;
-    item->work = std::move(work);
-    item->on_timeout = std::move(on_timeout);
+    std::shared_ptr<TaskItem> item;
+    try {
+        item = std::make_shared<TaskItem>();
+        item->deadline = std::chrono::steady_clock::now() + observer_timeout;
+        item->work = std::move(work);
+        item->on_timeout = std::move(on_timeout);
 
-    {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        if (state_->stopping) {
-            return {false, CallAdmissionFailure::ShuttingDown};
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            if (state_->stopping) {
+                return {false, CallAdmissionFailure::ShuttingDown};
+            }
+            if (state_->queue.size() >= state_->max_queue) {
+                ++state_->stats.rejected;
+                return {false, CallAdmissionFailure::GlobalSaturation};
+            }
+            state_->queue.push_back(item);
+            state_->stats.queued = state_->queue.size();
+            state_->stats.high_water_queued =
+                std::max(state_->stats.high_water_queued, state_->stats.queued);
         }
-        if (state_->queue.size() >= state_->max_queue) {
-            ++state_->stats.rejected;
-            return {false, CallAdmissionFailure::GlobalSaturation};
-        }
-        state_->queue.push_back(item);
-        state_->stats.queued = state_->queue.size();
-        state_->stats.high_water_queued =
-            std::max(state_->stats.high_water_queued, state_->stats.queued);
-    }
-    state_->cv.notify_one();
+        state_->cv.notify_one();
 
-    if (item->on_timeout) {
-        std::lock_guard<std::mutex> tlock(timer_mutex_);
-        pending_timers_.push_back(item);
-        timer_cv_.notify_one();
+        if (item->on_timeout) {
+            std::lock_guard<std::mutex> tlock(timer_mutex_);
+            pending_timers_.push_back(item);
+            timer_cv_.notify_one();
+        }
+        return {true, CallAdmissionFailure::GlobalSaturation};
+    } catch (const std::bad_alloc&) {
+        return {false, CallAdmissionFailure::GlobalSaturation};
     }
-    return {true, CallAdmissionFailure::GlobalSaturation};
 }
 
 void ControlExecutor::worker_loop(const std::shared_ptr<SharedState>& state) {

@@ -4,8 +4,10 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -83,7 +85,7 @@ int main(int argc, char** argv) {
         (void)rodaq::logging::shutdown();
         return 1;
     }
-    auto runtime = std::move(runtime_res.value());
+    std::shared_ptr<rodaq::DaqRuntime> runtime(std::move(runtime_res.value()));
     (void)runtime->observe();
 
     rodaq::server::ServerApp server;
@@ -91,6 +93,7 @@ int main(int argc, char** argv) {
     services.tasks = &runtime->tasks();
     services.system = &runtime->system();
     services.artifacts = &runtime->artifacts();
+    services.lifetime_pin = runtime;
 
     const auto shutdown_budget = dep.value().server.timeouts.shutdown;
     if (auto started = server.start(std::move(dep.value().server), services); !started.ok()) {
@@ -122,13 +125,18 @@ int main(int argc, char** argv) {
 
     const auto deadline = std::chrono::steady_clock::now() + shutdown_budget;
     auto srv_sd = server.shutdown(deadline);
-    auto core_sd = runtime->shutdown(deadline);
     if (!srv_sd.ok()) {
-        RODAQ_LOG_ERROR("ServerApp::shutdown error: {}", srv_sd.status().message());
+        RODAQ_LOG_CRITICAL(
+            "ServerApp::shutdown unresolved ({}); skipping normal Core teardown to protect "
+            "detached workers; process restart required",
+            srv_sd.status().message());
+        (void)rodaq::logging::flush();
+        std::_Exit(1);
     }
+    auto core_sd = runtime->shutdown(deadline);
     if (!core_sd.ok()) {
         RODAQ_LOG_ERROR("DaqRuntime::shutdown error: {}", core_sd.status().message());
     }
     (void)rodaq::logging::shutdown();
-    return (srv_sd.ok() && core_sd.ok()) ? 0 : 1;
+    return core_sd.ok() ? 0 : 1;
 }

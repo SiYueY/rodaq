@@ -232,7 +232,8 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
         }
         frame->reservation.emplace(std::move(reservation.value()));
         auto committer = SegmentCommitter::create(
-            frame->files, manifest.value(), input.manifest_limits, *frame->reservation);
+            frame->files, manifest.value(), input.manifest_limits, *frame->reservation,
+            state->options.durability);
         if (!committer.ok()) {
             return fail_before_publish(committer.status().code());
         }

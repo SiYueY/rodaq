@@ -245,7 +245,7 @@ Result<void> SealedFiles::verify() const {
     return state_->verify_entries();
 }
 
-Result<void> SealedFiles::install_manifest(std::string_view encoded_manifest) {
+Result<void> SealedFiles::install_manifest(std::string_view encoded_manifest, bool sync) {
     if (encoded_manifest.empty() || encoded_manifest.size() > state_->manifest_limit ||
         state_->manifest_attempted) {
         return Status(StatusCode::InvalidArgument, {});
@@ -257,7 +257,7 @@ Result<void> SealedFiles::install_manifest(std::string_view encoded_manifest) {
     state_->manifest_attempted = true;
     auto publication = persistence::publish_file(
         state_->staging, "manifest.json", encoded_manifest, persistence::FilePublishMode::Create,
-        static_cast<std::size_t>(state_->manifest_limit), state_->faults);
+        static_cast<std::size_t>(state_->manifest_limit), state_->faults, sync);
     if (!publication.status.ok()) {
         return std::move(publication.status);
     }
@@ -319,7 +319,7 @@ std::uint64_t SealedFiles::segment_id() const noexcept { return state_->segment_
 
 VolumeId SealedFiles::volume_id() const noexcept { return state_->volume->identity(); }
 
-Result<void> SealedFiles::publish_directory() {
+Result<void> SealedFiles::publish_directory(bool sync_parent) {
     if (!state_->manifest || state_->publication_attempted) {
         return Status(StatusCode::InvalidState, {});
     }
@@ -357,10 +357,12 @@ Result<void> SealedFiles::publish_directory() {
         return Status(errno == EEXIST ? StatusCode::Conflict : StatusCode::Unavailable, {});
     }
     state_->current_directory.swap(final_path);
-    auto synced =
-        synchronize(state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults);
-    if (!synced.ok()) {
-        return synced.status();
+    if (sync_parent) {
+        auto synced =
+            synchronize(state_->parent.get(), persistence::FileStep::SyncDirectory, state_->faults);
+        if (!synced.ok()) {
+            return synced.status();
+        }
     }
     return verify();
 }

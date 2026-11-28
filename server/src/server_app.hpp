@@ -14,11 +14,14 @@
 
 namespace rodaq::server {
 
-// Non-owning public Core service pointers injected into ServerApp.
+// Public Core service pointers injected into ServerApp, plus an optional shared
+// lifetime pin keeping the Core owner alive through any detached late-returning
+// worker after a shutdown timeout.
 struct ServerServices {
     TaskService* tasks{nullptr};
     SystemService* system{nullptr};
     ArtifactService* artifacts{nullptr};
+    std::shared_ptr<void> lifetime_pin;
 };
 
 // Owns Drogon HTTP listener, BearerAuthenticator, ControlExecutor,

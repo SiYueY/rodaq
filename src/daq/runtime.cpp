@@ -58,6 +58,7 @@ Result<std::unique_ptr<DaqRuntime>> DaqRuntime::open(DaqOpenOptions options) {
         settings.output_root = std::move(options.volume.name);
         settings.max_tasks = options.max_tasks;
         settings.max_artifacts_per_volume = options.volume.max_artifacts_per_volume;
+        settings.durability = options.volume.durability;
         settings.native_timeout = options.native_timeout;
         settings.system_snapshot_max_age = options.system_snapshot_max_age;
         settings.tasks.config.max_pipelines = options.max_pipelines_per_task;

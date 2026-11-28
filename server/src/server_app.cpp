@@ -151,17 +151,28 @@ struct RequestGuardResult {
     drogon::HttpResponsePtr rejection;
 };
 
+// Shared immutable + pinned execution backing captured by all worker-thread
+// closures (ControlExecutor mutations and DownloadRegistry file opens) so a
+// late-returning detached worker after shutdown timeout never dereferences
+// ServerApp::Impl* or a destroyed Core runtime.
+struct ServerExecutionContext {
+    ServerConfig config;
+    ServerServices services;
+    std::shared_ptr<DownloadRegistry> downloads;
+};
+
 }  // namespace
 
 struct ServerApp::Impl {
     ServerConfig config;
     ServerServices services;
+    std::shared_ptr<ServerExecutionContext> ctx;
     std::atomic<ServerPhase> phase{ServerPhase::Starting};
     std::atomic<bool> started{false};
     std::atomic<bool> stopped{false};
     std::unique_ptr<BearerAuthenticator> auth;
     std::unique_ptr<ControlExecutor> executor;
-    std::unique_ptr<DownloadRegistry> downloads;
+    std::shared_ptr<DownloadRegistry> downloads;
     StaticAssetService static_assets;
     std::thread drogon_thread;
 
@@ -518,17 +529,18 @@ struct ServerApp::Impl {
                 }
                 dispatch_control(
                     g, std::move(cb),
-                    [this, cfg = std::move(parsed_cfg.value()), req_id_obj = std::move(req_id_obj),
-                     req_id = g.request_id, ver = g.api_version]() {
-                        auto created = services.tasks->create_task(cfg, req_id_obj);
+                    [ctx = this->ctx, cfg = std::move(parsed_cfg.value()),
+                     req_id_obj = std::move(req_id_obj), req_id = g.request_id,
+                     ver = g.api_version]() {
+                        auto created = ctx->services.tasks->create_task(cfg, req_id_obj);
                         if (!created.ok()) {
                             RODAQ_LOG_WARNING("server task_create_failed request_id={}", req_id);
                             return make_error_http(
                                 map_core_status(created.status(), FailureDomain::TaskControl),
-                                req_id, config.http.max_json_response_bytes, ver);
+                                req_id, ctx->config.http.max_json_response_bytes, ver);
                         }
                         std::string config_version;
-                        if (auto snap = services.tasks->get_task(created.value()); snap.ok()) {
+                        if (auto snap = ctx->services.tasks->get_task(created.value()); snap.ok()) {
                             config_version = snap.value().active_config_version;
                         }
                         RODAQ_LOG_INFO(
@@ -539,7 +551,7 @@ struct ServerApp::Impl {
                             make_success_envelope(
                                 req_id, serialize_task_create(created.value(), config_version),
                                 ver),
-                            req_id, config.http.max_json_response_bytes, ver);
+                            req_id, ctx->config.http.max_json_response_bytes, ver);
                     });
             },
             {drogon::Post});
@@ -679,17 +691,18 @@ struct ServerApp::Impl {
                 }
                 dispatch_control(
                     g, std::move(cb),
-                    [this, tid = parsed_id.value(), cfg = std::move(parsed_cfg.value()),
+                    [ctx = this->ctx, tid = parsed_id.value(), cfg = std::move(parsed_cfg.value()),
                      req_id_obj = std::move(req_id_obj), precondition, req_id = g.request_id,
                      ver = g.api_version]() {
-                        auto op = services.tasks->configure(tid, cfg, req_id_obj, precondition);
+                        auto op =
+                            ctx->services.tasks->configure(tid, cfg, req_id_obj, precondition);
                         if (!op.ok()) {
                             RODAQ_LOG_WARNING(
                                 "server task_configure_failed request_id={} task_id={}", req_id,
                                 to_string(tid));
                             return make_error_http(
                                 map_core_status(op.status(), FailureDomain::TaskControl), req_id,
-                                config.http.max_json_response_bytes, ver);
+                                ctx->config.http.max_json_response_bytes, ver);
                         }
                         RODAQ_LOG_INFO(
                             "server task_configure_accepted request_id={} operation_id={}", req_id,
@@ -698,7 +711,7 @@ struct ServerApp::Impl {
                             202,
                             make_success_envelope(
                                 req_id, serialize_mutation_accepted(tid, op.value()), ver),
-                            req_id, config.http.max_json_response_bytes, ver);
+                            req_id, ctx->config.http.max_json_response_bytes, ver);
                     });
             },
             {drogon::Put});
@@ -745,27 +758,28 @@ struct ServerApp::Impl {
                 const auto kind = dto.value().kind;
                 dispatch_control(
                     g, std::move(cb),
-                    [this, tid = parsed_id.value(), kind, req_id_obj = std::move(req_id_obj),
-                     precondition, req_id = g.request_id, ver = g.api_version]() {
+                    [ctx = this->ctx, tid = parsed_id.value(), kind,
+                     req_id_obj = std::move(req_id_obj), precondition, req_id = g.request_id,
+                     ver = g.api_version]() {
                         Result<OperationId> op(Status(StatusCode::Internal, "unhandled kind"));
                         switch (kind) {
                             case OperationKind::Start:
-                                op = services.tasks->start(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->start(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Pause:
-                                op = services.tasks->pause(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->pause(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Resume:
-                                op = services.tasks->resume(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->resume(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Stop:
-                                op = services.tasks->stop(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->stop(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Reset:
-                                op = services.tasks->reset(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->reset(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Retire:
-                                op = services.tasks->retire(tid, req_id_obj, precondition);
+                                op = ctx->services.tasks->retire(tid, req_id_obj, precondition);
                                 break;
                             case OperationKind::Configure:
                                 break;
@@ -776,7 +790,7 @@ struct ServerApp::Impl {
                                 to_wire_string(kind), to_string(tid));
                             return make_error_http(
                                 map_core_status(op.status(), FailureDomain::TaskControl), req_id,
-                                config.http.max_json_response_bytes, ver);
+                                ctx->config.http.max_json_response_bytes, ver);
                         }
                         RODAQ_LOG_INFO(
                             "server task_op_accepted request_id={} kind={} operation_id={}", req_id,
@@ -785,7 +799,7 @@ struct ServerApp::Impl {
                             202,
                             make_success_envelope(
                                 req_id, serialize_mutation_accepted(tid, op.value()), ver),
-                            req_id, config.http.max_json_response_bytes, ver);
+                            req_id, ctx->config.http.max_json_response_bytes, ver);
                     });
             },
             {drogon::Post});
@@ -1119,16 +1133,19 @@ struct ServerApp::Impl {
                         std::move(cb));
 
                 // Acquire ArtifactReadHandle on bounded download disk worker (off event loop).
-                const bool queued = downloads->submit_open([this, art_id = aid.value(),
+                // Capture shared ServerExecutionContext (never raw Impl*) so detached late return
+                // after shutdown timeout remains memory-safe.
+                const bool queued = downloads->submit_open([ctx = this->ctx, art_id = aid.value(),
                                                             file_id = fid.value(), range_hdr,
                                                             if_range_hdr, conn_weak, shared_cb,
                                                             req_id = g.request_id,
                                                             ver = g.api_version]() {
-                    auto info = services.artifacts->get_artifact(art_id);
+                    const auto max_resp = ctx->config.http.max_json_response_bytes;
+                    auto info = ctx->services.artifacts->get_artifact(art_id);
                     if (!info.ok()) {
                         (*shared_cb)(make_error_http(
                             map_core_status(info.status(), FailureDomain::Storage), req_id,
-                            config.http.max_json_response_bytes, ver));
+                            max_resp, ver));
                         return;
                     }
                     const ArtifactFileInfo* matched = nullptr;
@@ -1141,14 +1158,14 @@ struct ServerApp::Impl {
                     if (!matched) {
                         (*shared_cb)(make_error_http(
                             make_request_error(404, "not_found", "artifact file not found"), req_id,
-                            config.http.max_json_response_bytes, ver));
+                            max_resp, ver));
                         return;
                     }
-                    auto acquired = services.artifacts->acquire_read(art_id, file_id);
+                    auto acquired = ctx->services.artifacts->acquire_read(art_id, file_id);
                     if (!acquired.ok()) {
                         (*shared_cb)(make_error_http(
                             map_core_status(acquired.status(), FailureDomain::Storage), req_id,
-                            config.http.max_json_response_bytes, ver));
+                            max_resp, ver));
                         return;
                     }
                     auto handle = std::make_shared<ArtifactReadHandle>(std::move(acquired.value()));
@@ -1165,20 +1182,20 @@ struct ServerApp::Impl {
                             make_request_error(
                                 400, "multiple_ranges_not_supported",
                                 "V1 supports at most one byte-range-spec"),
-                            req_id, config.http.max_json_response_bytes, ver));
+                            req_id, max_resp, ver));
                         return;
                     }
                     if (parsed_range.status == RangeParseStatus::Malformed) {
                         (*shared_cb)(make_error_http(
                             make_request_error(400, "invalid_range", "malformed Range header"),
-                            req_id, config.http.max_json_response_bytes, ver));
+                            req_id, max_resp, ver));
                         return;
                     }
                     if (parsed_range.status == RangeParseStatus::Unsatisfiable) {
                         auto resp = make_error_http(
                             make_request_error(
                                 416, "range_not_satisfiable", "requested Range unsatisfiable"),
-                            req_id, config.http.max_json_response_bytes, ver);
+                            req_id, max_resp, ver);
                         resp->addHeader("Content-Range", "bytes */" + std::to_string(full_length));
                         (*shared_cb)(resp);
                         return;
@@ -1188,13 +1205,13 @@ struct ServerApp::Impl {
                     if (!conn || conn->disconnected()) {
                         return;
                     }
-                    auto admitted =
-                        downloads->create_session(parsed_range.range, std::move(handle), conn_weak);
+                    auto admitted = ctx->downloads->create_session(
+                        parsed_range.range, std::move(handle), conn_weak);
                     if (!admitted.admitted) {
                         (*shared_cb)(make_error_http(
                             make_request_error(
                                 503, "downloads_busy", "download concurrency limit reached"),
-                            req_id, config.http.max_json_response_bytes, ver));
+                            req_id, max_resp, ver));
                         return;
                     }
 
@@ -1350,7 +1367,9 @@ Result<void> ServerApp::start(ServerConfig config, ServerServices services) {
     impl_->services = services;
     impl_->auth = std::move(auth.value());
     impl_->executor = std::move(exec.value());
-    impl_->downloads = std::move(dl.value());
+    impl_->downloads = std::shared_ptr<DownloadRegistry>(std::move(dl.value()));
+    impl_->ctx = std::make_shared<ServerExecutionContext>(
+        ServerExecutionContext{impl_->config, impl_->services, impl_->downloads});
     impl_->static_assets = StaticAssetService::create(impl_->config.static_assets_root, kApiMajor);
     impl_->phase.store(ServerPhase::Ready, std::memory_order_release);
 
@@ -1360,9 +1379,9 @@ Result<void> ServerApp::start(ServerConfig config, ServerServices services) {
     app.setIdleConnectionTimeout(60);
     app.disableSigtermHandling();
     app.setConnectionCallback(
-        [dl_raw = impl_->downloads.get()](const trantor::TcpConnectionPtr& conn) {
+        [dl_shared = impl_->downloads](const trantor::TcpConnectionPtr& conn) {
             if (conn && conn->disconnected()) {
-                dl_raw->notify_connection_closed(conn.get());
+                dl_shared->notify_connection_closed(conn.get());
             }
         });
     app.addListener(impl_->config.http.listen_address, impl_->config.http.port);

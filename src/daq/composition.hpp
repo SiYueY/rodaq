@@ -55,6 +55,7 @@ struct DeploymentSettings {
     task::TaskStorePolicy tasks;
     std::size_t max_tasks{4};
     std::uint32_t max_artifacts_per_volume{10000};
+    DurabilityProfile durability{DurabilityProfile::Normal};
     std::chrono::nanoseconds native_timeout{std::chrono::seconds{5}};
     std::chrono::nanoseconds system_snapshot_max_age{std::chrono::seconds{2}};
 };

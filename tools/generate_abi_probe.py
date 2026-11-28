@@ -120,10 +120,7 @@ def generate(root, output, flags):
             literal(', "sizeof": ')
             number(f"sizeof((({name}*)0)->{field})")
             if slot:
-                # Registry optional slots predate this initial 1.0 candidate.
-                literal(', "introduced_minor": 0, "required": ' + (
-                    "false" if name == "rodaq_service_registry_vtable_t" and field != "query"
-                    else "true"))
+                literal(', "introduced_minor": 0, "required": true')
                 literal(', "signature": ' + json.dumps(" ".join(declaration.split())))
             literal("}")
             field_separator = ","

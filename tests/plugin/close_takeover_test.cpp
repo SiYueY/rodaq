@@ -133,8 +133,8 @@ TEST_F(CloseTakeover, SaturatedWorkersAndFailedCallerAllocationCannotLoseCloseRe
     {
         RejectAllocation fail;
         try {
-            auto* probe = new int(1);
-            delete probe;
+            void* volatile probe = ::operator new(sizeof(int));
+            ::operator delete(probe);
         } catch (const std::bad_alloc&) {
             injected = true;
         }

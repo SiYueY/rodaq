@@ -28,6 +28,7 @@ struct CatalogOptions {
     std::uint32_t max_read_leases{64};
     std::size_t max_read_bytes{1024 * 1024};
     std::chrono::nanoseconds read_lease_duration{std::chrono::seconds{30}};
+    DurabilityProfile durability{DurabilityProfile::Normal};
     // Private deterministic fault seams, executed outside the index lock.
     std::function<int(ReadStep)> read_faults;
     std::function<int(DeleteStep)> delete_faults;

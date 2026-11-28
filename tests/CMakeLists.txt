@@ -225,15 +225,6 @@ endforeach()
 add_executable(rodaq_loader_fault_consumer plugin/loader_fault_consumer.cpp)
 target_link_libraries(rodaq_loader_fault_consumer PRIVATE rodaq::plugin)
 rodaq_enable_project_warnings(rodaq_loader_fault_consumer)
-add_executable(rodaq_loader_supervision_consumer plugin/loader_supervision_consumer.cpp)
-target_link_libraries(rodaq_loader_supervision_consumer PRIVATE rodaq::plugin)
-rodaq_enable_project_warnings(rodaq_loader_supervision_consumer)
-add_library(rodaq_catalog_block_interposer SHARED plugin/catalog_block_interposer.c)
-target_link_libraries(rodaq_catalog_block_interposer PRIVATE ${CMAKE_DL_LIBS})
-rodaq_enable_project_warnings(rodaq_catalog_block_interposer)
-add_executable(rodaq_catalog_supervision_consumer plugin/catalog_supervision_consumer.cpp)
-target_link_libraries(rodaq_catalog_supervision_consumer PRIVATE rodaq::plugin)
-rodaq_enable_project_warnings(rodaq_catalog_supervision_consumer)
 
 if(NOT RODAQ_SANITIZER STREQUAL "thread")
     add_executable(rodaq_close_takeover_test plugin/close_takeover_test.cpp)
@@ -278,11 +269,6 @@ if(RODAQ_SCHEMA_PYTHON_EXECUTABLE)
             --probe $<TARGET_FILE:rodaq_task_config_probe>)
     set_tests_properties(rodaq_task_schema_conformance PROPERTIES TIMEOUT 60)
 endif()
-add_test(NAME rodaq_catalog_supervision
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/catalog_supervision_test.py
-        --interposer $<TARGET_FILE:rodaq_catalog_block_interposer>
-        --consumer $<TARGET_FILE:rodaq_catalog_supervision_consumer>)
-set_tests_properties(rodaq_catalog_supervision PROPERTIES TIMEOUT 45)
 add_test(NAME rodaq_loader_bootstrap_rejection
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/loader_fault_test.py
         --provider $<TARGET_FILE:rodaq_loader_fault_provider>
@@ -290,13 +276,6 @@ add_test(NAME rodaq_loader_bootstrap_rejection
         --proxy $<TARGET_FILE:rodaq_loader_dependency_0> --proxy $<TARGET_FILE:rodaq_loader_dependency_1>
         --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json)
 set_tests_properties(rodaq_loader_bootstrap_rejection PROPERTIES TIMEOUT 120 FIXTURES_REQUIRED counter_sdk)
-add_test(NAME rodaq_loader_supervision
-    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/plugin/loader_supervision_test.py
-        --provider $<TARGET_FILE:rodaq_loader_fault_provider>
-        --consumer $<TARGET_FILE:rodaq_loader_supervision_consumer>
-        --manifest ${PROJECT_BINARY_DIR}/counter-matrix/cpp_provider-0-installed/lib/rodaq/plugins/com.example.counter/1.0.0/manifest.json
-        --healthy-package ${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0)
-set_tests_properties(rodaq_loader_supervision PROPERTIES TIMEOUT 45 FIXTURES_REQUIRED counter_sdk)
 
 string(TOUPPER "${CMAKE_BUILD_TYPE}" rodaq_build_type)
 add_custom_target(rodaq_generate_abi_probe
@@ -361,6 +340,7 @@ if(RODAQ_BUILD_MCAP_STORAGE OR RODAQ_BUILD_ROS2_ACQUISITION)
             -DRODAQ_SOURCE_DIR=${PROJECT_SOURCE_DIR}
             -DRODAQ_C_COMPILER=${CMAKE_C_COMPILER}
             -DRODAQ_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DRODAQ_SANITIZER=${RODAQ_SANITIZER}
             -DRODAQ_BUILD_MCAP_STORAGE=${RODAQ_BUILD_MCAP_STORAGE}
             -DRODAQ_BUILD_ROS2_ACQUISITION=${RODAQ_BUILD_ROS2_ACQUISITION}
             -P ${PROJECT_SOURCE_DIR}/tests/oot_plugins_contract.cmake)

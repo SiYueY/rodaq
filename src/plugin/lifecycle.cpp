@@ -18,8 +18,7 @@
 namespace rodaq::plugin {
 namespace {
 
-constexpr auto kStageTimeout = std::chrono::seconds(30);
-constexpr std::size_t kMaxLoadObservers = 1024;
+constexpr auto kInstanceStageTimeout = std::chrono::seconds(30);
 
 struct CreationAuthority {
     std::mutex mutex;
@@ -55,9 +54,9 @@ void fill_event(
 }
 
 bool shutdown_settled_locked(const ManagerState& manager) noexcept {
-    return manager.shutdown_requested && !manager.restart_required && manager.discovery.done &&
-           manager.active_loads == 0 && manager.active_creates == 0 && manager.queue_count == 0 &&
-           manager.instance_count == 0 && manager.pending_closes == 0 && manager.close_busy == 0;
+    return manager.shutdown_requested && !manager.restart_required && manager.active_loads == 0 &&
+           manager.active_creates == 0 && manager.queue_count == 0 && manager.instance_count == 0 &&
+           manager.pending_closes == 0 && manager.close_busy == 0;
 }
 
 void worker_exited(const std::shared_ptr<ManagerState>& manager) noexcept {
@@ -76,33 +75,9 @@ void worker_exited(const std::shared_ptr<ManagerState>& manager) noexcept {
     retention.reset();
 }
 
-void failed_work(
-    const std::shared_ptr<ManagerState>& manager, LifecycleWork& work,
-    const std::shared_ptr<InstanceState>& instance, StatusCode code, bool critical) {
-    if (work.kind == WorkKind::Initialize && instance) {
-        fail_initialization(manager, instance, Status(code, {}), critical);
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        if (critical) {
-            degrade_locked(*manager, Status(code, {}));
-        }
-        if (work.kind == WorkKind::Load && !work.done) {
-            --manager->active_loads;
-            --manager->loaded_count;
-        }
-        work.result = Status(code, {});
-        work.done = true;
-        work.stage = WorkStage::Complete;
-    }
-    manager->changed.notify_all();
-}
-
 void lifecycle_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
     for (;;) {
         LifecycleWork* work = nullptr;
-        std::shared_ptr<LifecycleWork> load_owner;
         std::shared_ptr<InstanceState> instance;
         {
             std::unique_lock<std::mutex> lock(manager->mutex);
@@ -114,41 +89,26 @@ void lifecycle_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
             work = manager->queue[manager->queue_head];
             manager->queue_head = (manager->queue_head + 1) % manager->queue.size();
             --manager->queue_count;
-            if (work->kind == WorkKind::Load) {
-                load_owner = work->shared_from_this();
-            } else if (work->kind == WorkKind::Initialize) {
-                instance = work->instance.lock();
-            }
+            instance = work->instance.lock();
         }
         LifecycleInvocation invocation(*manager, instance.get());
         try {
-            switch (work->kind) {
-                case WorkKind::Catalog:
-                    run_discovery(manager);
-                    break;
-                case WorkKind::Load:
-                    run_load(manager, *work);
-                    break;
-                case WorkKind::Initialize:
-                    if (!instance) {
-                        throw std::bad_alloc();
-                    }
-                    run_initialization(manager, instance);
-                    break;
+            if (!instance) {
+                throw std::bad_alloc();
             }
+            run_initialization(manager, instance);
         } catch (const std::bad_alloc&) {
             const bool native =
-                work->kind == WorkKind::Initialize && (work->stage == WorkStage::NativeCreate ||
-                                                       work->stage == WorkStage::NativeConfigure);
-            failed_work(
-                manager, *work, instance,
-                native ? StatusCode::Internal : StatusCode::ResourceExhausted, native);
+                work->stage == WorkStage::NativeCreate || work->stage == WorkStage::NativeConfigure;
+            if (instance) {
+                fail_initialization(
+                    manager, instance,
+                    Status(native ? StatusCode::Internal : StatusCode::ResourceExhausted, {}),
+                    native);
+            }
         } catch (...) {
-            failed_work(manager, *work, instance, StatusCode::Internal, true);
-            if (work->kind == WorkKind::Load) {
-                enqueue_diagnostic(
-                    manager, "Exception crossed load ABI; restart required",
-                    &manager->catalog[work->catalog_index].info, 0, "native-load");
+            if (instance) {
+                fail_initialization(manager, instance, Status(StatusCode::Internal, {}), true);
             }
         }
     }
@@ -254,8 +214,6 @@ void reaper_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
             return;
         }
     }
-    // Joining may run/wait for dependency TLS cleanup. Health monitor remains
-    // independent and supervises this whole retirement stage.
     for (auto& worker : manager->lifecycle_workers) {
         worker.join();
     }
@@ -278,7 +236,7 @@ void reaper_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
 
 std::chrono::nanoseconds pending_timeout(const ManagerState& manager) noexcept {
     constexpr auto kBase =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kStageTimeout).count();
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kInstanceStageTimeout).count();
     constexpr auto kMax = std::numeric_limits<std::int64_t>::max();
     const auto batches = (manager.options.max_instances + manager.close_workers.size() - 1) /
                          manager.close_workers.size();
@@ -295,7 +253,6 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
         std::size_t event_count = 0;
         const auto now = std::chrono::steady_clock::now();
         const auto native_now = monotonic_now();
-        const PluginInfo empty_info{};
         bool notify = false;
         bool join_reaper = false;
         {
@@ -309,27 +266,19 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
             }
             auto inspect = [&](LifecycleWork& work, const PluginInfo& info, PluginInstanceId id) {
                 if (work.submitted && !work.done && !work.reported &&
-                    now - work.stage_started > kStageTimeout && event_count < events.size()) {
+                    now - work.stage_started > kInstanceStageTimeout &&
+                    event_count < events.size()) {
                     work.reported = true;
                     fill_event(
                         events[event_count++], info, id, static_cast<int>(work.stage), false);
                     degrade_locked(*manager, Status(StatusCode::DeadlineExceeded, {}));
                 }
             };
-            inspect(manager->discovery, empty_info, 0);
-            for (const auto& work : manager->load_pool) {
-                inspect(
-                    *work,
-                    work->catalog_index < manager->catalog.size()
-                        ? manager->catalog[work->catalog_index].info
-                        : empty_info,
-                    0);
-            }
             for (std::size_t i = 0; i < manager->instances.size(); ++i) {
                 const auto& instance = manager->instances[i];
                 if (!instance) {
                     if (manager->reserved_instances[i] &&
-                        now - manager->instance_reserved_at[i] > kStageTimeout) {
+                        now - manager->instance_reserved_at[i] > kInstanceStageTimeout) {
                         degrade_locked(*manager, Status(StatusCode::DeadlineExceeded, {}));
                         notify = true;
                     }
@@ -343,7 +292,7 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
                 const auto elapsed = now - instance->close_stage_started;
                 bool expired = elapsed > (instance->close_stage == CloseStage::Pending
                                               ? pending_timeout(*manager)
-                                              : kStageTimeout);
+                                              : kInstanceStageTimeout);
                 if (instance->close_stage == CloseStage::NativeShutdown) {
                     const auto returned =
                         instance->native_shutdown_returned.load(std::memory_order_acquire);
@@ -363,13 +312,13 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
                 }
             }
             if (manager->diagnostic_busy && !manager->diagnostic_reported &&
-                now - manager->diagnostic_started > kStageTimeout) {
+                now - manager->diagnostic_started > kInstanceStageTimeout) {
                 manager->diagnostic_reported = true;
                 degrade_locked(*manager, Status(StatusCode::DeadlineExceeded, {}));
                 notify = true;
             }
             if (manager->reap_requested && !manager->reap_done && !manager->reap_reported &&
-                now - manager->reap_started > kStageTimeout) {
+                now - manager->reap_started > kInstanceStageTimeout) {
                 manager->reap_reported = true;
                 degrade_locked(*manager, Status(StatusCode::DeadlineExceeded, {}));
                 notify = true;
@@ -385,7 +334,6 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
                 manager->changed.wait_for(lock, std::chrono::milliseconds(10));
             }
         }
-        // Diagnostic formatting and sinks never run under Manager/Instance locks.
         for (std::size_t i = 0; i < event_count; ++i) {
             const auto& event = events[i];
             std::array<char, 640> message{};
@@ -395,7 +343,7 @@ void monitor_worker(const std::shared_ptr<ManagerState>& manager) noexcept {
                 "monotonic=%lld",
                 event.plugin.data(), event.version.data(),
                 static_cast<unsigned long long>(event.instance),
-                event.close ? "close" : "initialize/load", event.stage,
+                event.close ? "close" : "initialize", event.stage,
                 static_cast<long long>(native_now));
             if (size > 0) {
                 enqueue_diagnostic(
@@ -441,17 +389,18 @@ void release_authority(std::uint64_t token) noexcept {
 
 AuthorityLease::~AuthorityLease() noexcept { release_authority(token_); }
 
-ManagerState::ManagerState(PluginManagerOptions value, std::uint64_t token)
+ManagerState::ManagerState(
+    PluginManagerOptions value, std::vector<CatalogEntry> discovered, std::uint64_t token)
 : authority(token),
   options(std::move(value)),
+  catalog(std::move(discovered)),
+  load_slots(catalog.size()),
   instances(options.max_instances),
   reserved_instances(options.max_instances, false),
   instance_reserved_at(options.max_instances),
-  queue(options.max_instances + options.max_loaded_plugins + 1, nullptr) {}
+  queue(options.max_instances + 1, nullptr) {}
 
 ManagerState::~ManagerState() noexcept {
-    // Threads reach their exit accounting before normal self-retention releases.
-    // No native work can outlive this State; detach only reclaims finished handles.
     for (auto& worker : lifecycle_workers) {
         if (worker.joinable()) {
             worker.detach();
@@ -620,84 +569,6 @@ Result<void> start_workers(const std::shared_ptr<ManagerState>& manager) {
         manager->self_retention.reset();
         return Status(StatusCode::ResourceExhausted, "Cannot start Plugin lifecycle workers");
     }
-}
-
-void run_discovery(const std::shared_ptr<ManagerState>& manager) {
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        manager->discovery.stage = WorkStage::CatalogScan;
-        manager->discovery.stage_started = std::chrono::steady_clock::now();
-    }
-    auto catalog = discover_plugins(manager->options.search_paths);
-    std::vector<std::shared_ptr<LifecycleWork>> pool;
-    std::vector<std::shared_ptr<LifecycleWork>> loads;
-    if (catalog.ok()) {
-        loads.resize(catalog.value().size());
-        const auto capacity =
-            kMaxLoadObservers + kMaxPackageEntries + manager->options.max_loaded_plugins;
-        pool.reserve(capacity);
-        for (std::size_t i = 0; i < capacity; ++i) {
-            pool.push_back(std::make_shared<LifecycleWork>(WorkKind::Load));
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        if (catalog.ok() && manager->phase == PluginManagerPhase::Running) {
-            manager->catalog = std::move(catalog).value();
-            manager->loads = std::move(loads);
-            manager->load_pool = std::move(pool);
-        } else {
-            manager->discovery.result =
-                catalog.ok() ? Status(StatusCode::InvalidState, {}) : std::move(catalog).status();
-        }
-        manager->discovery.done = true;
-        manager->discovery.stage = WorkStage::Complete;
-    }
-    manager->changed.notify_all();
-}
-
-void run_load(const std::shared_ptr<ManagerState>& manager, LifecycleWork& work) {
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        work.stage = WorkStage::NativeLoad;
-        work.stage_started = std::chrono::steady_clock::now();
-    }
-    auto prepared = prepare_library(manager->catalog[work.catalog_index]);
-    Status failure;
-    if (prepared.ok()) {
-        {
-            std::lock_guard<std::mutex> lock(manager->mutex);
-            if (manager->phase == PluginManagerPhase::Running) {
-                auto committed = prepared.value().commit();
-                if (committed.ok()) {
-                    work.library = prepared.value().library();
-                    work.result = Status{};
-                    work.done = true;
-                    work.stage = WorkStage::Complete;
-                    --manager->active_loads;
-                    manager->changed.notify_all();
-                    return;
-                }
-                failure = std::move(committed).status();
-            } else {
-                failure =
-                    Status(StatusCode::InvalidState, "Manager stopped before Library publish");
-            }
-        }
-        // Transient dlclose/rollback must finish before actual-work accounting.
-        { auto rollback = std::move(prepared).value(); }
-    } else {
-        failure = std::move(prepared).status();
-    }
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex);
-        --manager->active_loads;
-        --manager->loaded_count;
-        work.result = std::move(failure);
-        work.done = true;
-        work.stage = WorkStage::Complete;
-    }
-    manager->changed.notify_all();
 }
 
 }  // namespace rodaq::plugin

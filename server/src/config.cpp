@@ -328,7 +328,7 @@ Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
                 v, {"name", "max_managed_bytes", "max_commit_bytes", "stop_free_bytes",
                     "low_free_bytes", "recovery_free_bytes", "space_sample_max_age_ms",
                     "recovery_stable_window_ms", "max_segments", "max_commit_slots",
-                    "max_artifacts_per_volume"})) {
+                    "max_artifacts_per_volume", "durability_profile"})) {
             return Status(StatusCode::InvalidArgument, "unexpected key in daq.volume");
         }
         if (v.contains("name")) {
@@ -336,6 +336,22 @@ Result<DaqOpenOptions> parse_daq_object(const nlohmann::json& d) {
                 return Status(StatusCode::InvalidArgument, "daq.volume.name must be string");
             }
             opts.volume.name = v["name"].get<std::string>();
+        }
+        if (v.contains("durability_profile")) {
+            if (!v["durability_profile"].is_string()) {
+                return Status(
+                    StatusCode::InvalidArgument, "daq.volume.durability_profile must be string");
+            }
+            const auto& profile = v["durability_profile"].get_ref<const std::string&>();
+            if (profile == "normal") {
+                opts.volume.durability = DurabilityProfile::Normal;
+            } else if (profile == "power_loss_hardened") {
+                opts.volume.durability = DurabilityProfile::PowerLossHardened;
+            } else {
+                return Status(
+                    StatusCode::InvalidArgument,
+                    "daq.volume.durability_profile must be normal or power_loss_hardened");
+            }
         }
         if (!read_opt_int(v, "max_managed_bytes", opts.volume.max_managed_bytes) ||
             !read_opt_int(v, "max_commit_bytes", opts.volume.max_commit_bytes) ||

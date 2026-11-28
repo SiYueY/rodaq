@@ -371,6 +371,7 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
         catalog.volume = o.volume;
         catalog.capacity = o.capacity;
         catalog.max_artifacts = o.settings.max_artifacts_per_volume;
+        catalog.durability = o.settings.durability;
         catalog.manifest = catalog_manifest_limits(o.settings);
         auto index = artifact::ArtifactCatalog::create(std::move(catalog));
         if (!index.ok()) {

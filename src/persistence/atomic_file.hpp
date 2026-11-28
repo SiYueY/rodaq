@@ -41,7 +41,8 @@ struct FilePublication {
 
 FilePublication publish_file(
     const std::filesystem::path& directory, std::string_view name, std::string_view contents,
-    FilePublishMode mode, std::size_t max_bytes, const FileFaultHook& faults = {});
+    FilePublishMode mode, std::size_t max_bytes, const FileFaultHook& faults = {},
+    bool sync = true);
 
 // Name syntax alone is not ownership proof; only an exclusive domain owner
 // may clean these names in its own namespace.

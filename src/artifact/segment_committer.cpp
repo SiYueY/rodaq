@@ -8,14 +8,16 @@
 namespace rodaq::artifact {
 
 SegmentCommitter::SegmentCommitter(
-    std::unique_ptr<SealedFiles> files, std::string encoded, CommitReservation reservation) noexcept
+    std::unique_ptr<SealedFiles> files, std::string encoded, CommitReservation reservation,
+    DurabilityProfile durability) noexcept
 : files_(std::move(files)),
   encoded_manifest_(std::move(encoded)),
-  reservation_(std::move(reservation)) {}
+  reservation_(std::move(reservation)),
+  durability_(durability) {}
 
 Result<std::unique_ptr<SegmentCommitter>> SegmentCommitter::create(
     std::unique_ptr<SealedFiles>& files, const SegmentManifest& manifest,
-    const ManifestLimits& limits, CommitReservation& reservation) {
+    const ManifestLimits& limits, CommitReservation& reservation, DurabilityProfile durability) {
     if (!files || files->segment_id() != manifest.identity.segment_id ||
         !(files->volume_id() == manifest.identity.volume_id)) {
         return Status(StatusCode::InvalidArgument, {});
@@ -56,7 +58,7 @@ Result<std::unique_ptr<SegmentCommitter>> SegmentCommitter::create(
     }
     try {
         return std::unique_ptr<SegmentCommitter>(new SegmentCommitter(
-            std::move(files), std::move(encoded.value()), std::move(reservation)));
+            std::move(files), std::move(encoded.value()), std::move(reservation), durability));
     } catch (const std::bad_alloc&) {
         return Status(StatusCode::ResourceExhausted, {});
     }
@@ -67,8 +69,9 @@ Result<void> SegmentCommitter::commit() {
         return Status(StatusCode::InvalidState, {});
     }
     attempted_ = true;
+    const bool hardened = durability_ == DurabilityProfile::PowerLossHardened;
     reservation_.volume.mark_effects_possible();
-    auto installed = files_->install_manifest(encoded_manifest_);
+    auto installed = files_->install_manifest(encoded_manifest_, hardened);
     if (!installed.ok()) {
         return installed.status();
     }
@@ -77,11 +80,13 @@ Result<void> SegmentCommitter::commit() {
     if (!accounted.ok()) {
         return accounted.status();
     }
-    auto synced = files_->sync_tree();
-    if (!synced.ok()) {
-        return synced.status();
+    if (hardened) {
+        auto synced = files_->sync_tree();
+        if (!synced.ok()) {
+            return synced.status();
+        }
     }
-    auto published = files_->publish_directory();
+    auto published = files_->publish_directory(hardened);
     if (!published.ok()) {
         return published.status();
     }

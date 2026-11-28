@@ -38,7 +38,7 @@ public:
     std::uint64_t storage_bytes() const noexcept;
     std::uint64_t manifest_bytes() const noexcept;
     const std::filesystem::path& staging_directory() const noexcept;
-    Result<void> install_manifest(std::string_view encoded_manifest);
+    Result<void> install_manifest(std::string_view encoded_manifest, bool sync = true);
     Result<void> sync_tree();
     Result<void> verify() const;
     bool durable_tree() const noexcept;
@@ -47,7 +47,7 @@ public:
 
 private:
     friend class SegmentCommitter;
-    Result<void> publish_directory();
+    Result<void> publish_directory(bool sync_parent = false);
     struct State;
     explicit SealedFiles(std::unique_ptr<State> state) noexcept;
     std::unique_ptr<State> state_;

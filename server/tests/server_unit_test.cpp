@@ -244,6 +244,123 @@ TEST(ControlExecutorTest, ObserverTimeoutRetainsWorkerSlotUntilLateReturnAndEnfo
     EXPECT_EQ(m.late_completed, 1u);
 }
 
+TEST(
+    ControlExecutorTest, ShutdownTimeoutDetachesWorkerWithoutUafWhenOwnerDestroysBeforeLateReturn) {
+    struct SharedBacking {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool entered{false};
+        bool release{false};
+        bool done{false};
+        std::uint64_t magic{0x524f444151ULL};
+    };
+    auto backing = std::make_shared<SharedBacking>();
+
+    ExecutionConfig cfg;
+    cfg.control_workers = 1;
+    cfg.control_queue = 2;
+    auto exec = ControlExecutor::create(cfg);
+    ASSERT_TRUE(exec.ok());
+
+    const auto sub = exec.value()->submit(
+        5s,
+        [backing](const std::function<bool()>& try_claim) {
+            {
+                std::lock_guard<std::mutex> lk(backing->mu);
+                backing->entered = true;
+            }
+            backing->cv.notify_all();
+            std::unique_lock<std::mutex> lk(backing->mu);
+            backing->cv.wait(lk, [&] { return backing->release; });
+            // Access shared backing after ControlExecutor owner has been destroyed.
+            EXPECT_EQ(backing->magic, 0x524f444151ULL);
+            (void)try_claim();
+            backing->done = true;
+            backing->cv.notify_all();
+        },
+        [] {});
+    ASSERT_TRUE(sub.admitted);
+
+    {
+        std::unique_lock<std::mutex> lk(backing->mu);
+        ASSERT_TRUE(backing->cv.wait_for(lk, 2s, [&] { return backing->entered; }));
+    }
+
+    const auto sd = exec.value()->shutdown(std::chrono::steady_clock::now() + 20ms);
+    EXPECT_EQ(sd.status().code(), rodaq::StatusCode::DeadlineExceeded);
+
+    // Destroy owner completely while detached worker is still blocked.
+    exec.value().reset();
+
+    {
+        std::lock_guard<std::mutex> lk(backing->mu);
+        backing->release = true;
+    }
+    backing->cv.notify_all();
+
+    {
+        std::unique_lock<std::mutex> lk(backing->mu);
+        ASSERT_TRUE(backing->cv.wait_for(lk, 2s, [&] { return backing->done; }));
+    }
+}
+
+TEST(
+    DownloadRegistryTest,
+    ShutdownTimeoutDetachesOpenWorkerWithoutUafWhenOwnerDestroysBeforeLateReturn) {
+    struct SharedBacking {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool entered{false};
+        bool release{false};
+        bool done{false};
+        std::uint64_t magic{0x444f574e4cULL};
+    };
+    auto backing = std::make_shared<SharedBacking>();
+
+    DownloadConfig cfg;
+    cfg.workers = 1;
+    cfg.max_concurrent = 2;
+    cfg.chunk_bytes = 65536;
+    cfg.max_bytes_in_flight = 131072;
+    auto reg = DownloadRegistry::create(cfg);
+    ASSERT_TRUE(reg.ok());
+
+    ASSERT_TRUE(reg.value()->submit_open([backing]() {
+        {
+            std::lock_guard<std::mutex> lk(backing->mu);
+            backing->entered = true;
+        }
+        backing->cv.notify_all();
+        std::unique_lock<std::mutex> lk(backing->mu);
+        backing->cv.wait(lk, [&] { return backing->release; });
+        EXPECT_EQ(backing->magic, 0x444f574e4cULL);
+        backing->done = true;
+        backing->cv.notify_all();
+    }));
+
+    {
+        std::unique_lock<std::mutex> lk(backing->mu);
+        ASSERT_TRUE(backing->cv.wait_for(lk, 2s, [&] { return backing->entered; }));
+    }
+
+    const auto sd = reg.value()->shutdown(std::chrono::steady_clock::now() + 20ms);
+    EXPECT_EQ(sd.status().code(), rodaq::StatusCode::DeadlineExceeded);
+
+    // Destroy owner completely while detached open worker is still blocked.
+    reg.value().reset();
+
+    {
+        std::lock_guard<std::mutex> lk(backing->mu);
+        backing->release = true;
+    }
+    backing->cv.notify_all();
+
+    {
+        std::unique_lock<std::mutex> lk(backing->mu);
+        ASSERT_TRUE(backing->cv.wait_for(lk, 2s, [&] { return backing->done; }));
+    }
+}
+
 TEST(DownloadRegistryTest, EnforcesGlobalLimitNoexceptCancelAndShutdownCleanup) {
     DownloadConfig cfg;
     cfg.workers = 2;
