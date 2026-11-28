@@ -17,8 +17,7 @@ namespace rodaq::mcap_storage {
 namespace {
 
 constexpr std::string_view kLibrary = "rodaq/1.0";
-constexpr std::string_view kProfile = "ros2";
-constexpr std::string_view kDistro = RODAQ_MCAP_ROS_DISTRO;
+constexpr std::string_view kRos2Profile = "ros2";
 constexpr std::uint64_t kMaxSchemaBytes = 1024 * 1024;
 constexpr std::uint64_t kMaxCatalogBytes = 64 * 1024 * 1024;
 constexpr std::uint32_t kMaxDescriptors = 65535;
@@ -53,6 +52,8 @@ Result<void> check_deadline(plugin::Deadline deadline) {
 struct StorageBackend::Descriptor {
     mcap::Schema schema;
     mcap::Channel channel;
+    bool has_schema{false};
+    std::optional<std::string> ros_distribution;
     std::uint64_t input_bytes{0};
     std::uint64_t segment{0};
     mcap::SchemaId schema_id{0};
@@ -86,11 +87,13 @@ Result<void> StorageBackend::configure(std::string_view input) {
     if (phase_ != Phase::New) {
         return Status(StatusCode::InvalidState, {});
     }
-    auto valid = validate_config(input);
-    if (valid.ok()) {
-        phase_ = Phase::Configured;
+    auto parsed = parse_config(input);
+    if (!parsed.ok()) {
+        return parsed.status();
     }
-    return valid;
+    config_ = std::move(parsed.value());
+    phase_ = Phase::Configured;
+    return {};
 }
 
 Result<void> StorageBackend::prepare(
@@ -121,13 +124,21 @@ Result<void> StorageBackend::prepare_descriptor(
     if (input.schema.size > kMaxSchemaBytes || input.metadata.json.size > kMaxRos2MetadataBytes) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    if (!storage::abi::valid_descriptor(&input) || input.schema.size == 0 ||
-        input.schema_name.size == 0 ||
-        std::string_view(input.message_encoding.data, input.message_encoding.size) != "cdr") {
+    if (!storage::abi::valid_descriptor(&input)) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    const std::string_view schema_enc(input.schema_encoding.data, input.schema_encoding.size);
-    if (schema_enc != "ros2msg" && schema_enc != "ros2idl") {
+    const bool has_schema =
+        input.schema_name.size != 0 || input.schema_encoding.size != 0 || input.schema.size != 0;
+    if (config_.profile == McapProfile::Ros2) {
+        if (input.schema.size == 0 || input.schema_name.size == 0 ||
+            std::string_view(input.message_encoding.data, input.message_encoding.size) != "cdr") {
+            return Status(StatusCode::InvalidArgument, {});
+        }
+        const std::string_view schema_enc(input.schema_encoding.data, input.schema_encoding.size);
+        if (schema_enc != "ros2msg" && schema_enc != "ros2idl") {
+            return Status(StatusCode::InvalidArgument, {});
+        }
+    } else if (has_schema && (input.schema_name.size == 0 || input.schema_encoding.size == 0)) {
         return Status(StatusCode::InvalidArgument, {});
     }
     if (auto ok = check_deadline(deadline); !ok.ok()) {
@@ -138,24 +149,49 @@ Result<void> StorageBackend::prepare_descriptor(
     if (existing == descriptors_.end() && descriptors_.size() == kMaxDescriptors) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    auto ros2_meta = parse_ros2_metadata(input.metadata);
-    if (!ros2_meta.ok()) {
-        return ros2_meta.status();
-    }
     Descriptor descriptor;
-    auto schema = mcap::Schema(
-        text(input.schema_name), text(input.schema_encoding),
-        std::string_view(reinterpret_cast<const char*>(input.schema.data), input.schema.size));
-    schema.id = 0;
-    descriptor.schema = std::move(schema);
+    descriptor.has_schema = has_schema;
+    if (has_schema) {
+        const std::string_view schema_view =
+            input.schema.size != 0
+                ? std::string_view(
+                      reinterpret_cast<const char*>(input.schema.data), input.schema.size)
+                : std::string_view("", 0);
+        auto schema =
+            mcap::Schema(text(input.schema_name), text(input.schema_encoding), schema_view);
+        schema.id = 0;
+        descriptor.schema = std::move(schema);
+    }
     auto channel = mcap::Channel(text(input.channel_name), text(input.message_encoding), 0);
     channel.id = 0;
     descriptor.channel = std::move(channel);
-    descriptor.channel.metadata.emplace(
-        kOfferedQosKey, std::move(ros2_meta.value().offered_qos_yaml));
-    if (!ros2_meta.value().type_description_hash.empty()) {
+    if (config_.profile == McapProfile::Ros2) {
+        auto ros2_meta = parse_ros2_metadata(input.metadata);
+        if (!ros2_meta.ok()) {
+            return ros2_meta.status();
+        }
+        // Cell 5: explicit ros_distro conflicts with descriptor subscription.ros_distribution.
+        if (config_.ros_distro.has_value() && ros2_meta.value().ros_distribution.has_value() &&
+            *config_.ros_distro != *ros2_meta.value().ros_distribution) {
+            return Status(
+                StatusCode::Conflict,
+                "Configured MCAP ros_distro conflicts with descriptor ros_distribution");
+        }
+        // If an Open segment already emitted rosbag2/ROS_DISTRO, forbid conflicting late stream.
+        if (phase_ == Phase::Open && segment_ros_distro_.has_value() &&
+            ros2_meta.value().ros_distribution.has_value() &&
+            *segment_ros_distro_ != *ros2_meta.value().ros_distribution) {
+            return Status(
+                StatusCode::Conflict,
+                "Late descriptor ros_distribution conflicts with open MCAP segment ROS_DISTRO");
+        }
+        descriptor.ros_distribution = std::move(ros2_meta.value().ros_distribution);
         descriptor.channel.metadata.emplace(
-            kTypeHashKey, std::move(ros2_meta.value().type_description_hash));
+            kOfferedQosKey, std::move(ros2_meta.value().offered_qos_yaml));
+        if (!ros2_meta.value().type_description_hash.empty()) {
+            descriptor.channel.metadata.emplace(
+                kTypeHashKey, std::move(ros2_meta.value().type_description_hash));
+        }
     }
     descriptor.input_bytes = input.schema.size + input.schema_name.size +
                              input.schema_encoding.size + input.channel_name.size +
@@ -163,7 +199,9 @@ Result<void> StorageBackend::prepare_descriptor(
                              input.metadata.json.size;
     if (existing != descriptors_.end()) {
         const auto& old = existing->second;
-        return same_schema(old.schema, descriptor.schema) &&
+        return old.has_schema == descriptor.has_schema &&
+                       (!old.has_schema || same_schema(old.schema, descriptor.schema)) &&
+                       old.ros_distribution == descriptor.ros_distribution &&
                        old.channel.topic == descriptor.channel.topic &&
                        old.channel.messageEncoding == descriptor.channel.messageEncoding &&
                        old.channel.metadata == descriptor.channel.metadata
@@ -218,7 +256,9 @@ Result<void> StorageBackend::open_segment(
             fail(ok.status().code());
             return ok.status();
         }
-        mcap::McapWriterOptions options{std::string(kProfile)};
+        const std::string header_profile =
+            config_.profile == McapProfile::Ros2 ? std::string(kRos2Profile) : std::string();
+        mcap::McapWriterOptions options{header_profile};
         options.library = kLibrary;
         options.noChunking = true;
         options.noSummary = true;
@@ -226,12 +266,47 @@ Result<void> StorageBackend::open_segment(
         options.noChunkCRC = true;
         options.compression = mcap::Compression::None;
         writer_->open(*mcap_, options);
-        mcap::Metadata metadata;
-        metadata.name = "rosbag2";
-        metadata.metadata.emplace("ROS_DISTRO", kDistro);
-        const auto written = writer_->write(metadata);
-        if (!written.ok() || mcap_->status() != StatusCode::Ok) {
-            fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
+
+        // Apply 7-cell ROS_DISTRO decision table (never fabricate or silently override):
+        // - generic: never emit rosbag2/ROS_DISTRO
+        // - ros2 + explicit ros_distro: emit configured ros_distro (conflicts rejected at prepare)
+        // - ros2 + no explicit ros_distro: emit only when all prepared descriptors agree on a
+        //   non-empty ros_distribution; otherwise omit rosbag2 legacy metadata.
+        segment_ros_distro_.reset();
+        if (config_.profile == McapProfile::Ros2) {
+            if (config_.ros_distro.has_value()) {
+                segment_ros_distro_ = config_.ros_distro;
+            } else if (!descriptors_.empty()) {
+                std::optional<std::string> agreed;
+                bool consistent = true;
+                for (const auto& entry : descriptors_) {
+                    if (!entry.second.ros_distribution.has_value()) {
+                        consistent = false;
+                        break;
+                    }
+                    if (!agreed.has_value()) {
+                        agreed = entry.second.ros_distribution;
+                    } else if (*agreed != *entry.second.ros_distribution) {
+                        consistent = false;
+                        break;
+                    }
+                }
+                if (consistent && agreed.has_value()) {
+                    segment_ros_distro_ = std::move(agreed);
+                }
+            }
+        }
+        if (segment_ros_distro_.has_value()) {
+            mcap::Metadata metadata;
+            metadata.name = "rosbag2";
+            metadata.metadata.emplace("ROS_DISTRO", *segment_ros_distro_);
+            const auto written = writer_->write(metadata);
+            if (!written.ok() || mcap_->status() != StatusCode::Ok) {
+                fail(mcap_->status() != StatusCode::Ok ? mcap_->status() : StatusCode::DataLoss);
+                return Status(failure_, {});
+            }
+        } else if (mcap_->status() != StatusCode::Ok) {
+            fail(mcap_->status());
             return Status(failure_, {});
         }
         segment_id_ = segment.segment_id;
@@ -256,20 +331,24 @@ Result<void> StorageBackend::materialize(Descriptor& descriptor) {
     if (channel_count_ == limits_.max_descriptors_per_segment) {
         return Status(StatusCode::ResourceExhausted, {});
     }
-    auto schema = schemas_.find(&descriptor);
-    if (schema == schemas_.end()) {
-        if (schemas_.size() == kMaxDescriptors) {
-            return Status(StatusCode::ResourceExhausted, {});
+    if (descriptor.has_schema) {
+        auto schema = schemas_.find(&descriptor);
+        if (schema == schemas_.end()) {
+            if (schemas_.size() == kMaxDescriptors) {
+                return Status(StatusCode::ResourceExhausted, {});
+            }
+            auto native = descriptor.schema;
+            writer_->addSchema(native);
+            if (native.id == 0) {
+                return Status(StatusCode::DataLoss, {});
+            }
+            descriptor.schema_id = native.id;
+            schemas_.emplace(&descriptor, native.id);
+        } else {
+            descriptor.schema_id = schema->second;
         }
-        auto native = descriptor.schema;
-        writer_->addSchema(native);
-        if (native.id == 0) {
-            return Status(StatusCode::DataLoss, {});
-        }
-        descriptor.schema_id = native.id;
-        schemas_.emplace(&descriptor, native.id);
     } else {
-        descriptor.schema_id = schema->second;
+        descriptor.schema_id = 0;
     }
     auto native = descriptor.channel;
     native.schemaId = descriptor.schema_id;

@@ -175,6 +175,15 @@ def stage_release_package() -> tuple[Path, Path, str]:
     if "libnode" in readelf_out.lower():
         raise RuntimeError("Unexpected Node.js shared library dependency in bin/rodaq")
 
+    mcap_dso = stage_dir / "lib/rodaq/plugins/com.rodaq.storage.mcap/1.0.0/lib/librodaq_mcap_storage.so"
+    mcap_dynamic = run_checked(["readelf", "-d", str(mcap_dso)])
+    forbidden = ("libmcap", "mcap_vendor", "librcl", "librmw", "libament", "liblz4", "libzstd")
+    needed = [line.lower() for line in mcap_dynamic.splitlines() if "(NEEDED)" in line]
+    if any(name in line for line in needed for name in forbidden):
+        raise RuntimeError(f"MCAP plugin unexpectedly depends on ROS or compression libraries: {needed}")
+    if not (stage_dir / "share/licenses/RoDAQ/mcap-cpp-LICENSE").is_file():
+        raise RuntimeError("Missing standalone MCAP C++ license")
+
     tarball = OUT_DIR / f"{RELEASE_NAME}.tar.gz"
     with tarfile.open(tarball, "w:gz") as tf:
         tf.add(stage_dir, arcname=RELEASE_NAME)
@@ -397,13 +406,17 @@ int main(int argc, char** argv) {
         iso_ros2_src = tmp / "isolated_ros2"
         shutil.copytree(REPO_ROOT / "plugins/storage/mcap", iso_mcap_src)
         shutil.copytree(REPO_ROOT / "plugins/acquisition/ros2", iso_ros2_src)
+        for isolated_src in (iso_mcap_src, iso_ros2_src):
+            shutil.copy2(REPO_ROOT / "src/internal/strict_json.hpp", isolated_src)
+        mcap_include = REPO_ROOT / "third_party/mcap-cpp/cpp/mcap/include"
 
         run_checked(
             [
                 "bash",
                 "-lc",
                 f'source /opt/ros/{ROS_DISTRO}/setup.bash && '
-                f'cmake -S "{iso_mcap_src}" -B "{tmp / "iso_mcap_build"}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" && '
+                f'cmake -S "{iso_mcap_src}" -B "{tmp / "iso_mcap_build"}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" '
+                f'-DRODAQ_MCAP_CPP_INCLUDE_DIR="{mcap_include}" && '
                 f'cmake --build "{tmp / "iso_mcap_build"}" -j4 && '
                 f'cmake -S "{iso_ros2_src}" -B "{tmp / "iso_ros2_build"}" -DCMAKE_PREFIX_PATH="{relocated_prefix}" && '
                 f'cmake --build "{tmp / "iso_ros2_build"}" -j4',
@@ -618,12 +631,12 @@ finally:
                         "plugin_version": "1.0.0",
                         "config": {
                             "format_version": "1.0",
+                            "profile": "ros2",
                             "compression": "none",
                             "chunk_mode": "none",
                             "chunk_crc": False,
                             "message_index": False,
                             "summary": False,
-                            "rosbag2_metadata": "legacy_ros_distro",
                         },
                     },
                     "streams": [

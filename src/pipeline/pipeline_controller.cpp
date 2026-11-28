@@ -343,7 +343,38 @@ Result<GateSnapshot> PipelineController::close_admission(ControlGeneration gener
     return closed;
 }
 
-Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::Deadline deadline) {
+Result<artifact::SealedSegment> build_sealed_segment(
+    const std::shared_ptr<RecordingSegment>& segment, storage::SegmentSealResult seal,
+    const storage::PrepareConfig& envelope, const artifact::ManifestLimits& manifest_limits,
+    std::uint64_t work_id) {
+    if (!segment || work_id == 0) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        std::vector<artifact::FileEvidence> evidence;
+        evidence.reserve(seal.files.size());
+        for (const auto& file : seal.files) {
+            evidence.push_back({file.relative_path, file.physical_size});
+        }
+        auto manifest = segment->metadata.capture_manifest(std::move(evidence), WallTime{});
+        if (!manifest.ok()) {
+            return manifest.status();
+        }
+        auto reservation = segment->handoff_sealed(seal.total_physical_bytes);
+        if (!reservation.ok()) {
+            return reservation.status();
+        }
+        return artifact::SealedSegment{work_id,          segment->metadata.segment_id(),
+                                       segment->task_id, std::move(manifest.value()),
+                                       std::move(seal),  envelope,
+                                       manifest_limits,  std::move(reservation.value())};
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
+
+Result<std::optional<artifact::SealedSegment>> PipelineController::drain(
+    plugin::Deadline deadline) {
     PipelineControlCall call(state_->control);
     if (!call) {
         return Status(StatusCode::Conflict, {});
@@ -368,11 +399,11 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     {
         std::lock_guard<std::mutex> slots(state_->segments);
         if (state_->retained) {
-            return state_->retained->handoff;
+            return Status(StatusCode::Conflict, {});
         }
     }
     if (state_->artifact_settled) {
-        return std::optional<SealedPipelineSegment>{};
+        return std::optional<artifact::SealedSegment>{};
     }
     if (state_->artifact_work.load() != 0) {
         return Status(StatusCode::Conflict, {});
@@ -383,7 +414,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     }
     auto segment = std::atomic_load(&output->segment);
     if (!segment) {
-        return std::optional<SealedPipelineSegment>{};
+        return std::optional<artifact::SealedSegment>{};
     }
     segment->close_admission();
     if (state_->artifact_handed_off) {
@@ -407,7 +438,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
         return Status(StatusCode::InvalidState, {});
     }
     if (facts.accepted == 0) {
-        return std::optional<SealedPipelineSegment>{};
+        return std::optional<artifact::SealedSegment>{};
     }
     auto id = next_work_id();
     if (!id.ok()) {
@@ -429,10 +460,14 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::drain(plugin::D
     if (!sealed.ok()) {
         return sealed.status();
     }
+    auto handoff = build_sealed_segment(
+        segment, std::move(*seal), state_->options.envelope, state_->options.manifest_limits,
+        id.value());
+    if (!handoff.ok()) {
+        return handoff.status();
+    }
     state_->artifact_handed_off = true;
-    return std::optional<SealedPipelineSegment>{SealedPipelineSegment{
-        std::move(segment), std::move(*seal), state_->options.envelope,
-        state_->options.manifest_limits, id.value()}};
+    return std::optional<artifact::SealedSegment>(std::move(handoff.value()));
 }
 
 Result<void> PipelineController::acknowledge_artifact(
@@ -447,7 +482,7 @@ Result<void> PipelineController::acknowledge_artifact(
     if (state_->retained && state_->retained->work_id == work_id && work_id != 0 &&
         state_->retained->segment->metadata.segment_id() == segment_id) {
         auto& old = *state_->retained;
-        if (!old.handoff || !old.segment->capacity_snapshot().sealed) {
+        if (!old.segment->capacity_snapshot().sealed) {
             return Status(StatusCode::InvalidState, {});
         }
         auto added = add_segment_records(state_->completed, old.segment->metadata.snapshot(), true);

@@ -56,6 +56,10 @@ Result<std::unique_ptr<SegmentCommitter>> SegmentCommitter::create(
             std::numeric_limits<std::uint64_t>::max() - reservation.storage_bytes) {
         return Status(StatusCode::DataLoss, {});
     }
+    auto accounted = reservation.volume.record_sealed_usage(files->storage_bytes());
+    if (!accounted.ok()) {
+        return accounted.status();
+    }
     try {
         return std::unique_ptr<SegmentCommitter>(new SegmentCommitter(
             std::move(files), std::move(encoded.value()), std::move(reservation), durability));

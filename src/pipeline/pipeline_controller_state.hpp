@@ -212,12 +212,16 @@ struct PipelineController::WriterDomain {
 struct RotatedSegment {
     std::shared_ptr<RecordingSegment> segment;
     std::uint64_t work_id{0};
-    std::optional<SealedPipelineSegment> handoff;
 };
 
 Result<void> add_segment_records(
     SegmentMetadataSnapshot& aggregate, const SegmentMetadataSnapshot& segment,
     bool completed_only = false);
+
+Result<artifact::SealedSegment> build_sealed_segment(
+    const std::shared_ptr<RecordingSegment>& segment, storage::SegmentSealResult seal,
+    const storage::PrepareConfig& envelope, const artifact::ManifestLimits& manifest_limits,
+    std::uint64_t work_id);
 
 std::uint64_t effective_segment_reservation(const PipelineOptions& options) noexcept;
 
@@ -259,7 +263,7 @@ struct PipelineController::State {
     std::array<std::pair<std::uint64_t, std::uint64_t>, 2> acknowledged{};
     std::size_t acknowledged_next{0};
 
-    Result<std::optional<SealedPipelineSegment>> finish_rotation(plugin::Deadline deadline);
+    Result<std::optional<artifact::SealedSegment>> finish_rotation(plugin::Deadline deadline);
 };
 
 }  // namespace rodaq::pipeline

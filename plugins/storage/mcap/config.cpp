@@ -1,104 +1,95 @@
 #include "config.hpp"
 
+#include <algorithm>
 #include <array>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include <nlohmann/json.hpp>
-#include <rodaq/plugin/abi.hpp>
+#include "strict_json.hpp"
 
 namespace rodaq::mcap_storage {
 namespace {
 
-struct StrictAbort {
-    const char* message;
-};
-
-nlohmann::json parse_strict_json(std::string_view input) {
-    if (input.find('\0') != std::string_view::npos ||
-        plugin::abi::utf8_prefix(input, input.size()) != input.size()) {
-        throw StrictAbort{"MCAP config JSON contains invalid UTF-8 or NUL"};
+bool valid_ros_distro(std::string_view value) noexcept {
+    if (value.empty() || value.size() > 32) {
+        return false;
     }
-    std::vector<std::set<std::string>> key_stack;
-    std::size_t nodes = 0;
-    auto callback = [&](int depth, nlohmann::json::parse_event_t event,
-                        nlohmann::json& parsed) -> bool {
-        if (depth > 8) {
-            throw StrictAbort{"MCAP config JSON nesting depth exceeded"};
-        }
-        switch (event) {
-            case nlohmann::json::parse_event_t::object_start:
-                if (++nodes > 256) {
-                    throw StrictAbort{"MCAP config JSON node limit exceeded"};
-                }
-                key_stack.emplace_back();
-                break;
-            case nlohmann::json::parse_event_t::object_end:
-                if (!key_stack.empty()) {
-                    key_stack.pop_back();
-                }
-                break;
-            case nlohmann::json::parse_event_t::key: {
-                const auto& key = parsed.get_ref<const std::string&>();
-                if (key_stack.empty() || !key_stack.back().insert(key).second) {
-                    throw StrictAbort{"Duplicate JSON object key in MCAP config"};
-                }
-                break;
-            }
-            case nlohmann::json::parse_event_t::array_start:
-            case nlohmann::json::parse_event_t::value:
-                if (++nodes > 256) {
-                    throw StrictAbort{"MCAP config JSON node limit exceeded"};
-                }
-                break;
-            case nlohmann::json::parse_event_t::array_end:
-                break;
-        }
-        return true;
-    };
-    return nlohmann::json::parse(input.begin(), input.end(), callback);
+    const auto first = static_cast<unsigned char>(value.front());
+    if (first < 'a' || first > 'z') {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [](char ch) {
+        const auto byte = static_cast<unsigned char>(ch);
+        return (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '_' ||
+               byte == '-';
+    });
 }
 
 }  // namespace
 
-Result<void> validate_config(std::string_view input) {
+Result<McapConfig> parse_config(std::string_view input) {
     if (input.empty() || input.size() > 4096) {
         return Status(StatusCode::InvalidArgument, "Invalid MCAP config size");
     }
-    nlohmann::json config;
-    try {
-        config = parse_strict_json(input);
-    } catch (const StrictAbort& abort) {
-        return Status(StatusCode::InvalidArgument, abort.message);
-    } catch (const nlohmann::json::exception&) {
-        return Status(StatusCode::InvalidArgument, "Malformed MCAP config JSON");
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted, "MCAP config allocation failed");
+    auto document = internal::parse_strict_json(input, {4096, 8, 256});
+    if (!document.ok()) {
+        return document.status();
     }
+    const auto& config = document.value();
     if (!config.is_object() || !config.contains("format_version")) {
         return Status(StatusCode::InvalidArgument, "Missing MCAP format_version");
     }
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 4> kStrings{{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 3> kFixedStrings{{
         {"format_version", "1.0"},
         {"compression", "none"},
         {"chunk_mode", "none"},
-        {"rosbag2_metadata", "legacy_ros_distro"},
     }};
+    McapConfig parsed;
     for (const auto& item : config.items()) {
+        const auto& key = item.key();
+        const auto& value = item.value();
         bool valid = false;
-        for (const auto& field : kStrings) {
-            valid = valid || (item.key() == field.first && item.value().is_string() &&
-                              item.value().get_ref<const std::string&>() == field.second);
+        for (const auto& field : kFixedStrings) {
+            if (key == field.first) {
+                valid = value.is_string() && value.get_ref<const std::string&>() == field.second;
+            }
         }
-        if (item.key() == "chunk_crc" || item.key() == "message_index" || item.key() == "summary") {
-            valid = item.value().is_boolean() && !item.value().get<bool>();
+        if (key == "chunk_crc" || key == "message_index" || key == "summary") {
+            valid = value.is_boolean() && !value.get<bool>();
+        } else if (key == "profile") {
+            if (value.is_string()) {
+                const auto& prof = value.get_ref<const std::string&>();
+                if (prof == "generic") {
+                    parsed.profile = McapProfile::Generic;
+                    valid = true;
+                } else if (prof == "ros2") {
+                    parsed.profile = McapProfile::Ros2;
+                    valid = true;
+                }
+            }
+        } else if (key == "ros_distro") {
+            if (value.is_string() && valid_ros_distro(value.get_ref<const std::string&>())) {
+                parsed.ros_distro = value.get<std::string>();
+                valid = true;
+            }
         }
         if (!valid) {
             return Status(StatusCode::InvalidArgument, "Unsupported MCAP config field/value");
         }
+    }
+    if (parsed.profile == McapProfile::Generic && parsed.ros_distro.has_value()) {
+        return Status(
+            StatusCode::InvalidArgument, "MCAP generic profile forbids ros_distro configuration");
+    }
+    return parsed;
+}
+
+Result<void> validate_config(std::string_view input) {
+    auto parsed = parse_config(input);
+    if (!parsed.ok()) {
+        return parsed.status();
     }
     return {};
 }

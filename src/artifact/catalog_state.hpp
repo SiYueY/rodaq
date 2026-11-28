@@ -36,11 +36,10 @@ struct CatalogEntry {
 };
 
 struct CommitFrame {
-    explicit CommitFrame(pipeline::SealedPipelineSegment value) : sealed(std::move(value)) {}
+    explicit CommitFrame(SealedSegment value) : sealed(std::move(value)) {}
 
-    pipeline::SealedPipelineSegment sealed;
+    SealedSegment sealed;
     std::unique_ptr<SealedFiles> files;
-    std::optional<CommitReservation> reservation;
     std::unique_ptr<SegmentCommitter> committer;
 };
 

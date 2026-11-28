@@ -1,6 +1,8 @@
 #include "artifact/artifact_catalog.hpp"
 #include "artifact/segment_committer.hpp"
 #include "artifact/startup_scan.hpp"
+#include "daq/composition.hpp"
+#include "execution_lane.hpp"
 #include "manifest_fixture.hpp"
 #include "persistence/atomic_file.hpp"
 
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -16,6 +19,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <optional>
 
 namespace {
 
@@ -23,6 +27,7 @@ namespace artifact = rodaq::artifact;
 namespace persistence = rodaq::persistence;
 namespace fs = std::filesystem;
 using rodaq::StatusCode;
+using namespace std::chrono_literals;
 
 class SegmentCommitterTest : public testing::Test {
 protected:
@@ -95,6 +100,26 @@ protected:
         artifact::CommitReservation reservation{std::move(capacity.value()), 3};
         return artifact::SegmentCommitter::create(
             files.value(), manifest_, {}, reservation, durability);
+    }
+
+    rodaq::Result<artifact::SealedSegment> handoff() {
+        auto capacity = volume_capacity_->reserve(8195, 100);
+        if (!capacity.ok()) {
+            return capacity.status();
+        }
+        capacity.value().mark_effects_possible();
+        manifest_.files = {{"data.mcap", 3}};
+        return artifact::SealedSegment{
+            1,         7,  manifest_.identity.task_id,      manifest_, seal_,
+            envelope_, {}, {std::move(capacity.value()), 3}};
+    }
+
+    rodaq::Result<std::shared_ptr<artifact::ArtifactCatalog>> catalog() {
+        artifact::CatalogOptions options;
+        options.volume = volume_;
+        options.capacity = volume_capacity_;
+        options.max_artifacts = 32;
+        return artifact::ArtifactCatalog::create(options);
     }
 
     fs::path final_dir() const { return volume_->artifacts_directory() / "7"; }
@@ -199,6 +224,153 @@ TEST_F(SegmentCommitterTest, FileResizeBeforeRenameIsDetectedAndBlocksPublicatio
     ASSERT_TRUE(prepared.ok());
     EXPECT_EQ(prepared.value()->commit().status().code(), StatusCode::DataLoss);
     EXPECT_FALSE(fs::exists(final_dir()));
+}
+
+// A closed or full Commit lane must return the original move-only owner.
+struct BlockingWork final : rodaq::Work {
+    std::promise<void> started;
+    std::shared_future<void> released;
+    explicit BlockingWork(std::shared_future<void> done) : released(std::move(done)) {}
+    void run() noexcept override {
+        started.set_value();
+        released.wait();
+    }
+};
+
+struct LaneGuard {
+    std::shared_ptr<rodaq::ExecutionLane> lane;
+    std::promise<void> release;
+    bool released{false};
+    explicit LaneGuard(std::shared_ptr<rodaq::ExecutionLane> owner) : lane(std::move(owner)) {}
+    void unblock() {
+        if (!released) {
+            release.set_value();
+            released = true;
+        }
+    }
+    ~LaneGuard() {
+        unblock();
+        (void)lane->shutdown(std::chrono::steady_clock::now() + 2s);
+    }
+};
+
+TEST_F(SegmentCommitterTest, ClosedCommitLaneReturnsOwnerAndAbortReleasesOnlyAfterCleanup) {
+    auto cat = catalog();
+    ASSERT_TRUE(cat.ok());
+    auto lane = rodaq::ExecutionLane::create(1, 1);
+    ASSERT_TRUE(lane.ok());
+    ASSERT_TRUE(lane.value()->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+    auto input = handoff();
+    ASSERT_TRUE(input.ok());
+    std::optional<artifact::SealedSegment> sealed(std::move(input.value()));
+    bool ack = false;
+    auto result =
+        rodaq::daq::submit_commit(cat.value(), lane.value(), 10ms, sealed, [&] { ack = true; });
+    EXPECT_EQ(result.status().code(), StatusCode::InvalidState);
+    ASSERT_TRUE(sealed);
+    EXPECT_FALSE(ack);
+    EXPECT_TRUE(fs::exists(staging_));
+    EXPECT_EQ(volume_capacity_->snapshot().commit_bytes, 8195U);
+    EXPECT_EQ(volume_capacity_->snapshot().actual_bytes, 0U);
+    ASSERT_TRUE(cat.value()->abort(*sealed).ok());
+    sealed.reset();
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_EQ(volume_capacity_->snapshot().commit_bytes, 0U);
+    EXPECT_EQ(volume_capacity_->snapshot().orphaned_reservations, 0U);
+}
+
+TEST_F(SegmentCommitterTest, FullCommitLaneReturnsOwnerAndAdmittedTimeoutRetainsIt) {
+    auto cat = catalog();
+    ASSERT_TRUE(cat.ok());
+    auto lane = rodaq::ExecutionLane::create(1, 1);
+    ASSERT_TRUE(lane.ok());
+    LaneGuard guard{lane.value()};
+    auto released = guard.release.get_future().share();
+    auto blocking = std::make_shared<BlockingWork>(released);
+    auto started = blocking->started.get_future();
+    ASSERT_TRUE(guard.lane->submit(blocking).ok());
+    ASSERT_EQ(started.wait_for(2s), std::future_status::ready);
+    auto queued = std::make_shared<BlockingWork>(released);
+    auto queued_started = queued->started.get_future();
+    ASSERT_TRUE(guard.lane->submit(queued).ok());
+    auto input = handoff();
+    ASSERT_TRUE(input.ok());
+    std::optional<artifact::SealedSegment> sealed(std::move(input.value()));
+    auto result = rodaq::daq::submit_commit(cat.value(), guard.lane, 10ms, sealed, {});
+    EXPECT_EQ(result.status().code(), StatusCode::ResourceExhausted);
+    ASSERT_TRUE(sealed);
+    EXPECT_EQ(volume_capacity_->snapshot().commit_bytes, 8195U);
+    guard.unblock();
+    ASSERT_EQ(queued_started.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(guard.lane->wait_idle(std::chrono::steady_clock::now() + 2s).ok());
+
+    // Hold the worker with a fresh promise while the Commit is actually queued.
+    std::promise<void> unblock;
+    auto held = std::make_shared<BlockingWork>(unblock.get_future().share());
+    auto held_started = held->started.get_future();
+    ASSERT_TRUE(guard.lane->submit(held).ok());
+    // Always release the worker before an assertion can leave this scope.
+    const auto ready = held_started.wait_for(2s);
+    auto acknowledged = std::make_shared<std::atomic<bool>>(false);
+    auto timed = rodaq::daq::submit_commit(
+        cat.value(), guard.lane, 1ms, sealed, [acknowledged] { *acknowledged = true; });
+    const auto pending = volume_capacity_->snapshot();
+    const bool staging_exists = fs::exists(staging_);
+    const bool early_ack = acknowledged->load();
+    unblock.set_value();
+    ASSERT_TRUE(guard.lane->wait_idle(std::chrono::steady_clock::now() + 2s).ok());
+    EXPECT_EQ(ready, std::future_status::ready);
+    EXPECT_EQ(timed.status().code(), StatusCode::DeadlineExceeded);
+    EXPECT_FALSE(sealed);
+    EXPECT_TRUE(staging_exists);
+    EXPECT_FALSE(early_ack);
+    EXPECT_EQ(pending.commit_slots, 1U);
+    EXPECT_TRUE(acknowledged->load());
+    EXPECT_EQ(volume_capacity_->snapshot().orphaned_reservations, 0U);
+    EXPECT_EQ(volume_capacity_->snapshot().commit_slots, 0U);
+    EXPECT_TRUE(fs::is_directory(final_dir()));
+}
+
+TEST_F(SegmentCommitterTest, FailedCleanupRetainsChargeAndNeverDeletesPublishedFiles) {
+    auto cat = catalog();
+    ASSERT_TRUE(cat.ok());
+    auto input = handoff();
+    ASSERT_TRUE(input.ok());
+    fs::create_directory(final_dir());
+    std::ofstream(final_dir() / "sentinel") << "keep";
+    bool settled = true;
+    auto committed = cat.value()->commit(std::move(input.value()), &settled);
+    EXPECT_FALSE(committed.ok());
+    EXPECT_FALSE(settled);
+    EXPECT_TRUE(fs::exists(final_dir() / "sentinel"));
+    EXPECT_TRUE(fs::exists(staging_));
+    const auto facts = volume_capacity_->snapshot();
+    // The failed publication has already written the manifest and converted
+    // the reservation into actual usage. Neither the files nor their charge
+    // may disappear just because cleanup could not be proven.
+    const auto retained_bytes =
+        fs::file_size(staging_ / "data.mcap") + fs::file_size(staging_ / "manifest.json");
+    EXPECT_EQ(facts.actual_bytes, retained_bytes);
+    EXPECT_EQ(facts.commit_bytes, retained_bytes);
+    EXPECT_EQ(facts.commit_slots, 1U);
+    EXPECT_NE(facts.protection, StatusCode::Ok);
+    EXPECT_FALSE(facts.actual_usage_complete);
+}
+
+TEST_F(SegmentCommitterTest, RejectedPhysicalEvidenceCleansStagingBeforeSettlement) {
+    auto cat = catalog();
+    ASSERT_TRUE(cat.ok());
+    auto input = handoff();
+    ASSERT_TRUE(input.ok());
+    std::ofstream(staging_ / "data.mcap", std::ios::app) << "wrong-size";
+    bool settled = false;
+    auto result = cat.value()->commit(std::move(input.value()), &settled);
+    EXPECT_FALSE(result.ok());
+    EXPECT_TRUE(settled);
+    EXPECT_FALSE(fs::exists(staging_));
+    EXPECT_FALSE(fs::exists(final_dir()));
+    EXPECT_EQ(volume_capacity_->snapshot().commit_bytes, 0U);
+    EXPECT_EQ(volume_capacity_->snapshot().orphaned_reservations, 0U);
 }
 
 TEST_F(SegmentCommitterTest, StartupScanCleansTmpAndDeletingSkipsCorruptAndRebuildsCatalog) {

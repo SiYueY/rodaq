@@ -185,12 +185,8 @@ Result<artifact::CommitReservation> RecordingSegment::handoff_sealed(std::uint64
         reservation_->invalidate_usage();
         return Status(StatusCode::DataLoss, {});
     }
-    auto updated =
-        reservation_->record_usage(storage_bytes, capacity_.reserved_bytes - storage_bytes);
-    if (!updated.ok()) {
-        return updated.status();
-    }
-    capacity_.actual_bytes = storage_bytes;
+    // The reported Seal size is not a verified disk fact. Move the full
+    // reservation without modifying its accounting; Commit verifies files.
     capacity_.sealed = true;
     artifact::CommitReservation result{std::move(*reservation_), storage_bytes};
     reservation_.reset();

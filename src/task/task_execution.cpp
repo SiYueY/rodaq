@@ -28,13 +28,27 @@ DataImpact combine_impact(DataImpact left, DataImpact right) noexcept {
 void commit_sealed_segment(
     const task::RunExecutionOptions& exec_opts,
     const std::shared_ptr<pipeline::PipelineController>& controller,
-    const pipeline::SealedPipelineSegment& sealed, StatusCode& failure, DataImpact& impact) {
-    const auto work_id = sealed.work_id;
-    const auto seg_id = sealed.segment->metadata.segment_id();
+    std::optional<artifact::SealedSegment>& sealed, StatusCode& failure, DataImpact& impact) {
+    const auto work_id = sealed->work_id;
+    const auto seg_id = sealed->segment_id;
     auto ack = [controller, work_id, seg_id]() noexcept {
         (void)controller->acknowledge_artifact(work_id, seg_id);
     };
-    auto committed = exec_opts.commit_with_ack(sealed, std::move(ack));
+    Result<void> committed = Status(StatusCode::ResourceExhausted, {});
+    try {
+        committed = exec_opts.commit_with_ack(sealed, ack);
+    } catch (const std::bad_alloc&) {
+        // The caller still owns the handoff if the callback could not be allocated.
+    }
+    if (sealed) {
+        auto aborted = exec_opts.abort_sealed(*sealed);
+        if (aborted.ok()) {
+            ack();
+        } else {
+            committed = aborted.status();
+        }
+        sealed.reset();
+    }
     if (!committed.ok()) {
         if (failure == StatusCode::Ok) {
             failure = committed.status().code();
@@ -63,7 +77,7 @@ void settle_pipeline_close(
                 impact = combine_impact(impact, DataImpact::PersistenceUnknown);
             }
         } else if (drained.value().has_value()) {
-            commit_sealed_segment(exec_opts, controller, *drained.value(), failure, impact);
+            commit_sealed_segment(exec_opts, controller, drained.value(), failure, impact);
         }
         auto cleaned = controller->cleanup(deadline);
         if (!cleaned.ok()) {
@@ -1031,7 +1045,7 @@ Result<void> TaskService::schedule_rotation(std::uint64_t now_monotonic) {
                         StatusCode fail = StatusCode::Ok;
                         DataImpact impact = DataImpact::None;
                         commit_sealed_segment(
-                            exec_opts, pipe.controller, *rotated.value(), fail, impact);
+                            exec_opts, pipe.controller, rotated.value(), fail, impact);
                         if (impact != DataImpact::None) {
                             std::lock_guard<std::mutex> lock(entry->control_mutex);
                             entry->last_data_impact =

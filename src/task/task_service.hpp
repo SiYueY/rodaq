@@ -64,8 +64,9 @@ struct RunExecutionOptions {
         TaskId, std::string_view config_version, ControlGeneration, const TaskConfig&)>
         resolve;
     // Decoupled bounded Commit handoff with post-commit acknowledgement hook.
-    std::function<Result<void>(const pipeline::SealedPipelineSegment&, std::function<void()>)>
+    std::function<Result<void>(std::optional<artifact::SealedSegment>&, std::function<void()>)>
         commit_with_ack;
+    std::function<Result<void>(artifact::SealedSegment&)> abort_sealed;
     std::function<Result<std::uint64_t>()> allocate_segment_id;
     // Releases per-Task Writer lane slices on Retire after settlement.
     std::function<void(TaskId)> release_task_resources;

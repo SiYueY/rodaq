@@ -125,7 +125,7 @@ Result<void> add_segment_records(
     return {};
 }
 
-Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
+Result<std::optional<artifact::SealedSegment>> PipelineController::rotate(
     std::uint64_t successor_segment_id, plugin::Deadline deadline) {
     PipelineControlCall call(state_->control);
     if (!call) {
@@ -264,7 +264,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::rotate(
     }
 }
 
-Result<std::optional<SealedPipelineSegment>> PipelineController::State::finish_rotation(
+Result<std::optional<artifact::SealedSegment>> PipelineController::State::finish_rotation(
     plugin::Deadline deadline) {
     auto old = std::atomic_load(&output->segment);
     auto next = successor;
@@ -322,6 +322,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::State::finish_r
         return Status(StatusCode::Unavailable, {});
     }
     std::shared_ptr<RotatedSegment> retired;
+    std::optional<artifact::SealedSegment> handoff;
     if (facts.accepted != 0) {
         retired = std::make_shared<RotatedSegment>();
         if (artifact_work.load() == 0) {
@@ -350,8 +351,12 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::State::finish_r
         if (!sealed.ok()) {
             return sealed.status();
         }
-        retired->handoff.emplace(SealedPipelineSegment{
-            old, std::move(*seal), options.envelope, options.manifest_limits, work});
+        auto built = build_sealed_segment(
+            old, std::move(*seal), options.envelope, options.manifest_limits, work);
+        if (!built.ok()) {
+            return built.status();
+        }
+        handoff.emplace(std::move(built.value()));
     } else {
         auto aborted = abort_unopened(old, options.volume);
         if (!aborted.ok()) {
@@ -383,7 +388,7 @@ Result<std::optional<SealedPipelineSegment>> PipelineController::State::finish_r
         output->rotating = false;
     }
     output->wake();
-    return retired ? retired->handoff : std::optional<SealedPipelineSegment>{};
+    return handoff;
 }
 
 }  // namespace rodaq::pipeline

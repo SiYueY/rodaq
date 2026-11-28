@@ -63,16 +63,12 @@
       "verification": "vue-tsc strict typecheck, vite production build (chrome111/edge111/firefox114/safari16.4 target), Vitest unit/component/OpenAPI contract suite, Playwright real-browser E2E against rodaq daemon"
     },
     {
-      "name": "mcap_vendor / libmcap",
-      "version": "Humble 0.15.16 / libmcap 0.8.0; Jazzy 0.26.11 / libmcap 1.3.1",
-      "package": {
-        "humble": "ros-humble-mcap-vendor 0.15.16-1jammy.20260304.195727",
-        "jazzy": "ros-jazzy-mcap-vendor 0.26.11-1noble.20260603.151024"
-      },
-      "license": "MIT (libmcap); Apache-2.0 (ROS vendor)",
-      "source": "Prepared ROS 2 Humble package; Jazzy is rebuilt against its own prepared package",
-      "purpose": "Private MCAP format writer and IWritable; no rosbag2 Recorder/storage lifecycle",
-      "verification": "Native API probe, checked I/O/sidecar/capacity fixtures, independent reader and Humble/Jazzy info/play qualification"
+      "name": "Foxglove MCAP C++",
+      "version": "releases/cpp/v2.1.3 / 1420296ffcfdcde4b6894c0c1aba0ad083f93dde",
+      "license": "MIT",
+      "source": "Pinned third_party/mcap-cpp Git submodule; compression dependencies disabled",
+      "purpose": "Private standalone MCAP writer and IWritable; generic and ROS 2 profiles",
+      "verification": "Independent no-ROS build, checked I/O, independent reader and Humble/Jazzy info/play qualification"
     },
     {
       "name": "rclcpp / public RMW API",

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
 #include <memory>
@@ -13,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "../pipeline/recording_segment.hpp"
 #include "catalog_state.hpp"
 #include "startup_scan.hpp"
 
@@ -22,19 +22,43 @@ namespace {
 
 using persistence::FileDescriptor;
 
-void cleanup_staging_best_effort(
-    const std::shared_ptr<ManagedVolume>& volume, std::uint64_t segment_id) noexcept {
+Result<void> cleanup_staging(const CatalogOptions& options, std::uint64_t segment_id) {
     try {
+        auto verified = options.volume->verify();
+        if (!verified.ok()) {
+            return verified.status();
+        }
         FileDescriptor parent(open(
-            volume->artifacts_directory().c_str(),
+            options.volume->artifacts_directory().c_str(),
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
         if (parent.get() < 0) {
-            return;
+            return Status(StatusCode::Unavailable, {});
         }
-        const std::string name = std::to_string(segment_id) + ".tmp";
+        const auto final_name = std::to_string(segment_id);
+        struct stat info {};
+        // Publication may have succeeded before a later fsync/verify failure.
+        // Never release a reservation while a final directory still exists.
+        if (fstatat(parent.get(), final_name.c_str(), &info, AT_SYMLINK_NOFOLLOW) == 0) {
+            return Status(StatusCode::DataLoss, {});
+        }
+        if (errno != ENOENT) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        const auto staging_name = final_name + ".tmp";
         std::uint32_t remaining = 1024;
-        (void)remove_tree_bounded(parent.get(), name.c_str(), 4, remaining);
+        auto removed = remove_tree_bounded(parent.get(), staging_name.c_str(), 4, remaining);
+        if (!removed.ok()) {
+            return removed.status();
+        }
+        if (options.durability == DurabilityProfile::PowerLossHardened &&
+            fsync(parent.get()) != 0) {
+            return Status(StatusCode::Unavailable, {});
+        }
+        return options.volume->verify();
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
     } catch (...) {
+        return Status(StatusCode::Internal, {});
     }
 }
 
@@ -150,24 +174,62 @@ Result<StartupScanReport> ArtifactCatalog::startup_scan() {
     }
 }
 
-Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& sealed) {
-    auto state = state_;
-    if (!sealed.segment || sealed.work_id == 0) {
+Result<void> ArtifactCatalog::abort(SealedSegment& sealed) {
+    if (sealed.segment_id == 0 || sealed.work_id == 0 ||
+        sealed.manifest.identity.segment_id != sealed.segment_id ||
+        !(sealed.manifest.identity.volume_id == state_->options.volume->identity()) ||
+        !(sealed.manifest.identity.task_id == sealed.task_id)) {
         return Status(StatusCode::InvalidArgument, {});
     }
-    const auto id = sealed.segment->metadata.segment_id();
+    {
+        std::lock_guard<std::mutex> lock(state_->index);
+        if (state_->scanning || state_->find(sealed.segment_id) != state_->slots.size()) {
+            sealed.reservation.volume.invalidate_usage();
+            return Status(StatusCode::Conflict, {});
+        }
+    }
+    auto cleaned = cleanup_staging(state_->options, sealed.segment_id);
+    if (!cleaned.ok()) {
+        sealed.reservation.volume.invalidate_usage();
+        return cleaned.status();
+    }
+    return sealed.reservation.volume.settle_aborted_after_cleanup();
+}
+
+Result<void> ArtifactCatalog::commit(SealedSegment sealed, bool* settled) {
+    if (settled) {
+        *settled = false;
+    }
+    auto state = state_;
+    if (sealed.segment_id == 0 || sealed.work_id == 0 ||
+        sealed.manifest.identity.segment_id != sealed.segment_id ||
+        !(sealed.manifest.identity.volume_id == state->options.volume->identity()) ||
+        !(sealed.manifest.identity.task_id == sealed.task_id)) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    const auto id = sealed.segment_id;
     std::size_t at = state->slots.size();
     std::shared_ptr<CommitFrame> frame;
     bool claimed = false;
 
     const auto fail_before_publish = [&](StatusCode failure) -> Result<void> {
-        cleanup_staging_best_effort(state->options.volume, id);
-        if (frame && frame->committer) {
-            (void)frame->committer->abort_after_cleanup();
+        auto cleaned = cleanup_staging(state->options, id);
+        if (cleaned.ok() && frame) {
+            auto aborted = frame->committer
+                               ? frame->committer->abort_after_cleanup()
+                               : frame->sealed.reservation.volume.settle_aborted_after_cleanup();
+            if (aborted.ok() && settled) {
+                *settled = true;
+            }
+            if (!aborted.ok()) {
+                cleaned = aborted.status();
+            }
+        }
+        if (!cleaned.ok()) {
+            state->options.capacity->protect(cleaned.status().code());
+        }
+        if (frame) {
             frame->committer.reset();
-        } else if (frame && frame->reservation) {
-            (void)frame->reservation->volume.settle_aborted_after_cleanup();
-            frame->reservation.reset();
         }
         if (frame) {
             frame->files.reset();
@@ -175,44 +237,55 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
         std::lock_guard<std::mutex> lock(state->index);
         auto& slot = state->slots[at];
         slot = CatalogSlot{};
-        return Status(failure, {});
+        return cleaned.ok() ? Result<void>(Status(failure, {})) : Result<void>(cleaned.status());
+    };
+
+    // Before a Catalog claim, the incoming job still owns the handoff.
+    // On rejection clean only if no other Catalog owner claims that identity.
+    const auto fail_unclaimed = [&](StatusCode failure) -> Result<void> {
+        auto aborted = abort(frame ? frame->sealed : sealed);
+        if (aborted.ok() && settled) {
+            *settled = true;
+        }
+        return aborted.ok() ? Result<void>(Status(failure, {})) : Result<void>(aborted.status());
     };
 
     try {
-        frame = std::make_shared<CommitFrame>(sealed);
+        const auto work_id = sealed.work_id;
+        frame = std::make_shared<CommitFrame>(std::move(sealed));
         {
-            std::lock_guard<std::mutex> lock(state->index);
+            std::unique_lock<std::mutex> lock(state->index);
             if (state->scanning) {
-                return Status(StatusCode::Conflict, {});
+                lock.unlock();
+                return fail_unclaimed(StatusCode::Conflict);
             }
             if (state->options.volume->protection() != StatusCode::Ok) {
-                return Status(state->options.volume->protection(), {});
+                const auto failure = state->options.volume->protection();
+                lock.unlock();
+                return fail_unclaimed(failure);
             }
             at = state->find(id);
             if (at != state->slots.size()) {
-                const auto& existing = state->slots[at];
-                if (existing.work_id != sealed.work_id || existing.work != CatalogWork::None) {
-                    return Status(StatusCode::Conflict, {});
-                }
-                return existing.visible ? Result<void>{}
-                       : existing.failure != StatusCode::Ok
-                           ? Result<void>(Status(existing.failure, {}))
-                           : Result<void>(Status(StatusCode::InvalidState, {}));
+                // A move-only handoff cannot legitimately be resubmitted.
+                // Do not delete or adopt another owner's staging/final files.
+                frame->sealed.reservation.volume.invalidate_usage();
+                return Status(StatusCode::Conflict, {});
             }
             const auto empty = std::find_if(
                 state->slots.begin(), state->slots.end(),
                 [](const auto& slot) { return slot.segment_id == 0; });
             if (empty == state->slots.end()) {
-                return Status(StatusCode::ResourceExhausted, {});
+                lock.unlock();
+                return fail_unclaimed(StatusCode::ResourceExhausted);
             }
             at = static_cast<std::size_t>(empty - state->slots.begin());
             empty->segment_id = id;
-            empty->work_id = sealed.work_id;
+            empty->work_id = work_id;
             empty->frame = frame;
             empty->work = CatalogWork::Commit;
             claimed = true;
         }
-        const auto& input = frame->sealed;
+        auto& input = frame->sealed;
         auto files = SealedFiles::open(
             state->options.volume, id, input.files, input.envelope,
             input.manifest_limits.max_bytes);
@@ -220,19 +293,15 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
             return fail_before_publish(files.status().code());
         }
         frame->files = std::move(files.value());
+        if (frame->files->storage_bytes() != input.reservation.storage_bytes) {
+            return fail_before_publish(StatusCode::DataLoss);
+        }
         const auto now = std::chrono::time_point_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now());
-        auto manifest = input.segment->metadata.capture_manifest(frame->files->evidence(), now);
-        if (!manifest.ok()) {
-            return fail_before_publish(manifest.status().code());
-        }
-        auto reservation = input.segment->handoff_sealed(frame->files->storage_bytes());
-        if (!reservation.ok()) {
-            return fail_before_publish(reservation.status().code());
-        }
-        frame->reservation.emplace(std::move(reservation.value()));
+        input.manifest.identity.committed_at = now;
+        input.manifest.files = frame->files->evidence();
         auto committer = SegmentCommitter::create(
-            frame->files, manifest.value(), input.manifest_limits, *frame->reservation,
+            frame->files, input.manifest, input.manifest_limits, input.reservation,
             state->options.durability);
         if (!committer.ok()) {
             return fail_before_publish(committer.status().code());
@@ -271,13 +340,16 @@ Result<void> ArtifactCatalog::commit(const pipeline::SealedPipelineSegment& seal
         }
         // Release pinned Commit file descriptors outside the index lock.
         frame->committer.reset();
+        if (settled) {
+            *settled = true;
+        }
         return {};
     } catch (const std::bad_alloc&) {
         return claimed ? fail_before_publish(StatusCode::ResourceExhausted)
-                       : Result<void>(Status(StatusCode::ResourceExhausted, {}));
+                       : fail_unclaimed(StatusCode::ResourceExhausted);
     } catch (...) {
         return claimed ? fail_before_publish(StatusCode::Internal)
-                       : Result<void>(Status(StatusCode::Internal, {}));
+                       : fail_unclaimed(StatusCode::Internal);
     }
 }
 
@@ -295,8 +367,7 @@ Result<bool> ArtifactCatalog::retire_eligible(TaskId task) const {
             continue;
         }
         const bool belongs = (slot.entry && slot.entry->info.summary.task_id == task) ||
-                             (slot.frame && slot.frame->sealed.segment &&
-                              slot.frame->sealed.segment->metadata.task_id() == task);
+                             (slot.frame && slot.frame->sealed.task_id == task);
         if (!belongs) {
             if (!slot.entry && !slot.frame) {
                 return false;

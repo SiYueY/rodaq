@@ -20,6 +20,16 @@ target_compile_options(rodaq_ros2_config PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(rodaq_ros2_config PUBLIC rodaq::ros2_support
     PRIVATE rclcpp::rclcpp nlohmann_json::nlohmann_json)
 target_include_directories(rodaq_ros2_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Shared private source helper, bundled with isolated official plugin sources.
+set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/internal" CACHE PATH
+    "Directory containing RoDAQ's private strict_json.hpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/strict_json.hpp")
+    set(RODAQ_STRICT_JSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(NOT EXISTS "${RODAQ_STRICT_JSON_INCLUDE_DIR}/strict_json.hpp")
+    message(FATAL_ERROR "Official plugin source requires private strict_json.hpp")
+endif()
+target_include_directories(rodaq_ros2_config PRIVATE "${RODAQ_STRICT_JSON_INCLUDE_DIR}")
 
 add_library(rodaq_ros2_runtime STATIC runtime.cpp subscription.cpp native_resources.cpp)
 target_compile_options(rodaq_ros2_runtime PRIVATE -Wall -Wextra -Wpedantic)

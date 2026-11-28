@@ -11,8 +11,8 @@
 #include <rodaq/artifact/artifact_service.hpp>
 #include <rodaq/task/config.hpp>
 
-#include "../pipeline/sealed_segment.hpp"
 #include "manifest.hpp"
+#include "sealed_segment.hpp"
 #include "volume_capacity.hpp"
 
 namespace rodaq::artifact {
@@ -62,7 +62,9 @@ public:
     // Synchronous startup scan before Server enters Ready.
     Result<StartupScanReport> startup_scan();
     // Publishes a sealed Pipeline segment into a final Artifact and Catalog.
-    Result<void> commit(const pipeline::SealedPipelineSegment& sealed);
+    Result<void> commit(SealedSegment sealed, bool* settled = nullptr);
+    // Caller still owns a sealed handoff rejected before queue admission.
+    Result<void> abort(SealedSegment& sealed);
     Result<ArtifactPage> query(const ArtifactQuery& query) const;
     Result<ArtifactInfo> get(ArtifactId id) const;
     Result<ArtifactReadHandle> acquire(ArtifactId id, ArtifactFileId file);

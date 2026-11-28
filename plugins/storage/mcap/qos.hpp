@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -39,11 +40,12 @@ inline constexpr std::string_view kRos2MetadataFormat = "ros2/1.0";
 struct Ros2ChannelMetadata {
     std::string offered_qos_yaml{"[]\n"};
     std::string type_description_hash;
+    std::optional<std::string> ros_distribution;
 };
 
 // Strictly parses ros2/1.0 Descriptor metadata JSON (or empty metadata) into
-// rosbag2-compatible channel metadata. Ignores optional diagnostic subscription block;
-// fails closed on unknown format, duplicate keys, or invalid QoS/type-hash fields.
+// rosbag2-compatible channel metadata, including optional subscription.ros_distribution.
+// Fails closed on unknown format, duplicate keys, or invalid QoS/type-hash/subscription fields.
 Result<Ros2ChannelMetadata> parse_ros2_metadata(const rodaq_descriptor_metadata_t& metadata);
 
 }  // namespace rodaq::mcap_storage

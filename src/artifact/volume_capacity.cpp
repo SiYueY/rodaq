@@ -233,6 +233,15 @@ Result<void> VolumeReservation::record_usage(
     return {};
 }
 
+Result<void> VolumeReservation::record_sealed_usage(std::uint64_t actual_bytes) {
+    const auto exposure = actual_ + future_;
+    if (actual_bytes > exposure) {
+        invalidate_usage();
+        return Status(StatusCode::DataLoss, {});
+    }
+    return record_usage(actual_bytes, exposure - actual_bytes);
+}
+
 void VolumeReservation::mark_effects_possible() noexcept { effects_possible_ = true; }
 
 void VolumeReservation::invalidate_usage() {

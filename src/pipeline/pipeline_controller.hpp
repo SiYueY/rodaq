@@ -12,10 +12,10 @@
 #include <rodaq/plugin/library.hpp>
 #include <rodaq/plugin/manager.hpp>
 
+#include "../artifact/sealed_segment.hpp"
 #include "../execution_lane.hpp"
 #include "pipeline_writer.hpp"
 #include "recording_instance.hpp"
-#include "sealed_segment.hpp"
 
 namespace rodaq::pipeline {
 
@@ -100,8 +100,8 @@ public:
     Result<void> establish_control_fence(std::optional<std::uint64_t> monotonic_ns = {}) noexcept;
     Result<std::optional<std::uint64_t>> recording_time_boundary() const;
     Result<GateSnapshot> close_admission(ControlGeneration generation);
-    Result<std::optional<SealedPipelineSegment>> drain(plugin::Deadline deadline);
-    Result<std::optional<SealedPipelineSegment>> rotate(
+    Result<std::optional<artifact::SealedSegment>> drain(plugin::Deadline deadline);
+    Result<std::optional<artifact::SealedSegment>> rotate(
         std::uint64_t successor_segment_id, plugin::Deadline deadline);
     Result<bool> rotation_due(const SegmentPolicy& policy, std::uint64_t now_monotonic) const;
     Result<void> acknowledge_artifact(std::uint64_t work_id, std::uint64_t segment_id);

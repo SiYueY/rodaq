@@ -51,9 +51,12 @@ protected:
         fs::copy(
             RODAQ_PIPELINE_ACQUISITION_PACKAGE, root_ / "packages/acquisition",
             fs::copy_options::recursive);
+#ifdef RODAQ_PIPELINE_MCAP_PACKAGE
+        fs::copy(RODAQ_PIPELINE_MCAP_PACKAGE, root_ / "packages/mcap", fs::copy_options::recursive);
+#endif
         plugin::PluginManagerOptions plugins;
         plugins.search_paths = {root_ / "packages"};
-        plugins.max_loaded_plugins = 2;
+        plugins.max_loaded_plugins = 3;
         plugins.max_instances = 8;
         plugins.max_config_size = 4096;
         plugins.shutdown_timeout = 2s;
@@ -181,23 +184,27 @@ TEST_F(PipelineControllerTest, FullPrepareOpenRotateDrainCommitAndCleanupLifecyc
     auto rotated = controller->rotate(8, soon());
     ASSERT_TRUE(rotated.ok()) << rotated.status().message();
     ASSERT_TRUE(rotated.value().has_value());
-    EXPECT_EQ(rotated.value()->segment->capacity_snapshot().segment_id, 7ULL);
-    ASSERT_TRUE(catalog_->commit(*rotated.value()).ok());
-    ASSERT_TRUE(controller->acknowledge_artifact(rotated.value()->work_id, 7).ok());
+    const auto rotated_work = rotated.value()->work_id;
+    EXPECT_EQ(rotated.value()->segment_id, 7ULL);
+    ASSERT_TRUE(catalog_->commit(std::move(*rotated.value())).ok());
+    ASSERT_TRUE(controller->acknowledge_artifact(rotated_work, 7).ok());
 
-    // Wait for more records on segment 8, then close and drain.
+    // Wait for new admissions after rotation, not the cumulative count.
+    const auto accepted_before_successor = controller->snapshot().value().gate.accepted_records;
     const auto until2 = std::chrono::steady_clock::now() + 2s;
-    while (controller->snapshot().value().records.accepted < 2 &&
+    while (controller->snapshot().value().gate.accepted_records < accepted_before_successor + 2 &&
            std::chrono::steady_clock::now() < until2) {
         std::this_thread::sleep_for(2ms);
     }
+    ASSERT_GE(controller->snapshot().value().gate.accepted_records, accepted_before_successor + 2);
     ASSERT_TRUE(controller->close_admission(7).ok());
     auto drained = controller->drain(soon());
     ASSERT_TRUE(drained.ok()) << drained.status().message();
     ASSERT_TRUE(drained.value().has_value());
-    EXPECT_EQ(drained.value()->segment->capacity_snapshot().segment_id, 8ULL);
-    ASSERT_TRUE(catalog_->commit(*drained.value()).ok());
-    ASSERT_TRUE(controller->acknowledge_artifact(drained.value()->work_id, 8).ok());
+    const auto drained_work = drained.value()->work_id;
+    EXPECT_EQ(drained.value()->segment_id, 8ULL);
+    ASSERT_TRUE(catalog_->commit(std::move(*drained.value())).ok());
+    ASSERT_TRUE(controller->acknowledge_artifact(drained_work, 8).ok());
 
     ASSERT_TRUE(controller->quiesce(soon()).ok());
     ASSERT_TRUE(controller->cleanup(soon()).ok());
@@ -206,6 +213,60 @@ TEST_F(PipelineControllerTest, FullPrepareOpenRotateDrainCommitAndCleanupLifecyc
     EXPECT_TRUE(catalog_->get(rodaq::ArtifactId{7}).ok());
     EXPECT_TRUE(catalog_->get(rodaq::ArtifactId{8}).ok());
 }
+
+#ifdef RODAQ_PIPELINE_MCAP_PACKAGE
+TEST_F(PipelineControllerTest, GenericAcquisitionThroughMcapAndArtifactCommit) {
+    auto options = make_options(15, 1);
+    options.definition.storage = {
+        "com.rodaq.storage.mcap", "1.0.0", R"({"format_version":"1.0","profile":"generic"})"};
+    options.manifest.storage = {"com.rodaq.storage.mcap", "RoDAQ MCAP Storage", "1.0.0"};
+    options.manifest.format = "mcap";
+    auto created = pipeline::PipelineController::create(std::move(options));
+    ASSERT_TRUE(created.ok()) << created.status().message();
+    auto controller = std::move(created.value());
+    auto prepared = controller->prepare(soon());
+    ASSERT_TRUE(prepared.ok()) << prepared.status().message();
+    pipeline::OpenAuthorization auth;
+    auth.task_id = rodaq::test::manifest_identity().task_id;
+    auth.pipeline_id = 1;
+    auth.instance_id = prepared.value().instance_id;
+    auth.control_generation = 7;
+    auth.prepared_monotonic = prepared.value().prepared_monotonic;
+    auth.opened_monotonic = prepared.value().prepared_monotonic;
+    ASSERT_EQ(controller->open_admission(auth), pipeline::GateOpenResult::Opened);
+    const auto until = std::chrono::steady_clock::now() + 2s;
+    while (controller->snapshot().value().gate.accepted_records < 2 &&
+           std::chrono::steady_clock::now() < until) {
+        std::this_thread::sleep_for(2ms);
+    }
+    ASSERT_GE(controller->snapshot().value().gate.accepted_records, 2ULL);
+    ASSERT_TRUE(controller->close_admission(7).ok());
+    auto drained = controller->drain(soon());
+    ASSERT_TRUE(drained.ok()) << drained.status().message();
+    ASSERT_TRUE(drained.value());
+    const auto work = drained.value()->work_id;
+    ASSERT_TRUE(catalog_->commit(std::move(*drained.value())).ok());
+    ASSERT_TRUE(controller->acknowledge_artifact(work, 15).ok());
+    ASSERT_TRUE(controller->cleanup(soon()).ok());
+    EXPECT_TRUE(controller->snapshot().value().quiescence.settled);
+    auto info = catalog_->get(rodaq::ArtifactId{15});
+    ASSERT_TRUE(info.ok());
+    ASSERT_EQ(info.value().files.size(), 1U);
+    EXPECT_EQ(info.value().files[0].display_name, "15.mcap");
+    const auto dir = volume_->artifacts_directory() / "15";
+    const auto bytes = rodaq::persistence::read_file(dir, "15.mcap", 65536);
+    ASSERT_TRUE(bytes.ok());
+    ASSERT_GE(bytes.value().size(), 16U);
+    EXPECT_EQ(bytes.value().substr(0, 8), std::string("\x89MCAP0\r\n", 8));
+    const auto manifest = rodaq::persistence::read_file(dir, "manifest.json", 65536);
+    ASSERT_TRUE(manifest.ok());
+    auto decoded = artifact::decode_manifest(manifest.value(), {});
+    ASSERT_TRUE(decoded.ok());
+    ASSERT_FALSE(decoded.value().descriptors.empty());
+    EXPECT_EQ(decoded.value().descriptors[0].message_encoding, "raw");
+    EXPECT_GT(decoded.value().coverage[0].written, 0U);
+}
+#endif
 
 TEST_F(PipelineControllerTest, StorageUnknownFailurePreventsNormalArtifactCommit) {
     auto created = pipeline::PipelineController::create(

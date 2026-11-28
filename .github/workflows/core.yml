@@ -13,8 +13,11 @@ jobs:
         preset: [dev, asan-ubsan, tsan]
     steps:
       - uses: actions/checkout@v4
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         with:
           submodules: recursive
+          lfs: false
       - name: Install Core toolchain and dependencies
         run: |
           sudo apt-get update
@@ -29,7 +32,7 @@ jobs:
         run: python3 tools/check_format.py
       - name: Configure (${{ matrix.preset }})
         run: |
-          EXTRA_FLAGS="-DRODAQ_BUILD_BEHAVIORAL_FAKES=ON -DRODAQ_SCHEMA_PYTHON_EXECUTABLE=$GITHUB_WORKSPACE/build/schema-venv/bin/python"
+          EXTRA_FLAGS="-DRODAQ_BUILD_BEHAVIORAL_FAKES=ON -DRODAQ_BUILD_MCAP_STORAGE=ON -DRODAQ_SCHEMA_PYTHON_EXECUTABLE=$GITHUB_WORKSPACE/build/schema-venv/bin/python"
           if [ "${{ matrix.preset }}" = "dev" ]; then
             EXTRA_FLAGS="$EXTRA_FLAGS -DRODAQ_ENABLE_CLANG_TIDY=ON"
           fi
@@ -86,8 +89,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         with:
           submodules: recursive
+          lfs: false
       - uses: actions/setup-node@v4
         with:
           node-version: "26"
@@ -104,7 +110,7 @@ jobs:
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
             | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y ros-humble-rclcpp ros-humble-mcap-vendor \
+          sudo apt-get install -y ros-humble-rclcpp \
             ros-humble-sensor-msgs ros-humble-std-msgs \
             ros-humble-rosidl-default-generators ros-humble-rosidl-default-runtime \
             ros-humble-rclpy

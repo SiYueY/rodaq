@@ -103,6 +103,8 @@ public:
     Result<void> release_future(std::uint64_t bytes);
     // Actual growth converts previously reserved exposure; total cannot grow.
     Result<void> record_usage(std::uint64_t actual_bytes, std::uint64_t remaining_future_bytes);
+    // Converts verified storage bytes while retaining the full commit exposure.
+    Result<void> record_sealed_usage(std::uint64_t actual_bytes);
     void mark_effects_possible() noexcept;
     // Backend exceeded its envelope: aggregate actual usage is no longer a
     // complete disk fact. Retain all charges and stop further growth.

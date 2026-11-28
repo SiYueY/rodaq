@@ -4,13 +4,11 @@
 #include <cstdint>
 #include <iterator>
 #include <new>
-#include <set>
 #include <string>
-#include <vector>
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
-#include <rodaq/plugin/abi.hpp>
+#include "strict_json.hpp"
 
 namespace rodaq::mcap_storage {
 namespace {
@@ -31,54 +29,6 @@ struct QosProfile {
     std::uint64_t lease_nsec{0};
     bool avoid_ros_namespace_conventions{false};
 };
-
-struct StrictAbort {
-    const char* message;
-};
-
-Json parse_strict_json(std::string_view input) {
-    if (input.find('\0') != std::string_view::npos ||
-        plugin::abi::utf8_prefix(input, input.size()) != input.size()) {
-        throw StrictAbort{"Invalid UTF-8 or NUL in ros2/1.0 metadata"};
-    }
-    std::vector<std::set<std::string>> key_stack;
-    std::size_t nodes = 0;
-    auto callback = [&](int depth, Json::parse_event_t event, Json& parsed) -> bool {
-        if (depth > 16) {
-            throw StrictAbort{"ros2/1.0 metadata nesting depth exceeded"};
-        }
-        switch (event) {
-            case Json::parse_event_t::object_start:
-                if (++nodes > 16384) {
-                    throw StrictAbort{"ros2/1.0 metadata node count exceeded"};
-                }
-                key_stack.emplace_back();
-                break;
-            case Json::parse_event_t::object_end:
-                if (!key_stack.empty()) {
-                    key_stack.pop_back();
-                }
-                break;
-            case Json::parse_event_t::key: {
-                const auto& key = parsed.get_ref<const std::string&>();
-                if (key_stack.empty() || !key_stack.back().insert(key).second) {
-                    throw StrictAbort{"Duplicate key in ros2/1.0 metadata"};
-                }
-                break;
-            }
-            case Json::parse_event_t::array_start:
-            case Json::parse_event_t::value:
-                if (++nodes > 16384) {
-                    throw StrictAbort{"ros2/1.0 metadata node count exceeded"};
-                }
-                break;
-            case Json::parse_event_t::array_end:
-                break;
-        }
-        return true;
-    };
-    return Json::parse(input.begin(), input.end(), callback);
-}
 
 bool read_u64(const Json& obj, const char* key, std::uint64_t& out) {
     if (!obj.contains(key)) {
@@ -160,7 +110,12 @@ Result<Ros2ChannelMetadata> parse_ros2_metadata(const rodaq_descriptor_metadata_
         return Status(StatusCode::ResourceExhausted, "ros2/1.0 metadata exceeds byte limit");
     }
     try {
-        const auto doc = parse_strict_json({metadata.json.data, metadata.json.size});
+        auto parsed = internal::parse_strict_json(
+            {metadata.json.data, metadata.json.size}, {kMaxRos2MetadataBytes, 16, 16384});
+        if (!parsed.ok()) {
+            return parsed.status();
+        }
+        const auto& doc = parsed.value();
         if (!doc.is_object()) {
             return Status(StatusCode::InvalidArgument, "ros2/1.0 metadata must be a JSON object");
         }
@@ -181,6 +136,29 @@ Result<Ros2ChannelMetadata> parse_ros2_metadata(const rodaq_descriptor_metadata_
                     return Status(StatusCode::InvalidArgument, "Invalid RIHS01 type hash");
                 }
                 result.type_description_hash = hash;
+            }
+        }
+        if (doc.contains("subscription")) {
+            const auto& sub = doc.at("subscription");
+            if (!sub.is_object()) {
+                return Status(StatusCode::InvalidArgument, "subscription metadata must be object");
+            }
+            if (sub.contains("ros_distribution")) {
+                if (!sub.at("ros_distribution").is_string()) {
+                    return Status(StatusCode::InvalidArgument, "Invalid ros_distribution type");
+                }
+                const auto& distro = sub.at("ros_distribution").get_ref<const std::string&>();
+                if (distro.empty() || distro.size() > 32 ||
+                    static_cast<unsigned char>(distro.front()) < 'a' ||
+                    static_cast<unsigned char>(distro.front()) > 'z' ||
+                    !std::all_of(distro.begin(), distro.end(), [](char ch) {
+                        const auto b = static_cast<unsigned char>(ch);
+                        return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' ||
+                               b == '-';
+                    })) {
+                    return Status(StatusCode::InvalidArgument, "Invalid ros_distribution value");
+                }
+                result.ros_distribution = distro;
             }
         }
         if (doc.contains("offered_qos_profiles")) {
@@ -209,8 +187,6 @@ Result<Ros2ChannelMetadata> parse_ros2_metadata(const rodaq_descriptor_metadata_
             }
         }
         return result;
-    } catch (const StrictAbort& abort) {
-        return Status(StatusCode::InvalidArgument, abort.message);
     } catch (const Json::exception&) {
         return Status(StatusCode::InvalidArgument, "Malformed ros2/1.0 metadata JSON");
     } catch (const std::bad_alloc&) {

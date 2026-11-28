@@ -7,3 +7,6 @@
 [submodule "third_party/fmt"]
 	path = third_party/fmt
 	url = https://github.com/fmtlib/fmt.git
+[submodule "third_party/mcap-cpp"]
+	path = third_party/mcap-cpp
+	url = https://github.com/foxglove/mcap.git

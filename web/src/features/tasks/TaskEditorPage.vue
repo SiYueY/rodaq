@@ -198,6 +198,19 @@ function onRos2QosModeChange(binding: Ros2StreamBinding): void {
   }
 }
 
+function onMcapProfileChange(p: PortablePipelineConfig, profile: 'ros2' | 'generic'): void {
+  const distro =
+    profile === 'ros2' && typeof p.storage.config.ros_distro === 'string'
+      ? p.storage.config.ros_distro
+      : undefined;
+  p.storage.config = buildQualifiedMcapConfig(profile, distro);
+}
+
+function onMcapRosDistroChange(p: PortablePipelineConfig, value: string): void {
+  const profile = p.storage.config.profile === 'generic' ? 'generic' : 'ros2';
+  p.storage.config = buildQualifiedMcapConfig(profile, value);
+}
+
 function parseRawPluginConfigs(): boolean {
   rawJsonParseErrors.value = {};
   let ok = true;
@@ -648,9 +661,38 @@ onBeforeUnmount(() => {
           class="card"
           style="background: var(--bg-subtle)"
         >
-          <strong>Qualified Single-File MCAP Baseline (format_version 1.0 · read-only)</strong>
-          <div class="mono muted" style="margin-top: 4px">
-            single-file .mcap · compression=none · chunk_mode=none · rosbag2_metadata=legacy_ros_distro
+          <strong>Qualified Single-File MCAP Baseline (format_version 1.0)</strong>
+          <div class="grid-2" style="margin-top: 8px">
+            <div class="form-field" style="margin-bottom: 0">
+              <label :for="`mcap-profile-${pIdx}`">MCAP Profile</label>
+              <select
+                :id="`mcap-profile-${pIdx}`"
+                :value="(p.storage.config.profile as string) || 'ros2'"
+                @change="
+                  onMcapProfileChange(
+                    p,
+                    ($event.target as HTMLSelectElement).value as 'ros2' | 'generic',
+                  )
+                "
+              >
+                <option value="ros2">ros2</option>
+                <option value="generic">generic</option>
+              </select>
+            </div>
+            <div class="form-field" style="margin-bottom: 0">
+              <label :for="`mcap-distro-${pIdx}`">Optional ROS Distro (ros2 profile only)</label>
+              <input
+                :id="`mcap-distro-${pIdx}`"
+                type="text"
+                placeholder="auto from descriptor (or e.g. humble)"
+                :disabled="p.storage.config.profile === 'generic'"
+                :value="typeof p.storage.config.ros_distro === 'string' ? p.storage.config.ros_distro : ''"
+                @input="onMcapRosDistroChange(p, ($event.target as HTMLInputElement).value)"
+              />
+            </div>
+          </div>
+          <div class="mono muted" style="margin-top: 6px">
+            single-file .mcap · compression=none · chunk_mode=none · chunk_crc=false · summary=false
           </div>
         </div>
         <div v-else class="form-field">

@@ -33,16 +33,23 @@ export function isOfficialMcapEditorSupported(pluginId: string, pluginVersion: s
   return pluginId === OFFICIAL_MCAP_PLUGIN_ID && COMPATIBLE_MCAP_VERSIONS.has(pluginVersion);
 }
 
-export function buildQualifiedMcapConfig(): Record<string, unknown> {
-  return {
+export function buildQualifiedMcapConfig(
+  profile: 'ros2' | 'generic' = 'ros2',
+  rosDistro?: string,
+): Record<string, unknown> {
+  const cfg: Record<string, unknown> = {
     format_version: '1.0',
+    profile,
     compression: 'none',
     chunk_mode: 'none',
     chunk_crc: false,
     message_index: false,
     summary: false,
-    rosbag2_metadata: 'legacy_ros_distro',
   };
+  if (profile === 'ros2' && rosDistro && rosDistro.trim().length > 0) {
+    cfg.ros_distro = rosDistro.trim();
+  }
+  return cfg;
 }
 
 export function buildDefaultRos2Config(streamKeys: string[]): Record<string, unknown> {
@@ -216,6 +223,32 @@ export function validateTaskDraft(
     }
     if (!p.streams.length) {
       issues.push({ path: `${base}/streams`, message: 'At least one stream is required' });
+    }
+    if (isOfficialMcapEditorSupported(p.storage.plugin_id, p.storage.plugin_version)) {
+      const mcapCfg = p.storage.config;
+      const profile = mcapCfg.profile ?? 'ros2';
+      if (profile !== 'ros2' && profile !== 'generic') {
+        issues.push({
+          path: `${base}/storage/config/profile`,
+          message: 'MCAP profile must be ros2 or generic',
+        });
+      }
+      if ('ros_distro' in mcapCfg && mcapCfg.ros_distro !== undefined) {
+        if (profile === 'generic') {
+          issues.push({
+            path: `${base}/storage/config/ros_distro`,
+            message: 'MCAP generic profile forbids ros_distro',
+          });
+        } else if (
+          typeof mcapCfg.ros_distro !== 'string' ||
+          !/^[a-z][a-z0-9_-]{0,31}$/.test(mcapCfg.ros_distro)
+        ) {
+          issues.push({
+            path: `${base}/storage/config/ros_distro`,
+            message: 'ros_distro must match ^[a-z][a-z0-9_-]{0,31}$',
+          });
+        }
+      }
     }
     const seenKeys = new Set<string>();
     p.streams.forEach((s, sIdx) => {

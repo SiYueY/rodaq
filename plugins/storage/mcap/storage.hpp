@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,6 +12,7 @@
 #include <rodaq/storage/types.hpp>
 
 #include "checked_sink.hpp"
+#include "config.hpp"
 
 namespace rodaq::mcap_storage {
 
@@ -51,6 +53,8 @@ private:
     // This index is cleared per Segment and destroyed before those owners.
     std::map<const Descriptor*, mcap::SchemaId, SchemaLess> schemas_;
     storage::PrepareConfig limits_{};
+    McapConfig config_{};
+    std::optional<std::string> segment_ros_distro_;
     Phase phase_{Phase::New};
     StatusCode failure_{StatusCode::Ok};
     std::uint64_t catalog_bytes_{0};

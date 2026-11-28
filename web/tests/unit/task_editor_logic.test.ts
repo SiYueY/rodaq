@@ -72,8 +72,31 @@ describe('Task Editor compatibility table & simplified Portable TaskConfig (WEB-
     expect(isOfficialMcapEditorSupported(OFFICIAL_MCAP_PLUGIN_ID, '1.0.0')).toBe(true);
     expect(isOfficialMcapEditorSupported(OFFICIAL_MCAP_PLUGIN_ID, '1.1.0')).toBe(false);
 
-    expect(buildQualifiedMcapConfig().format_version).toBe('1.0');
+    const mcapDefault = buildQualifiedMcapConfig();
+    expect(mcapDefault.format_version).toBe('1.0');
+    expect(mcapDefault.profile).toBe('ros2');
+    expect('rosbag2_metadata' in mcapDefault).toBe(false);
+    expect('ros_distro' in mcapDefault).toBe(false);
+
+    const mcapGeneric = buildQualifiedMcapConfig('generic', 'humble');
+    expect(mcapGeneric.profile).toBe('generic');
+    expect('ros_distro' in mcapGeneric).toBe(false);
+
+    const mcapDistro = buildQualifiedMcapConfig('ros2', 'humble');
+    expect(mcapDistro.ros_distro).toBe('humble');
+
     expect(buildDefaultRos2Config(['cam']).format_version).toBe('1.0');
+  });
+
+  it('rejects ros_distro combined with generic MCAP profile in draft validation', () => {
+    const draft = createDefaultTaskDraft(SAMPLE_CAPS);
+    draft.pipelines[0].storage.config = {
+      format_version: '1.0',
+      profile: 'generic',
+      ros_distro: 'humble',
+    };
+    const issues = validateTaskDraft(draft, SAMPLE_CAPS);
+    expect(issues.some((i) => i.path.endsWith('/storage/config/ros_distro'))).toBe(true);
   });
 
   it('excludes deferred backends and serializes simplified Portable TaskConfig without obsolete policy fields', () => {

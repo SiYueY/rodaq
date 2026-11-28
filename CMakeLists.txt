@@ -111,7 +111,7 @@ target_link_libraries(rodaq_daq PUBLIC rodaq::plugin
 rodaq_enable_project_warnings(rodaq_daq)
 
 option(RODAQ_BUILD_BEHAVIORAL_FAKES "Build qualification-only fault-injection backends" OFF)
-option(RODAQ_BUILD_MCAP_STORAGE "Build the MCAP format backend using prepared ROS dependencies" OFF)
+option(RODAQ_BUILD_MCAP_STORAGE "Build the standalone MCAP storage plugin using pinned upstream mcap-cpp" OFF)
 option(RODAQ_BUILD_ROS2_ACQUISITION "Build ROS 2 acquisition using prepared ROS dependencies" OFF)
 option(RODAQ_BUILD_SERVER "Build the RoDAQ Drogon 1.9.14 HTTP server" OFF)
 set(RODAQ_CONFIG_EXTRA_DEPS "")
@@ -141,6 +141,10 @@ install(FILES third_party/tl_expected/COPYING
     DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME tl_expected-LICENSE)
 install(FILES third_party/spdlog/LICENSE
     DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME spdlog-LICENSE)
+if(RODAQ_BUILD_MCAP_STORAGE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mcap-cpp/LICENSE")
+    install(FILES third_party/mcap-cpp/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RoDAQ RENAME mcap-cpp-LICENSE)
+endif()
 configure_package_config_file(cmake/RoDAQConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/RoDAQConfig.cmake
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RoDAQ)

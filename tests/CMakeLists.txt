@@ -437,6 +437,11 @@ if(RODAQ_BUILD_BEHAVIORAL_FAKES)
         RODAQ_PIPELINE_LIFECYCLE_PACKAGE="${PROJECT_BINARY_DIR}/counter-matrix/lifecycle_provider-0-installed/lib/rodaq/plugins/com.example.lifecycle/1.0.0"
         RODAQ_PIPELINE_ACQUISITION_PACKAGE="${PROJECT_BINARY_DIR}/plugins/fake_acquisition/rodaq-plugins")
     add_dependencies(rodaq_pipeline_controller_test rodaq_fake_storage rodaq_fake_acquisition)
+    if(TARGET rodaq_mcap_storage)
+        target_compile_definitions(rodaq_pipeline_controller_test PRIVATE
+            RODAQ_PIPELINE_MCAP_PACKAGE="${PROJECT_BINARY_DIR}/plugins/storage/mcap/rodaq-plugins")
+        add_dependencies(rodaq_pipeline_controller_test rodaq_mcap_storage)
+    endif()
     rodaq_enable_project_warnings(rodaq_pipeline_controller_test)
     gtest_discover_tests(rodaq_pipeline_controller_test PROPERTIES TIMEOUT 30)
     set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES

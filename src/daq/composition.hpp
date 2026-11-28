@@ -70,6 +70,13 @@ struct CompositionOptions {
     persistence::FileFaultHook task_file_faults;
 };
 
+// Private Commit lane submission. The caller retains the handoff on admission
+// failure; successful admission consumes it even if the observer times out.
+Result<void> submit_commit(
+    const std::shared_ptr<artifact::ArtifactCatalog>& catalog,
+    const std::shared_ptr<ExecutionLane>& commit_lane, std::chrono::nanoseconds timeout,
+    std::optional<artifact::SealedSegment>& sealed, std::function<void()> on_settled);
+
 struct StartupOptions;
 struct DeploymentLease;
 

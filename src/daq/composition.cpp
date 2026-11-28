@@ -211,15 +211,21 @@ struct CommitReply {
 
 struct CommitJob final : Work {
     std::shared_ptr<artifact::ArtifactCatalog> catalog;
-    pipeline::SealedPipelineSegment sealed;
-    std::function<void()> on_committed;
+    std::optional<artifact::SealedSegment> sealed;
+    std::function<void()> on_settled;
     std::shared_ptr<CommitReply> reply;
 
     void run() noexcept override {
         try {
-            auto result = catalog->commit(sealed);
-            if (result.ok() && on_committed) {
-                on_committed();
+            if (!sealed) {
+                reply->complete(Status(StatusCode::InvalidState, {}));
+                return;
+            }
+            bool settled = false;
+            auto result = catalog->commit(std::move(*sealed), &settled);
+            sealed.reset();
+            if (settled && on_settled) {
+                on_settled();
             }
             reply->complete(std::move(result));
         } catch (const std::bad_alloc&) {
@@ -231,6 +237,34 @@ struct CommitJob final : Work {
 };
 
 }  // namespace
+
+Result<void> submit_commit(
+    const std::shared_ptr<artifact::ArtifactCatalog>& catalog,
+    const std::shared_ptr<ExecutionLane>& commit_lane, std::chrono::nanoseconds timeout,
+    std::optional<artifact::SealedSegment>& sealed, std::function<void()> on_settled) {
+    if (!sealed) {
+        return Status(StatusCode::InvalidArgument, {});
+    }
+    try {
+        auto job = std::make_shared<CommitJob>();
+        job->catalog = catalog;
+        job->on_settled = std::move(on_settled);
+        job->reply = std::make_shared<CommitReply>();
+        auto reply = job->reply;
+        // All fallible allocations precede the move. Retain the job
+        // until queue admission so rejection can restore its owner.
+        job->sealed.emplace(std::move(*sealed));
+        sealed.reset();
+        auto admitted = commit_lane->submit(job);
+        if (!admitted.ok()) {
+            sealed.emplace(std::move(*job->sealed));
+            return admitted.status();
+        }
+        return reply->wait(timeout);
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted, {});
+    }
+}
 
 struct Composition::State {
     // Declared first: releases the namespace lease after composed authorities.
@@ -418,23 +452,12 @@ Result<std::unique_ptr<Composition>> Composition::create(CompositionOptions opti
                 TaskId task_id) noexcept { release_writer_slot(*resources, task_id); };
         execution->commit_with_ack = [catalog = state->catalog, commit_lane = state->lanes[5],
                                       timeout = o.settings.native_timeout](
-                                         const pipeline::SealedPipelineSegment& sealed,
-                                         std::function<void()> on_committed) -> Result<void> {
-            try {
-                auto job = std::make_shared<CommitJob>();
-                job->catalog = catalog;
-                job->sealed = sealed;
-                job->on_committed = std::move(on_committed);
-                job->reply = std::make_shared<CommitReply>();
-                auto reply = job->reply;
-                auto admitted = commit_lane->submit(std::move(job));
-                if (!admitted.ok()) {
-                    return admitted.status();
-                }
-                return reply->wait(timeout);
-            } catch (const std::bad_alloc&) {
-                return Status(StatusCode::ResourceExhausted, {});
-            }
+                                         std::optional<artifact::SealedSegment>& sealed,
+                                         std::function<void()> on_settled) -> Result<void> {
+            return submit_commit(catalog, commit_lane, timeout, sealed, std::move(on_settled));
+        };
+        execution->abort_sealed = [catalog = state->catalog](artifact::SealedSegment& sealed) {
+            return catalog->abort(sealed);
         };
         execution->allocate_segment_id = [volume = o.volume]() {
             return volume->allocate_segment_id();

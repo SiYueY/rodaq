@@ -6,11 +6,23 @@
   "required": ["format_version"],
   "properties": {
     "format_version": {"const": "1.0"},
+    "profile": {"enum": ["generic", "ros2"], "default": "ros2"},
+    "ros_distro": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$"},
     "compression": {"const": "none", "default": "none"},
     "chunk_mode": {"const": "none", "default": "none"},
     "chunk_crc": {"const": false, "default": false},
     "message_index": {"const": false, "default": false},
-    "summary": {"const": false, "default": false},
-    "rosbag2_metadata": {"const": "legacy_ros_distro", "default": "legacy_ros_distro"}
-  }
+    "summary": {"const": false, "default": false}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"profile": {"const": "generic"}},
+        "required": ["profile"]
+      },
+      "then": {
+        "not": {"required": ["ros_distro"]}
+      }
+    }
+  ]
 }
