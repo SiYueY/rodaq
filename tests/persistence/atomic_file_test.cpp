@@ -84,6 +84,21 @@ TEST_F(AtomicFile, FailuresBeforePublicationKeepOldAuthorityAndReleaseTemporaryO
     }
 }
 
+TEST_F(AtomicFile, NormalPublicationWithoutSyncReportsPublishedNotDurable) {
+    const auto published = persistence::publish_file(
+        root_, "manifest.json", R"({"ok":true})", FilePublishMode::Create, 4096,
+        [](FileStep step) {
+            return (step == FileStep::SyncFile || step == FileStep::SyncDirectory) ? EIO : 0;
+        },
+        false);
+    ASSERT_TRUE(published.status.ok());
+    EXPECT_EQ(published.disposition, FileDisposition::Published);
+    EXPECT_NE(published.disposition, FileDisposition::Durable);
+    EXPECT_EQ(published.step, FileStep::Complete);
+    EXPECT_TRUE(published.retained_temporary.empty());
+    EXPECT_EQ(persistence::read_file(root_, "manifest.json", 64).value(), R"({"ok":true})");
+}
+
 TEST_F(AtomicFile, ParentSyncFailureNeverClaimsDurableDespiteVisibleNewFile) {
     ASSERT_TRUE(write("old", FilePublishMode::Create).status.ok());
     const auto failed = write("new", FilePublishMode::Replace, [](FileStep step) {

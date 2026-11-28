@@ -170,6 +170,8 @@ struct ServerApp::Impl {
     std::atomic<ServerPhase> phase{ServerPhase::Starting};
     std::atomic<bool> started{false};
     std::atomic<bool> stopped{false};
+    std::atomic<bool> quiescent{true};
+    std::shared_ptr<ServerStartupLatch> drogon_latch;
     std::unique_ptr<BearerAuthenticator> auth;
     std::unique_ptr<ControlExecutor> executor;
     std::shared_ptr<DownloadRegistry> downloads;
@@ -362,23 +364,32 @@ struct ServerApp::Impl {
         const RequestGuardResult& guard,
         std::function<void(const drogon::HttpResponsePtr&)> http_cb,
         std::function<drogon::HttpResponsePtr()> work_fn) {
-        auto shared_cb = std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(
-            std::move(http_cb));
+        struct ResponseGate {
+            std::atomic<bool> sent{false};
+            std::function<void(const drogon::HttpResponsePtr&)> cb;
+
+            void send_once(const drogon::HttpResponsePtr& resp) {
+                if (!sent.exchange(true, std::memory_order_acq_rel) && cb) {
+                    cb(resp);
+                }
+            }
+        };
+        auto gate = std::make_shared<ResponseGate>();
+        gate->cb = std::move(http_cb);
         const std::string req_id = guard.request_id;
         const ApiVersion ver = guard.api_version;
         const auto max_resp = config.http.max_json_response_bytes;
 
         auto submitted = executor->submit(
             config.timeouts.mutation_acceptance,
-            [shared_cb,
-             work_fn = std::move(work_fn)](const std::function<bool()>& try_claim_response) {
+            [gate, work_fn = std::move(work_fn)](const std::function<bool()>& try_claim_response) {
                 auto resp = work_fn();
                 if (try_claim_response()) {
-                    (*shared_cb)(resp);
+                    gate->send_once(resp);
                 }
             },
-            [shared_cb, req_id, ver, max_resp]() {
-                (*shared_cb)(make_error_http(
+            [gate, req_id, ver, max_resp]() {
+                gate->send_once(make_error_http(
                     make_request_error(
                         504, "observer_timeout",
                         "observer deadline exceeded; refresh authoritative Task state"),
@@ -386,7 +397,7 @@ struct ServerApp::Impl {
             });
 
         if (!submitted.admitted) {
-            (*shared_cb)(make_error_http(
+            gate->send_once(make_error_http(
                 make_request_error(
                     503, "server_busy", "control execution capacity temporarily saturated"),
                 req_id, max_resp, ver));
@@ -1387,21 +1398,31 @@ Result<void> ServerApp::start(ServerConfig config, ServerServices services) {
     app.addListener(impl_->config.http.listen_address, impl_->config.http.port);
     impl_->register_routes();
 
-    std::mutex ready_mutex;
-    std::condition_variable ready_cv;
-    bool loop_running = false;
-    app.registerBeginningAdvice([&] {
-        std::lock_guard<std::mutex> lock(ready_mutex);
-        loop_running = true;
-        ready_cv.notify_all();
-    });
+    auto latch = std::make_shared<ServerStartupLatch>();
+    impl_->drogon_latch = latch;
+    app.registerBeginningAdvice([latch]() { latch->mark_running(); });
 
-    impl_->started.store(true, std::memory_order_release);
-    impl_->drogon_thread = std::thread([] { drogon::app().run(); });
-
-    std::unique_lock<std::mutex> lock(ready_mutex);
-    if (!ready_cv.wait_for(lock, std::chrono::seconds{5}, [&] { return loop_running; })) {
+    try {
+        impl_->quiescent.store(false, std::memory_order_release);
+        impl_->started.store(true, std::memory_order_release);
+        impl_->drogon_thread = std::thread([latch]() {
+            drogon::app().run();
+            latch->mark_exited();
+        });
+    } catch (const std::system_error&) {
         impl_->phase.store(ServerPhase::Failed, std::memory_order_release);
+        (void)shutdown(std::chrono::steady_clock::now() + impl_->config.timeouts.shutdown);
+        return Status(StatusCode::ResourceExhausted, "failed to launch Drogon event loop thread");
+    }
+
+    if (!latch->wait_running_for(std::chrono::seconds{5})) {
+        impl_->phase.store(ServerPhase::Failed, std::memory_order_release);
+        auto sd = shutdown(std::chrono::steady_clock::now() + impl_->config.timeouts.shutdown);
+        if (!sd.ok() || !quiescent()) {
+            return Status(
+                StatusCode::DeadlineExceeded,
+                "Drogon event loop did not start within 5s and shutdown remained unresolved");
+        }
         return Status(StatusCode::Unavailable, "Drogon event loop did not start within 5s");
     }
     RODAQ_LOG_INFO(
@@ -1411,9 +1432,14 @@ Result<void> ServerApp::start(ServerConfig config, ServerServices services) {
 }
 
 Result<void> ServerApp::shutdown(std::chrono::steady_clock::time_point deadline) {
-    if (!impl_->started.load(std::memory_order_acquire) ||
-        impl_->stopped.exchange(true, std::memory_order_acq_rel)) {
+    if (!impl_->started.load(std::memory_order_acquire)) {
         return {};
+    }
+    if (impl_->stopped.exchange(true, std::memory_order_acq_rel)) {
+        return impl_->quiescent.load(std::memory_order_acquire)
+                   ? Result<void>{}
+                   : Result<void>(Status(
+                         StatusCode::DeadlineExceeded, "ServerApp shutdown remained unresolved"));
     }
     impl_->phase.store(ServerPhase::Draining, std::memory_order_release);
     RODAQ_LOG_INFO("server entering phase=draining");
@@ -1429,18 +1455,34 @@ Result<void> ServerApp::shutdown(std::chrono::steady_clock::time_point deadline)
     if (impl_->executor) {
         exec_res = impl_->executor->shutdown(deadline);
     }
-    drogon::app().quit();
+    bool drogon_settled = true;
     if (impl_->drogon_thread.joinable()) {
-        impl_->drogon_thread.join();
+        drogon::app().quit();
+        if (impl_->drogon_latch && impl_->drogon_latch->wait_exited_until(deadline)) {
+            impl_->drogon_thread.join();
+        } else {
+            impl_->drogon_thread.detach();
+            drogon_settled = false;
+        }
     }
+    const bool all_settled = dl_res.ok() && exec_res.ok() && drogon_settled;
+    impl_->quiescent.store(all_settled, std::memory_order_release);
     if (!dl_res.ok()) {
         return dl_res.status();
     }
     if (!exec_res.ok()) {
         return exec_res.status();
     }
+    if (!drogon_settled) {
+        return Status(
+            StatusCode::DeadlineExceeded, "Drogon event loop thread exceeded shutdown deadline");
+    }
     RODAQ_LOG_INFO("server shutdown settled");
     return {};
+}
+
+bool ServerApp::quiescent() const noexcept {
+    return !impl_ || impl_->quiescent.load(std::memory_order_acquire);
 }
 
 ServerPhase ServerApp::phase() const noexcept {

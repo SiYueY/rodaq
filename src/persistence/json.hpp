@@ -52,6 +52,9 @@ inline Result<Json> parse_json(std::string_view input, const JsonLimits& limits 
     }
 }
 
+// Deterministic compact sorted-key UTF-8 JSON digest (nlohmann::json::dump()
+// with lexicographically ordered object keys, no insignificant whitespace, no
+// external JCS framework): SHA-256(domain || '\0' || serialized).
 inline Result<std::string> semantic_digest(const Json& value, std::string_view domain) {
     try {
         const auto serialized = value.dump();

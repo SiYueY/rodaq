@@ -203,6 +203,59 @@ TEST_F(ManagedVolumeTest, ChangedMarkerContentsAndLostLeaseIdentityProtectTheAct
     EXPECT_EQ(readmitted.value()->verify().status().code(), StatusCode::DataLoss);
 }
 
+TEST_F(ManagedVolumeTest, VolumeMarkerContentDigestMatchesFixedVector) {
+    constexpr std::string_view kVolumeId = "01234567-89ab-4cde-8fab-0123456789ab";
+    constexpr std::string_view kCreatedAt = "2026-11-27T00:00:00.000000000Z";
+    // SHA-256("rodaq.volume.v1\0" ||
+    //   "{\"created_at\":\"2026-11-27T00:00:00.000000000Z\","
+    //   "\"format_version\":\"1.0\","
+    //   "\"volume_id\":\"01234567-89ab-4cde-8fab-0123456789ab\"}")
+    constexpr std::string_view kExpectedDigest =
+        "sha256:28b2d3dc8b95bf2bfa92d2ddd4f2337849781121a725b2bc2faf8a36c3633351";
+
+    persistence::Json doc = {
+        {"format_version", "1.0"},
+        {"volume_id", kVolumeId},
+        {"created_at", kCreatedAt},
+    };
+    const auto encoded = persistence::encode_integrity(doc, "rodaq.volume.v1");
+    ASSERT_TRUE(encoded.ok());
+    const auto parsed = persistence::parse_json(encoded.value());
+    ASSERT_TRUE(parsed.ok());
+    EXPECT_EQ(parsed.value().at("content_digest"), kExpectedDigest);
+
+    // Input JSON with different key order must verify against the exact same fixed vector.
+    ASSERT_TRUE(fs::create_directory(root_ / ".rodaq"));
+    ASSERT_TRUE(fs::create_directory(root_ / ".rodaq/artifacts"));
+    const std::string reordered = std::string(R"({"volume_id":")") + std::string(kVolumeId) +
+                                  R"(","content_digest":")" + std::string(kExpectedDigest) +
+                                  R"(","format_version":"1.0","created_at":")" +
+                                  std::string(kCreatedAt) + R"("})";
+    ASSERT_TRUE(
+        persistence::publish_file(
+            root_ / ".rodaq", "volume.json", reordered, persistence::FilePublishMode::Create, 4096)
+            .status.ok());
+
+    const auto expected_id = artifact::parse_volume_id(kVolumeId).value();
+    auto opened = ManagedVolume::open(root_, VolumeOpenMode::Existing, expected_id);
+    ASSERT_TRUE(opened.ok()) << opened.status().message();
+    EXPECT_EQ(opened.value()->identity(), expected_id);
+    opened.value().reset();
+
+    // Flipping a single hex digit in content_digest must fail closed with DataLoss.
+    std::string tampered = reordered;
+    const auto pos = tampered.find(kExpectedDigest);
+    ASSERT_NE(pos, std::string::npos);
+    tampered[pos + kExpectedDigest.size() - 1] = '0';
+    ASSERT_TRUE(
+        persistence::publish_file(
+            root_ / ".rodaq", "volume.json", tampered, persistence::FilePublishMode::Replace, 4096)
+            .status.ok());
+    EXPECT_EQ(
+        ManagedVolume::open(root_, VolumeOpenMode::Existing, expected_id).status().code(),
+        StatusCode::DataLoss);
+}
+
 TEST_F(ManagedVolumeTest, ConcurrentPipelineStagingAndSpaceQueriesRetainTheSameVolumeIdentity) {
     auto opened = ManagedVolume::open(root_, VolumeOpenMode::Initialize);
     ASSERT_TRUE(opened.ok());

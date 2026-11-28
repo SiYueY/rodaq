@@ -5,6 +5,7 @@
 #include "download/download_registry.hpp"
 #include "download/download_session.hpp"
 #include "security/auth.hpp"
+#include "server_app.hpp"
 #include "service_call_executor.hpp"
 #include "static_assets.hpp"
 
@@ -467,6 +468,93 @@ TEST(StaticAssetServiceTest, EnforcesManifestMajorCachePolicyAndNeverFallbacksAp
     EXPECT_FALSE(bad.usable());
     ASSERT_TRUE(bad.deployment_error().has_value());
     EXPECT_EQ(*bad.deployment_error(), "web_bundle_api_major_mismatch");
+}
+
+TEST(ControlExecutorTest, PreAdmissionFaultNeverRunsMutationOrDoubleCallsCallback) {
+    ExecutionConfig cfg;
+    cfg.control_workers = 1;
+    cfg.control_queue = 2;
+    auto exec = ControlExecutor::create(cfg);
+    ASSERT_TRUE(exec.ok());
+
+    for (const auto fault_point :
+         {ControlExecutor::SubmitFaultPoint::TimerRegister,
+          ControlExecutor::SubmitFaultPoint::QueuePush}) {
+        std::atomic<int> mutation_calls{0};
+        std::atomic<int> response_calls{0};
+        exec.value()->set_submit_fault_for_test(fault_point);
+        const auto sub = exec.value()->submit(
+            10ms,
+            [&](const std::function<bool()>& try_claim) {
+                mutation_calls.fetch_add(1, std::memory_order_acq_rel);
+                if (try_claim()) {
+                    response_calls.fetch_add(1, std::memory_order_acq_rel);
+                }
+            },
+            [&]() { response_calls.fetch_add(1, std::memory_order_acq_rel); });
+        EXPECT_FALSE(sub.admitted);
+        EXPECT_EQ(sub.failure, CallAdmissionFailure::GlobalSaturation);
+        // Simulate caller sending 503 synchronously on rejection.
+        response_calls.fetch_add(1, std::memory_order_acq_rel);
+
+        // Wait past the observer timeout so any leaked timer would have fired.
+        std::this_thread::sleep_for(40ms);
+        EXPECT_EQ(mutation_calls.load(std::memory_order_acquire), 0);
+        EXPECT_EQ(response_calls.load(std::memory_order_acquire), 1);
+    }
+
+    // Subsequent ordinary submission must still succeed cleanly after rollback.
+    std::atomic<int> ok_calls{0};
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    const auto sub = exec.value()->submit(
+        2s,
+        [&](const std::function<bool()>& try_claim) {
+            if (try_claim()) {
+                ok_calls.fetch_add(1, std::memory_order_acq_rel);
+            }
+            std::lock_guard<std::mutex> lk(mu);
+            done = true;
+            cv.notify_all();
+        },
+        [&]() { ok_calls.fetch_add(10, std::memory_order_acq_rel); });
+    ASSERT_TRUE(sub.admitted);
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        ASSERT_TRUE(cv.wait_for(lk, 2s, [&] { return done; }));
+    }
+    EXPECT_EQ(ok_calls.load(std::memory_order_acquire), 1);
+    ASSERT_TRUE(exec.value()->shutdown(std::chrono::steady_clock::now() + 2s).ok());
+}
+
+TEST(ServerAppTest, SharedStartupLatchSurvivesLateAdviceAfterWaiterExitAndQuiescenceStartsTrue) {
+    // Verify a late BeginningAdvice callback after wait_running_for timeout never
+    // touches a destroyed stack frame (verified under ASan).
+    std::function<void()> late_advice;
+    {
+        auto latch = std::make_shared<ServerStartupLatch>();
+        late_advice = [latch]() {
+            latch->mark_running();
+            latch->mark_exited();
+        };
+        EXPECT_FALSE(latch->wait_running_for(5ms));
+    }
+    // Original waiter scope has exited; invoking the late advice must be safe.
+    ASSERT_TRUE(static_cast<bool>(late_advice));
+    late_advice();
+
+    // Unstarted / failed-validation ServerApp remains quiescent so caller may
+    // safely tear down Core without tripping fail-closed _Exit.
+    ServerApp app;
+    EXPECT_TRUE(app.quiescent());
+    ServerConfig cfg;
+    ServerServices empty_services;
+    const auto res = app.start(cfg, empty_services);
+    EXPECT_FALSE(res.ok());
+    EXPECT_TRUE(app.quiescent());
+    EXPECT_TRUE(app.shutdown(std::chrono::steady_clock::now() + 1s).ok());
+    EXPECT_TRUE(app.quiescent());
 }
 
 }  // namespace

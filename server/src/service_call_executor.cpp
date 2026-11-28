@@ -1,6 +1,7 @@
 #include "service_call_executor.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <system_error>
 #include <utility>
 
@@ -11,6 +12,7 @@ struct ControlExecutor::TaskItem {
     std::function<void(const std::function<bool()>& try_claim_response)> work;
     std::function<void()> on_timeout;
     std::mutex state_mutex;
+    bool admitted{false};
     bool started{false};
     bool completed{false};
     bool timed_out{false};
@@ -58,6 +60,10 @@ Result<std::unique_ptr<ControlExecutor>> ControlExecutor::create(const Execution
     }
 }
 
+void ControlExecutor::set_submit_fault_for_test(SubmitFaultPoint point) noexcept {
+    test_fault_.store(point, std::memory_order_release);
+}
+
 ExecutorSubmitResult ControlExecutor::submit(
     std::chrono::nanoseconds observer_timeout,
     std::function<void(const std::function<bool()>& try_claim_response)> work,
@@ -67,12 +73,32 @@ ExecutorSubmitResult ControlExecutor::submit(
     }
 
     std::shared_ptr<TaskItem> item;
+    bool timer_registered = false;
+    auto rollback_timer = [&]() noexcept {
+        if (!item) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> slock(item->state_mutex);
+            item->cancelled_before_start = true;
+            item->completed = true;
+            item->response_claimed = true;
+        }
+        if (timer_registered) {
+            std::lock_guard<std::mutex> tlock(timer_mutex_);
+            pending_timers_.erase(
+                std::remove(pending_timers_.begin(), pending_timers_.end(), item),
+                pending_timers_.end());
+        }
+    };
+
     try {
         item = std::make_shared<TaskItem>();
         item->deadline = std::chrono::steady_clock::now() + observer_timeout;
         item->work = std::move(work);
         item->on_timeout = std::move(on_timeout);
 
+        // Fast-path saturation/shutdown rejection before touching timer state.
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             if (state_->stopping) {
@@ -82,20 +108,60 @@ ExecutorSubmitResult ControlExecutor::submit(
                 ++state_->stats.rejected;
                 return {false, CallAdmissionFailure::GlobalSaturation};
             }
-            state_->queue.push_back(item);
-            state_->stats.queued = state_->queue.size();
-            state_->stats.high_water_queued =
-                std::max(state_->stats.high_water_queued, state_->stats.queued);
         }
-        state_->cv.notify_one();
 
+        // Stage 1: register timer entry while item->admitted == false so timer_loop
+        // cannot expire it until queue admission commits. Any allocation failure here
+        // happens before any worker can observe the item.
         if (item->on_timeout) {
             std::lock_guard<std::mutex> tlock(timer_mutex_);
+            auto expected = SubmitFaultPoint::TimerRegister;
+            if (test_fault_.compare_exchange_strong(
+                    expected, SubmitFaultPoint::None, std::memory_order_acq_rel)) {
+                throw std::bad_alloc();
+            }
             pending_timers_.push_back(item);
+            timer_registered = true;
+        }
+
+        // Stage 2: enqueue work and atomically flip item->admitted = true under
+        // state_->mutex. No allocation occurs after the commit point.
+        std::optional<CallAdmissionFailure> rejection;
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            if (state_->stopping) {
+                rejection = CallAdmissionFailure::ShuttingDown;
+            } else if (state_->queue.size() >= state_->max_queue) {
+                ++state_->stats.rejected;
+                rejection = CallAdmissionFailure::GlobalSaturation;
+            } else {
+                auto expected = SubmitFaultPoint::QueuePush;
+                if (test_fault_.compare_exchange_strong(
+                        expected, SubmitFaultPoint::None, std::memory_order_acq_rel)) {
+                    throw std::bad_alloc();
+                }
+                state_->queue.push_back(item);
+                {
+                    std::lock_guard<std::mutex> slock(item->state_mutex);
+                    item->admitted = true;
+                }
+                state_->stats.queued = state_->queue.size();
+                state_->stats.high_water_queued =
+                    std::max(state_->stats.high_water_queued, state_->stats.queued);
+            }
+        }
+        if (rejection) {
+            rollback_timer();
+            return {false, *rejection};
+        }
+        state_->cv.notify_one();
+        if (timer_registered) {
+            std::lock_guard<std::mutex> tlock(timer_mutex_);
             timer_cv_.notify_one();
         }
         return {true, CallAdmissionFailure::GlobalSaturation};
     } catch (const std::bad_alloc&) {
+        rollback_timer();
         return {false, CallAdmissionFailure::GlobalSaturation};
     }
 }
@@ -218,7 +284,7 @@ void ControlExecutor::timer_loop() {
                 std::lock_guard<std::mutex> slock(item->state_mutex);
                 if (item->completed || item->response_claimed) {
                     erase = true;
-                } else if (now >= item->deadline) {
+                } else if (item->admitted && now >= item->deadline) {
                     item->timed_out = true;
                     item->response_claimed = true;
                     if (item->on_timeout) {

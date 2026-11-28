@@ -256,7 +256,7 @@ FilePublication publish_file(
             }
         }
 
-        outcome.disposition = FileDisposition::Durable;
+        outcome.disposition = sync ? FileDisposition::Durable : FileDisposition::Published;
         outcome.step = FileStep::Complete;
         return outcome;
     } catch (const std::bad_alloc&) {

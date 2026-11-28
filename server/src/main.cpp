@@ -96,9 +96,24 @@ int main(int argc, char** argv) {
     services.lifetime_pin = runtime;
 
     const auto shutdown_budget = dep.value().server.timeouts.shutdown;
+    auto ensure_server_quiescent_or_exit = [&](const char* phase_label,
+                                               std::chrono::steady_clock::time_point deadline) {
+        auto srv_sd = server.shutdown(deadline);
+        if (!srv_sd.ok() || !server.quiescent()) {
+            RODAQ_LOG_CRITICAL(
+                "ServerApp not quiescent during {} ({}); skipping normal Core teardown to "
+                "protect unresolved workers/event loop; process restart required",
+                phase_label, srv_sd.ok() ? "server still active" : srv_sd.status().message());
+            (void)rodaq::logging::flush();
+            std::_Exit(1);
+        }
+    };
+
     if (auto started = server.start(std::move(dep.value().server), services); !started.ok()) {
         RODAQ_LOG_ERROR("ServerApp::start failed: {}", started.status().message());
-        (void)runtime->shutdown(std::chrono::steady_clock::now() + shutdown_budget);
+        const auto deadline = std::chrono::steady_clock::now() + shutdown_budget;
+        ensure_server_quiescent_or_exit("startup failure", deadline);
+        (void)runtime->shutdown(deadline);
         (void)rodaq::logging::shutdown();
         return 1;
     }
@@ -124,15 +139,7 @@ int main(int argc, char** argv) {
     }
 
     const auto deadline = std::chrono::steady_clock::now() + shutdown_budget;
-    auto srv_sd = server.shutdown(deadline);
-    if (!srv_sd.ok()) {
-        RODAQ_LOG_CRITICAL(
-            "ServerApp::shutdown unresolved ({}); skipping normal Core teardown to protect "
-            "detached workers; process restart required",
-            srv_sd.status().message());
-        (void)rodaq::logging::flush();
-        std::_Exit(1);
-    }
+    ensure_server_quiescent_or_exit("shutdown", deadline);
     auto core_sd = runtime->shutdown(deadline);
     if (!core_sd.ok()) {
         RODAQ_LOG_ERROR("DaqRuntime::shutdown error: {}", core_sd.status().message());

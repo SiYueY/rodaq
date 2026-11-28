@@ -55,6 +55,10 @@ public:
 
     ControlMetrics metrics() const;
 
+    // Internal test seam for verifying pre-admission exception atomicity.
+    enum class SubmitFaultPoint { None, TimerRegister, QueuePush };
+    void set_submit_fault_for_test(SubmitFaultPoint point) noexcept;
+
 private:
     struct TaskItem;
     struct SharedState;
@@ -66,6 +70,7 @@ private:
     ExecutionConfig config_;
     std::shared_ptr<SharedState> state_;
     std::atomic<bool> stopping_{false};
+    std::atomic<SubmitFaultPoint> test_fault_{SubmitFaultPoint::None};
     bool stopped_{false};
     std::mutex timer_mutex_;
     std::condition_variable timer_cv_;

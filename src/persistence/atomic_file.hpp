@@ -11,7 +11,9 @@
 namespace rodaq::persistence {
 
 enum class FilePublishMode { Create, Replace };
-enum class FileDisposition { NotPublished, Uncertain, Durable };
+// Published: atomically renamed without fsync (DurabilityProfile::Normal).
+// Durable: atomically renamed and both file + parent directory fsync succeeded.
+enum class FileDisposition { NotPublished, Uncertain, Published, Durable };
 enum class FileStep {
     OpenDirectory,
     CreateTemporary,
